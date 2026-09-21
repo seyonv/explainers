@@ -7,12 +7,23 @@ cd "$(dirname "$0")"
 node sync-papers.mjs
 node build-hub.mjs
 git add -A
-if git diff --cached --quiet; then
+
+committed=0
+if ! git diff --cached --quiet; then
+  git commit -q -m "Publish ${1:-explainers}"
+  committed=1
+fi
+
+pushed=0
+if [ "$(git rev-list --count @{u}..HEAD)" -gt 0 ]; then
+  git push -q
+  pushed=1
+fi
+
+if [ "$committed" -eq 0 ] && [ "$pushed" -eq 0 ]; then
   echo "Nothing new to publish."
   exit 0
 fi
-git commit -q -m "Publish ${1:-explainers}"
-git push -q
 
 repo=$(git remote get-url origin | sed -E 's#(git@github.com:|https://github.com/)##; s#\.git$##')
 page=""
