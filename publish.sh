@@ -14,4 +14,6 @@ git commit -q -m "Publish ${1:-explainers}"
 git push -q
 
 repo=$(git remote get-url origin | sed -E 's#(git@github.com:|https://github.com/)##; s#\.git$##')
-echo "Pushed. Live in about a minute at https://${repo%%/*}.github.io/${repo#*/}/${1:+$1/}"
+page=""
+if [ -n "${1:-}" ] && [ ! -f "$1/index.html" ]; then page=$(cd "$1" && ls *.html | head -1); fi
+echo "Pushed. Live in about a minute at https://${repo%%/*}.github.io/${repo#*/}/${1:+$1/}$page"
