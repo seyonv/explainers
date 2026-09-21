@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The prompt-and-repair loop</title>
+<style>
+:root{
+  --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
+  --text:#1c1f23; --muted:#6b7068; --faint:#b9b9b3;
+  --accent:#4a9d77; --accent-bg:#dcefdf; --accent-border:#8cc79c;
+  --red:#c0492b; --red-bg:#fbeceb;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#15171a; --surface:#1d2024; --surface2:#24282d; --border:#32373d;
+    --text:#e6e8ea; --muted:#9aa1a9; --faint:#4a5057;
+    --accent:#5fb37f; --accent-bg:#1c2b22; --accent-border:#3f7a55;
+    --red:#e57368; --red-bg:#2e1f1e;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text)}
+.card{max-width:820px;margin:0 auto;padding:28px 32px;font-family:-apple-system,"Inter",system-ui,sans-serif;line-height:1.45}
+h1{font-size:26px;font-weight:600;margin:0 0 6px;letter-spacing:-0.01em}
+.sub{font-size:15px;color:var(--muted);margin:0 0 20px}
+h2{font-size:17px;font-weight:600;margin:26px 0 10px}
+p{font-size:15px;margin:0 0 10px}
+.cap{font-size:13px;color:var(--muted);margin:8px 0 0;text-align:center}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+
+/* Horizontal bar chart with running total and cutoff */
+.bars{display:grid;grid-template-columns:110px 1fr 90px;column-gap:14px;row-gap:12px;align-items:center;font-size:14px}
+.bars .hd{font-size:13px;color:var(--muted)}
+.bars .hd.r,.bars .tot{text-align:right;font-variant-numeric:tabular-nums}
+.bars .tok{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:15px}
+.bars .track{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted)}
+.bars .bar{height:22px;border-radius:3px;background:var(--accent)}
+.bars .tot{font-size:15px}
+.bars .strong{font-weight:600}
+.cutoff{grid-column:1 / -1;border-top:2px dashed var(--red);margin-top:4px;padding-top:6px;text-align:center;font-size:13px;color:var(--red)}
+
+/* Tables and formulas */
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border)}
+th{font-size:12px;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:none}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+.hi{color:var(--accent);font-weight:600} .lo{color:var(--red)}
+.formula{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin:10px 0;white-space:pre;overflow-x:auto;line-height:1.55}
+
+/* 2x2 grid */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.cell{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.cell.win{background:var(--accent-bg);border-color:var(--accent-border)}
+.cell h3{font-size:16px;font-weight:600;margin:0 0 5px;display:flex;gap:8px;align-items:baseline}
+.cell p{font-size:14px;margin:0;color:var(--text)}
+.cell.win h3,.cell.win p{color:var(--accent)}
+.x{color:var(--red)} .ok{color:var(--accent)}
+
+/* Clarification box */
+.note{border:1px solid var(--border);border-radius:10px;padding:14px 18px;font-size:14px}
+.note p{font-size:14px} .note p:last-child{margin-bottom:0}
+
+.foot{margin-top:22px;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+svg{display:block;max-width:100%}
+.sl{font-size:12px;fill:var(--muted)} .st{font-size:13px;fill:var(--text)}
+@media (max-width:560px){.grid2{grid-template-columns:1fr}.bars{grid-template-columns:70px 1fr 64px}}
+a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+</style>
+<style>
+.stream{display:grid;grid-template-columns:118px 1fr;column-gap:12px;row-gap:12px;align-items:center}
+.stream .lab{font-size:13px;line-height:1.3}
+.stream .lab small{display:block;color:var(--muted);font-size:12px}
+.chips{display:flex;flex-wrap:wrap;gap:4px;align-items:center}
+.chips span{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;padding:3px 6px;border-radius:4px;border:1px solid var(--border);background:var(--surface);font-variant-numeric:tabular-nums}
+.chips .a{background:var(--accent-bg);border-color:var(--accent-border);color:var(--accent)}
+.chips .r{background:var(--surface2);border-color:var(--accent-border);color:var(--accent);font-weight:600}
+.chips .w{background:var(--red-bg);border-color:var(--red);color:var(--red);font-weight:600}
+.chips .gap{border:none;background:none;color:var(--muted);font-family:inherit;font-size:13px;padding:3px 2px}
+.chips .gap b{color:var(--text)} .chips .gap b.ok{color:var(--accent)}
+.key{display:inline-flex;align-items:center;gap:5px;margin:0 8px;white-space:nowrap}
+.key i{display:inline-block;width:12px;height:12px;border-radius:2px}
+.key .k1{background:var(--accent-bg);border:1px solid var(--accent-border)} .key .k2{background:var(--surface2);border:1px solid var(--accent-border)} .key .k3{background:var(--red-bg);border:1px solid var(--red)}
+.mathbox{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px 16px 12px;margin:10px 0;overflow-x:auto}
+.mathbox math{font-size:21px;color:var(--text);font-family:"STIX Two Math","Latin Modern Math","Cambria Math",math}
+.mathbox .t1{color:var(--text)} .mathbox .t2{color:var(--accent)} .mathbox .t3{color:var(--muted)}
+.mathbox .lab{font-size:12px;font-family:-apple-system,"Inter",system-ui,sans-serif;padding-top:3px;border-top:1.5px solid currentColor;margin-top:2px}
+.mrow2{display:flex;flex-wrap:wrap;gap:10px 40px;justify-content:center}
+.legend{display:grid;grid-template-columns:auto 1fr auto;column-gap:14px;row-gap:5px;font-size:13px;margin-top:12px;align-items:baseline}
+.legend .sym{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;text-align:right}
+.legend .v{color:var(--muted);text-align:right;font-variant-numeric:tabular-nums}
+.parts td{vertical-align:top}
+.parts td:first-child{font-weight:600;white-space:nowrap}
+.parts .ex{font-size:13px}
+.parts .ex b{font-variant-numeric:tabular-nums;font-weight:500}
+.parts .ex span{display:block;color:var(--muted)}
+.parts code,.cmp code{font-size:12px}
+.cmp td{vertical-align:top;font-size:13px}
+.cmp td:first-child{font-weight:600;white-space:nowrap}
+.tag{font-size:11px;font-weight:600;color:var(--muted);border:1px solid var(--border);border-radius:4px;padding:1px 5px;margin-left:6px;white-space:nowrap}
+.bx{fill:var(--surface);stroke:var(--border)} .bxg{fill:var(--accent-bg);stroke:var(--accent-border)}
+.bxr{fill:var(--red-bg);stroke:var(--red)} .bxo{fill:var(--surface2);stroke:var(--faint)}
+.ln{stroke:var(--muted);stroke-width:1.5;fill:none} .lr{stroke:var(--red);stroke-width:1.5;fill:none}
+.ah{fill:var(--muted)} .ahr{fill:var(--red)}
+.sb{font-size:13px;font-weight:600;fill:var(--text)} .sg{font-size:13px;font-weight:600;fill:var(--accent)} .sr{font-size:13px;font-weight:600;fill:var(--red)} .slr{font-size:12px;fill:var(--red)}
+.foot a{color:var(--muted)}
+@media (max-width:560px){.stream{grid-template-columns:1fr;row-gap:4px}.stream .chips{margin-bottom:8px}.legend{grid-template-columns:auto 1fr}.legend .v{display:none}.parts .what{display:none}.cmp .cfg{display:none}}
+</style>
+</head>
+<body>
+<article class="card">
+<h1>The prompt-and-repair loop</h1>
+<p class="sub">Also called the unconstrained method, parse-and-repair, retry with feedback, or "reask" (Instructor, Pydantic AI and BAML style). The cookbook's version (unconstrained-method page) wraps the model in a control loop: a careful prompt, then clean, parse and validate the text, feed any error back, and give up after 3 repairs × 3 fresh starts. The paper calls this setup "LM-only" and notes under-constrained engines "often necessitat[e] additional post-processing or retry logic".</p>
+
+<p><b>In one breath.</b> Don't touch the decoder. Ask nicely for JSON, then check the answer in code, and if it fails, show the model its own mistake and ask again. Each extra try is a whole new model call, so it works well when the first try usually passes, and it only catches the mistakes your checker knows to look for.</p>
+
+<h2>The pipeline, as the cookbook writes it</h2>
+<svg viewBox="0 0 760 262" role="img" aria-label="Prompt, clean, parse, validate, return; on error, repair in the same chat up to 3 calls, then a fresh retry up to 3 times, then raise">
+<defs>
+  <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah"/></marker>
+  <marker id="ahr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ahr"/></marker>
+</defs>
+<rect class="bx" x="10" y="30" width="150" height="72" rx="8"/>
+<text class="sb" x="22" y="52">1 · Prompt + call</text><text class="sl" x="22" y="70">system role, schema,</text><text class="sl" x="22" y="86">few-shot, "JSON Output:"</text>
+<rect class="bx" x="185" y="30" width="125" height="72" rx="8"/>
+<text class="sb" x="197" y="52">2 · Clean</text><text class="sl" x="197" y="70">strip ``` fences</text><text class="sl" x="197" y="86">first { … last }</text>
+<rect class="bx" x="335" y="30" width="135" height="72" rx="8"/>
+<text class="sb" x="347" y="52">3 · Lenient parse</text><text class="sl" x="347" y="70">json.loads, then</text><text class="sl" x="347" y="86">ast.literal_eval</text>
+<rect class="bx" x="495" y="30" width="130" height="72" rx="8"/>
+<text class="sb" x="507" y="52">4 · Validate</text><text class="sl" x="507" y="70">allow-list the keys,</text><text class="sl" x="507" y="86">cast the types</text>
+<rect class="bxg" x="650" y="30" width="100" height="72" rx="8"/>
+<text class="sg" x="662" y="52">&#10003; Return</text><text class="sl" x="662" y="70">the cleaned</text><text class="sl" x="662" y="86">dict</text>
+<path class="ln" d="M160,66 H183" marker-end="url(#ah)"/><path class="ln" d="M310,66 H333" marker-end="url(#ah)"/><path class="ln" d="M470,66 H493" marker-end="url(#ah)"/><path class="ln" d="M625,66 H648" marker-end="url(#ah)"/>
+<path class="lr" d="M600,102 V178" marker-end="url(#ahr)"/><text class="slr" x="607" y="146">any error</text><text class="slr" x="607" y="161">in 2, 3 or 4</text>
+<rect class="bxo" x="495" y="180" width="160" height="72" rx="8"/>
+<text class="sb" x="507" y="202">5 · Repair</text><text class="sl" x="507" y="220">append output + error,</text><text class="sl" x="507" y="236">call again, same chat</text>
+<path class="ln" d="M520,180 V140 H85 V104" marker-end="url(#ah)"/><text class="sl" x="120" y="133">calls 2 and 3 of the same chat</text>
+<rect class="bxo" x="255" y="180" width="170" height="72" rx="8"/>
+<text class="sb" x="267" y="202">6 · Fresh retry</text><text class="sl" x="267" y="220">3 calls failed: wipe the</text><text class="sl" x="267" y="236">history, start a new chat</text>
+<path class="ln" d="M493,216 H427" marker-end="url(#ah)"/><text class="sl" x="460" y="206" text-anchor="middle">call 3</text><text class="sl" x="460" y="236" text-anchor="middle">fails</text>
+<path class="ln" d="M340,180 V141" stroke-dasharray="4 3"/>
+<rect class="bxr" x="10" y="180" width="150" height="72" rx="8"/>
+<text class="sr" x="22" y="202">&#10007; Raise</text><text class="sl" x="22" y="220">after 3 chats × 3 calls</text><text class="sl" x="22" y="236">= 9 model calls</text>
+<path class="lr" d="M253,216 H162" marker-end="url(#ahr)"/><text class="slr" x="207" y="206" text-anchor="middle">3rd chat</text>
+</svg>
+<p class="cap">Grey = extra work you pay for. In the cookbook's code each of the 3 inner tries is one <code>llm.chat</code> call, so "3 repair attempts" means 1 first answer + 2 repairs per chat, and the loop stops at 9 calls. The cookbook's own example is an internal expense bot with a person checking the output, not the store chatbot.</p>
+
+<h2>How many calls it takes</h2>
+<p>If each call passes your checks with probability p, and the tries are independent, the number of calls follows a geometric distribution:</p>
+<div class="mathbox">
+<div class="mrow2">
+<math display="block">
+  <mi>E</mi><mo stretchy="false">[</mo><mtext>calls</mtext><mo stretchy="false">]</mo><mo>=</mo>
+  <munder class="t2"><mfrac><mn>1</mn><mi>p</mi></mfrac><mtext class="lab">expected calls</mtext></munder>
+</math>
+<math display="block">
+  <mi>P</mi><mo stretchy="false">(</mo><mtext>still failing after&#160;</mtext><mi>k</mi><mo stretchy="false">)</mo><mo>=</mo>
+  <munder class="t3"><msup><mrow><mo stretchy="false">(</mo><mn>1</mn><mo>&#8722;</mo><mi>p</mi><mo stretchy="false">)</mo></mrow><mi>k</mi></msup><mtext class="lab">every try failed</mtext></munder>
+</math>
+</div>
+<div class="legend">
+  <span class="sym">p</span><span>share of single calls that pass <em>your</em> checker (so it depends on what the checker checks)</span><span class="v">7/30 to 29/30 below</span>
+  <span class="sym">k</span><span>calls allowed before you give up</span><span class="v">3 per chat, 9 in all</span>
+</div>
+</div>
+<table>
+<tr><th>What counts as a pass, measured on M3, qwen3.5:4b</th><th class="num">p</th><th class="num">E[calls]</th><th class="num">fail after 3</th><th class="num">fail after 9</th></tr>
+<tr><td>Raw text passes <code>json.loads</code> (no cleaning)</td><td class="num lo">7/30</td><td class="num lo">4.29</td><td class="num">0.451</td><td class="num">0.092</td></tr>
+<tr><td>Cleaned, then valid against the schema</td><td class="num hi">29/30</td><td class="num hi">1.03</td><td class="num">3.7 × 10<sup>−5</sup></td><td class="num hi">5.1 × 10<sup>−14</sup></td></tr>
+<tr><td>Values correct too (the checker also checks the total)</td><td class="num">15/30</td><td class="num">2.00</td><td class="num">0.125</td><td class="num">0.0020</td></tr>
+</table>
+<div class="formula">no cleaning : 1 / (7/30)  = 30/7  = 4.29 calls     (23/30)^9 = 0.092
+cleaned     : 1 / (29/30) = 30/29 = 1.03 calls     (1/30)^3  = 1/27,000 = 3.7e-5
+                                                   (1/30)^9  = 1/19,683,000,000,000 = 5.1e-14
+values      : 1 / (15/30) = 2.00 calls             (1/2)^3 = 0.125    (1/2)^9 = 0.0020</div>
+<p class="cap">p values are from the 30-run test in the facts (temp 0.7, seeds 1000–1029). The formula assumes independent tries, which fits fresh retries at temperature 0.7 best. Repairs inside one chat see the earlier mistake, so they are not independent (see below). Cleaning alone moves the loop from about 4 calls to about 1: most "broken" answers were only wrapped in <code>```json</code> fences (23 of 30).</p>
+
+<h2>What the loop does with wrong-but-valid values</h2>
+<p>With a schema-only checker, 29/30 answers pass on the first call and <b class="lo">14 of 30 ship with a wrong total</b> (60, 66 or 78 instead of 54). Only the one invalid answer triggers a retry; for the other 14, nothing failed. So I added a value check (total must equal qty × price from the list, without telling the model the answer) and re-ran the cookbook's inner loop, up to 3 calls in one chat, on the 15 seeds that were wrong or invalid. Measured on M3, qwen3.5:4b, one run per seed. Each chip is one request, showing how many calls it used:</p>
+<div class="stream">
+  <div class="lab">Schema check only<small>seeds 1000–1029</small></div>
+  <div class="chips"><span class="a">54</span><span class="w">60</span><span class="w">60</span><span class="a">54</span><span class="a">54</span><span class="w">66</span><span class="a">54</span><span class="w">[ ]</span><span class="a">54</span><span class="w">78</span><span class="a">54</span><span class="w">60</span><span class="a">54</span><span class="w">60</span><span class="a">54</span><span class="w">60</span><span class="a">54</span><span class="a">54</span><span class="w">60</span><span class="w">78</span><span class="w">60</span><span class="a">54</span><span class="w">66</span><span class="a">54</span><span class="w">60</span><span class="a">54</span><span class="a">54</span><span class="w">60</span><span class="w">60</span><span class="a">54</span><span class="gap">correct <b class="ok">15</b> · 14 wrong shipped</span></div>
+  <div class="lab">+ value check, repair<small>calls used</small></div>
+  <div class="chips"><span class="a">1</span><span class="r">2</span><span class="r">2</span><span class="a">1</span><span class="a">1</span><span class="r">2</span><span class="a">1</span><span class="r">3</span><span class="a">1</span><span class="w">3 ✗</span><span class="a">1</span><span class="r">2</span><span class="a">1</span><span class="r">2</span><span class="a">1</span><span class="r">2</span><span class="a">1</span><span class="a">1</span><span class="r">2</span><span class="w">3 ✗</span><span class="r">2</span><span class="a">1</span><span class="w">3 ✗</span><span class="a">1</span><span class="r">2</span><span class="a">1</span><span class="a">1</span><span class="w">3 ✗</span><span class="r">2</span><span class="a">1</span><span class="gap">correct <b class="ok">26</b> · 50 calls</span></div>
+</div>
+<p class="cap"><span class="key"><i class="k1"></i>correct on call 1</span> <span class="key"><i class="k2"></i>fixed by repair (calls used)</span> <span class="key"><i class="k3"></i>wrong total or invalid</span></p>
+<div class="formula">first call right        : 15            × 1 call  = 15 calls
+fixed on the 1st repair : 10            × 2 calls = 20 calls
+fixed on the 2nd repair :  1 (seed 1007) × 3 calls =  3 calls
+still wrong after 3     :  4            × 3 calls = 12 calls
+total                   : 26/30 correct (87%)      50 calls / 30 requests = 1.67 calls each
+formula said            : (1/2)^3 = 12.5% stuck    seen: 4/30 = 13.3%</div>
+<p class="cap">The totals match, but the mechanism doesn't: the 4 stuck chats kept writing 60 or 78 in each repair, so a repair is not a fresh coin flip. Only fresh retries (step 6, not run here) would re-roll them. Every first call reproduced the recorded total for its seed. Seed 1007 (the bare array) needed 3 calls: its first repair still had extra <code>unit_price</code> keys, which my strict <code>jsonschema</code> check rejected; the cookbook's allow-list would have dropped them silently. Rough time cost, not timed: 1.67 × 5.53 s median per call ≈ 9.2 s per request, vs 2.72 s median with the grammar on and no value check. If your code can compute the total, just compute it (see <a href="valid-not-correct.html">valid-not-correct</a>) instead of asking again.</p>
+
+<h2>Each stage, two examples</h2>
+<p>Think of it as a clerk who reads a form, tidies the handwriting, and hands it back with a sticky note if a box is wrong.</p>
+<table class="parts">
+<tr><th>Stage</th><th class="what">What it does</th><th>Example A</th><th>Example B</th></tr>
+<tr><td>Clean</td><td class="what">Removes Markdown fences and keeps only the text from the first <code>{</code> to the last <code>}</code>.</td>
+  <td class="ex"><b class="ok">```json {…} ```</b><span>fixed: 23/30 local answers were fenced</span></td>
+  <td class="ex"><b class="lo">[{…}, {…}]</b><span>not fixed: a bare array becomes two objects glued together (seed 1007)</span></td></tr>
+<tr><td>Lenient parse</td><td class="what">Tries strict <code>json.loads</code>, then Python's <code>ast.literal_eval</code> for near-JSON.</td>
+  <td class="ex"><b class="ok">{"sku": "BW-CITRUS"}</b><span>strict JSON: first parser</span></td>
+  <td class="ex"><b class="ok">{'sku': 'BW-CITRUS',}</b><span>single quotes, trailing comma: fallback (cookbook's cases; illustrative)</span></td></tr>
+<tr><td>Validate</td><td class="what">Drops keys not on an allow-list and casts values to the expected types; raises if a cast fails.</td>
+  <td class="ex"><b>"unit_price": 12</b><span>extra key: dropped</span></td>
+  <td class="ex"><b>"total_claim": "450"</b><span>cast to 450; "about 450" raises (illustrative)</span></td></tr>
+<tr><td>Repair</td><td class="what">Appends the bad output and an error message to the chat and calls again.</td>
+  <td class="ex"><b>known error</b><span>custom message, e.g. "Field 'total_claim' must be a number"</span></td>
+  <td class="ex"><b>unknown error</b><span>the raw exception text is sent back</span></td></tr>
+<tr><td>Fresh retry</td><td class="what">After 3 failed calls, throws the chat away so the old mistake stops steering the model.</td>
+  <td class="ex"><b class="ok">new sample</b><span>re-rolls a stuck 60 at temperature 0.7</span></td>
+  <td class="ex"><b class="lo">same again</b><span>at temperature 0 it may repeat itself (inferred, not tested)</span></td></tr>
+</table>
+
+<h2>Libraries that run the loop for you</h2>
+<table class="cmp">
+<tr><th>Library</th><th class="cfg">You define</th><th>What it does, per the cookbook</th><th>Notable claim or limit</th></tr>
+<tr><td>Hand-rolled</td><td class="cfg">a prompt string</td><td>The pipeline above: clean, <code>json.loads</code> → <code>ast.literal_eval</code>, allow-list + casts, 3 repairs × 3 fresh retries.</td><td>You own every edge case.</td></tr>
+<tr><td>Instructor</td><td class="cfg">a Pydantic <code>BaseModel</code>, passed as <code>response_model</code></td><td>Writes the prompt, parses and validates against the model, re-prompts or cleans on failure. Uses the provider's server-side structured outputs when there are any, and falls back to prompting for open models.</td><td>Retries are configurable; caching and streaming. Debugging means peeking at the prompt it sent.</td></tr>
+<tr><td>Pydantic AI</td><td class="cfg">a <code>BaseModel</code>, run with <code>agent.run(prompt)</code></td><td>Prompts for JSON, parses into the model, casts <code>"25"</code> to 25, and "can optionally retry or throw an error".</td><td>"Only works well for JSON schemas, and those too without deep nesting"; best with large, capable models.</td></tr>
+<tr><td>BAML</td><td class="cfg">BAML type definitions</td><td>Builds a compact prompt from the types, then does "type-safe outputs and retries".</td><td>Order prompt ~420 → ~140 tokens. Beats OpenAI structured outputs on BFCL (cookbook's claim, not checked here).</td></tr>
+</table>
+<div class="formula">BAML prompt size : 140 / 420 = 0.33   → 67% fewer tokens on the cookbook's example
+                   (the cookbook's general figure is "60% less tokens than JSON schemas")</div>
+
+<h2>Why it beats the alternatives, when you can't use a grammar</h2>
+<div class="grid2">
+  <div class="cell"><h3><span class="x">&#10007;</span> Single-shot parse</h3><p>Call once, <code>json.loads</code>, hope. Locally that passed 7 of 30 times, because the model wraps answers in fences. One failure is one failed request.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Constrained decoding</h3><p>30/30 valid here, and usually the better pick. But it needs logits or a provider feature, and closed APIs support only part of JSON Schema (paper: OpenAI declares 0.30 coverage on GitHub Easy, Llama-3.2-1B setup).</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> A person fixes every failure</h3><p>Catches wrong values a schema can't, but costs minutes per request instead of seconds. The cookbook keeps a human for review in its expense bot, not as the repair step.</p></div>
+  <div class="cell win"><h3><span class="ok">&#10003;</span> Prompt, check, repair, retry</h3><p>Works with any model and any checker you can write in code, including value checks a grammar can't express. Here it took 15 → 26 correct of 30 for 1.67 calls per request.</p></div>
+</div>
+
+<h2>When should you use it?</h2>
+<div class="note">
+  <p><b>Good fit.</b> Closed models or endpoints with no schema support; output a person reads and only needs to "loosely adhere to schema" (cookbook); schemas built on the fly, where the cookbook says constrained decoding's first-use cost (milliseconds to seconds) isn't amortised; and checks that no grammar can hold, like "the total matches the price list".</p>
+  <p><b>Poor fit.</b> Machine consumers at high volume. The cookbook recommends constrained decoding there, because failed answers "need regeneration, which increases latency linearly with the error rate". Locally, a grammar gave 30/30 valid in one call at 2.72 s median, while this loop averaged 1.67 calls. The loop also only catches what the validator checks: with a schema-only checker, all 14 wrong totals would have shipped. Best of both is common: a grammar for the shape, plus a value check and one repair for the meaning.</p>
+</div>
+
+<p class="foot">Related: <a href="_overview.html">_overview</a> · <a href="_overview-choosing.html">_overview-choosing</a> · <a href="why-json-breaks.html">why-json-breaks</a> · <a href="valid-not-correct.html">valid-not-correct</a> · <a href="token-masking.html">token-masking</a> · <a href="coverage-compliance.html">coverage-compliance</a> · <a href="compile-vs-per-token.html">compile-vs-per-token</a> · <a href="where-it-runs.html">where-it-runs</a> · <a href="compact-formats.html">compact-formats</a><br>
+Sources: Nanonets cookbook, <a href="https://nanonets.com/cookbooks/structured-llm-outputs/basic-concepts/unconstrained-method/">unconstrained method</a> (the prompt, <code>clean_text</code>, <code>parse_json</code>, <code>sanitize_data</code>, <code>reliable_extract</code>), <a href="https://nanonets.com/cookbooks/structured-llm-outputs/unconstrained-decoding/instructor/">Instructor</a>, <a href="https://nanonets.com/cookbooks/structured-llm-outputs/unconstrained-decoding/pydantic-ai/">Pydantic AI</a>, <a href="https://nanonets.com/cookbooks/structured-llm-outputs/unconstrained-decoding/baml/">BAML</a>, <a href="https://nanonets.com/cookbooks/structured-llm-outputs/basic-concepts/choosing-the-right-method/">choosing the right method</a>; Geng et al., <a href="https://arxiv.org/abs/2501.10868">Generating Structured Outputs from Language Models</a> (under-constrained engines need "post-processing or retry logic"; OpenAI coverage, Table 4). Local runs on Apple M3, Ollama 0.34.2, qwen3.5:4b, think:false, 2026-09-21: the 30-run test (seeds 1000–1029, temp 0.7, <code>jsonschema</code> 4.26.0), plus one repair-loop run per seed on the 15 failing seeds (up to 3 calls in one chat, value check = qty × list price; fresh retries not run). Expected calls and failure odds are computed from those counts under an independence assumption.</p>
+</article>
+</body>
+</html>
