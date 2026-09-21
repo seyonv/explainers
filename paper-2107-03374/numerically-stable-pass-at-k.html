@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Numerically stable pass@k</title>
+<style>
+:root{
+  --bg:#ffffff; --surface:#f6f7f8; --surface2:#eceef1; --border:#dcdfe3;
+  --text:#1c1f23; --muted:#6b7280;
+  --accent:#3d8f5f; --accent-bg:#eaf4ee;
+  --red:#c0392b; --red-bg:#fbeceb;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#15171a; --surface:#1d2024; --surface2:#24282d; --border:#32373d;
+    --text:#e6e8ea; --muted:#9aa1a9;
+    --accent:#5fb37f; --accent-bg:#1c2b22;
+    --red:#e57368; --red-bg:#2e1f1e;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text)}
+.card{max-width:820px;margin:0 auto;padding:28px 32px;font-family:-apple-system,"Inter",system-ui,sans-serif;line-height:1.45}
+h1{font-size:26px;font-weight:600;margin:0 0 6px;letter-spacing:-0.01em}
+.sub{font-size:15px;color:var(--muted);margin:0 0 20px}
+h2{font-size:13px;font-weight:600;color:var(--muted);margin:22px 0 9px;letter-spacing:0.02em}
+p{font-size:15px;margin:0 0 10px}
+.cap{font-size:13px;color:var(--muted);margin:8px 0 0}
+.box{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px 16px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.cell{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px 14px}
+.cell.win{background:var(--accent-bg);border-color:var(--accent)}
+.cell h3{font-size:14px;font-weight:600;margin:0 0 5px;display:flex;gap:7px;align-items:baseline}
+.cell p{font-size:13px;color:var(--muted);margin:0}
+.cell.win p{color:var(--text)}
+.mk{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-weight:700}
+.x{color:var(--red)} .ok{color:var(--accent)}
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:6px 10px;border-bottom:1px solid var(--border)}
+th{font-size:12px;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:none}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+.hi{color:var(--accent);font-weight:600}
+.lo{color:var(--red)}
+code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+.formula{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin:10px 0;overflow-x:auto;white-space:pre;line-height:1.55}
+.note{background:var(--surface);border-left:3px solid var(--accent);border-radius:0 8px 8px 0;padding:12px 16px;font-size:14px}
+.note p{font-size:14px}
+.note p:last-child{margin-bottom:0}
+.foot{margin-top:24px;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+svg{display:block;max-width:100%}
+.sl{font-size:12px;fill:var(--muted)}
+.st{font-size:13px;fill:var(--text)}
+</style>
+</head>
+<body>
+<article class="card">
+
+<h1>Numerically stable pass@k</h1>
+<p class="sub">Also: the term-by-term product form, the Figure 3 <code>pass_at_k</code> script &middot; The paper notes that evaluating its pass@k estimator (Eq. 1) directly "results in very large numbers and numerical instability", so Figure 3 gives an algebraically simplified numpy version. Used for every pass@k number in the paper (n = 200, k &le; 100).</p>
+
+<h2>In one breath</h2>
+<p>The pass@k estimator is a ratio of two binomial coefficients, and at the paper's scale those coefficients are astronomically large even though their ratio is an ordinary probability. Cancelling the factorials first turns the whole thing into a product of small factors between 0 and 1, which floating point handles exactly as well as any other arithmetic.</p>
+
+<h2>The algebra: the same number, a different route</h2>
+<div class="formula">Eq. 1   pass@k = 1 - C(n-c, k) / C(n, k)          <- ratio of huge integers
+
+        C(n-c, k)     (n-c)! (n-k)!        n              k
+        --------- =  ---------------  =   PROD    ( 1  -  - )
+         C(n, k)       n!  (n-c-k)!      i=n-c+1          i
+
+Figure 3  pass@k = 1 - prod(1.0 - k / arange(n-c+1, n+1))
+          guard:  if n - c &lt; k:  return 1.0     # C(n-c,k) = 0</div>
+<p class="cap">The identity is exact, not an approximation: every factorial cancels. Each factor <code>1 - k/i</code> lies in [0, 1], so no intermediate value is ever larger than 1.</p>
+
+<h2>Worked example: one HumanEval problem at the paper's settings, n = 200, c = 8, k = 100</h2>
+<div class="box">
+<div class="formula">direct    C(200,100) = 9.0549e+58     C(192,100) = 3.0581e+56
+          ratio = 3.0581e+56 / 9.0549e+58 = 0.003377
+          pass@100 = 1 - 0.003377 = 0.996623
+
+          but via factorials:  200! ~ 1e+375,  192! ~ 1e+357
+          float64 max is 1.7977e+308  ->  inf / inf  ->  nan</div>
+<table>
+<thead><tr><th>step i</th><th class="num">factor 1 - 100/i</th><th class="num">running product</th></tr></thead>
+<tbody>
+<tr><td>193</td><td class="num">0.481865</td><td class="num">0.481865</td></tr>
+<tr><td>194</td><td class="num">0.484536</td><td class="num">0.233481</td></tr>
+<tr><td>195</td><td class="num">0.487179</td><td class="num">0.113747</td></tr>
+<tr><td>196</td><td class="num">0.489796</td><td class="num">0.055713</td></tr>
+<tr><td>197</td><td class="num">0.492386</td><td class="num">0.027432</td></tr>
+<tr><td>198</td><td class="num">0.494949</td><td class="num">0.013578</td></tr>
+<tr><td>199</td><td class="num">0.497487</td><td class="num">0.006755</td></tr>
+<tr><td>200</td><td class="num">0.500000</td><td class="num">0.003377</td></tr>
+</tbody>
+</table>
+<p class="cap">Eight multiplications, largest intermediate 0.482. pass@100 = 1 - 0.003377 = <span class="hi">0.996623</span> &mdash; the same value the ratio of binomials gives, reached without ever forming a number bigger than one. The choice of c = 8 is illustrative; the paper reports aggregate pass@k, not per-problem correct counts.</p>
+</div>
+
+<h2>Why the direct route breaks: magnitude of the intermediates, n = 200</h2>
+<div class="box">
+<svg viewBox="0 0 740 168" role="img" aria-label="Bar chart of intermediate magnitudes on a log scale">
+  <line x1="120" y1="140" x2="700" y2="140" stroke="currentColor" stroke-opacity="0.25"/>
+  <line x1="580" y1="18" x2="580" y2="140" stroke="var(--red)" stroke-dasharray="4 3" stroke-opacity="0.8"/>
+  <text x="576" y="154" text-anchor="middle" class="sl" fill="var(--red)">float64 max, 1e308</text>
+
+  <text x="112" y="34" text-anchor="end" class="st">200!</text>
+  <rect x="120" y="22" width="620" height="16" fill="var(--red)" opacity="0.75"/>
+  <text x="700" y="34" text-anchor="end" class="sl" fill="#fff">1e375, overflows</text>
+
+  <text x="112" y="64" text-anchor="end" class="st">192!</text>
+  <rect x="120" y="52" width="590" height="16" fill="var(--red)" opacity="0.75"/>
+  <text x="702" y="64" class="sl">1e357, overflows</text>
+
+  <text x="112" y="94" text-anchor="end" class="st">C(200,100)</text>
+  <rect x="120" y="82" width="98" height="16" fill="var(--muted)" opacity="0.55"/>
+  <text x="226" y="94" class="sl">1e59, fits but loses digits</text>
+
+  <text x="112" y="124" text-anchor="end" class="st">1 - k/i factors</text>
+  <rect x="120" y="112" width="4" height="16" fill="var(--accent)"/>
+  <text x="132" y="124" class="sl" fill="var(--accent)">at most 1</text>
+</svg>
+<p class="cap">Log scale, bar length proportional to the exponent. Whether the direct route overflows or merely loses precision depends on how the binomials are computed &mdash; factorials blow past float64 immediately, while an exact-integer <code>math.comb</code> survives at n = 200 and fails at larger n. The paper states the problem qualitatively and does not give an error analysis; the overflow thresholds here are added context.</p>
+</div>
+
+<h2>Why it beats the alternatives</h2>
+<div class="grid2">
+  <div class="cell">
+    <h3><span class="mk x">&times;</span> Factorials, then divide</h3>
+    <p>Compute n!, (n-c)!, (n-k)!, (n-c-k)! in floating point and combine. At n = 200 the first factorial is already 1e375: it becomes <code>inf</code>, and inf/inf is <code>nan</code>.</p>
+  </div>
+  <div class="cell">
+    <h3><span class="mk x">&times;</span> Exact big-integer binomials</h3>
+    <p>Correct, and fine at n = 200, but it builds 59-digit integers to return a number near 1, is slow inside a loop over 164 problems &times; many k values, and still overflows once converted to float at larger n.</p>
+  </div>
+  <div class="cell">
+    <h3><span class="mk x">&times;</span> Approximate with 1 - (1 - p&#770;)<sup>k</sup></h3>
+    <p>Cheap and stable, using p&#770; = c/n as the pass@1 estimate. But the paper shows in Appendix A that this is biased, so it does not estimate the same quantity.</p>
+  </div>
+  <div class="cell win">
+    <h3><span class="mk ok">&check;</span> Term-by-term product (Figure 3)</h3>
+    <p>Exactly equal to Eq. 1, evaluated as c multiplications of factors in [0, 1]. No overflow, no big integers, one vectorised numpy line, plus a guard returning 1.0 when n - c &lt; k.</p>
+  </div>
+</div>
+
+<h2>Worth knowing</h2>
+<div class="note">
+<p>This is a numerics fix, not a statistics fix. It does not change the estimator, its unbiasedness, or its variance &mdash; it only changes how the same expression is evaluated, so it can never explain a difference between two papers' pass@k numbers.</p>
+<p>The product can underflow to 0.0 when c is large, which returns pass@k = 1.0. That is harmless here, because the true value is then within float precision of 1 anyway. The failure the paper is guarding against is the opposite one: large intermediates. Note also that Eq. 1 is a per-problem quantity; the reported pass@k is its mean over the 164 HumanEval problems.</p>
+</div>
+
+<p class="foot">Source: Evaluating Large Language Models Trained on Code (Chen et al., 2021), Section 2.1 and Figure 3, page 3. Related cards: pass@k, functional correctness, HumanEval.</p>
+
+</article>
+</body>
+</html>
