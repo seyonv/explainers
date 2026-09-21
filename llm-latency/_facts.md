@@ -30,6 +30,7 @@ Every card writer read this before writing. The values below appear on the cards
 | Writing speed | `ollama run --verbose` / `/api/generate` eval rate | 15.4 tokens/s | 2026-09-21 |
 | Prompt reading | 2,605-token prompt, `prompt_eval_duration` | 12.6 s fresh (33.9 s when the machine was busy), 0.41 s cached | 2026-09-21 |
 | Network round trip | `curl -w "%{time_connect} %{time_appconnect}"`, 3 tries | localhost 0.3 ms · Anthropic 7–11 ms · DeepInfra 53–77 ms | 2026-09-21 |
+| Structured-output overhead | `/api/generate` with `format` = none / json / 2-field / 40-field schema, 3 runs | TTFT median 0.143 vs 0.154 s (40-field); 15.4–15.7 tokens/s either way | 2026-09-21 |
 | Latency spread | 20 identical 60-token requests | p50 4.66 s, p95 6.54 s, max 7.14 s | 2026-09-21 |
 
 ## Terms
@@ -41,4 +42,4 @@ time to first token (TTFT), output speed (tokens/s after the first token), outpu
 - red `--red`: ✗, cutoffs, waste, the slowest value
 
 ## Card list
-Overviews: `_overview`, `_overview-hosts`, `_overview-agents` · Metrics: `ttft`, `output-speed`, `output-length` · Mechanisms: `memory-bandwidth`, `hardware`, `quantization`, `moe`, `speculative-decoding`, `prompt-caching` · Multipliers: `thinking-tokens`, `harness-calls`, `context-growth` · Agents: `tail-latency`, `retries-timeouts`, `compounding-errors`, `parallel-calls`, `model-routing`
+Overviews: `_overview`, `_overview-hosts`, `_overview-agents` · Metrics: `ttft`, `output-speed`, `output-length` · Mechanisms: `memory-bandwidth`, `hardware`, `quantization`, `moe`, `speculative-decoding`, `prompt-caching`, `grammar-compilation` · Multipliers: `thinking-tokens`, `harness-calls`, `context-growth` · Agents: `tail-latency`, `retries-timeouts`, `compounding-errors`, `parallel-calls`, `model-routing`
