@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Context growth in agent loops</title>
+<style>
+:root{
+  --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
+  --text:#1c1f23; --muted:#6b7068; --faint:#b9b9b3;
+  --accent:#4a9d77; --accent-bg:#dcefdf; --accent-border:#8cc79c;
+  --red:#c0492b; --red-bg:#fbeceb;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#15171a; --surface:#1d2024; --surface2:#24282d; --border:#32373d;
+    --text:#e6e8ea; --muted:#9aa1a9; --faint:#4a5057;
+    --accent:#5fb37f; --accent-bg:#1c2b22; --accent-border:#3f7a55;
+    --red:#e57368; --red-bg:#2e1f1e;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text)}
+.card{max-width:820px;margin:0 auto;padding:28px 32px;font-family:-apple-system,"Inter",system-ui,sans-serif;line-height:1.45}
+h1{font-size:26px;font-weight:600;margin:0 0 6px;letter-spacing:-0.01em}
+.sub{font-size:15px;color:var(--muted);margin:0 0 20px}
+h2{font-size:17px;font-weight:600;margin:26px 0 10px}
+p{font-size:15px;margin:0 0 10px}
+.cap{font-size:13px;color:var(--muted);margin:8px 0 0;text-align:center}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+
+/* Horizontal bar chart with running total and cutoff */
+.bars{display:grid;grid-template-columns:110px 1fr 90px;column-gap:14px;row-gap:12px;align-items:center;font-size:14px}
+.bars .hd{font-size:13px;color:var(--muted)}
+.bars .hd.r,.bars .tot{text-align:right;font-variant-numeric:tabular-nums}
+.bars .tok{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:15px}
+.bars .track{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted)}
+.bars .bar{height:22px;border-radius:3px;background:var(--accent)}
+.bars .tot{font-size:15px}
+.bars .strong{font-weight:600}
+.bars .out,.bars .out .tok{color:var(--muted)}
+.bars .track.out .bar{background:var(--faint)}
+.bars .out .tot{font-size:13px}
+.cutoff{grid-column:1 / -1;border-top:2px dashed var(--red);margin-top:4px;padding-top:6px;text-align:center;font-size:13px;color:var(--red)}
+
+/* Tables and formulas */
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border)}
+th{font-size:12px;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:none}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+.hi{color:var(--accent);font-weight:600} .lo{color:var(--red)}
+.formula{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin:10px 0;white-space:pre;overflow-x:auto;line-height:1.55}
+
+/* 2x2 grid */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.cell{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.cell.win{background:var(--accent-bg);border-color:var(--accent-border)}
+.cell h3{font-size:16px;font-weight:600;margin:0 0 5px;display:flex;gap:8px;align-items:baseline}
+.cell p{font-size:14px;margin:0;color:var(--text)}
+.cell.win h3,.cell.win p{color:var(--accent)}
+.x{color:var(--red)} .ok{color:var(--accent)}
+
+/* Clarification box */
+.note{border:1px solid var(--border);border-radius:10px;padding:14px 18px;font-size:14px}
+.note p{font-size:14px} .note p:last-child{margin-bottom:0}
+
+.foot{margin-top:22px;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+svg{display:block;max-width:100%}
+.sl{font-size:12px;fill:var(--muted)} .st{font-size:13px;fill:var(--text)}
+@media (max-width:560px){.grid2{grid-template-columns:1fr}.bars{grid-template-columns:70px 1fr 64px}}
+a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+</style>
+<style>
+.stack{height:22px;border-radius:3px;display:flex;overflow:hidden}
+.stack i{display:block;height:100%;background:var(--faint)}
+.stack b{display:block;height:100%;background:var(--accent)}
+.key{display:inline-flex;align-items:center;gap:5px;margin:0 8px}
+.key i{display:inline-block;width:12px;height:12px;border-radius:2px}
+.key .k1{background:var(--faint)} .key .k2{background:var(--accent)}
+.bars .track span{white-space:nowrap}
+.foot a{color:var(--muted)}
+</style>
+</head>
+<body>
+<article class="card">
+<h1>Context growth in agent loops</h1>
+<p class="sub">Also called history re-sending, context accumulation, or quadratic context cost. It shows up in every agent harness (Claude Code, Cursor, Codex CLI, your own loop), because the model API keeps no memory between calls.</p>
+
+<p><b>In one breath.</b> The model forgets everything after each call, so the harness re-sends the system prompt, the tool definitions and the whole conversation so far every time. Each call's input grows by a fixed step, so the input per call grows in a straight line and the total input read over a session grows roughly with the square of the number of calls.</p>
+
+<h2>Worked example (illustrative): 30 calls, 20k-token start, +2k per turn</h2>
+<p style="font-size:13px;color:var(--muted);margin:0 0 10px">Input tokens sent on selected calls. <span class="key"><i class="k1"></i>already sent before (cacheable)</span><span class="key"><i class="k2"></i>new this turn</span></p>
+<div class="bars">
+  <div class="hd">Call</div><div class="hd">Input tokens this call</div><div class="hd r">Running total</div>
+  <div class="tok">1</div><div class="track"><div class="stack" style="width:21%"><b style="width:100%"></b></div><span>20,000</span></div><div class="tot">20,000</div>
+  <div class="tok">5</div><div class="track"><div class="stack" style="width:29%"><i style="width:93%"></i><b style="width:7%"></b></div><span>28,000</span></div><div class="tot">120,000</div>
+  <div class="tok">10</div><div class="track"><div class="stack" style="width:40%"><i style="width:95%"></i><b style="width:5%"></b></div><span>38,000</span></div><div class="tot">290,000</div>
+  <div class="tok">15</div><div class="track"><div class="stack" style="width:50%"><i style="width:96%"></i><b style="width:4%"></b></div><span>48,000</span></div><div class="tot">510,000</div>
+  <div class="tok">20</div><div class="track"><div class="stack" style="width:61%"><i style="width:97%"></i><b style="width:3%"></b></div><span>58,000</span></div><div class="tot">780,000</div>
+  <div class="tok">25</div><div class="track"><div class="stack" style="width:71%"><i style="width:97%"></i><b style="width:3%"></b></div><span>68,000</span></div><div class="tot">1,100,000</div>
+  <div class="tok strong">30</div><div class="track"><div class="stack" style="width:82%"><i style="width:97%"></i><b style="width:3%"></b></div><span>78,000</span></div><div class="tot strong">1,470,000</div>
+</div>
+<div class="formula">input on call k   = 20,000 + 2,000 × (k − 1)           call 30: 20,000 + 58,000 = 78,000
+session total     = 30 × 20,000 + 2,000 × (0+1+…+29)
+                  = 600,000 + 2,000 × 435 = 1,470,000 tokens
+if nothing piled up (30 × 22,000)  =   660,000   → growth costs 2.2× more
+double the calls to 60             = 4,740,000   → 2× the calls, 3.2× the tokens</div>
+
+<table>
+<tr><th>Same 30 calls, Claude Sonnet 5 input price</th><th class="num">Tokens</th><th class="num">Cost</th></tr>
+<tr><td>No caching: every token at $2 / 1M</td><td class="num">1,470,000</td><td class="num lo">$2.94</td></tr>
+<tr><td>Cached prefix: earlier tokens read at 0.1× ($0.20 / 1M)</td><td class="num">1,392,000</td><td class="num">$0.28</td></tr>
+<tr><td>&nbsp;&nbsp;+ new tokens written to cache at 1.25× ($2.50 / 1M)</td><td class="num">78,000</td><td class="num">$0.20</td></tr>
+<tr><td><b>Cached total</b></td><td class="num">1,470,000</td><td class="num hi">$0.47</td></tr>
+</table>
+<div class="formula">cache reads  = Σ input of the previous call = 29 × 20,000 + 2,000 × (0+…+28) = 1,392,000
+cache writes = 20,000 (call 1) + 29 × 2,000 = 78,000
+cost = 1.392 × $0.20 + 0.078 × $2.50 = $0.278 + $0.195 = $0.47   (6.2× cheaper than $2.94)</div>
+<p class="cap">Input only: the output tokens cost the same either way. Prices are Anthropic's list prices for Sonnet 5 (cache writes kept 5 minutes). The cached case assumes every call lands within the cache lifetime and the prefix never changes. The 20k start, 2k per turn and 30 calls are <b>illustrative</b>; real tool results (a whole file, a test log) are often far bigger than 2k.</p>
+
+<h2>What it does to the wait</h2>
+<table>
+<tr><th>Prompt reading (prefill) time</th><th class="num">Call 1 (20k)</th><th class="num">Call 30 (78k)</th><th class="num">All 30 calls</th></tr>
+<tr><td>Your M3, no cache hit, ~207 tokens/s</td><td class="num">96.6 s</td><td class="num lo">376.8 s</td><td class="num lo">7,101 s ≈ 2.0 h</td></tr>
+<tr><td>Your M3, prefix cached, only the new 2k read</td><td class="num">96.6 s</td><td class="num hi">9.7 s</td><td class="num hi">376.8 s</td></tr>
+</table>
+<div class="formula">uncached: 1,470,000 ÷ 207 = 7,101 s        call 30: 78,000 ÷ 207 = 376.8 s
+cached:   20,000 ÷ 207 + 29 × (2,000 ÷ 207) = 96.6 + 280.2 = 376.8 s</div>
+<p class="cap">207 tokens/s is the prefill speed measured on your M3 in this set (qwen3.5:4b, it ranged down to 77 when the machine was busy). Treat these as lower bounds: reading each new token gets a little slower as the context grows. Hosted models read far faster, but the shape is the same: Anthropic's own example of a 100K-token prompt took 11.5 s to the first token uncached and 2.4 s cached, against Sonnet 5's 1.39 s median at about 10k tokens.</p>
+
+<h2>Why it beats the alternatives</h2>
+<div class="grid2">
+  <div class="cell"><h3><span class="x">&#10007;</span> Re-send everything, uncached</h3><p>Simplest, and the model sees everything. But cost and prompt reading grow with the square of the calls: $2.94 and 2 hours of M3 reading here, versus $0.47 and 6 minutes cached.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Truncate old turns</h3><p>Drop the oldest messages to stay under a budget. Cheap, but the model forgets what it already tried, repeats mistakes, and every cut changes the prefix so the cache misses.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Start a fresh session</h3><p>Resets input to the 20k start. Great between unrelated tasks, but mid-task you lose the plan and findings unless you write them down first.</p></div>
+  <div class="cell win"><h3><span class="ok">&#10003;</span> Cached stable prefix + compaction</h3><p>Keep the system prompt and tools byte-identical at the front so they cache, append new turns at the end, and when history gets long, replace it with a short summary. In the example, compacting 28k of history into 4k at call 15 caps call 30 at 52k instead of 78k.</p></div>
+</div>
+<div class="formula">compaction at call 15 (illustrative): calls 16–30 start at 24,000 instead of 50,000
+calls 1–15 = 510,000   calls 16–30 = 15 × 24,000 + 2,000 × 105 = 570,000
++ one summarizing call that reads 48,000   → 1,128,000 total (23% less than 1,470,000)</div>
+
+<h2>Is a longer context just slower and pricier?</h2>
+<div class="note">
+  <p>No, it can also make answers worse. Liu et al. (2023, "Lost in the middle") found models use facts at the start and end of a long prompt best; with the answer buried mid-context, GPT-3.5-Turbo did worse than with no documents at all (below its 56.1% closed-book score). Chroma's "Context rot" (2025) tested 18 models, including Claude 4, GPT-4.1 and Gemini 2.5, and found accuracy falls as input grows, even on simple tasks. A 1,000,000-token window (Sonnet 5 on OpenRouter) is a hard limit, not a quality promise: at +2k per turn it would fill around call 491, and 78k is only 7.8% of it.</p>
+  <p>When is it not the problem? Short tasks. A 4-call FizzBuzz loop never gets far past its starting prompt, so the fixed start and the call count matter more. Compaction also costs something: the summary drops details, is itself a model call, and resets the history part of the cache.</p>
+</div>
+
+<p class="foot">Related: <a href="ttft.html">ttft</a> · <a href="output-speed.html">output-speed</a> · <a href="output-length.html">output-length</a> · <a href="prompt-caching.html">prompt-caching</a> · <a href="thinking-tokens.html">thinking-tokens</a> · <a href="harness-calls.html">harness-calls</a> · <a href="_overview.html">_overview</a> · <a href="_overview-hosts.html">_overview-hosts</a> · <a href="tail-latency.html">tail-latency</a> · <a href="retries-timeouts.html">retries-timeouts</a> · <a href="compounding-errors.html">compounding-errors</a> · <a href="parallel-calls.html">parallel-calls</a> · <a href="model-routing.html">model-routing</a> · <a href="_overview-agents.html">_overview-agents</a><br>
+Sources: <a href="https://openrouter.ai/anthropic/claude-sonnet-5">OpenRouter, Claude Sonnet 5</a> (1,000,000-token context; $2 / $10 per 1M; cache read $0.20 per 1M; checked 2026-09-21) · <a href="https://platform.claude.com/docs/en/build-with-claude/prompt-caching">Anthropic caching docs</a> (cache write 1.25×, read 0.1×) · <a href="https://claude.com/blog/prompt-caching">claude.com/blog/prompt-caching</a> (100K prompt: 11.5 s → 2.4 s) · <a href="https://artificialanalysis.ai/leaderboards/models">Artificial Analysis</a> (Sonnet 5 TTFT 1.39 s, 2026-09-21) · <a href="https://arxiv.org/abs/2307.03172">Liu et al., Lost in the middle (2023)</a> · <a href="https://www.trychroma.com/research/context-rot">Hong, Troynikov, Huber, Context rot (Chroma, 2025)</a>. M3 prefill speed: local Ollama measurement in this set. Session shape is illustrative.</p>
+</article>
+</body>
+</html>

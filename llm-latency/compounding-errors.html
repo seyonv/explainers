@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Compounding errors in agent loops</title>
+<style>
+:root{
+  --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
+  --text:#1c1f23; --muted:#6b7068; --faint:#b9b9b3;
+  --accent:#4a9d77; --accent-bg:#dcefdf; --accent-border:#8cc79c;
+  --red:#c0492b; --red-bg:#fbeceb;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#15171a; --surface:#1d2024; --surface2:#24282d; --border:#32373d;
+    --text:#e6e8ea; --muted:#9aa1a9; --faint:#4a5057;
+    --accent:#5fb37f; --accent-bg:#1c2b22; --accent-border:#3f7a55;
+    --red:#e57368; --red-bg:#2e1f1e;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text)}
+.card{max-width:820px;margin:0 auto;padding:28px 32px;font-family:-apple-system,"Inter",system-ui,sans-serif;line-height:1.45}
+h1{font-size:26px;font-weight:600;margin:0 0 6px;letter-spacing:-0.01em}
+.sub{font-size:15px;color:var(--muted);margin:0 0 20px}
+h2{font-size:17px;font-weight:600;margin:26px 0 10px}
+p{font-size:15px;margin:0 0 10px}
+.cap{font-size:13px;color:var(--muted);margin:8px 0 0;text-align:center}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+
+/* Horizontal bar chart with running total and cutoff */
+.bars{display:grid;grid-template-columns:110px 1fr 90px;column-gap:14px;row-gap:12px;align-items:center;font-size:14px}
+.bars .hd{font-size:13px;color:var(--muted)}
+.bars .hd.r,.bars .tot{text-align:right;font-variant-numeric:tabular-nums}
+.bars .tok{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:15px}
+.bars .track{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted)}
+.bars .bar{height:22px;border-radius:3px;background:var(--accent)}
+.bars .tot{font-size:15px}
+.bars .strong{font-weight:600}
+.bars .out,.bars .out .tok{color:var(--muted)}
+.bars .track.out .bar{background:var(--faint)}
+.bars .out .tot{font-size:13px}
+.cutoff{grid-column:1 / -1;border-top:2px dashed var(--red);margin-top:4px;padding-top:6px;text-align:center;font-size:13px;color:var(--red)}
+
+/* Tables and formulas */
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border)}
+th{font-size:12px;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:none}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+.hi{color:var(--accent);font-weight:600} .lo{color:var(--red)}
+.formula{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin:10px 0;white-space:pre;overflow-x:auto;line-height:1.55}
+
+/* 2x2 grid */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.cell{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.cell.win{background:var(--accent-bg);border-color:var(--accent-border)}
+.cell h3{font-size:16px;font-weight:600;margin:0 0 5px;display:flex;gap:8px;align-items:baseline}
+.cell p{font-size:14px;margin:0;color:var(--text)}
+.cell.win h3,.cell.win p{color:var(--accent)}
+.x{color:var(--red)} .ok{color:var(--accent)}
+
+/* Clarification box */
+.note{border:1px solid var(--border);border-radius:10px;padding:14px 18px;font-size:14px}
+.note p{font-size:14px} .note p:last-child{margin-bottom:0}
+
+.foot{margin-top:22px;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+svg{display:block;max-width:100%}
+.sl{font-size:12px;fill:var(--muted)} .st{font-size:13px;fill:var(--text)}
+@media (max-width:560px){.grid2{grid-template-columns:1fr}.bars{grid-template-columns:70px 1fr 64px}}
+a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+.heat td.num{font-size:15px}
+.heat .g{color:var(--accent);font-weight:600}
+.heat .m{color:var(--text)}
+.heat .b{color:var(--red)}
+.foot a{color:var(--muted)}
+td.num{white-space:nowrap}
+</style>
+</head>
+<body>
+<article class="card">
+<h1>Compounding errors in agent loops</h1>
+<p class="sub">Also called per-step reliability, error accumulation, consistency, or pass^k. It shows up whenever a harness chains many model calls into one task: coding agents, customer-service bots, anything with “autonomous” in the pitch.</p>
+
+<p><b>In one breath.</b> If each step of a task goes right 95% of the time, the whole task goes right only when <em>every</em> step does. So the odds multiply: 20 unchecked steps at 95% each finish correctly only 36% of the time. Checking each step against reality (run the test, validate the output) turns silent failures into cheap retries.</p>
+
+<h2>Worked example 1: success of an unchecked N-step task, p<sup>N</sup></h2>
+<table class="heat">
+<tr><th>Per-step success p</th><th class="num">N = 1</th><th class="num">5</th><th class="num">10</th><th class="num">20</th><th class="num">50</th></tr>
+<tr><td>99%</td><td class="num g">99.0%</td><td class="num g">95.1%</td><td class="num g">90.4%</td><td class="num m">81.8%</td><td class="num m">60.5%</td></tr>
+<tr><td>95%</td><td class="num g">95.0%</td><td class="num m">77.4%</td><td class="num m">59.9%</td><td class="num b">35.8%</td><td class="num b">7.7%</td></tr>
+<tr><td>90%</td><td class="num g">90.0%</td><td class="num m">59.0%</td><td class="num b">34.9%</td><td class="num b">12.2%</td><td class="num b">0.5%</td></tr>
+</table>
+<div class="formula">task success = p × p × … × p = p^N      (every step must go right, no checking)
+0.95^20 = 0.358  →  a “95% reliable” step fails the 20-step task 64% of the time
+0.99^50 = 0.605  →  even 99% per step loses 4 in 10 fifty-step tasks</div>
+<p class="cap">Pure arithmetic, assuming every step is equally hard and failures are independent. A “step” is one model call or tool action. The 4-call FizzBuzz loop in <a href="harness-calls.html">harness calls</a> is N = 4; a real coding session is often dozens.</p>
+
+<h2>What benchmarks actually measure</h2>
+<table>
+<tr><th>Study</th><th>Measure</th><th class="num">Result</th></tr>
+<tr><td>τ-bench (Yao et al., 2024), retail domain, gpt-4o with function calling</td><td>pass^1: succeeds on one try</td><td class="num">61.2%</td></tr>
+<tr><td></td><td>pass^8: succeeds on <em>all 8</em> tries of the same task</td><td class="num lo">&lt;25%</td></tr>
+<tr><td>METR time horizon (Kwa et al., 2025), Claude 3.7 Sonnet</td><td>length of task (in human time) it finishes 50% of the time</td><td class="num">59 min</td></tr>
+<tr><td></td><td>same, at 80% success</td><td class="num lo">~15 min</td></tr>
+</table>
+<div class="formula">τ-bench if tries were independent:  0.612^8 = 0.020 = 2%
+τ-bench measured:                    &lt;25%   (the paper's intro: “as low as ~25%”)
+METR: asking for 80% instead of 50% success cuts task length 59 → ~15 min (≈ 4×)</div>
+<p class="cap">pass^k is “the chance that all k i.i.d. task trials are successful, averaged across tasks” (τ-bench §3). Measured pass^8 is far above 2% because failures cluster: some tasks the agent nearly always gets right, others it nearly always gets wrong. METR finds 80% horizons “roughly 5x shorter” than 50% ones across models, and horizons doubling about every 7 months. These are 2024–25 models; newer ones score higher, but the shape holds.</p>
+
+<h2>Worked example 2: checking turns failures into retries</h2>
+<div class="formula">one step, p = 0.90, checked, up to 2 retries (3 tries total):
+  fails only if all 3 tries fail:   1 − 0.1^3 = 1 − 0.001 = 99.9%
+  average tries used:               1 + 0.1 + 0.01 = 1.11
+20-step task:  unchecked 0.90^20 = 12.2%   vs   checked 0.999^20 = 98.0%</div>
+<p class="cap">Assumes each retry is an independent draw and the check (a test, a schema validator, a compiler) catches every bad output. 11% more calls buy an 8× higher task success rate here.</p>
+
+<h2>Worked example 3: time to a correct result</h2>
+<table>
+<tr><th>10-step task</th><th class="num">Per step</th><th class="num">p</th><th class="num">Time per attempt</th><th class="num">Success</th><th class="num">Time to correct</th></tr>
+<tr><td>Fast model, check only at the end</td><td class="num">2.91 s</td><td class="num">0.90</td><td class="num">29.1 s</td><td class="num">34.9%</td><td class="num lo">83.5 s</td></tr>
+<tr><td>Careful model, check only at the end</td><td class="num">6.00 s</td><td class="num">0.99</td><td class="num">60.0 s</td><td class="num">90.4%</td><td class="num">66.3 s</td></tr>
+<tr><td>Fast model, test each step (+0.5 s)</td><td class="num">3.41 s</td><td class="num">0.90</td><td class="num">3.41 s / step</td><td class="num">90% / step</td><td class="num hi">37.9 s</td></tr>
+<tr><td>Careful model, test each step (+0.5 s)</td><td class="num">6.50 s</td><td class="num">0.99</td><td class="num">6.50 s / step</td><td class="num">99% / step</td><td class="num">65.7 s</td></tr>
+</table>
+<div class="formula">time to a correct result = time per attempt ÷ success rate   (retry until it passes)
+fast, end check:     (10 × 2.91) ÷ 0.90^10 = 29.1 ÷ 0.349 = 83.5 s
+careful, end check:  (10 × 6.00) ÷ 0.99^10 = 60.0 ÷ 0.904 = 66.3 s   ← slower model wins
+fast, step checks:   10 × (2.91 + 0.5) ÷ 0.90 = 10 × 3.79 = 37.9 s   ← checking wins
+fast step = 1.39 s first token + 100 tokens ÷ 66 tokens/s = 2.91 s</div>
+<p class="cap">The 2.91 s step uses Claude Sonnet 5's Artificial Analysis medians (1.39 s, 66 tokens/s, 2026-09-21). The careful model's 6 s, both success rates, 100 tokens per step and the 0.5 s test are <b>illustrative</b>. Retrying only the failed step is far cheaper than redoing the whole task.</p>
+
+<h2>Why it beats the alternatives</h2>
+<div class="grid2">
+  <div class="cell"><h3><span class="x">&#10007;</span> Longer, stricter prompts</h3><p>More rules in the system prompt add prefill time on every call, but can't stop a wrong step from passing silently. τ-bench agents already had the full policy and still broke it.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> A bigger model, nothing else</h3><p>Raising p from 90% to 95% helps, but 50 unchecked steps still finish only 7.7% of the time. Every model's errors compound; they just compound slower.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> More autonomy, no checks</h3><p>Letting the agent run longer raises N, and success falls with p<sup>N</sup>. METR's horizons shrink about 4× when you ask for 80% success instead of 50%.</p></div>
+  <div class="cell win"><h3><span class="ok">&#10003;</span> Verify each step against reality, keep tasks short</h3><p>Tests, type checks and schema validation catch a bad step immediately, so it costs one retry, not the whole task: 12.2% → 98.0% for 20 steps. Short tasks keep N small.</p></div>
+</div>
+
+<h2>Do retries always fix it?</h2>
+<div class="note">
+  <p>No. The 99.9% figure assumes each try is a fresh coin flip. When the model is <em>systematically</em> wrong (it misreads the spec, doesn't know an API, or the test itself is wrong), it fails the same way every time. τ-bench shows this: 61% single-try success but ~25% all-8, not the 2% independence would predict, so the failures sit on the same tasks. Retries also can't help if nothing checks the output: a confident wrong answer looks like success.</p>
+  <p>For those cases, change something between tries (new context, a different model, a hint from the error message), or put a human at the steps that are expensive or impossible to undo: payments, deletes, deploys. Checking isn't always worth it either: for one-shot questions with no cheap check, a single careful call is simpler.</p>
+</div>
+
+<p class="foot">Related: <a href="harness-calls.html">harness-calls</a> · <a href="thinking-tokens.html">thinking-tokens</a> · <a href="ttft.html">ttft</a> · <a href="output-speed.html">output-speed</a> · <a href="output-length.html">output-length</a> · <a href="prompt-caching.html">prompt-caching</a> · <a href="retries-timeouts.html">retries-timeouts</a> · <a href="tail-latency.html">tail-latency</a> · <a href="context-growth.html">context-growth</a> · <a href="parallel-calls.html">parallel-calls</a> · <a href="model-routing.html">model-routing</a> · <a href="_overview-agents.html">_overview-agents</a> · <a href="_overview.html">_overview</a> · <a href="_overview-hosts.html">_overview-hosts</a><br>
+Sources: τ-bench, Yao et al. 2024, <a href="https://arxiv.org/abs/2406.12045">arxiv.org/abs/2406.12045</a> (Table 2: gpt-4o retail pass^1 61.2%; abstract and §5: pass^8 &lt;25% in retail); METR, Kwa et al. 2025, “Measuring AI ability to complete long tasks”, <a href="https://arxiv.org/abs/2503.14499">arxiv.org/abs/2503.14499</a> (§4.2.1: Claude 3.7 Sonnet 50% horizon 59 min, 80% horizon ~15 min; 80% horizons roughly 5× shorter; ~7-month doubling); artificialanalysis.ai/leaderboards/models (Claude Sonnet 5 non-reasoning, 2026-09-21). Examples 1–2 are arithmetic; step times and success rates in example 3 are illustrative.</p>
+</article>
+</body>
+</html>

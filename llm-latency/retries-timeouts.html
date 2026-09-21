@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Retries, timeouts and fallbacks</title>
+<style>
+:root{
+  --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
+  --text:#1c1f23; --muted:#6b7068; --faint:#b9b9b3;
+  --accent:#4a9d77; --accent-bg:#dcefdf; --accent-border:#8cc79c;
+  --red:#c0492b; --red-bg:#fbeceb;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#15171a; --surface:#1d2024; --surface2:#24282d; --border:#32373d;
+    --text:#e6e8ea; --muted:#9aa1a9; --faint:#4a5057;
+    --accent:#5fb37f; --accent-bg:#1c2b22; --accent-border:#3f7a55;
+    --red:#e57368; --red-bg:#2e1f1e;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text)}
+.card{max-width:820px;margin:0 auto;padding:28px 32px;font-family:-apple-system,"Inter",system-ui,sans-serif;line-height:1.45}
+h1{font-size:26px;font-weight:600;margin:0 0 6px;letter-spacing:-0.01em}
+.sub{font-size:15px;color:var(--muted);margin:0 0 20px}
+h2{font-size:17px;font-weight:600;margin:26px 0 10px}
+p{font-size:15px;margin:0 0 10px}
+.cap{font-size:13px;color:var(--muted);margin:8px 0 0;text-align:center}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+
+/* Horizontal bar chart with running total and cutoff */
+.bars{display:grid;grid-template-columns:110px 1fr 90px;column-gap:14px;row-gap:12px;align-items:center;font-size:14px}
+.bars .hd{font-size:13px;color:var(--muted)}
+.bars .hd.r,.bars .tot{text-align:right;font-variant-numeric:tabular-nums}
+.bars .tok{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:15px}
+.bars .track{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted)}
+.bars .bar{height:22px;border-radius:3px;background:var(--accent)}
+.bars .tot{font-size:15px}
+.bars .strong{font-weight:600}
+.cutoff{grid-column:1 / -1;border-top:2px dashed var(--red);margin-top:4px;padding-top:6px;text-align:center;font-size:13px;color:var(--red)}
+
+/* Tables and formulas */
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border)}
+th{font-size:12px;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:none}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+.hi{color:var(--accent);font-weight:600} .lo{color:var(--red)}
+.formula{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin:10px 0;white-space:pre;overflow-x:auto;line-height:1.55}
+
+/* 2x2 grid */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.cell{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.cell.win{background:var(--accent-bg);border-color:var(--accent-border)}
+.cell h3{font-size:16px;font-weight:600;margin:0 0 5px;display:flex;gap:8px;align-items:baseline}
+.cell p{font-size:14px;margin:0;color:var(--text)}
+.cell.win h3,.cell.win p{color:var(--accent)}
+.x{color:var(--red)} .ok{color:var(--accent)}
+
+/* Clarification box */
+.note{border:1px solid var(--border);border-radius:10px;padding:14px 18px;font-size:14px}
+.note p{font-size:14px} .note p:last-child{margin-bottom:0}
+
+.foot{margin-top:22px;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+svg{display:block;max-width:100%}
+.sl{font-size:12px;fill:var(--muted)} .st{font-size:13px;fill:var(--text)}
+@media (max-width:560px){.grid2{grid-template-columns:1fr}.bars{grid-template-columns:70px 1fr 64px}}
+a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+</style>
+<style>
+.stack{height:22px;border-radius:3px;display:flex;overflow:hidden;gap:2px}
+.stack i{display:block;height:100%;background:var(--red);opacity:.75}
+.stack b{display:block;height:100%;background:var(--faint)}
+.key{display:inline-flex;align-items:center;gap:5px;margin:0 8px}
+.key i{display:inline-block;width:12px;height:12px;border-radius:2px}
+.key .k1{background:var(--red);opacity:.75} .key .k2{background:var(--accent)}
+.foot a{color:var(--muted)}
+td.code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;white-space:nowrap}
+</style>
+</head>
+<body>
+<article class="card">
+<h1>Retries, timeouts and fallbacks</h1>
+<p class="sub">Also called rate limits, 429 / 529 errors, exponential backoff, failover or provider fallback. Built into the Anthropic and OpenAI SDKs (on by default) and into routers like OpenRouter. It matters most in agents, where one task is many calls.</p>
+
+<p><b>In one breath.</b> Some API calls fail (the server is busy, or you are over your limit) and some just hang. A <b>retry</b> sends the same call again after a short wait. A <b>timeout</b> is how long you wait before giving up. A <b>fallback</b> sends the call to a different provider or model when the first one keeps failing. Set them well and a failure costs you a second. Set them badly and it costs you minutes, or the whole task.</p>
+
+<h2>What can go wrong with one call</h2>
+<table>
+<tr><th>Status code</th><th>What it means</th><th>SDK retries it?</th><th>What to do</th></tr>
+<tr><td class="code">429</td><td><b>Rate limit</b>: you sent more requests or tokens per minute than your account allows</td><td>yes</td><td>wait the <code>retry-after</code> seconds the server sends</td></tr>
+<tr><td class="code">529 / 5xx</td><td><b>Overloaded</b> or server error: the provider is busy for everyone</td><td>yes</td><td>back off, then fall back to another provider</td></tr>
+<tr><td class="code">408 / 409</td><td>Request timed out on the server / conflict</td><td>yes</td><td>retry</td></tr>
+<tr><td class="code">no reply</td><td>Your <b>timeout</b> fired, or the connection dropped</td><td>yes</td><td>stream long calls instead of raising the timeout</td></tr>
+<tr><td class="code">400 / 401</td><td>Bad request or bad key</td><td class="lo">no</td><td>fix the request: retrying fails the same way</td></tr>
+</table>
+<p class="cap">Anthropic and OpenAI Python SDKs, current <code>main</code>: <code>max_retries = 2</code>, timeout 10 minutes (5 s to connect). A 429 caused by hitting a monthly spend cap has no <code>retry-after</code> and keeps failing until the cap resets.</p>
+
+<h2>Worked example 1: exponential backoff with jitter</h2>
+<p><b>Exponential backoff</b> doubles the wait after each failure so a busy server gets breathing room. <b>Jitter</b> shaves a random amount off each wait so a thousand clients that failed together don't all retry in the same instant. The SDK numbers:</p>
+<table>
+<tr><th>Retry</th><th class="num">Base wait</th><th class="num">With jitter (75–100%)</th><th class="num">Total time asleep</th></tr>
+<tr><td>1</td><td class="num">0.5 s</td><td class="num">0.375 – 0.5 s</td><td class="num">0.375 – 0.5 s</td></tr>
+<tr><td>2 <span style="color:var(--muted)">(SDK default stops here)</span></td><td class="num">1 s</td><td class="num">0.75 – 1 s</td><td class="num hi">1.125 – 1.5 s</td></tr>
+<tr><td>3</td><td class="num">2 s</td><td class="num">1.5 – 2 s</td><td class="num">2.625 – 3.5 s</td></tr>
+<tr><td>4</td><td class="num">4 s</td><td class="num">3 – 4 s</td><td class="num">5.625 – 7.5 s</td></tr>
+<tr><td>5</td><td class="num">8 s (cap)</td><td class="num">6 – 8 s</td><td class="num lo">11.625 – 15.5 s</td></tr>
+</table>
+<div class="formula">wait(n) = min(0.5 s × 2^(n−1), 8 s) × (1 − 0.25 × random)     n = retry number
+2 retries: 0.5 + 1       = 1.5 s max  (× 0.75 → 1.125 s min)
+4 retries: 0.5 + 1 + 2 + 4 = 7.5 s max  (× 0.75 → 5.625 s min)
+if the server sends retry-after: wait exactly that instead of wait(n)</div>
+<p class="cap">Constants are from the SDKs' source (<code>INITIAL_RETRY_DELAY = 0.5</code>, <code>MAX_RETRY_DELAY = 8.0</code>). The sleeping is cheap. The real cost is each failed attempt's own time, plus a <code>retry-after</code> that can be tens of seconds. The OpenAI SDK only obeys <code>retry-after</code> up to 2 minutes; the Anthropic SDK obeys any value. In the 4-call agent loop from <a href="harness-calls.html">harness calls</a> (13.43 s), one quick 529 on a call adds about 0.4–0.5 s of sleep, plus the failed attempt's own time.</p>
+
+<h2>Worked example 2: a timeout that is too short</h2>
+<p>One Sonnet 5 call at max thinking effort takes 147.4 s from start to finish, and without streaming the first byte arrives only at the end. Set <code>timeout=60</code> and watch what happens:</p>
+<div class="bars" style="grid-template-columns:170px 1fr 130px">
+  <div class="hd">Setup</div><div class="hd">Time, to scale (181.5 s = full width)</div><div class="hd r">Result</div>
+  <div>60 s timeout, no streaming</div><div class="track"><div class="stack" style="width:100%"><i style="width:33.06%"></i><b style="width:0.28%"></b><i style="width:33.06%"></i><b style="width:0.55%"></b><i style="width:33.06%"></i></div></div><div class="tot lo strong">181.5 s, error</div>
+  <div>Default timeout or streaming</div><div class="track"><div class="bar" style="width:81.2%"></div></div><div class="tot hi">147.4 s, answer</div>
+</div>
+<div class="formula">3 attempts × 60 s cut off    = 180.0 s
++ backoff 0.5 s + 1.0 s     =   1.5 s
+= 181.5 s, then APITimeoutError and no answer    vs  147.4 s for the answer
+each attempt restarts from zero: 60 s of thinking thrown away, 3 times</div>
+<p class="cap"><span class="key"><i class="k1"></i>attempt cut off by the timeout</span> <span class="key"><i class="k2"></i>completed call</span><br>147.4 s is the Artificial Analysis median for Claude Sonnet 5 at max effort (from <a href="thinking-tokens.html">thinking tokens</a>). The SDK timeout limits the wait for the <em>next bytes</em>, not the whole call. With streaming, thinking and <code>ping</code> events keep bytes arriving, so a 60 s timeout only fires if the server truly goes silent.</p>
+
+<h2>Why it beats the alternatives</h2>
+<div class="grid2">
+  <div class="cell"><h3><span class="x">&#10007;</span> No retry (<code>max_retries=0</code>)</h3><p>Every brief 429 or 529 kills the call. In a 20-call agent task, one blip anywhere fails the whole task.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Retry right away in a loop</h3><p>Hammers a server that is already overloaded, burns your rate limit faster, and all clients retry in the same instant. It ignores <code>retry-after</code>, so those early retries fail anyway.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Huge timeout, no streaming</h3><p>Nothing breaks, but a call that is truly stuck hangs for the full 10 minutes before you find out. Some networks also drop idle connections well before that.</p></div>
+  <div class="cell win"><h3><span class="ok">&#10003;</span> Bounded backoff + streaming + fallback</h3><p>A few jittered retries (about 1.5 s) cover blips. Streaming lets a short timeout catch dead calls without killing long ones. When one provider stays down, a fallback (OpenRouter <code>models: [...]</code>, or a second SDK client) answers instead.</p></div>
+</div>
+
+<h2>Are retries free safety?</h2>
+<div class="note">
+  <p>No, for two reasons. First, <b>duplicate side effects</b>. If a step fails after its tool already ran (say, the tool worked but the reply timed out), a harness that retries the whole step runs the tool again: two emails sent, two rows inserted, two payments. Make tool actions <b>idempotent</b>, meaning safe to run twice: send a unique request ID, check "already done?" before writing, and prefer "set X to 5" over "add 1 to X".</p>
+  <p>Second, <b>retries hide outages</b>. The SDK quietly absorbs failures, so you only see "slow", not "failed twice". Log every retry (the SDKs send an <code>x-stainless-retry-count</code> header, and debug logging names each one) and alert when the rate climbs. Also, don't retry what can't succeed: a 400, a bad key or a spent monthly cap fails the same way every time, and a fallback model may give different quality answers and bills at its own price.</p>
+</div>
+
+<p class="foot">Related: <a href="ttft.html">ttft</a> · <a href="output-speed.html">output-speed</a> · <a href="thinking-tokens.html">thinking-tokens</a> · <a href="harness-calls.html">harness-calls</a> · <a href="tail-latency.html">tail-latency</a> · <a href="compounding-errors.html">compounding-errors</a> · <a href="parallel-calls.html">parallel-calls</a> · <a href="model-routing.html">model-routing</a> · <a href="context-growth.html">context-growth</a> · <a href="_overview-agents.html">_overview-agents</a> · <a href="_overview.html">_overview</a> · <a href="_overview-hosts.html">_overview-hosts</a><br>
+Sources (read 2026-09-21): Anthropic SDK defaults and backoff, <a href="https://github.com/anthropics/anthropic-sdk-python/blob/main/src/anthropic/_constants.py">_constants.py</a> and <a href="https://github.com/anthropics/anthropic-sdk-python/blob/main/src/anthropic/_base_client.py">_base_client.py</a>; <a href="https://platform.claude.com/docs/en/api/sdks/python">Anthropic Python SDK docs</a> (retries, timeouts); OpenAI SDK <a href="https://github.com/openai/openai-python#retries">README</a>, <a href="https://github.com/openai/openai-python/blob/main/src/openai/_constants.py">_constants.py</a> and <a href="https://github.com/openai/openai-python/blob/main/src/openai/_base_client.py">_base_client.py</a>; Anthropic <a href="https://platform.claude.com/docs/en/api/errors">errors</a>, <a href="https://platform.claude.com/docs/en/api/rate-limits">rate limits</a> (<code>retry-after</code>, spend cap), <a href="https://platform.claude.com/docs/en/build-with-claude/streaming">streaming</a> (ping events); OpenRouter <a href="https://openrouter.ai/docs/guides/routing/provider-selection">provider routing</a> and <a href="https://openrouter.ai/docs/guides/routing/model-fallbacks">model fallbacks</a>; artificialanalysis.ai/leaderboards/models (Sonnet 5 max effort, 147.4 s). The 20-call task and the single 529 in the loop are illustrative.</p>
+</article>
+</body>
+</html>
