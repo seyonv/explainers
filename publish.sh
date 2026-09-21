@@ -38,5 +38,5 @@ fi
 
 repo=$(git remote get-url origin | sed -E 's#(git@github.com:|https://github.com/)##; s#\.git$##')
 page=""
-if [ -n "${1:-}" ] && [ ! -f "$1/index.html" ]; then page=$(cd "$1" && ls *.html | head -1); fi
-echo "Pushed. Live in about a minute at https://${repo%%/*}.github.io/${repo#*/}/${1:+$1/}$page"
+if [ -n "${1:-}" ] && [ -d "$1" ] && [ ! -f "$1/index.html" ]; then page=$(cd "$1" && ls *.html | head -1); fi
+echo "Pushed. Live in about a minute at https://${repo%%/*}.github.io/${repo#*/}/$( [ -d "${1:-}" ] && echo "$1/" )$page"
