@@ -17,7 +17,7 @@ function renderIndex(paper, meta, cards) {
   return readFileSync(join(here, "paper-template.html"), "utf8")
     .replaceAll("<!--TITLE-->", esc(paper.title))
     .replace("<!--SUB-->", sub)
-    .replace("/*GROUPS*/[]", JSON.stringify(groups));
+    .replace("/*GROUPS*/[]", JSON.stringify(groups).replace(/</g, "\\u003c"));
 }
 
 // Writes only when bytes differ; returns true if anything changed.

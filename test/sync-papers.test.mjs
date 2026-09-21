@@ -17,10 +17,12 @@ function paperDir(src, id, arxiv, cards) {
 test("syncPapers groups per paper, filters, is idempotent, and prunes", () => {
   const src = mkdtempSync(join(tmpdir(), "src-")), dest = mkdtempSync(join(tmpdir(), "dest-"));
   mkdirSync(join(dest, "llm-latency")); writeFileSync(join(dest, "llm-latency", "index.html"), "keep");
+  writeFileSync(join(dest, "paper-template.html"), "template");
   const cards = [
     { slug: "pass-at-k", title: "pass@k", kind: "concept", status: "ready" },
     { slug: "_overview", title: "Overview", kind: "overview", status: "ready" },
     { slug: "wip", title: "WIP", kind: "concept", status: "generating" },
+    { slug: "evil", title: "</script><script>alert(1)</script>", kind: "concept", status: "ready" },
   ];
   const a = paperDir(src, "20260913-2305-01210-gp2n", "2305.01210", cards);
   writeFileSync(join(a, "cards", "pass-at-k.v1.html"), "old");
@@ -29,10 +31,12 @@ test("syncPapers groups per paper, filters, is idempotent, and prunes", () => {
   const r1 = syncPapers({ src, dest });
   assert.deepEqual(r1.written.sort(), ["paper-2107-03374", "paper-2305-01210"]);
   assert.deepEqual(readdirSync(join(dest, "paper-2305-01210")).sort(),
-    ["_overview.html", "explainer.json", "index.html", "pass-at-k.html"]);
+    ["_overview.html", "evil.html", "explainer.json", "index.html", "pass-at-k.html"]);
   const idx = readFileSync(join(dest, "paper-2305-01210", "index.html"), "utf8");
   assert.ok(idx.includes("Paper 2305.01210"));
   assert.ok(idx.indexOf('"_overview.html"') < idx.indexOf('"pass-at-k.html"'));
+  assert.equal(idx.split("</script>").length - 1, 1);
+  assert.ok(existsSync(join(dest, "paper-template.html")));
 
   assert.deepEqual(syncPapers({ src, dest }).written, []);
 
@@ -40,4 +44,5 @@ test("syncPapers groups per paper, filters, is idempotent, and prunes", () => {
   assert.deepEqual(syncPapers({ src, dest }).removed, ["paper-2305-01210"]);
   assert.ok(!existsSync(join(dest, "paper-2305-01210")));
   assert.equal(readFileSync(join(dest, "llm-latency", "index.html"), "utf8"), "keep");
+  assert.ok(existsSync(join(dest, "paper-template.html")));
 });
