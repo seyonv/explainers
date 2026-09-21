@@ -4,6 +4,13 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+lock="${TMPDIR:-/tmp}/seyonv-explainers-publish.lock"
+if ! mkdir "$lock" 2>/dev/null; then
+  echo "Another publish is running."
+  exit 0
+fi
+trap 'rmdir "$lock"' EXIT
+
 node sync-papers.mjs
 node build-hub.mjs
 git add -A
