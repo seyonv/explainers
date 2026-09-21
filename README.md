@@ -38,3 +38,13 @@ course is finished.
 
 `.nojekyll` must stay: without it, GitHub Pages drops every file whose name starts with `_`, such
 as `_overview.html`.
+
+## Papers
+
+Cards made from a paper (via `concept-curriculum` pointed at an arXiv paper) land in a
+`paper-<id>/` folder, each with an `explainer.json` that has `"kind": "paper"`. `sync-papers.mjs`
+keeps these folders in sync with the paper source list; it only touches `paper-*` folders and
+leaves everything else alone. `publish.sh` runs `node sync-papers.mjs` before `build-hub.mjs`, so
+every publish re-syncs papers first. A launchd job (`launchd/com.seyonv.explainers-sync.plist`,
+installed separately) runs `./publish.sh papers` every 30 minutes so new papers show up without
+manual intervention.

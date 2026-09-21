@@ -35,7 +35,7 @@ for (const slug of readdirSync(root).sort()) {
     preview: `${slug}/${preview}`,
     title: override.title || text(html, /<h1[^>]*>([\s\S]*?)<\/h1>/) || text(html, /<title>([\s\S]*?)<\/title>/) || slug,
     description: clip(override.description || text(html, /<p class="sub">([\s\S]*?)<\/p>/), 170),
-    kind: isCurriculum ? "curriculum" : "single",
+    kind: override.kind === "paper" ? "paper" : isCurriculum ? "curriculum" : "single",
     cards: cards.length,
     date: override.date || firstCommitDate(slug) || new Date(statSync(join(dir, main)).mtimeMs).toISOString().slice(0, 10),
   });
@@ -46,4 +46,9 @@ const page = readFileSync(join(root, "hub-template.html"), "utf8")
   .replace("/*ENTRIES*/[]", JSON.stringify(entries, null, 1))
   .replace("<!--COUNT-->", `${entries.length} explainer${entries.length === 1 ? "" : "s"}, ${entries.reduce((n, e) => n + e.cards, 0)} cards`);
 writeFileSync(join(root, "index.html"), page);
+writeFileSync(join(root, "hub.json"), JSON.stringify({
+  explainers: entries.length,
+  papers: entries.filter((e) => e.kind === "paper").length,
+  cards: entries.reduce((n, e) => n + e.cards, 0),
+}) + "\n");
 console.log(`index.html: ${entries.length} entries (${entries.map((e) => e.slug).join(", ")})`);

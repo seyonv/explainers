@@ -4,6 +4,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+node sync-papers.mjs
 node build-hub.mjs
 git add -A
 if git diff --cached --quiet; then
