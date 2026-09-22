@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Roofline intuition</title>
+<style>
+:root{
+  --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
+  --text:#1c1f23; --muted:#6b7068; --faint:#b9b9b3;
+  --accent:#4a9d77; --accent-bg:#dcefdf; --accent-border:#8cc79c;
+  --red:#c0492b; --red-bg:#fbeceb;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#15171a; --surface:#1d2024; --surface2:#24282d; --border:#32373d;
+    --text:#e6e8ea; --muted:#9aa1a9; --faint:#4a5057;
+    --accent:#5fb37f; --accent-bg:#1c2b22; --accent-border:#3f7a55;
+    --red:#e57368; --red-bg:#2e1f1e;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text)}
+.card{max-width:820px;margin:0 auto;padding:28px 32px;font-family:-apple-system,"Inter",system-ui,sans-serif;line-height:1.45}
+h1{font-size:26px;font-weight:600;margin:0 0 6px;letter-spacing:-0.01em}
+.sub{font-size:15px;color:var(--muted);margin:0 0 20px}
+h2{font-size:17px;font-weight:600;margin:26px 0 10px}
+p{font-size:15px;margin:0 0 10px}
+.cap{font-size:13px;color:var(--muted);margin:8px 0 0;text-align:center}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+
+/* Tables and formulas */
+.tw{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border)}
+th{font-size:12px;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:none}
+.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.hi{color:var(--accent);font-weight:600} .lo{color:var(--red)} .mu{color:var(--muted)}
+.formula{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin:10px 0;white-space:pre;overflow-x:auto;line-height:1.55}
+
+/* MathML formula (patterns.md §1) */
+.mathbox{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px 16px 12px;margin:10px 0;overflow-x:auto}
+.mathbox math{font-size:21px;color:var(--text);font-family:"STIX Two Math","Latin Modern Math","Cambria Math",math}
+.mathbox .t1{color:var(--accent)} .mathbox .t2{color:var(--muted)}
+.mathbox .lab{font-size:12px;font-family:-apple-system,"Inter",system-ui,sans-serif;padding-top:3px;border-top:1.5px solid currentColor;margin-top:2px}
+.mathrow{display:flex;flex-wrap:wrap;gap:10px 40px;justify-content:center;margin-top:14px}
+.mathrow math{font-size:19px}
+.legend{display:grid;grid-template-columns:auto 1fr auto;column-gap:14px;row-gap:5px;font-size:13px;margin-top:14px;align-items:baseline}
+.legend .sym{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;text-align:right}
+.legend .v{color:var(--muted);text-align:right;font-variant-numeric:tabular-nums}
+@media (max-width:560px){.legend{grid-template-columns:auto 1fr}.legend .v{display:none}}
+
+/* Two-examples term table (patterns.md §3) */
+.parts td{vertical-align:top} .parts td:first-child{font-weight:600}
+.parts .ex{font-size:13px} .parts .ex span{display:block;color:var(--muted)}
+@media (max-width:560px){.parts .what{display:none}}
+
+/* Batch sweep bars */
+.sweep td{padding:4px 10px}
+.sweep .bt{display:block;height:10px;border-radius:2px;background:var(--faint)}
+.sweep .bt.c{background:var(--accent)}
+.sweep .cut td{border-top:2px dashed var(--red);border-bottom:none;color:var(--red);font-size:13px;text-align:center;padding:4px}
+.sweep .barcell{width:40%}
+
+/* 2x2 grid */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.cell{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.cell.win{background:var(--accent-bg);border-color:var(--accent-border)}
+.cell h3{font-size:16px;font-weight:600;margin:0 0 5px;display:flex;gap:8px;align-items:baseline}
+.cell p{font-size:14px;margin:0;color:var(--text)}
+.cell.win h3,.cell.win p{color:var(--accent)}
+.x{color:var(--red)} .ok{color:var(--accent)}
+
+/* Clarification box */
+.note{border:1px solid var(--border);border-radius:10px;padding:14px 18px;font-size:14px}
+.note p{font-size:14px} .note p:last-child{margin-bottom:0}
+.note ul{margin:4px 0 10px;padding-left:20px} .note li{margin-bottom:4px}
+
+.labline{font-size:14px;border:1px solid var(--border);border-radius:8px;padding:8px 12px;background:var(--surface)}
+.foot{margin-top:22px;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+.foot p{font-size:13px;margin:0 0 8px}
+svg{display:block;max-width:100%;height:auto}
+.sl{font-size:12px;fill:var(--muted)} .st{font-size:13px;fill:var(--text)}
+.sr{font-size:12px;fill:var(--red)} .sa{font-size:13px;fill:var(--accent)}
+@media (max-width:560px){.card{padding:20px 16px}.grid2{grid-template-columns:1fr}}
+a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+</style>
+</head>
+<body>
+<article class="card">
+<h1>Compute-bound or memory-bound? The roofline intuition</h1>
+<p class="sub">Also called the roofline model, arithmetic intensity, ops:byte, or the ridge point. Anyone who says "decode is memory-bound" or "prefill is compute-bound" is using this idea. Here it's applied to Llama-3.1-8B on one H100.</p>
+
+<h2>In one breath</h2>
+<p>Every operation needs some math (FLOPs) and has to move some bytes between memory and the chip. It takes about as long as the slower of the two: FLOPs ÷ peak FLOP/s, or bytes ÷ memory bandwidth. Arithmetic intensity (FLOPs per byte) tells you which one wins, and the hardware's <b>ridge point</b> is the dividing line: on an H100 it's 989e12 ÷ 3.35e12 ≈ <b class="lo">295 FLOPs per byte</b>.</p>
+<p class="mu" style="font-size:14px">Kitchen version: a chef who can make 295 cuts in the time a runner brings one ingredient from the pantry sits idle on a recipe that needs one cut per ingredient, and keeps the runner waiting on one that needs 500.</p>
+
+<h2>The formula</h2>
+<div class="mathbox">
+<math display="block">
+  <mi>T</mi><mo>&#8776;</mo><mo>max</mo><mo stretchy="true" form="prefix" minsize="2.4em">(</mo>
+  <munder class="t1"><mfrac><mtext>FLOPs</mtext><mi>C</mi></mfrac><mtext class="lab">math time</mtext></munder>
+  <mo>,</mo><mspace width="0.4em"/>
+  <munder class="t2"><mfrac><mtext>bytes</mtext><mi>W</mi></mfrac><mtext class="lab">memory time</mtext></munder>
+  <mo stretchy="true" form="postfix" minsize="2.4em">)</mo>
+</math>
+<div class="mathrow">
+<math><mi>I</mi><mo>=</mo><mfrac><mtext>FLOPs</mtext><mtext>bytes</mtext></mfrac></math>
+<math><msup><mi>I</mi><mo>*</mo></msup><mo>=</mo><mfrac><mi>C</mi><mi>W</mi></mfrac></math>
+<math><mi>I</mi><mo>&gt;</mo><msup><mi>I</mi><mo>*</mo></msup><mo>&#8660;</mo><mtext>compute-bound</mtext></math>
+</div>
+<div class="legend">
+  <span class="sym">C</span><span>peak compute, FLOP/s</span><span class="v">H100 BF16 dense: 989e12</span>
+  <span class="sym">W</span><span>memory (HBM) bandwidth, bytes/s</span><span class="v">H100: 3.35e12</span>
+  <span class="sym">FLOPs</span><span>multiplies + adds the operation needs</span><span class="v">matmul [B,D]·[D,F]: 2BDF</span>
+  <span class="sym">bytes</span><span>data read from and written to HBM</span><span class="v">BF16: 2 bytes per number</span>
+  <span class="sym">I</span><span>arithmetic intensity of the operation</span><span class="v">property of the work</span>
+  <span class="sym">I*</span><span>ridge point (the chip's ops:byte ratio)</span><span class="v">property of the hardware: 295</span>
+</div>
+</div>
+<div class="formula">T ≈ max(FLOPs / C, bytes / W)    I = FLOPs / bytes    I* = C / W = 989e12 / 3.35e12 = 295.2</div>
+<p class="cap">Why comparing I with I* works: FLOPs/C &gt; bytes/W is the same inequality as FLOPs/bytes &gt; C/W. Taking the max assumes the chip overlaps math with memory traffic perfectly. With no overlap you'd take the sum, which is at most 2× the max (Scaling Book Part 1).</p>
+
+<h2>Worked example: four real operations on one H100 (BF16)</h2>
+<div class="tw">
+<table>
+<tr><th>Operation</th><th class="num">FLOPs</th><th class="num">Bytes</th><th class="num">I = FLOPs/byte</th><th>Bound</th><th class="num">Math time</th><th class="num">Memory time</th></tr>
+<tr><td>(a) vector add, 1M elements</td><td class="num">1.0 M</td><td class="num">6.0 MB</td><td class="num">0.167</td><td class="mu">memory</td><td class="num">1.0 ns</td><td class="num lo">1.79 µs</td></tr>
+<tr><td>(b) MLP matmul, 1 token (decode)</td><td class="num">117.4 M</td><td class="num">117.5 MB</td><td class="num">1.00</td><td class="mu">memory</td><td class="num">0.119 µs</td><td class="num lo">35.1 µs</td></tr>
+<tr><td>(c) MLP matmul, 512 tokens (prefill)</td><td class="num">60.13 G</td><td class="num">136.3 MB</td><td class="num hi">441</td><td class="hi">compute</td><td class="num lo">60.8 µs</td><td class="num">40.7 µs</td></tr>
+<tr><td>(d) whole decode step, batch 1</td><td class="num">16.06 G</td><td class="num">16.06 GB</td><td class="num">1.00</td><td class="mu">memory</td><td class="num">0.016 ms</td><td class="num lo">4.79 ms</td></tr>
+</table>
+</div>
+<p class="cap">Red = the larger time, which sets T. The MLP matmul is Llama-3.1-8B's up (or gate) projection, D = 4096 → F = 14336.</p>
+<div class="formula">(a) z = x + y, N = 1,000,000 BF16 numbers
+    FLOPs = N = 1.0e6
+    bytes = 2 B × (read x, read y, write z) = 2 × 3 × 1e6 = 6.0e6
+    I = 0.167       T_math = 1e6 / 989e12 = 1.0 ns       T_mem = 6e6 / 3.35e12 = 1.79 µs
+
+(b) x[1, 4096] · W[4096, 14336]     FLOPs = 2·B·D·F     bytes = 2·(BD + DF + BF)
+    FLOPs = 2·1·4096·14336 = 117.4e6
+    bytes = 2·(4,096 + 58,720,256 + 14,336) = 117.5e6
+    I = 1.00        T_math = 0.119 µs                    T_mem = 35.1 µs
+
+(c) X[512, 4096] · W[4096, 14336]   (512 tokens share one read of the weights)
+    FLOPs = 2·512·4096·14336 = 60.13e9
+    bytes = 2·(2.10M + 58.72M + 7.34M) = 136.3e6
+    I = 441 > 295   T_math = 60.8 µs                     T_mem = 40.7 µs
+
+(d) one decode step: each of the 8.03e9 weights is read once and used for 2 FLOPs
+    FLOPs = 2 × 8.03e9 = 16.06e9    bytes = 2 B × 8.03e9 = 16.06e9 (KV cache ignored)
+    I = 1.0         T_math = 16.2 µs = 0.016 ms          T_mem = 4.79 ms
+    → FLOPs-only estimate is 295× too fast; ceiling = 1 / 4.79 ms ≈ 209 tokens/s</div>
+<p class="labline"><a href="https://github.com/seyonv/explainers/blob/main/perf-1-foundations/labs/roofline-intuition.py">Run it: labs/roofline-intuition.py</a> prints this table for the H100 and TPU v5e, and the batch sweep below. Every number in this section comes from its output.</p>
+
+<h2>The same four operations on a roofline plot</h2>
+<svg viewBox="0 0 780 390" role="img" aria-label="Log-log roofline plot for the H100: attainable TFLOP/s against arithmetic intensity, ridge at 295">
+  <rect x="60" y="30" width="485.8" height="300" style="fill:var(--surface)"/>
+  <!-- grid -->
+  <g style="stroke:var(--border);stroke-width:1">
+    <line x1="60" y1="263.3" x2="760" y2="263.3"/><line x1="60" y1="196.7" x2="760" y2="196.7"/>
+    <line x1="60" y1="130" x2="760" y2="130"/><line x1="60" y1="63.3" x2="760" y2="63.3"/>
+    <line x1="200" y1="30" x2="200" y2="330"/><line x1="340" y1="30" x2="340" y2="330"/>
+    <line x1="480" y1="30" x2="480" y2="330"/><line x1="620" y1="30" x2="620" y2="330"/>
+  </g>
+  <line x1="60" y1="330" x2="760" y2="330" style="stroke:var(--muted)"/>
+  <line x1="60" y1="30" x2="60" y2="330" style="stroke:var(--muted)"/>
+  <!-- axis ticks -->
+  <text class="sl" x="60" y="347" text-anchor="middle">0.1</text><text class="sl" x="200" y="347" text-anchor="middle">1</text>
+  <text class="sl" x="340" y="347" text-anchor="middle">10</text><text class="sl" x="480" y="347" text-anchor="middle">100</text>
+  <text class="sl" x="620" y="347" text-anchor="middle">1,000</text><text class="sl" x="760" y="347" text-anchor="end">10,000</text>
+  <text class="sl" x="54" y="334" text-anchor="end">0.1</text><text class="sl" x="54" y="267" text-anchor="end">1</text>
+  <text class="sl" x="54" y="201" text-anchor="end">10</text><text class="sl" x="54" y="134" text-anchor="end">100</text>
+  <text class="sl" x="54" y="67" text-anchor="end">1,000</text>
+  <text class="sl" x="410" y="372" text-anchor="middle">arithmetic intensity I (FLOPs per byte, log scale)</text>
+  <text class="sl" x="14" y="180" text-anchor="middle" transform="rotate(-90 14 180)">attainable TFLOP/s (log)</text>
+  <!-- ridge -->
+  <line x1="545.8" y1="30" x2="545.8" y2="330" style="stroke:var(--red);stroke-width:1.5;stroke-dasharray:5 4"/>
+  <text class="sr" x="551" y="318">ridge I* ≈ 295</text>
+  <!-- roofline -->
+  <polyline points="60,295 545.8,63.7 760,63.7" style="fill:none;stroke:var(--text);stroke-width:2.5"/>
+  <text class="sl" x="250" y="176" transform="rotate(-25.5 250 176)">memory roof: I × 3.35 TB/s</text>
+  <text class="sl" x="755" y="56" text-anchor="end">compute roof: 989 TF/s</text>
+  <text class="sl" x="70" y="46">memory-bound side (compute waits for bytes)</text>
+  <text class="sl" x="755" y="290" text-anchor="end">compute-bound side</text>
+  <!-- matmul batch sweep B = 1..1024 -->
+  <g style="fill:var(--faint)">
+    <circle cx="242.1" cy="208.3" r="3"/><circle cx="284.2" cy="188.2" r="3"/><circle cx="326.3" cy="168.2" r="3"/>
+    <circle cx="368.3" cy="148.2" r="3"/><circle cx="410.1" cy="128.3" r="3"/><circle cx="451.7" cy="108.5" r="3"/>
+    <circle cx="492.6" cy="89" r="3"/><circle cx="532.5" cy="70" r="3"/><circle cx="604.5" cy="63.7" r="3"/>
+  </g>
+  <text class="sl" x="400" y="172">matmul, B = 2 … 1024</text>
+  <!-- the four operations -->
+  <circle cx="91.2" cy="280.1" r="6" style="fill:var(--muted)"/>
+  <text class="st" x="100" y="302">(a) vector add, 0.56 TF/s</text>
+  <circle cx="200" cy="228.3" r="6" style="fill:var(--muted)"/>
+  <text class="st" x="210" y="248">(b) 1-token matmul, (d) decode step: 3.35 TF/s</text>
+  <circle cx="570.2" cy="63.7" r="7" style="fill:var(--accent)"/>
+  <text class="sa" x="582" y="92">(c) 512-token matmul</text>
+</svg>
+<p class="cap">Log–log. Attainable FLOP/s = min(C, I × W). Left of the red line, the achievable FLOP/s rise with intensity along the bandwidth roof; right of it, you hit the compute roof. (b) and (d) land on the same point: both do 2 FLOPs per 2-byte weight. The grey dots are the matmul at B = 2, 4, …, 1024 tokens.</p>
+
+<h2>The words, each with two examples</h2>
+<div class="tw">
+<table class="parts">
+<tr><th>Term</th><th class="what">What it means</th><th>Example A</th><th>Example B</th></tr>
+<tr><td>FLOPs</td><td class="what">Floating-point multiplies and adds the operation needs. A matmul [B,D]·[D,F] needs 2BDF.</td>
+  <td class="ex"><b>1.0 M</b><span>vector add, 1 per element</span></td><td class="ex"><b>60.13 G</b><span>512-token MLP matmul</span></td></tr>
+<tr><td>Bytes moved</td><td class="what">Everything read from and written back to HBM. In BF16, that's 2 bytes per number.</td>
+  <td class="ex"><b>6.0 MB</b><span>vector add: read x and y, write z</span></td><td class="ex"><b>16.06 GB</b><span>decode step: all 8.03B weights</span></td></tr>
+<tr><td>Arithmetic intensity</td><td class="what">FLOPs ÷ bytes. A property of the work, not of the chip.</td>
+  <td class="ex"><b class="lo">0.167</b><span>vector add</span></td><td class="ex"><b class="ok">441</b><span>512-token matmul</span></td></tr>
+<tr><td>Ridge point (ops:byte)</td><td class="what">C ÷ W: how many FLOPs the chip can do in the time it moves one byte. A property of the chip.</td>
+  <td class="ex"><b>295</b><span>H100, BF16</span></td><td class="ex"><b>240</b><span>TPU v5e, BF16</span></td></tr>
+<tr><td>Memory-bound</td><td class="what">I &lt; I*: the compute units wait on memory, so the time is bytes ÷ W.</td>
+  <td class="ex"><b>4.79 ms</b><span>decode step (math is busy 0.34% of it)</span></td><td class="ex"><b>35.1 µs</b><span>1-token matmul</span></td></tr>
+<tr><td>Compute-bound</td><td class="what">I &gt; I*: the math units are the bottleneck, so the time is FLOPs ÷ C.</td>
+  <td class="ex"><b>60.8 µs</b><span>512-token matmul (memory 40.7 µs)</span></td><td class="ex"><b>16.2 ms</b><span>1,000-token prefill at 100% MFU</span></td></tr>
+</table>
+</div>
+
+<h2>Batching moves you along the roof</h2>
+<p>For a matmul with B tokens, I = BDF ÷ (BD + DF + BF), which is about B when B is much smaller than D and F. The weights are read once however many tokens share them, so batching tokens raises intensity almost for free. Here is X[B, 4096] · W[4096, 14336] on the H100 (bar length = attainable TFLOP/s, log scale):</p>
+<div class="tw">
+<table class="sweep">
+<tr><th class="num">B</th><th class="num">I exact</th><th>Bound</th><th class="num">Time</th><th class="num">TF/s</th><th class="barcell">Attainable (log)</th></tr>
+<tr><td class="num">1</td><td class="num">1.0</td><td class="mu">memory</td><td class="num">35.07 µs</td><td class="num">3.3</td><td><span class="bt" style="width:17.5%"></span></td></tr>
+<tr><td class="num">2</td><td class="num">2.0</td><td class="mu">memory</td><td class="num">35.08 µs</td><td class="num">6.7</td><td><span class="bt" style="width:27.6%"></span></td></tr>
+<tr><td class="num">4</td><td class="num">4.0</td><td class="mu">memory</td><td class="num">35.10 µs</td><td class="num">13.4</td><td><span class="bt" style="width:37.6%"></span></td></tr>
+<tr><td class="num">8</td><td class="num">8.0</td><td class="mu">memory</td><td class="num">35.14 µs</td><td class="num">26.7</td><td><span class="bt" style="width:47.6%"></span></td></tr>
+<tr><td class="num">16</td><td class="num">15.9</td><td class="mu">memory</td><td class="num">35.23 µs</td><td class="num">53.3</td><td><span class="bt" style="width:57.6%"></span></td></tr>
+<tr><td class="num">32</td><td class="num">31.7</td><td class="mu">memory</td><td class="num">35.41 µs</td><td class="num">106.1</td><td><span class="bt" style="width:67.6%"></span></td></tr>
+<tr><td class="num">64</td><td class="num">62.7</td><td class="mu">memory</td><td class="num">35.76 µs</td><td class="num">210.2</td><td><span class="bt" style="width:77.5%"></span></td></tr>
+<tr><td class="num">128</td><td class="num">123.1</td><td class="mu">memory</td><td class="num">36.47 µs</td><td class="num">412.2</td><td><span class="bt" style="width:87.3%"></span></td></tr>
+<tr><td class="num">256</td><td class="num">237.0</td><td class="mu">memory</td><td class="num">37.87 µs</td><td class="num">793.8</td><td><span class="bt" style="width:96.8%"></span></td></tr>
+<tr class="cut"><td colspan="6">ridge: I = 295.2 is reached at B = 325.4 tokens</td></tr>
+<tr><td class="num">512</td><td class="num">441.1</td><td class="hi">compute</td><td class="num">60.80 µs</td><td class="num">989.0</td><td><span class="bt c" style="width:100%"></span></td></tr>
+<tr><td class="num">1024</td><td class="num">774.9</td><td class="hi">compute</td><td class="num">121.60 µs</td><td class="num">989.0</td><td><span class="bt c" style="width:100%"></span></td></tr>
+</table>
+</div>
+<p class="cap">From 1 to 256 tokens, the time barely moves (35 → 38 µs) while the useful work grows 256×: extra tokens ride along on the same weight read. Past the ridge, the time doubles with B. The crossover is at 325, not 295, because the activations X and Z add B·(D + F) bytes, which pulls I below B.</p>
+
+<h2>It depends on the chip</h2>
+<div class="tw">
+<table>
+<tr><th>Chip, precision</th><th class="num">C (peak dense)</th><th class="num">W (HBM)</th><th class="num">Ridge I* = C/W</th><th class="num">Decode step, 16.06 GB ÷ W</th></tr>
+<tr><td>H100 SXM, BF16</td><td class="num">989 TF/s</td><td class="num">3.35 TB/s</td><td class="num lo">295</td><td class="num">4.79 ms</td></tr>
+<tr><td>H100 SXM, FP8</td><td class="num">1,979 TF/s</td><td class="num">3.35 TB/s</td><td class="num">591</td><td class="num">4.79 ms*</td></tr>
+<tr><td>H200, BF16</td><td class="num">989 TF/s</td><td class="num">4.8 TB/s</td><td class="num">206</td><td class="num hi">3.35 ms</td></tr>
+<tr><td>B200, BF16</td><td class="num">2,250 TF/s</td><td class="num">8.0 TB/s</td><td class="num">281</td><td class="num hi">2.01 ms</td></tr>
+<tr><td>TPU v5e, BF16</td><td class="num">197 TF/s</td><td class="num">0.82 TB/s</td><td class="num">240</td><td class="num">19.59 ms†</td></tr>
+</table>
+</div>
+<div class="formula">H200 vs H100: same C, 1.43× the bandwidth
+  → decode 4.79 → 3.35 ms (1.43× faster), ridge 295 → 206
+FP8 vs BF16 on H100: C doubles → ridge 591
+  → FP8 weights also halve the bytes, so a matmul's I doubles too,
+    and the batch needed to be compute-bound stays about the same</div>
+<p class="cap">*The decode time stays the same only if the weights stay in BF16. With FP8 weights it halves, to 2.40 ms. †Hypothetical: 16.06 GB of weights doesn't fit in a v5e's 16 GB of HBM. The ridges all sit between about 200 and 600: modern accelerators need a few hundred FLOPs per byte to stay busy. We couldn't find an official FLOP/s figure for your M3's GPU, so its ridge is left out.</p>
+
+<h2>Why it beats the alternatives</h2>
+<div class="grid2">
+  <div class="cell"><h3><span class="x">&#10007;</span> Count FLOPs only</h3><p>16.06 GFLOP ÷ 989 TF/s says a decode step takes 0.016 ms. The real floor is 4.79 ms, so the estimate is about 300× too fast, and it would tell you to buy more compute you can't use.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Count bytes only</h3><p>Right for decode, wrong for prefill: the 512-token matmul would be predicted at 40.7 µs, but the math takes 60.8 µs. Bytes-only also says batching is free forever, which stops being true at the ridge.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Just benchmark it</h3><p>You get a number, but not why. A 35 µs kernel could be excellent (it's at the bandwidth roof) or terrible, and the benchmark alone doesn't say whether to fix the bytes or the math.</p></div>
+  <div class="cell win"><h3><span class="ok">&#10003;</span> Roofline: two numbers</h3><p>Intensity against the ridge tells you which resource is the limit and how far you are from the roof. Below the ridge, cut the bytes or batch more tokens. Above it, cut the FLOPs or get more compute.</p></div>
+</div>
+
+<h2>Is it the whole truth?</h2>
+<div class="note">
+  <p>No. It's a first-order model, and it predicts a floor, not a measurement:</p>
+  <ul>
+    <li><b>Real kernels don't reach the roof.</b> The Scaling Book says H100s and B200s usually get about 80–85% of their spec FLOP/s (TPUs get closer to 95%). Bandwidth falls short too: your M3's measured decode implies about 51 of its ~100 GB/s (see <a href="prefill-vs-decode-mac.html">prefill vs decode</a>).</li>
+    <li><b>Caches bend the byte count.</b> Data that stays in L2 or shared memory (50 MB and 256 KB per SM on an H100) doesn't cost HBM bandwidth. Tiling a big matmul re-reads chunks, which adds bytes. Either way, the effective bandwidth ends up higher or lower than the spec.</li>
+    <li><b>Not every operation runs on the Tensor Cores.</b> A vector add runs on the CUDA cores, which peak at about 66 TF/s on an H100 against the Tensor Cores' 990 (Scaling Book Part 12). Their ridge is about 66e12 ÷ 3.35e12 ≈ 20, not 295. At I = 0.167, the vector add is still far below it.</li>
+    <li><b>Tiny operations are dominated by overhead.</b> A 1.79 µs vector add is short enough that kernel launch and synchronisation costs, which the roofline doesn't model, can matter as much as the bytes.</li>
+    <li><b>Other roofs exist.</b> Across several chips, the bottleneck can be the interconnect, with its own and much lower ridge. At long context, decode also reads the KV cache (1.07 GB for an 8k-token sequence), and attention's intensity doesn't grow with batch size.</li>
+  </ul>
+  <p>For the rigorous version (T_math vs T_comms, lower and upper bounds, and the critical batch size for a whole model), see <a href="../perf-2-scaling-book-inference/roofline.html">roofline</a> and <a href="../perf-2-scaling-book-inference/critical-batch-size.html">critical batch size</a> in perf-2.</p>
+</div>
+
+<div class="foot">
+<p><b>Read next:</b> Scaling Book Part 1, <a href="https://jax-ml.github.io/scaling-book/roofline/">"All About Rooflines"</a>: "Where does the time go?" through "Matrix multiplication", plus Questions 1, 2 and 5 (~25 min). Williams, Waterman &amp; Patterson, <a href="https://users.cs.duke.edu/~lkw34/papers/roofline-cacm2008.pdf">"Roofline: an insightful visual performance model"</a> (CACM 2009): all of it (~30 min). Kiely, <i>Inference Engineering</i> (2026) §2.4 "Calculating inference bottlenecks", pp. 61–66 (~15 min).</p>
+<p><b>Related:</b> <a href="gpu-machine.html">the GPU as a machine</a> · <a href="flops-per-token.html">FLOPs per token</a> · <a href="prefill-vs-decode-mac.html">prefill vs decode on your Mac</a> · <a href="transformer-forward.html">transformer forward pass</a> · <a href="../llm-latency/memory-bandwidth.html">memory-bandwidth-bound decoding</a> · <a href="../perf-2-scaling-book-inference/roofline.html">roofline (rigorous)</a> · <a href="../perf-2-scaling-book-inference/critical-batch-size.html">critical batch size</a> · <a href="_overview.html">overview</a></p>
+<p><b>Sources:</b> H100 989 TF/s BF16 and 3.35 TB/s, ridge 295, 80–85% achievable FLOP/s, TPU v5e 1.97e14 FLOP/s and 8.2e11 B/s (ridge 240), and matmul bytes 2(BD + DF + BF): <a href="https://jax-ml.github.io/scaling-book/roofline/">Scaling Book Part 1</a>. H200 4.8 TB/s; B200 2.25e15 FLOP/s and 8.0 TB/s; H100 FP8 1,979 TF/s; H100 CUDA-core 66 TF/s; L2 and SMEM sizes: <a href="https://jax-ml.github.io/scaling-book/gpus/">Scaling Book Part 12</a>. H100 ops:byte ≈ 295: Kiely, <i>Inference Engineering</i>, p. 62. Llama-3.1-8B shapes and 8.03B params: this course's shared facts. All times are computed by <a href="https://github.com/seyonv/explainers/blob/main/perf-1-foundations/labs/roofline-intuition.py">labs/roofline-intuition.py</a> and are floors at 100% of peak, not measurements.</p>
+</div>
+</article>
+</body>
+</html>

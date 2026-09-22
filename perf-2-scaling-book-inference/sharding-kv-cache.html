@@ -1,0 +1,550 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sharding the KV cache</title>
+<style>
+:root{
+  --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
+  --text:#1c1f23; --muted:#6b7068; --faint:#b9b9b3;
+  --accent:#4a9d77; --accent-bg:#dcefdf; --accent-border:#8cc79c;
+  --red:#c0492b; --red-bg:#fbeceb;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#15171a; --surface:#1d2024; --surface2:#24282d; --border:#32373d;
+    --text:#e6e8ea; --muted:#9aa1a9; --faint:#4a5057;
+    --accent:#5fb37f; --accent-bg:#1c2b22; --accent-border:#3f7a55;
+    --red:#e57368; --red-bg:#2e1f1e;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text)}
+.card{max-width:820px;margin:0 auto;padding:28px 32px;font-family:-apple-system,"Inter",system-ui,sans-serif;line-height:1.45}
+h1{font-size:26px;font-weight:600;margin:0 0 6px;letter-spacing:-0.01em}
+.sub{font-size:15px;color:var(--muted);margin:0 0 20px}
+h2{font-size:17px;font-weight:600;margin:26px 0 10px}
+p{font-size:15px;margin:0 0 10px}
+ul{font-size:15px;margin:0 0 10px;padding-left:20px}
+.cap{font-size:13px;color:var(--muted);margin:8px 0 0;text-align:center}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+
+/* Tables and formulas */
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border)}
+th{font-size:12px;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:none}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+.hi{color:var(--accent);font-weight:600} .lo{color:var(--red)}
+.formula{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin:10px 0;white-space:pre;overflow-x:auto;line-height:1.55}
+.tw{overflow-x:auto}
+.tw table{min-width:620px}
+
+/* MathML */
+.mathbox{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px 16px 12px;margin:10px 0;overflow-x:auto}
+.mathbox math{font-size:21px;color:var(--text);font-family:"STIX Two Math","Latin Modern Math","Cambria Math",math}
+.mathbox .t1{color:var(--text)} .mathbox .t2{color:var(--accent)} .mathbox .t3{color:var(--muted)}
+.mathbox .lab{font-size:12px;font-family:-apple-system,"Inter",system-ui,sans-serif;padding-top:3px;border-top:1.5px solid currentColor;margin-top:2px}
+.mathbox math + math{margin-top:14px}
+.legend{display:grid;grid-template-columns:auto 1fr auto;column-gap:14px;row-gap:5px;font-size:13px;margin-top:12px;align-items:baseline}
+.legend .sym{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;text-align:right}
+.legend .v{color:var(--muted);text-align:right;font-variant-numeric:tabular-nums}
+@media (max-width:560px){.legend{grid-template-columns:auto 1fr}.legend .v{display:none}}
+
+/* Two examples per term */
+.parts td{vertical-align:top} .parts td:first-child{font-weight:600;white-space:nowrap}
+.parts .ex{font-size:13px} .parts .ex span{display:block;color:var(--muted)}
+@media (max-width:560px){.parts .what{display:none}}
+
+/* Algorithm listing */
+.algo td{vertical-align:top;padding:5px 8px}
+.algo .n{color:var(--muted);font-size:12px;text-align:right;width:28px;font-variant-numeric:tabular-nums}
+.algo .c{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;white-space:nowrap}
+.algo .w{font-size:13px;color:var(--muted)}
+.algo tr.comm td{background:var(--surface2)}
+.algo tr.comm .c{font-weight:600}
+.algo tr.kv .c{color:var(--accent)}
+.algo sub{font-size:10px}
+
+/* 2x2 grid */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.cell{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.cell.win{background:var(--accent-bg);border-color:var(--accent-border)}
+.cell h3{font-size:16px;font-weight:600;margin:0 0 5px;display:flex;gap:8px;align-items:baseline}
+.cell p{font-size:14px;margin:0;color:var(--text)}
+.cell.win h3,.cell.win p{color:var(--accent)}
+.x{color:var(--red)} .ok{color:var(--accent)}
+
+/* Clarification box */
+.note{border:1px solid var(--border);border-radius:10px;padding:14px 18px;font-size:14px}
+.note p,.note li{font-size:14px} .note p:last-child{margin-bottom:0}
+
+.foot{margin-top:22px;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+.foot p{font-size:13px}
+.lab-link{display:inline-block;font-size:13px;border:1px solid var(--accent-border);background:var(--accent-bg);color:var(--accent);border-radius:6px;padding:4px 10px;margin:2px 0 10px;text-decoration:none}
+svg{display:block;max-width:100%;height:auto}
+.sl{font-size:12px;fill:var(--muted)} .st{font-size:13px;fill:var(--text)} .sh{font-size:14px;font-weight:600;fill:var(--text)}
+.tr{fill:var(--red);font-size:12px}
+.kvc{fill:var(--accent-bg);stroke:var(--accent);stroke-width:1}
+.cn{font-size:11px;fill:var(--accent);font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.bx{fill:var(--surface);stroke:var(--muted);stroke-width:1.2}
+.kvb{fill:var(--accent-bg);stroke:var(--accent);stroke-width:1.5}
+.cm{fill:var(--surface2);stroke:var(--faint);stroke-width:1.5;stroke-dasharray:5 3}
+.ar{stroke:var(--muted);stroke-width:1.3}
+.ah{fill:var(--muted)}
+.br{fill:none;stroke:var(--faint);stroke-width:1.3}
+.sb{font-size:9px}
+.gap{fill:none;stroke:var(--faint);stroke-width:1;stroke-dasharray:3 3}
+@media (max-width:560px){.grid2{grid-template-columns:1fr}.card{padding:20px 16px}}
+a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+</style>
+</head>
+<body>
+<article class="card">
+<h1>Sharding the KV cache</h1>
+<p class="sub">Also called batch-sharded attention, head-sharded KV, AllToAll attention, and (Appendix C) latency-bound collectives. This is Scaling Book Part 7, "Sharding the KV cache", plus Appendix C and a short look at Appendix B. The book's numbers are TPU v5e; the 8×H100 and Llama-3.1-8B numbers alongside are our recomputation.</p>
+
+<h2>In one breath</h2>
+<p>With GQA or MQA there are too few KV heads to split the cache across many chips by heads, so you split it by batch (each chip holds whole sequences) and pay two AllToAlls per layer to move the queries in and the outputs back. At small batch these collectives are so small that their fixed latency, not bandwidth, sets their cost.</p>
+
+<h2>Where the cache lives: heads first, then batch</h2>
+<p>The book's rule: "we almost always prefer to avoid replicating the cache, since it is the primary source of attention latency." So first Megatron-shard the KVs along the head dimension. "This is limited to K-way sharding", so when the model has few KV heads, shard heads as far as they go and then shard along the batch:</p>
+<div class="mathbox">
+<math display="block">
+  <mtext>KV</mtext><mo>[</mo><mn>2</mn><mo>,</mo>
+  <munder class="t2"><msub><mi>B</mi><mi>Z</mi></msub><mtext class="lab">batch, split Z ways</mtext></munder><mo>,</mo>
+  <mi>S</mi><mo>,</mo>
+  <munder class="t2"><msub><mi>K</mi><mi>Y</mi></msub><mtext class="lab">KV heads, split Y ≤ K ways</mtext></munder><mo>,</mo>
+  <mi>H</mi><mo>]</mo>
+  <mspace width="1.2em"/><mo>&#8658;</mo><mspace width="0.6em"/>
+  <mfrac><mtext>whole cache</mtext><mrow><mi>Y</mi><mo>&#183;</mo><mi>Z</mi></mrow></mfrac><mtext>&#160;per chip, no copies</mtext>
+</math>
+<div class="legend">
+  <span class="sym">2</span><span>the K and the V tensor</span><span class="v">always 2</span>
+  <span class="sym">B</span><span>sequences in the batch; subscript Z = sharded over mesh axis Z</span><span class="v">book example: 32</span>
+  <span class="sym">S</span><span>tokens of context in the cache (not sharded here)</span><span class="v">Llama example: 8,192</span>
+  <span class="sym">K</span><span>KV heads; subscript Y = sharded over mesh axis Y. Y can't exceed K</span><span class="v">Llama-3.1-8B: 8 · MQA: 1</span>
+  <span class="sym">H</span><span>head dimension</span><span class="v">128</span>
+  <span class="sym">Y · Z</span><span>total chips the attention layer is sharded over</span><span class="v">8 · 64</span>
+</div>
+</div>
+<svg viewBox="0 0 800 280" role="img" aria-label="Three layouts of the same 8-sequence KV cache over 8 chips: by heads when K = 8, by batch when K = 1, and a 2 by 4 mix of heads and batch">
+<text class="sh" x="40" y="22">(a) By heads</text>
+<text class="sl" x="40" y="40">Llama-3.1-8B, K = 8 KV heads</text>
+<text class="sl" x="53.0" y="66" text-anchor="middle">h0</text>
+<text class="sl" x="79.0" y="66" text-anchor="middle">h1</text>
+<text class="sl" x="105.0" y="66" text-anchor="middle">h2</text>
+<text class="sl" x="131.0" y="66" text-anchor="middle">h3</text>
+<text class="sl" x="157.0" y="66" text-anchor="middle">h4</text>
+<text class="sl" x="183.0" y="66" text-anchor="middle">h5</text>
+<text class="sl" x="209.0" y="66" text-anchor="middle">h6</text>
+<text class="sl" x="235.0" y="66" text-anchor="middle">h7</text>
+<text class="sl" x="34" y="86" text-anchor="end">s0</text>
+<rect class="kvc" x="40" y="72" width="26" height="19"/>
+<text class="cn" x="53.0" y="85.5" text-anchor="middle">0</text>
+<rect class="kvc" x="66" y="72" width="26" height="19"/>
+<text class="cn" x="79.0" y="85.5" text-anchor="middle">1</text>
+<rect class="kvc" x="92" y="72" width="26" height="19"/>
+<text class="cn" x="105.0" y="85.5" text-anchor="middle">2</text>
+<rect class="kvc" x="118" y="72" width="26" height="19"/>
+<text class="cn" x="131.0" y="85.5" text-anchor="middle">3</text>
+<rect class="kvc" x="144" y="72" width="26" height="19"/>
+<text class="cn" x="157.0" y="85.5" text-anchor="middle">4</text>
+<rect class="kvc" x="170" y="72" width="26" height="19"/>
+<text class="cn" x="183.0" y="85.5" text-anchor="middle">5</text>
+<rect class="kvc" x="196" y="72" width="26" height="19"/>
+<text class="cn" x="209.0" y="85.5" text-anchor="middle">6</text>
+<rect class="kvc" x="222" y="72" width="26" height="19"/>
+<text class="cn" x="235.0" y="85.5" text-anchor="middle">7</text>
+<text class="sl" x="34" y="105" text-anchor="end">s1</text>
+<rect class="kvc" x="40" y="91" width="26" height="19"/>
+<text class="cn" x="53.0" y="104.5" text-anchor="middle">0</text>
+<rect class="kvc" x="66" y="91" width="26" height="19"/>
+<text class="cn" x="79.0" y="104.5" text-anchor="middle">1</text>
+<rect class="kvc" x="92" y="91" width="26" height="19"/>
+<text class="cn" x="105.0" y="104.5" text-anchor="middle">2</text>
+<rect class="kvc" x="118" y="91" width="26" height="19"/>
+<text class="cn" x="131.0" y="104.5" text-anchor="middle">3</text>
+<rect class="kvc" x="144" y="91" width="26" height="19"/>
+<text class="cn" x="157.0" y="104.5" text-anchor="middle">4</text>
+<rect class="kvc" x="170" y="91" width="26" height="19"/>
+<text class="cn" x="183.0" y="104.5" text-anchor="middle">5</text>
+<rect class="kvc" x="196" y="91" width="26" height="19"/>
+<text class="cn" x="209.0" y="104.5" text-anchor="middle">6</text>
+<rect class="kvc" x="222" y="91" width="26" height="19"/>
+<text class="cn" x="235.0" y="104.5" text-anchor="middle">7</text>
+<text class="sl" x="34" y="124" text-anchor="end">s2</text>
+<rect class="kvc" x="40" y="110" width="26" height="19"/>
+<text class="cn" x="53.0" y="123.5" text-anchor="middle">0</text>
+<rect class="kvc" x="66" y="110" width="26" height="19"/>
+<text class="cn" x="79.0" y="123.5" text-anchor="middle">1</text>
+<rect class="kvc" x="92" y="110" width="26" height="19"/>
+<text class="cn" x="105.0" y="123.5" text-anchor="middle">2</text>
+<rect class="kvc" x="118" y="110" width="26" height="19"/>
+<text class="cn" x="131.0" y="123.5" text-anchor="middle">3</text>
+<rect class="kvc" x="144" y="110" width="26" height="19"/>
+<text class="cn" x="157.0" y="123.5" text-anchor="middle">4</text>
+<rect class="kvc" x="170" y="110" width="26" height="19"/>
+<text class="cn" x="183.0" y="123.5" text-anchor="middle">5</text>
+<rect class="kvc" x="196" y="110" width="26" height="19"/>
+<text class="cn" x="209.0" y="123.5" text-anchor="middle">6</text>
+<rect class="kvc" x="222" y="110" width="26" height="19"/>
+<text class="cn" x="235.0" y="123.5" text-anchor="middle">7</text>
+<text class="sl" x="34" y="143" text-anchor="end">s3</text>
+<rect class="kvc" x="40" y="129" width="26" height="19"/>
+<text class="cn" x="53.0" y="142.5" text-anchor="middle">0</text>
+<rect class="kvc" x="66" y="129" width="26" height="19"/>
+<text class="cn" x="79.0" y="142.5" text-anchor="middle">1</text>
+<rect class="kvc" x="92" y="129" width="26" height="19"/>
+<text class="cn" x="105.0" y="142.5" text-anchor="middle">2</text>
+<rect class="kvc" x="118" y="129" width="26" height="19"/>
+<text class="cn" x="131.0" y="142.5" text-anchor="middle">3</text>
+<rect class="kvc" x="144" y="129" width="26" height="19"/>
+<text class="cn" x="157.0" y="142.5" text-anchor="middle">4</text>
+<rect class="kvc" x="170" y="129" width="26" height="19"/>
+<text class="cn" x="183.0" y="142.5" text-anchor="middle">5</text>
+<rect class="kvc" x="196" y="129" width="26" height="19"/>
+<text class="cn" x="209.0" y="142.5" text-anchor="middle">6</text>
+<rect class="kvc" x="222" y="129" width="26" height="19"/>
+<text class="cn" x="235.0" y="142.5" text-anchor="middle">7</text>
+<text class="sl" x="34" y="162" text-anchor="end">s4</text>
+<rect class="kvc" x="40" y="148" width="26" height="19"/>
+<text class="cn" x="53.0" y="161.5" text-anchor="middle">0</text>
+<rect class="kvc" x="66" y="148" width="26" height="19"/>
+<text class="cn" x="79.0" y="161.5" text-anchor="middle">1</text>
+<rect class="kvc" x="92" y="148" width="26" height="19"/>
+<text class="cn" x="105.0" y="161.5" text-anchor="middle">2</text>
+<rect class="kvc" x="118" y="148" width="26" height="19"/>
+<text class="cn" x="131.0" y="161.5" text-anchor="middle">3</text>
+<rect class="kvc" x="144" y="148" width="26" height="19"/>
+<text class="cn" x="157.0" y="161.5" text-anchor="middle">4</text>
+<rect class="kvc" x="170" y="148" width="26" height="19"/>
+<text class="cn" x="183.0" y="161.5" text-anchor="middle">5</text>
+<rect class="kvc" x="196" y="148" width="26" height="19"/>
+<text class="cn" x="209.0" y="161.5" text-anchor="middle">6</text>
+<rect class="kvc" x="222" y="148" width="26" height="19"/>
+<text class="cn" x="235.0" y="161.5" text-anchor="middle">7</text>
+<text class="sl" x="34" y="181" text-anchor="end">s5</text>
+<rect class="kvc" x="40" y="167" width="26" height="19"/>
+<text class="cn" x="53.0" y="180.5" text-anchor="middle">0</text>
+<rect class="kvc" x="66" y="167" width="26" height="19"/>
+<text class="cn" x="79.0" y="180.5" text-anchor="middle">1</text>
+<rect class="kvc" x="92" y="167" width="26" height="19"/>
+<text class="cn" x="105.0" y="180.5" text-anchor="middle">2</text>
+<rect class="kvc" x="118" y="167" width="26" height="19"/>
+<text class="cn" x="131.0" y="180.5" text-anchor="middle">3</text>
+<rect class="kvc" x="144" y="167" width="26" height="19"/>
+<text class="cn" x="157.0" y="180.5" text-anchor="middle">4</text>
+<rect class="kvc" x="170" y="167" width="26" height="19"/>
+<text class="cn" x="183.0" y="180.5" text-anchor="middle">5</text>
+<rect class="kvc" x="196" y="167" width="26" height="19"/>
+<text class="cn" x="209.0" y="180.5" text-anchor="middle">6</text>
+<rect class="kvc" x="222" y="167" width="26" height="19"/>
+<text class="cn" x="235.0" y="180.5" text-anchor="middle">7</text>
+<text class="sl" x="34" y="200" text-anchor="end">s6</text>
+<rect class="kvc" x="40" y="186" width="26" height="19"/>
+<text class="cn" x="53.0" y="199.5" text-anchor="middle">0</text>
+<rect class="kvc" x="66" y="186" width="26" height="19"/>
+<text class="cn" x="79.0" y="199.5" text-anchor="middle">1</text>
+<rect class="kvc" x="92" y="186" width="26" height="19"/>
+<text class="cn" x="105.0" y="199.5" text-anchor="middle">2</text>
+<rect class="kvc" x="118" y="186" width="26" height="19"/>
+<text class="cn" x="131.0" y="199.5" text-anchor="middle">3</text>
+<rect class="kvc" x="144" y="186" width="26" height="19"/>
+<text class="cn" x="157.0" y="199.5" text-anchor="middle">4</text>
+<rect class="kvc" x="170" y="186" width="26" height="19"/>
+<text class="cn" x="183.0" y="199.5" text-anchor="middle">5</text>
+<rect class="kvc" x="196" y="186" width="26" height="19"/>
+<text class="cn" x="209.0" y="199.5" text-anchor="middle">6</text>
+<rect class="kvc" x="222" y="186" width="26" height="19"/>
+<text class="cn" x="235.0" y="199.5" text-anchor="middle">7</text>
+<text class="sl" x="34" y="219" text-anchor="end">s7</text>
+<rect class="kvc" x="40" y="205" width="26" height="19"/>
+<text class="cn" x="53.0" y="218.5" text-anchor="middle">0</text>
+<rect class="kvc" x="66" y="205" width="26" height="19"/>
+<text class="cn" x="79.0" y="218.5" text-anchor="middle">1</text>
+<rect class="kvc" x="92" y="205" width="26" height="19"/>
+<text class="cn" x="105.0" y="218.5" text-anchor="middle">2</text>
+<rect class="kvc" x="118" y="205" width="26" height="19"/>
+<text class="cn" x="131.0" y="218.5" text-anchor="middle">3</text>
+<rect class="kvc" x="144" y="205" width="26" height="19"/>
+<text class="cn" x="157.0" y="218.5" text-anchor="middle">4</text>
+<rect class="kvc" x="170" y="205" width="26" height="19"/>
+<text class="cn" x="183.0" y="218.5" text-anchor="middle">5</text>
+<rect class="kvc" x="196" y="205" width="26" height="19"/>
+<text class="cn" x="209.0" y="218.5" text-anchor="middle">6</text>
+<rect class="kvc" x="222" y="205" width="26" height="19"/>
+<text class="cn" x="235.0" y="218.5" text-anchor="middle">7</text>
+<text class="sl" x="40" y="244">each chip: 1 head × all 8 seqs</text>
+<text class="tr" x="40" y="260">a 9th chip gets no head: caps at K</text>
+<text class="sh" x="330" y="22">(b) By batch</text>
+<text class="sl" x="330" y="40">MQA, K = 1 KV head</text>
+<text class="sl" x="343.0" y="66" text-anchor="middle">h0</text>
+<text class="sl" x="324" y="86" text-anchor="end">s0</text>
+<rect class="kvc" x="330" y="72" width="26" height="19"/>
+<text class="cn" x="343.0" y="85.5" text-anchor="middle">0</text>
+<text class="sl" x="324" y="105" text-anchor="end">s1</text>
+<rect class="kvc" x="330" y="91" width="26" height="19"/>
+<text class="cn" x="343.0" y="104.5" text-anchor="middle">1</text>
+<text class="sl" x="324" y="124" text-anchor="end">s2</text>
+<rect class="kvc" x="330" y="110" width="26" height="19"/>
+<text class="cn" x="343.0" y="123.5" text-anchor="middle">2</text>
+<text class="sl" x="324" y="143" text-anchor="end">s3</text>
+<rect class="kvc" x="330" y="129" width="26" height="19"/>
+<text class="cn" x="343.0" y="142.5" text-anchor="middle">3</text>
+<text class="sl" x="324" y="162" text-anchor="end">s4</text>
+<rect class="kvc" x="330" y="148" width="26" height="19"/>
+<text class="cn" x="343.0" y="161.5" text-anchor="middle">4</text>
+<text class="sl" x="324" y="181" text-anchor="end">s5</text>
+<rect class="kvc" x="330" y="167" width="26" height="19"/>
+<text class="cn" x="343.0" y="180.5" text-anchor="middle">5</text>
+<text class="sl" x="324" y="200" text-anchor="end">s6</text>
+<rect class="kvc" x="330" y="186" width="26" height="19"/>
+<text class="cn" x="343.0" y="199.5" text-anchor="middle">6</text>
+<text class="sl" x="324" y="219" text-anchor="end">s7</text>
+<rect class="kvc" x="330" y="205" width="26" height="19"/>
+<text class="cn" x="343.0" y="218.5" text-anchor="middle">7</text>
+<text class="sl" x="330" y="244">each chip: the head × 1 whole seq</text>
+<text class="sl" x="330" y="260">2 AllToAlls per layer</text>
+<text class="sh" x="560" y="22">(c) Heads, then batch</text>
+<text class="sl" x="560" y="40">K = 2, Y = 2 × Z = 4</text>
+<text class="sl" x="573.0" y="66" text-anchor="middle">h0</text>
+<text class="sl" x="599.0" y="66" text-anchor="middle">h1</text>
+<text class="sl" x="554" y="86" text-anchor="end">s0</text>
+<rect class="kvc" x="560" y="72" width="26" height="19"/>
+<text class="cn" x="573.0" y="85.5" text-anchor="middle">0</text>
+<rect class="kvc" x="586" y="72" width="26" height="19"/>
+<text class="cn" x="599.0" y="85.5" text-anchor="middle">1</text>
+<text class="sl" x="554" y="105" text-anchor="end">s1</text>
+<rect class="kvc" x="560" y="91" width="26" height="19"/>
+<text class="cn" x="573.0" y="104.5" text-anchor="middle">0</text>
+<rect class="kvc" x="586" y="91" width="26" height="19"/>
+<text class="cn" x="599.0" y="104.5" text-anchor="middle">1</text>
+<text class="sl" x="554" y="124" text-anchor="end">s2</text>
+<rect class="kvc" x="560" y="110" width="26" height="19"/>
+<text class="cn" x="573.0" y="123.5" text-anchor="middle">2</text>
+<rect class="kvc" x="586" y="110" width="26" height="19"/>
+<text class="cn" x="599.0" y="123.5" text-anchor="middle">3</text>
+<text class="sl" x="554" y="143" text-anchor="end">s3</text>
+<rect class="kvc" x="560" y="129" width="26" height="19"/>
+<text class="cn" x="573.0" y="142.5" text-anchor="middle">2</text>
+<rect class="kvc" x="586" y="129" width="26" height="19"/>
+<text class="cn" x="599.0" y="142.5" text-anchor="middle">3</text>
+<text class="sl" x="554" y="162" text-anchor="end">s4</text>
+<rect class="kvc" x="560" y="148" width="26" height="19"/>
+<text class="cn" x="573.0" y="161.5" text-anchor="middle">4</text>
+<rect class="kvc" x="586" y="148" width="26" height="19"/>
+<text class="cn" x="599.0" y="161.5" text-anchor="middle">5</text>
+<text class="sl" x="554" y="181" text-anchor="end">s5</text>
+<rect class="kvc" x="560" y="167" width="26" height="19"/>
+<text class="cn" x="573.0" y="180.5" text-anchor="middle">4</text>
+<rect class="kvc" x="586" y="167" width="26" height="19"/>
+<text class="cn" x="599.0" y="180.5" text-anchor="middle">5</text>
+<text class="sl" x="554" y="200" text-anchor="end">s6</text>
+<rect class="kvc" x="560" y="186" width="26" height="19"/>
+<text class="cn" x="573.0" y="199.5" text-anchor="middle">6</text>
+<rect class="kvc" x="586" y="186" width="26" height="19"/>
+<text class="cn" x="599.0" y="199.5" text-anchor="middle">7</text>
+<text class="sl" x="554" y="219" text-anchor="end">s7</text>
+<rect class="kvc" x="560" y="205" width="26" height="19"/>
+<text class="cn" x="573.0" y="218.5" text-anchor="middle">6</text>
+<rect class="kvc" x="586" y="205" width="26" height="19"/>
+<text class="cn" x="599.0" y="218.5" text-anchor="middle">7</text>
+<text class="sl" x="560" y="244">KV[2, B<tspan class="sb" baseline-shift="sub">Z</tspan>, S, K<tspan class="sb" baseline-shift="sub">Y</tspan>, H]</text>
+<text class="sl" x="560" y="260">each chip: 1 head × 2 seqs</text>
+</svg>
+<p class="cap">Rows are 8 sequences (s0–s7), columns are KV heads (h0–h7). Each green cell is one sequence's cache for one head (all S tokens); the number is the chip that holds it. (a) K = 8 can go 8 ways by heads and no further. (b) With one KV head, the only way to split is by sequence. (c) The book's general form: 2 ways by heads × 4 ways by batch. Widths are schematic.</p>
+
+<h2>The price: two AllToAlls per attention layer</h2>
+<p>Everything else in the layer is model-sharded over heads, so Q comes out of W<sub>Q</sub> split by heads. To meet a batch-sharded cache it must be reshuffled so each chip gets all the heads it needs for <i>its</i> sequences, and the output must be reshuffled back. This is the book's figure from the Efficiently Scaling Transformer Inference (ESTI) paper, redrawn:</p>
+<svg viewBox="0 0 792 270" role="img" aria-label="Two pipelines. (a) MHA pure model sharding: X, W_Q, attention, W_O, AllReduce. (b) MQA with batch-sharded KV: X, W_Q, AllToAll, attention, AllToAll, W_O, AllReduce">
+<defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="ah" d="M0 0L10 5L0 10z"/></marker></defs>
+<text class="sh" x="10" y="32">(a) MHA, pure model sharding: Q, K, V all split by heads</text>
+<rect class="bx" x="10" y="48" width="100" height="50" rx="5"/>
+<text class="st" x="60.0" y="69" text-anchor="middle">X[B, D]</text>
+<text class="sl" x="60.0" y="86" text-anchor="middle">replicated</text>
+<rect class="bx" x="122" y="48" width="100" height="50" rx="5"/>
+<text class="st" x="172.0" y="69" text-anchor="middle">× W<tspan class="sb" baseline-shift="sub">Q</tspan></text>
+<text class="sl" x="172.0" y="86" text-anchor="middle">Q[B, N<tspan class="sb" baseline-shift="sub">Y</tspan>, H]</text>
+<rect class="kvb" x="346" y="48" width="100" height="50" rx="5"/>
+<text class="st" x="396.0" y="69" text-anchor="middle">attention</text>
+<text class="sl" x="396.0" y="86" text-anchor="middle">KV[B,S,K<tspan class="sb" baseline-shift="sub">Y</tspan>,H]</text>
+<rect class="bx" x="570" y="48" width="100" height="50" rx="5"/>
+<text class="st" x="620.0" y="69" text-anchor="middle">× W<tspan class="sb" baseline-shift="sub">O</tspan></text>
+<text class="sl" x="620.0" y="86" text-anchor="middle">partial X{U<tspan class="sb" baseline-shift="sub">Y</tspan>}</text>
+<rect class="cm" x="682" y="48" width="100" height="50" rx="5"/>
+<text class="st" x="732.0" y="69" text-anchor="middle">AllReduce</text>
+<text class="sl" x="732.0" y="86" text-anchor="middle">X[B, D]</text>
+<line class="ar" x1="112" y1="73.0" x2="118" y2="73.0" marker-end="url(#ah)"/>
+<line class="ar" x1="224" y1="73.0" x2="342" y2="73.0" marker-end="url(#ah)"/>
+<line class="ar" x1="448" y1="73.0" x2="566" y2="73.0" marker-end="url(#ah)"/>
+<line class="ar" x1="672" y1="73.0" x2="678" y2="73.0" marker-end="url(#ah)"/>
+<text class="sl" x="284.0" y="116" text-anchor="middle">no reshuffle</text>
+<text class="sl" x="508.0" y="116" text-anchor="middle">no reshuffle</text>
+<text class="sh" x="10" y="152">(b) MQA, batch-sharded KV cache: two extra AllToAlls</text>
+<rect class="bx" x="10" y="168" width="100" height="50" rx="5"/>
+<text class="st" x="60.0" y="189" text-anchor="middle">X[B, D]</text>
+<text class="sl" x="60.0" y="206" text-anchor="middle">replicated</text>
+<rect class="bx" x="122" y="168" width="100" height="50" rx="5"/>
+<text class="st" x="172.0" y="189" text-anchor="middle">× W<tspan class="sb" baseline-shift="sub">Q</tspan></text>
+<text class="sl" x="172.0" y="206" text-anchor="middle">Q[B, N<tspan class="sb" baseline-shift="sub">YZ</tspan>, H]</text>
+<rect class="cm" x="234" y="168" width="100" height="50" rx="5"/>
+<text class="st" x="284.0" y="189" text-anchor="middle">AllToAll Z→B</text>
+<text class="sl" x="284.0" y="206" text-anchor="middle">Q[B<tspan class="sb" baseline-shift="sub">Z</tspan>, N<tspan class="sb" baseline-shift="sub">Y</tspan>, H]</text>
+<rect class="kvb" x="346" y="168" width="100" height="50" rx="5"/>
+<text class="st" x="396.0" y="189" text-anchor="middle">attention</text>
+<text class="sl" x="396.0" y="206" text-anchor="middle">KV[B<tspan class="sb" baseline-shift="sub">Z</tspan>,S,K<tspan class="sb" baseline-shift="sub">Y</tspan>,H]</text>
+<rect class="cm" x="458" y="168" width="100" height="50" rx="5"/>
+<text class="st" x="508.0" y="189" text-anchor="middle">AllToAll Z→M</text>
+<text class="sl" x="508.0" y="206" text-anchor="middle">O[B, K<tspan class="sb" baseline-shift="sub">Y</tspan>, M<tspan class="sb" baseline-shift="sub">Z</tspan>, H]</text>
+<rect class="bx" x="570" y="168" width="100" height="50" rx="5"/>
+<text class="st" x="620.0" y="189" text-anchor="middle">× W<tspan class="sb" baseline-shift="sub">O</tspan></text>
+<text class="sl" x="620.0" y="206" text-anchor="middle">partial X{U<tspan class="sb" baseline-shift="sub">YZ</tspan>}</text>
+<rect class="cm" x="682" y="168" width="100" height="50" rx="5"/>
+<text class="st" x="732.0" y="189" text-anchor="middle">AllReduce</text>
+<text class="sl" x="732.0" y="206" text-anchor="middle">X[B, D]</text>
+<line class="ar" x1="112" y1="193.0" x2="118" y2="193.0" marker-end="url(#ah)"/>
+<line class="ar" x1="224" y1="193.0" x2="230" y2="193.0" marker-end="url(#ah)"/>
+<line class="ar" x1="336" y1="193.0" x2="342" y2="193.0" marker-end="url(#ah)"/>
+<line class="ar" x1="448" y1="193.0" x2="454" y2="193.0" marker-end="url(#ah)"/>
+<line class="ar" x1="560" y1="193.0" x2="566" y2="193.0" marker-end="url(#ah)"/>
+<line class="ar" x1="672" y1="193.0" x2="678" y2="193.0" marker-end="url(#ah)"/>
+<path class="br" d="M234 228 v6 H558 v-6"/>
+<text class="sl" x="396.0" y="250" text-anchor="middle">new: move small activations in, results out; the KV cache never moves</text>
+</svg>
+<p class="cap">Grey dashed boxes are communication; green is attention reading the KV cache; grey-outlined boxes are weight matmuls. In (a), splitting W<sub>Q</sub> by heads also splits Q the same way the KV cache is split, so attention is purely local. The book's caption: "we need two extra AllToAlls to shift the activations from model sharding to batch sharding, so they can act on the KV caches."</p>
+
+<h2>The full algorithm, as the book writes it</h2>
+<p>Attention with model parallelism over both Y and Z. M = N/K is query heads per KV head. A subscript says which mesh axis a dimension is split over; {U<sub>YZ</sub>} means "unreduced": each chip holds a partial sum; *<sub>H</sub> means "contract over H". The book: "I apologize for using K for both the key tensor and the KV head dimension."</p>
+<div class="tw">
+<table class="algo">
+<tr><th class="n">#</th><th>Line</th><th>What it does</th></tr>
+<tr><td class="n">1</td><td class="c">X[B, D] = …</td><td class="w">existing activations, unsharded from the previous layer</td></tr>
+<tr class="kv"><td class="n">2</td><td class="c">K[B<sub>Z</sub>, S, K<sub>Y</sub>, H], V[B<sub>Z</sub>, S, K<sub>Y</sub>, H] = …</td><td class="w">existing KV cache, batch sharded; it never moves</td></tr>
+<tr><td class="n">3</td><td class="c">Q[B, N<sub>YZ</sub>, H] = X[B, D] * W<sub>Q</sub>[D, N<sub>YZ</sub>, H]</td><td class="w">each chip computes its slice of query heads, for every sequence</td></tr>
+<tr class="comm"><td class="n">4</td><td class="c">Q[B<sub>Z</sub>, N<sub>Y</sub>, H] = AllToAll<sub>Z→B</sub>(Q[B, N<sub>YZ</sub>, H])</td><td class="w">AllToAll 1: trade heads for sequences along Z</td></tr>
+<tr><td class="n">5</td><td class="c">Q[B<sub>Z</sub>, K<sub>Y</sub>, M, H] = Reshape(Q[B<sub>Z</sub>, N<sub>Y</sub>, H])</td><td class="w">group query heads under their KV head</td></tr>
+<tr class="kv"><td class="n">6</td><td class="c">O[B<sub>Z</sub>, S, K<sub>Y</sub>, M] = Q[B<sub>Z</sub>, K<sub>Y</sub>, M, H] *<sub>H</sub> K[B<sub>Z</sub>, S, K<sub>Y</sub>, H]</td><td class="w">scores against the local K cache</td></tr>
+<tr><td class="n">7</td><td class="c">O[B<sub>Z</sub>, S, K<sub>Y</sub>, M] = Softmax<sub>S</sub>(O[B<sub>Z</sub>, S, K<sub>Y</sub>, M])</td><td class="w">softmax over the whole context; S is local, so no comms</td></tr>
+<tr class="kv"><td class="n">8</td><td class="c">O[B<sub>Z</sub>, K<sub>Y</sub>, M, H] = O[B<sub>Z</sub>, S, K<sub>Y</sub>, M] *<sub>S</sub> V[B<sub>Z</sub>, S, K<sub>Y</sub>, H]</td><td class="w">weighted sum of the local V cache</td></tr>
+<tr class="comm"><td class="n">9</td><td class="c">O[B, K<sub>Y</sub>, M<sub>Z</sub>, H] = AllToAll<sub>Z→M</sub>(O[B<sub>Z</sub>, K<sub>Y</sub>, M, H])</td><td class="w">AllToAll 2: trade sequences back for heads</td></tr>
+<tr><td class="n">10</td><td class="c">O[B, N<sub>YZ</sub>, H] = Reshape(O[B, K<sub>Y</sub>, M<sub>Z</sub>, H])</td><td class="w">back to W<sub>O</sub>'s head sharding</td></tr>
+<tr><td class="n">11</td><td class="c">X[B, D]{U<sub>YZ</sub>} = W<sub>O</sub>[N<sub>YZ</sub>, H, D] *<sub>N,H</sub> O[B, N<sub>YZ</sub>, H]</td><td class="w">each chip's heads give a partial X</td></tr>
+<tr class="comm"><td class="n">12</td><td class="c">X[B, D] = AllReduce(X[B, D]{U<sub>YZ</sub>})</td><td class="w">the usual Megatron AllReduce (not new)</td></tr>
+</table>
+</div>
+<p class="cap">Grey rows are collectives; green rows touch the KV cache. The lab runs these twelve lines on a 2 × 2 mesh of numpy "devices" (B = 8, N = 8, K = 2) and asserts the result equals unsharded attention: max difference 5.6e-16.</p>
+<p style="margin-top:12px">The book's verdict: "The new comms are modestly expensive since they operate on our small activations, while in return we save a huge amount of memory bandwidth loading the KVs (which are stationary)." With Llama-3.1-8B dims, one layer at B = 16 and S = 8,192 (our recomputation):</p>
+<div class="formula">Q moved by AllToAll 1   B·N·H·2 B   = 16 · 32 · 128 · 2       =     131 kB
+KV that stays put       B·S·2·K·H·2 = 16 · 8192 · 2 · 8 · 128 · 2 = 537 MB
+ratio                                                          = 4,096×</div>
+
+<h2>When batch is too small or context too long: shard the sequence</h2>
+<p>The book's third option: "If the batch size is too small, or the context is long, we can sequence shard the KV cache." Each chip holds a slice of S for every sequence. "First we need to AllGather the Q activations, and then accumulate the KVs in a similar fashion to Flash Attention": each chip returns its own running max, softmax denominator and unnormalised output, and they are combined exactly as Flash Attention combines tiles. The lab checks this too (S split 4 ways, max difference 4.6e-16). The cost is a collective to combine the partial results.</p>
+
+<h2>The words, with two examples each</h2>
+<p>Think of a library split across 8 branches. Head sharding shelves by subject, batch sharding shelves by reader, and an AllToAll is the courier van that swaps requests between branches.</p>
+<div class="tw">
+<table class="parts">
+  <tr><th>Term</th><th class="what">What actually happens</th><th>Example A</th><th>Example B</th></tr>
+  <tr><td>Head sharding</td><td class="what">Each chip keeps some KV heads for every sequence: KV[2, B, S, K<sub>Y</sub>, H]</td>
+      <td class="ex"><b class="ok">8 ways, 1 head each</b><span>Llama-3.1-8B (K = 8) on 8 chips</span></td>
+      <td class="ex"><b class="lo">stuck at 8</b><span>same model on 64 chips: 8 heads can't fill 64</span></td></tr>
+  <tr><td>Batch sharding</td><td class="what">Each chip keeps whole sequences: KV[2, B<sub>Z</sub>, S, K<sub>Y</sub>, H]</td>
+      <td class="ex"><b>8 ways</b><span>MQA (K = 1) on 8 chips: B/8 sequences each</span></td>
+      <td class="ex"><b>Y = 8 × Z = 8</b><span>the book's 64-way example with K = 8</span></td></tr>
+  <tr><td>AllToAll</td><td class="what">Every chip sends a different slice to every peer on one axis: a reshard, not a sum</td>
+      <td class="ex"><b>line 4</b><span>Q goes from split-by-head to split-by-sequence</span></td>
+      <td class="ex"><b>line 9</b><span>the output goes back to split-by-head</span></td></tr>
+  <tr><td>Latency-bound</td><td class="what">The fixed cost of launching a collective exceeds its bytes ÷ bandwidth</td>
+      <td class="ex"><b class="lo">16.4 kB per shard</b><span>v5e, B = 16, D = 8192, int8, 8-way: 0.36 µs/hop &lt; 1 µs</span></td>
+      <td class="ex"><b class="ok">262 kB per shard</b><span>same at B = 256: 5.83 µs/hop, bandwidth-bound</span></td></tr>
+</table>
+</div>
+
+<h2>Appendix C: when collectives are latency-bound</h2>
+<p>From Part 3, an AllGather into a tensor of B bytes over |X| chips on a 1D ring, with links of full-duplex bandwidth W<sub>ICI</sub> and latency T<sub>min</sub>:</p>
+<div class="mathbox">
+<math display="block">
+  <msub><mi>T</mi><mtext>total</mtext></msub><mo>=</mo><mo>max</mo>
+  <mo stretchy="true" form="prefix" minsize="2.4em">(</mo>
+  <munder class="t3"><mfrac><mrow><msub><mi>T</mi><mtext>min</mtext></msub><mo>&#183;</mo><mo>|</mo><mi>X</mi><mo>|</mo></mrow><mn>2</mn></mfrac><mtext class="lab">fixed cost per hop</mtext></munder>
+  <mo>,</mo><mspace width="0.5em"/>
+  <munder class="t2"><mfrac><mi>B</mi><msub><mi>W</mi><mtext>ICI</mtext></msub></mfrac><mtext class="lab">bytes ÷ bandwidth</mtext></munder>
+  <mo stretchy="true" form="postfix" minsize="2.4em">)</mo>
+</math>
+<math display="block">
+  <mtext>latency-bound when</mtext><mspace width="0.5em"/>
+  <mfrac><mrow><mtext>bytes</mtext><mo>/</mo><msub><mi>n</mi><mtext>shards</mtext></msub></mrow><mrow><mn>4.5</mn><mo>&#215;</mo><msup><mn>10</mn><mn>10</mn></msup></mrow></mfrac>
+  <mo>&lt;</mo><msup><mn>10</mn><mrow><mo>&#8722;</mo><mn>6</mn></mrow></msup><mtext>&#160;s</mtext>
+  <mspace width="1em"/><mo>&#8660;</mo><mspace width="1em"/>
+  <mi>Y</mi><mo>&gt;</mo><mfrac><mrow><mi>B</mi><mi>D</mi></mrow><mrow><mn>45,000</mn></mrow></mfrac><mtext>&#160;(int8)</mtext>
+</math>
+<div class="legend">
+  <span class="sym">T<sub>min</sub></span><span>fixed cost of dispatching one hop; the book's threshold is 1 µs per hop on TPU</span><span class="v">~1 µs</span>
+  <span class="sym">|X|, Y</span><span>chips on the axis (the book's n<sub>shards</sub>)</span><span class="v">8</span>
+  <span class="sym">B</span><span>in T<sub>total</sub>: bytes of the gathered tensor. In the rule: batch size (tokens)</span><span class="v">131 kB · 16</span>
+  <span class="sym">W<sub>ICI</sub></span><span>one-way ICI bandwidth per link, TPU v5e</span><span class="v">4.5e10 B/s</span>
+</div>
+</div>
+<div class="formula">per-shard threshold  4.5e10 B/s × 1e-6 s          =  45 kB
+8-way Megatron       8 × 45 kB                     = 360 kB   (book: "buffer_size &lt; 360kB")
+BS=16, D=8192, int8  16 × 8192 × 1 B = 131,072 B   = 131 kB &lt; 360 kB  → already latency-bound
+rule                 Y &gt; BD/45,000 = 131,072 / 45,000 = 2.9  → latency-bound from Y = 3 up</div>
+<p>The book: "This actually is not that small during inference … so we're already latency bound." Its takeaway: comms become latency-bound when total bytes &lt; W<sub>ICI</sub> × 1e-6, and "there's a parallel to be drawn here with the compute roofline — we are incurring the fixed cost of some small operations." The same D = 8192 int8 activations across batch sizes:</p>
+<div class="tw">
+<table>
+  <tr><th class="num">B</th><th class="num">bytes (BD)</th><th class="num">per shard, 8-way</th><th class="num">µs per hop</th><th class="num">T<sub>total</sub> terms, |X| = 8</th><th>Verdict</th><th class="num">latency-bound once Y &gt;</th></tr>
+  <tr><td class="num">4</td><td class="num">32.8 kB</td><td class="num">4.1 kB</td><td class="num">0.09</td><td class="num">4.0 vs 0.73 µs</td><td class="lo">latency</td><td class="num">0.7</td></tr>
+  <tr><td class="num">16</td><td class="num">131.1 kB</td><td class="num">16.4 kB</td><td class="num">0.36</td><td class="num">4.0 vs 2.91 µs</td><td class="lo">latency</td><td class="num">2.9</td></tr>
+  <tr><td class="num">64</td><td class="num">524.3 kB</td><td class="num">65.5 kB</td><td class="num">1.46</td><td class="num">4.0 vs 11.65 µs</td><td class="hi">bandwidth</td><td class="num">11.7</td></tr>
+  <tr><td class="num">256</td><td class="num">2,097 kB</td><td class="num">262.1 kB</td><td class="num">5.83</td><td class="num">4.0 vs 46.60 µs</td><td class="hi">bandwidth</td><td class="num">46.6</td></tr>
+</table>
+</div>
+<p class="cap">From labs/sharding-kv-cache.py. The T<sub>total</sub> column takes T<sub>min</sub> = 1 µs (the book's per-hop figure) in its formula; it agrees with the per-hop rule on every row here. At B = 4, 8-way sharding already gives 11× less data per hop than the 1 µs floor can use.</p>
+
+<h2>TPU v5e vs an 8×H100 NVLink node</h2>
+<div class="tw">
+<table>
+  <tr><th>Setup</th><th>Link bandwidth</th><th>Fixed cost per collective</th><th class="num">Bytes one µs moves</th><th>Activations at B = 16</th></tr>
+  <tr><td>TPU v5e, 8-way ring (book)</td><td>4.5e10 B/s one-way ICI</td><td>≈ 1 µs per hop</td><td class="num">45 kB per shard (360 kB total)</td><td>D = 8192 int8: 131 kB → <span class="lo">latency-bound</span></td></tr>
+  <tr><td>8×H100 NVLink (our recomputation)</td><td>450 GB/s egress per GPU (book Part 12)</td><td>not published in the book</td><td class="num">450 kB total</td><td>Llama-3.1-8B, D = 4096 bf16: 131 kB → 0.255 µs bandwidth term</td></tr>
+</table>
+</div>
+<div class="formula">AllGather   bytes·(N−1)/(N·W)  = 131,072·7 / (8·450e9)  = 0.255 µs
+Q AllToAll  bytes·(N−1)/(N²·W) = 131,072·7 / (64·450e9) = 0.032 µs
+bandwidth term reaches 1 µs only at B ≈ 63 (bf16)</div>
+<p class="cap">Our recomputation, not in the book. The GPU chapter gives no per-collective latency for NVLink, so we can't say where the floor is. It does say measured 8×H100 AllReduce bandwidth reaches only about 370 GB/s even at ~10 GB messages and about 150 GB/s for a 58 MB one, while "TPUs achieve peak bandwidth at much lower message sizes". Our inference: on GPUs, small-batch decode collectives are dominated by fixed overhead at least as much as on TPU.</p>
+
+<h2>Appendix B, briefly: 2D weight-stationary sharding</h2>
+<p>With 1D (pure Megatron) sharding, the hidden F dimension is cut so finely at high chip counts that it can become "significantly smaller than E" (d<sub>model</sub>). On a higher-dimensional mesh, 2D weight-stationary sharding splits the weights over both F and E, with activations sharded over E: "We perform an AllGather on the (yz) axis before the first layer, then ReduceScatter on the (x) axis." For attention the same trick shards over n<sub>heads</sub> instead of the hidden dimension, which lets it scale further. The ESTI paper has the details; the book's <a href="worked-problems.html">worked problem Q7</a> does the math.</p>
+
+<h2>How it differs from related ideas</h2>
+<div class="grid2">
+  <div class="cell"><h3><span class="x">&#10007;</span> Head sharding only</h3><p>KV[2, B, S, K<sub>Y</sub>, H] needs no extra comms (figure a), but stops at K ways. Llama-3.1-8B has K = 8; MQA has K = 1. More chips than KV heads means some chips duplicate a head.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Replicating the KV cache</h3><p>Copies waste memory, and every copy is read each step. In the book's 64-way example with K = 8, replicating over the other 8-way axis leaves each chip reading 8× more KV bytes than a fully sharded layout.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Sequence sharding</h3><p>Split S instead: AllGather Q, then combine partial softmaxes Flash-style (ring attention in prefill). It's the right answer when the batch is too small or the context is long, at the cost of a combining collective.</p></div>
+  <div class="cell win"><h3><span class="ok">&#10003;</span> Heads, then batch</h3><p>KV[2, B<sub>Z</sub>, S, K<sub>Y</sub>, H] is fully distributed with no copies. The price is two AllToAlls on small activations, 131 kB against 537 MB of stationary KV per layer in our Llama-dims example.</p></div>
+</div>
+
+<h2>Does serving Llama-3.1-8B need any of this?</h2>
+<div class="note">
+  <p>No. On one H100 the 16.06 GB of weights and up to ≈ 59 sequences of 8k-token KV fit on a single chip, so nothing is sharded. Even across an 8×H100 node, K = 8 KV heads split exactly 8 ways by heads, so figure (a) is enough.</p>
+  <p>It matters when:</p>
+  <ul>
+    <li><b>The model spans many chips.</b> The book's generation section can push model sharding to F/(B·β) = 16,384 / (32 · 8) = 64 ways and warns it "assumes we can fully shard our KV caches 64-ways which is difficult". Batch sharding is the answer to that. See <a href="sharding-prefill-generation.html">sharding prefill vs generation</a> and <a href="serving-llama-70b.html">serving LLaMA 3-70B</a>.</li>
+    <li><b>KV heads are few.</b> MQA (K = 1) can't be head-sharded at all, and GQA from <a href="kv-tricks.html">the KV tricks card</a> makes K small on purpose.</li>
+    <li><b>The batch is small.</b> Appendix C is why small-batch, multi-chip decode doesn't scale linearly: at B = 16 each collective costs at least its fixed latency, and on a ring that latency term (T<sub>min</sub>·|X|/2) grows with the chip count. Adding chips cuts HBM time per chip but not comms time.</li>
+  </ul>
+</div>
+
+<div class="foot">
+<p><a class="lab-link" href="https://github.com/seyonv/explainers/blob/main/perf-2-scaling-book-inference/labs/sharding-kv-cache.py">Run it: labs/sharding-kv-cache.py</a> Runs the book's 12-line algorithm on 4 numpy "devices" and checks it against plain attention, does the same for sequence sharding, then prints the Appendix C table and the 8×H100 recomputation. Try this: set K = 1, Y = 1, Z = 4 (MQA: all four ways are batch); compare the B = 4 and B = 64 rows; set Y = 4 with K = 2 and watch the "caps at K" assert fire.</p>
+<p><b>Read next:</b> <a href="https://jax-ml.github.io/scaling-book/inference/">Scaling Book Part 7</a>, "Sharding the KV cache" plus Appendix B (2D weight stationary) and Appendix C (latency-bound communications): all of each, ~20 min together. Then <a href="https://proceedings.mlsys.org/paper_files/paper/2023/file/c4be71ab8d24cdfb45e3d06dbfca2780-Paper-mlsys2023.pdf">Efficiently Scaling Transformer Inference (Pope et al., MLSys 2023)</a>, §3 on partitioning, where the (a)/(b) figure comes from.</p>
+<p><b>Related:</b> <a href="sharding-prefill-generation.html">sharding prefill vs generation</a> · <a href="serving-llama-70b.html">serving LLaMA 3-70B</a> · <a href="kv-tricks.html">tricks that shrink the KV cache</a> · <a href="attention-intensity.html">attention's arithmetic intensity</a> · <a href="params-vs-kv.html">params vs KV cache</a> · <a href="worked-problems.html">worked problems</a></p>
+<p><b>Sources:</b> KV[2, B<sub>Z</sub>, S, K<sub>Y</sub>, H], the two AllToAlls, the 12-line algorithm, sequence sharding, the 64-way example, Appendix B and Appendix C (4.5e10 B/s, 1 µs, 360 kB, 131 kB, Y &gt; BD/45,000): <a href="https://jax-ml.github.io/scaling-book/inference/">Scaling Book Part 7</a>. H100 450 GB/s NVLink egress, the in-node AllGather and AllToAll formulas, and the 370 GB/s and 150 GB/s measurements: <a href="https://jax-ml.github.io/scaling-book/gpus/">Scaling Book Part 12 (GPUs)</a>. Llama-3.1-8B shapes, 16.06 GB and ≈ 59 sequences of 8k: the course's shared facts. The table rows other than B = 16, the T<sub>total</sub> terms, the H100 column, 131 kB vs 537 MB and B ≈ 63 are our recomputation from labs/sharding-kv-cache.py, not in the book.</p>
+</div>
+</article>
+</body>
+</html>

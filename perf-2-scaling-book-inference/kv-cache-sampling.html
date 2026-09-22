@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sampling and the KV cache</title>
+<style>
+:root{
+  --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
+  --text:#1c1f23; --muted:#6b7068; --faint:#b9b9b3;
+  --accent:#4a9d77; --accent-bg:#dcefdf; --accent-border:#8cc79c;
+  --red:#c0492b; --red-bg:#fbeceb;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#15171a; --surface:#1d2024; --surface2:#24282d; --border:#32373d;
+    --text:#e6e8ea; --muted:#9aa1a9; --faint:#4a5057;
+    --accent:#5fb37f; --accent-bg:#1c2b22; --accent-border:#3f7a55;
+    --red:#e57368; --red-bg:#2e1f1e;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text)}
+.card{max-width:820px;margin:0 auto;padding:28px 32px;font-family:-apple-system,"Inter",system-ui,sans-serif;line-height:1.45}
+h1{font-size:26px;font-weight:600;margin:0 0 6px;letter-spacing:-0.01em}
+.sub{font-size:15px;color:var(--muted);margin:0 0 20px}
+h2{font-size:17px;font-weight:600;margin:26px 0 10px}
+h3.sec{font-size:15px;font-weight:600;margin:18px 0 8px}
+p{font-size:15px;margin:0 0 10px}
+.cap{font-size:13px;color:var(--muted);margin:8px 0 0;text-align:center}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+
+/* Tables and formulas */
+.tw{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border)}
+th{font-size:12px;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:none}
+.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.hi{color:var(--accent);font-weight:600} .lo{color:var(--red)}
+.formula{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin:10px 0;white-space:pre;overflow-x:auto;line-height:1.55}
+
+/* MathML */
+.mathbox{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px 16px 12px;margin:10px 0;overflow-x:auto}
+.mathbox math{font-size:21px;color:var(--text);font-family:"STIX Two Math","Latin Modern Math","Cambria Math",math}
+.mathbox .t1{color:var(--text)} .mathbox .t2{color:var(--accent)} .mathbox .t3{color:var(--muted)}
+.mathbox .lab{font-size:12px;font-family:-apple-system,"Inter",system-ui,sans-serif;padding-top:3px;border-top:1.5px solid currentColor;margin-top:2px}
+.legend{display:grid;grid-template-columns:auto 1fr auto;column-gap:14px;row-gap:5px;font-size:13px;margin-top:12px;align-items:baseline}
+.legend .sym{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;text-align:right}
+.legend .v{color:var(--muted);text-align:right;font-variant-numeric:tabular-nums}
+
+/* Parts table */
+.parts td{vertical-align:top} .parts td:first-child{font-weight:600;white-space:nowrap}
+.parts .ex{font-size:13px} .parts .ex span{display:block;color:var(--muted)}
+
+/* 2x2 grid */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.cell{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.cell.win{background:var(--accent-bg);border-color:var(--accent-border)}
+.cell h3{font-size:16px;font-weight:600;margin:0 0 5px;display:flex;gap:8px;align-items:baseline}
+.cell p{font-size:14px;margin:0;color:var(--text)}
+.cell.win h3,.cell.win p{color:var(--accent)}
+.x{color:var(--red)} .ok{color:var(--accent)}
+
+/* Clarification box */
+.note{border:1px solid var(--border);border-radius:10px;padding:14px 18px;font-size:14px}
+.note p{font-size:14px} .note p:last-child{margin-bottom:0}
+.lab-link{font-size:14px;border:1px solid var(--accent-border);background:var(--accent-bg);border-radius:8px;padding:8px 12px;margin:12px 0}
+
+.foot{margin-top:22px;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px 14px 10px;margin:10px 0}
+svg{display:block;max-width:100%}
+.sl{font-size:12px;fill:var(--muted)} .st{font-size:13px;fill:var(--text)}
+.tk{fill:var(--bg);stroke:var(--border)} .sm{fill:var(--accent-bg);stroke:var(--accent-border)}
+.re{fill:var(--red-bg);stroke:var(--red)} .box{fill:var(--surface2);stroke:var(--muted)}
+.ln{stroke:var(--muted);stroke-width:1.2;fill:none} .ah{fill:var(--muted)} .lg{fill:var(--faint)}
+.kv{fill:var(--accent-bg);stroke:var(--accent-border)} .kvn{fill:var(--accent)}
+.kvt{font-size:11px;fill:var(--bg)} .kvo{font-size:11px;fill:var(--accent)}
+@media (max-width:560px){.card{padding:20px 16px}.grid2{grid-template-columns:1fr}.legend{grid-template-columns:auto 1fr}.legend .v{display:none}.parts .what{display:none}}
+a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+</style>
+</head>
+<body>
+<article class="card">
+<h1>Sampling and the KV cache</h1>
+<p class="sub">Also called autoregressive decoding, KV caching, or prefill and generation. This is the opening of Scaling Book Part 7, "The Basics of Transformer Inference": how one token is sampled, why nobody runs the naive loop, and how the KV cache turns inference into two different jobs.</p>
+
+<h2>In one breath</h2>
+<p>A model predicts one token at a time. If you re-run the whole prefix every step, generating is Θ(n²) in the MLPs and worse in attention. So you compute each token's keys and values once and keep them in a <b>KV cache</b>. That splits inference into <b>prefill</b>, which processes the prompt and fills the cache, and <b>generation</b>, which produces one token per step and reads the cache.</p>
+
+<h2>The loop, done naively</h2>
+<p>The book: "We put a sequence in and our favorite Transformer will spit out log p(next token | previous tokens)… We can sample from this distribution and obtain a new token. Append this token and repeat." Done literally, every step feeds the <em>whole</em> sequence back in:</p>
+<div class="fig"><svg viewBox="0 0 760 216" style="width:100%;height:auto" role="img" aria-label="Naive sampling: each step re-processes the entire prefix"><text class="sl" x="64" y="16">tokens fed in (red = already processed before, done again)</text><text class="sl" x="516" y="16">logits → sample</text><text class="sl" x="760" y="16" text-anchor="end">tokens processed</text><text class="sl" x="0" y="47.0">step 1</text><rect class="tk" x="64" y="30" width="40" height="26" rx="4"/><text class="st" x="84.0" y="47.5" text-anchor="middle">The</text><rect class="tk" x="108" y="30" width="40" height="26" rx="4"/><text class="st" x="128.0" y="47.5" text-anchor="middle">cat</text><rect class="tk" x="152" y="30" width="40" height="26" rx="4"/><text class="st" x="172.0" y="47.5" text-anchor="middle">sat</text><line class="ln" x1="196" y1="43.0" x2="334" y2="43.0"/><polygon class="ah" points="340,43.0 333,39.0 333,47.0"/><rect class="box" x="340" y="27" width="130" height="32" rx="5"/><text class="st" x="405" y="47.5" text-anchor="middle">full forward pass</text><line class="ln" x1="470" y1="43.0" x2="506" y2="43.0"/><polygon class="ah" points="512,43.0 505,39.0 505,47.0"/><rect class="lg" x="516" y="48" width="5" height="8"/><rect class="lg" x="523" y="38" width="5" height="18"/><rect class="lg" x="530" y="50" width="5" height="6"/><rect class="lg" x="537" y="44" width="5" height="12"/><rect class="lg" x="544" y="52" width="5" height="4"/><line class="ln" x1="556" y1="43.0" x2="578" y2="43.0"/><polygon class="ah" points="584,43.0 577,39.0 577,47.0"/><rect class="sm" x="588" y="30" width="40" height="26" rx="4"/><text class="st" x="608.0" y="47.5" text-anchor="middle">on</text><text class="st" x="760" y="47.5" text-anchor="end">3</text><text class="sl" x="0" y="91.0">step 2</text><rect class="re" x="64" y="74" width="40" height="26" rx="4"/><text class="st" x="84.0" y="91.5" text-anchor="middle">The</text><rect class="re" x="108" y="74" width="40" height="26" rx="4"/><text class="st" x="128.0" y="91.5" text-anchor="middle">cat</text><rect class="re" x="152" y="74" width="40" height="26" rx="4"/><text class="st" x="172.0" y="91.5" text-anchor="middle">sat</text><rect class="sm" x="196" y="74" width="40" height="26" rx="4"/><text class="st" x="216.0" y="91.5" text-anchor="middle">on</text><line class="ln" x1="240" y1="87.0" x2="334" y2="87.0"/><polygon class="ah" points="340,87.0 333,83.0 333,91.0"/><rect class="box" x="340" y="71" width="130" height="32" rx="5"/><text class="st" x="405" y="91.5" text-anchor="middle">full forward pass</text><line class="ln" x1="470" y1="87.0" x2="506" y2="87.0"/><polygon class="ah" points="512,87.0 505,83.0 505,91.0"/><rect class="lg" x="516" y="92" width="5" height="8"/><rect class="lg" x="523" y="82" width="5" height="18"/><rect class="lg" x="530" y="94" width="5" height="6"/><rect class="lg" x="537" y="88" width="5" height="12"/><rect class="lg" x="544" y="96" width="5" height="4"/><line class="ln" x1="556" y1="87.0" x2="578" y2="87.0"/><polygon class="ah" points="584,87.0 577,83.0 577,91.0"/><rect class="sm" x="588" y="74" width="40" height="26" rx="4"/><text class="st" x="608.0" y="91.5" text-anchor="middle">the</text><text class="st" x="760" y="91.5" text-anchor="end">4</text><text class="sl" x="0" y="135.0">step 3</text><rect class="re" x="64" y="118" width="40" height="26" rx="4"/><text class="st" x="84.0" y="135.5" text-anchor="middle">The</text><rect class="re" x="108" y="118" width="40" height="26" rx="4"/><text class="st" x="128.0" y="135.5" text-anchor="middle">cat</text><rect class="re" x="152" y="118" width="40" height="26" rx="4"/><text class="st" x="172.0" y="135.5" text-anchor="middle">sat</text><rect class="re" x="196" y="118" width="40" height="26" rx="4"/><text class="st" x="216.0" y="135.5" text-anchor="middle">on</text><rect class="sm" x="240" y="118" width="40" height="26" rx="4"/><text class="st" x="260.0" y="135.5" text-anchor="middle">the</text><line class="ln" x1="284" y1="131.0" x2="334" y2="131.0"/><polygon class="ah" points="340,131.0 333,127.0 333,135.0"/><rect class="box" x="340" y="115" width="130" height="32" rx="5"/><text class="st" x="405" y="135.5" text-anchor="middle">full forward pass</text><line class="ln" x1="470" y1="131.0" x2="506" y2="131.0"/><polygon class="ah" points="512,131.0 505,127.0 505,135.0"/><rect class="lg" x="516" y="136" width="5" height="8"/><rect class="lg" x="523" y="126" width="5" height="18"/><rect class="lg" x="530" y="138" width="5" height="6"/><rect class="lg" x="537" y="132" width="5" height="12"/><rect class="lg" x="544" y="140" width="5" height="4"/><line class="ln" x1="556" y1="131.0" x2="578" y2="131.0"/><polygon class="ah" points="584,131.0 577,127.0 577,135.0"/><rect class="sm" x="588" y="118" width="40" height="26" rx="4"/><text class="st" x="608.0" y="135.5" text-anchor="middle">mat</text><text class="st" x="760" y="135.5" text-anchor="end">5</text><text class="sl" x="0" y="179.0">step 4</text><rect class="re" x="64" y="162" width="40" height="26" rx="4"/><text class="st" x="84.0" y="179.5" text-anchor="middle">The</text><rect class="re" x="108" y="162" width="40" height="26" rx="4"/><text class="st" x="128.0" y="179.5" text-anchor="middle">cat</text><rect class="re" x="152" y="162" width="40" height="26" rx="4"/><text class="st" x="172.0" y="179.5" text-anchor="middle">sat</text><rect class="re" x="196" y="162" width="40" height="26" rx="4"/><text class="st" x="216.0" y="179.5" text-anchor="middle">on</text><rect class="re" x="240" y="162" width="40" height="26" rx="4"/><text class="st" x="260.0" y="179.5" text-anchor="middle">the</text><rect class="sm" x="284" y="162" width="40" height="26" rx="4"/><text class="st" x="304.0" y="179.5" text-anchor="middle">mat</text><line class="ln" x1="328" y1="175.0" x2="334" y2="175.0"/><polygon class="ah" points="340,175.0 333,171.0 333,179.0"/><rect class="box" x="340" y="159" width="130" height="32" rx="5"/><text class="st" x="405" y="179.5" text-anchor="middle">full forward pass</text><line class="ln" x1="470" y1="175.0" x2="506" y2="175.0"/><polygon class="ah" points="512,175.0 505,171.0 505,179.0"/><rect class="lg" x="516" y="180" width="5" height="8"/><rect class="lg" x="523" y="170" width="5" height="18"/><rect class="lg" x="530" y="182" width="5" height="6"/><rect class="lg" x="537" y="176" width="5" height="12"/><rect class="lg" x="544" y="184" width="5" height="4"/><line class="ln" x1="556" y1="175.0" x2="578" y2="175.0"/><polygon class="ah" points="584,175.0 577,171.0 577,179.0"/><rect class="sm" x="588" y="162" width="40" height="26" rx="4"/><text class="st" x="608.0" y="179.5" text-anchor="middle">.</text><text class="st" x="760" y="179.5" text-anchor="end">6</text></svg></div>
+<p class="cap">Redrawn from the book's figure "naive-inference". The words are illustrative. Step k re-processes all the earlier tokens (red) just to add one (green). The book's caption calls this Θ(n²) overall, and its text says it's "O(n²) on the FFW and O(n³) on the attention mechanism to generate n tokens".</p>
+
+<h2>The loop, with a KV cache</h2>
+<p>Attention is causal: a token only ever looks <em>back</em>. So earlier tokens' keys and values never change once computed. The book: "we can simply write each token's key and value projections into a new data structure called a KV cache… future tokens can simply compute their q<sub>i</sub>·k<sub>j</sub> products without performing any new FLOPs on the earlier tokens."</p>
+<div class="fig"><svg viewBox="0 0 760 216" style="width:100%;height:auto" role="img" aria-label="Sampling with a KV cache: prefill writes the prompt's keys and values, each generation step adds one"><text class="sl" x="64" y="16">tokens fed in</text><text class="sl" x="366" y="16">KV cache after the step (solid = written now)</text><text class="sl" x="634" y="16">logits → sample</text><text class="sl" x="0" y="47.0">prefill</text><rect class="tk" x="64" y="30" width="40" height="26" rx="4"/><text class="st" x="84.0" y="47.5" text-anchor="middle">The</text><rect class="tk" x="108" y="30" width="40" height="26" rx="4"/><text class="st" x="128.0" y="47.5" text-anchor="middle">cat</text><rect class="tk" x="152" y="30" width="40" height="26" rx="4"/><text class="st" x="172.0" y="47.5" text-anchor="middle">sat</text><line class="ln" x1="196" y1="43.0" x2="206" y2="43.0"/><polygon class="ah" points="212,43.0 205,39.0 205,47.0"/><rect class="box" x="212" y="27" width="116" height="32" rx="5"/><text class="st" x="270" y="47.5" text-anchor="middle">forward pass</text><line class="ln" x1="328" y1="43.0" x2="364" y2="43.0" stroke-dasharray="3 3"/><rect class="kvn" x="366" y="32" width="32" height="22" rx="3"/><text class="kvt" x="382" y="47.0" text-anchor="middle">kv</text><rect class="kvn" x="402" y="32" width="32" height="22" rx="3"/><text class="kvt" x="418" y="47.0" text-anchor="middle">kv</text><rect class="kvn" x="438" y="32" width="32" height="22" rx="3"/><text class="kvt" x="454" y="47.0" text-anchor="middle">kv</text><line class="ln" x1="582" y1="43.0" x2="624" y2="43.0"/><polygon class="ah" points="630,43.0 623,39.0 623,47.0"/><rect class="lg" x="634" y="48" width="5" height="8"/><rect class="lg" x="641" y="38" width="5" height="18"/><rect class="lg" x="648" y="50" width="5" height="6"/><rect class="lg" x="655" y="44" width="5" height="12"/><rect class="lg" x="662" y="52" width="5" height="4"/><line class="ln" x1="674" y1="43.0" x2="696" y2="43.0"/><polygon class="ah" points="702,43.0 695,39.0 695,47.0"/><rect class="sm" x="706" y="30" width="50" height="26" rx="4"/><text class="st" x="731.0" y="47.5" text-anchor="middle">on</text><text class="sl" x="0" y="91.0">gen 1</text><rect class="sm" x="64" y="74" width="40" height="26" rx="4"/><text class="st" x="84.0" y="91.5" text-anchor="middle">on</text><line class="ln" x1="108" y1="87.0" x2="206" y2="87.0"/><polygon class="ah" points="212,87.0 205,83.0 205,91.0"/><rect class="box" x="212" y="71" width="116" height="32" rx="5"/><text class="st" x="270" y="91.5" text-anchor="middle">forward pass</text><line class="ln" x1="328" y1="87.0" x2="364" y2="87.0" stroke-dasharray="3 3"/><rect class="kv" x="366" y="76" width="32" height="22" rx="3"/><text class="kvo" x="382" y="91.0" text-anchor="middle">kv</text><rect class="kv" x="402" y="76" width="32" height="22" rx="3"/><text class="kvo" x="418" y="91.0" text-anchor="middle">kv</text><rect class="kv" x="438" y="76" width="32" height="22" rx="3"/><text class="kvo" x="454" y="91.0" text-anchor="middle">kv</text><rect class="kvn" x="474" y="76" width="32" height="22" rx="3"/><text class="kvt" x="490" y="91.0" text-anchor="middle">kv</text><line class="ln" x1="582" y1="87.0" x2="624" y2="87.0"/><polygon class="ah" points="630,87.0 623,83.0 623,91.0"/><rect class="lg" x="634" y="92" width="5" height="8"/><rect class="lg" x="641" y="82" width="5" height="18"/><rect class="lg" x="648" y="94" width="5" height="6"/><rect class="lg" x="655" y="88" width="5" height="12"/><rect class="lg" x="662" y="96" width="5" height="4"/><line class="ln" x1="674" y1="87.0" x2="696" y2="87.0"/><polygon class="ah" points="702,87.0 695,83.0 695,91.0"/><rect class="sm" x="706" y="74" width="50" height="26" rx="4"/><text class="st" x="731.0" y="91.5" text-anchor="middle">the</text><text class="sl" x="0" y="135.0">gen 2</text><rect class="sm" x="64" y="118" width="40" height="26" rx="4"/><text class="st" x="84.0" y="135.5" text-anchor="middle">the</text><line class="ln" x1="108" y1="131.0" x2="206" y2="131.0"/><polygon class="ah" points="212,131.0 205,127.0 205,135.0"/><rect class="box" x="212" y="115" width="116" height="32" rx="5"/><text class="st" x="270" y="135.5" text-anchor="middle">forward pass</text><line class="ln" x1="328" y1="131.0" x2="364" y2="131.0" stroke-dasharray="3 3"/><rect class="kv" x="366" y="120" width="32" height="22" rx="3"/><text class="kvo" x="382" y="135.0" text-anchor="middle">kv</text><rect class="kv" x="402" y="120" width="32" height="22" rx="3"/><text class="kvo" x="418" y="135.0" text-anchor="middle">kv</text><rect class="kv" x="438" y="120" width="32" height="22" rx="3"/><text class="kvo" x="454" y="135.0" text-anchor="middle">kv</text><rect class="kv" x="474" y="120" width="32" height="22" rx="3"/><text class="kvo" x="490" y="135.0" text-anchor="middle">kv</text><rect class="kvn" x="510" y="120" width="32" height="22" rx="3"/><text class="kvt" x="526" y="135.0" text-anchor="middle">kv</text><line class="ln" x1="582" y1="131.0" x2="624" y2="131.0"/><polygon class="ah" points="630,131.0 623,127.0 623,135.0"/><rect class="lg" x="634" y="136" width="5" height="8"/><rect class="lg" x="641" y="126" width="5" height="18"/><rect class="lg" x="648" y="138" width="5" height="6"/><rect class="lg" x="655" y="132" width="5" height="12"/><rect class="lg" x="662" y="140" width="5" height="4"/><line class="ln" x1="674" y1="131.0" x2="696" y2="131.0"/><polygon class="ah" points="702,131.0 695,127.0 695,135.0"/><rect class="sm" x="706" y="118" width="50" height="26" rx="4"/><text class="st" x="731.0" y="135.5" text-anchor="middle">mat</text><text class="sl" x="0" y="179.0">gen 3</text><rect class="sm" x="64" y="162" width="40" height="26" rx="4"/><text class="st" x="84.0" y="179.5" text-anchor="middle">mat</text><line class="ln" x1="108" y1="175.0" x2="206" y2="175.0"/><polygon class="ah" points="212,175.0 205,171.0 205,179.0"/><rect class="box" x="212" y="159" width="116" height="32" rx="5"/><text class="st" x="270" y="179.5" text-anchor="middle">forward pass</text><line class="ln" x1="328" y1="175.0" x2="364" y2="175.0" stroke-dasharray="3 3"/><rect class="kv" x="366" y="164" width="32" height="22" rx="3"/><text class="kvo" x="382" y="179.0" text-anchor="middle">kv</text><rect class="kv" x="402" y="164" width="32" height="22" rx="3"/><text class="kvo" x="418" y="179.0" text-anchor="middle">kv</text><rect class="kv" x="438" y="164" width="32" height="22" rx="3"/><text class="kvo" x="454" y="179.0" text-anchor="middle">kv</text><rect class="kv" x="474" y="164" width="32" height="22" rx="3"/><text class="kvo" x="490" y="179.0" text-anchor="middle">kv</text><rect class="kv" x="510" y="164" width="32" height="22" rx="3"/><text class="kvo" x="526" y="179.0" text-anchor="middle">kv</text><rect class="kvn" x="546" y="164" width="32" height="22" rx="3"/><text class="kvt" x="562" y="179.0" text-anchor="middle">kv</text><line class="ln" x1="582" y1="175.0" x2="624" y2="175.0"/><polygon class="ah" points="630,175.0 623,171.0 623,179.0"/><rect class="lg" x="634" y="180" width="5" height="8"/><rect class="lg" x="641" y="170" width="5" height="18"/><rect class="lg" x="648" y="182" width="5" height="6"/><rect class="lg" x="655" y="176" width="5" height="12"/><rect class="lg" x="662" y="184" width="5" height="4"/><line class="ln" x1="674" y1="175.0" x2="696" y2="175.0"/><polygon class="ah" points="702,175.0 695,171.0 695,179.0"/><rect class="sm" x="706" y="162" width="50" height="26" rx="4"/><text class="st" x="731.0" y="179.5" text-anchor="middle">.</text></svg></div>
+<p class="cap">Redrawn from the book's figure "cached-inference". Prefill runs the whole prompt in one pass and writes every prompt token's K and V. Each generation step feeds in only the newest token, attends to the cache and appends one new KV (solid green). The book calls this "an O(n) algorithm in the MLP block", and O(n²) in attention.</p>
+
+<h2>Two tasks in disguise</h2>
+<p>An analogy: prefill is reading the whole question at once. Generation is writing the answer one word at a time while glancing back at your notes (the cache). The book: "prefill and generation are very different beasts — Transformer inference is two tasks in disguise!"</p>
+<div class="tw"><table class="parts">
+  <tr><th>Part</th><th class="what">What actually happens (book's wording)</th><th>Example A: your M3</th><th>Example B: Llama-3.1-8B, H100</th></tr>
+  <tr><td>Prefill</td><td class="what">"Process all the tokens in the prompt at the same time and save the resulting activations (specifically, the key-value projections)" and the last token's logits.</td>
+      <td class="ex"><b>244 tokens in 1.30 s</b><span>188 tokens/s, qwen3.5:4b, measured</span></td>
+      <td class="ex"><b>1,000 tokens ≥ 16.2 ms</b><span>compute floor at 989 TFLOPS</span></td></tr>
+  <tr><td>Generation</td><td class="what">"Sample one token from the logits, feed that token back into the Transformer, and produce a new set of logits", appending its KV, until &lt;EOS&gt; or a length limit.</td>
+      <td class="ex"><b>14.1 tokens/s</b><span>≈ 71 ms per token, measured</span></td>
+      <td class="ex"><b>≥ 4.8 ms per token</b><span>reading 16.06 GB of weights at 3.35 TB/s</span></td></tr>
+  <tr><td>KV cache</td><td class="what">The saved K and V for every past token, every layer. The book: "a novel and significant source of complexity" compared to training.</td>
+      <td class="ex"><b>157 MB</b><span>Llama-3.1-8B, 1,200 tokens</span></td>
+      <td class="ex"><b>1.07 GB</b><span>Llama-3.1-8B, 8,192 tokens</span></td></tr>
+</table></div>
+<p class="cap">M3 numbers were measured locally (Ollama, qwen3.5:4b, 244-token prompt): prefill is about 13× faster <em>per token</em> than generation (188 ÷ 14.1). H100 numbers are floors from the course's shared facts. The next cards explain why one phase is compute-bound and the other memory-bound.</p>
+
+<h2>Worked example: 1,000-token prompt, generate 200, Llama-3.1-8B</h2>
+<h3 class="sec">What the cache costs in memory</h3>
+<div class="mathbox">
+<math display="block">
+  <msub><mi>KV</mi><mtext>bytes</mtext></msub><mo>=</mo>
+  <munder class="t3"><mn>2</mn><mtext class="lab">K and V</mtext></munder><mo>&#183;</mo>
+  <munder class="t1"><mrow><mi>L</mi><mo>&#183;</mo><mi>K</mi><mo>&#183;</mo><mi>H</mi></mrow><mtext class="lab">values per token per tensor</mtext></munder><mo>&#183;</mo>
+  <munder class="t3"><mtext>bytes</mtext><mtext class="lab">per value</mtext></munder><mo>&#183;</mo>
+  <munder class="t2"><mi>T</mi><mtext class="lab">tokens cached</mtext></munder>
+</math>
+<div class="legend">
+  <span class="sym">L</span><span>layers</span><span class="v">32</span>
+  <span class="sym">K</span><span>KV heads (GQA: 32 query heads share 8)</span><span class="v">8</span>
+  <span class="sym">H</span><span>head dimension</span><span class="v">128</span>
+  <span class="sym">bytes</span><span>bytes per stored value (BF16)</span><span class="v">2</span>
+  <span class="sym">T</span><span>prompt + generated tokens</span><span class="v">1,000 + 200</span>
+</div>
+</div>
+<div class="formula">per token:   2 · 32 · 8 · 128 · 2        = 131,072 B = 128 KiB
+this run:    131,072 B × 1,200 tokens    = 157,286,400 B ≈ 157 MB   (150 MiB)
+long chat:   131,072 B × 8,192 tokens    ≈ 1.07 GB</div>
+<p class="cap">The cache holds 1,199 entries when token 200 is sampled and 1,200 once it's fed back (the book's loop writes every sampled token's KV). That's small next to the 16.06 GB of weights, but it grows linearly with every token of every sequence in the batch.</p>
+
+<h3 class="sec">What the cache saves in FLOPs</h3>
+<div class="formula">tokens processed   naive:  passes over 1,000, 1,001, … 1,199 tokens
+                           = 200 × 1,000 + (0 + 1 + … + 199) = 200,000 + 19,900 = 219,900
+                   cached: prefill 1,000 + 199 one-token steps       = 1,199
+
+projections + MLP  ≈ 2N = 2 × 8.03e9 = 16.06 GFLOP per token processed
+attention q·k and p·v   = 4·L·D = 4 × 32 × 4,096 = 524,288 FLOP per (query, key) pair
+                   causal: the query at position t sees t keys
+                   cached total = 524,288 × (1 + 2 + … + 1,199) = 524,288 × 719,400 = 3.77e11
+                   naive total  = the same triangle, redone for every prefix 1,000 … 1,199</div>
+<div class="tw"><table>
+  <tr><th>Matmul FLOPs</th><th class="num">Naive</th><th class="num">KV cache</th><th class="num">Ratio</th><th>Book's claim (naive → cached, generating n)</th></tr>
+  <tr><td>Projections + MLP (2N per token)</td><td class="num lo">3.53e15</td><td class="num hi">1.93e13</td><td class="num">183×</td><td>FFW: O(n²) → O(n)</td></tr>
+  <tr><td>Attention dot products</td><td class="num lo">6.36e13</td><td class="num hi">3.77e11</td><td class="num">169×</td><td>attention: O(n³) → O(n²)</td></tr>
+  <tr><td><b>Total</b></td><td class="num lo"><b>3.60e15</b></td><td class="num hi"><b>1.96e13</b></td><td class="num"><b>183×</b></td><td>attention is only ~1.9% of FLOPs here</td></tr>
+</table></div>
+<p class="cap">Our recomputation, not in the book. 2N slightly overcounts (the 525M-parameter embedding is a lookup, not a matmul), but equally on both sides, so the ratios hold. Attention counts only unmasked (causal) pairs; a dense kernel would do about 2× that. At 1,000 keys, one token's attention is 524,288 × 1,000 = 0.52 GFLOP, 3.3% of its 16.06 GFLOP.</p>
+
+<h3 class="sec">The book's complexity claims, as n grows</h3>
+<div class="tw"><table>
+  <tr><th class="num">n generated</th><th class="num">Naive tokens</th><th class="num">Cached tokens</th><th class="num">MLP ratio</th><th class="num">Attention ratio</th><th class="num">KV cache</th><th class="num">Ratio from a 1-token start (MLP / attn)</th></tr>
+  <tr><td class="num">100</td><td class="num">104,950</td><td class="num">1,099</td><td class="num">95×</td><td class="num">91×</td><td class="num">0.14 GB</td><td class="num">50× / 34×</td></tr>
+  <tr><td class="num">1,000</td><td class="num">1,499,500</td><td class="num">1,999</td><td class="num">750×</td><td class="num">584×</td><td class="num">0.26 GB</td><td class="num">500× / 334×</td></tr>
+  <tr><td class="num">10,000</td><td class="num">59,995,000</td><td class="num">10,999</td><td class="num lo">5,455×</td><td class="num lo">3,664×</td><td class="num">1.44 GB</td><td class="num">5,000× / 3,334×</td></tr>
+</table></div>
+<p class="cap">Prompt fixed at 1,000 tokens, except the last column. There the prompt is 1 token, so the book's claims show cleanly: naive/cached ≈ n/2 for the MLP (O(n²) over O(n)) and ≈ n/3 for attention (O(n³) over O(n²)). Both ratios grow linearly in n: 10× more tokens, 10× more waste.</p>
+
+<h3 class="sec">But wall-clock time doesn't fall 183×</h3>
+<div class="tw"><table>
+  <tr><th>One chip</th><th>Peak compute · HBM bandwidth</th><th class="num">Naive floor</th><th class="num">Cached floor</th><th class="num">Speedup</th></tr>
+  <tr><td>H100 SXM</td><td>989 TFLOPS · 3.35 TB/s</td><td class="num lo">3.57 s</td><td class="num hi">0.979 s</td><td class="num">3.6×</td></tr>
+  <tr><td>TPU v5e*</td><td>197 TFLOPS · 0.82 TB/s</td><td class="num lo">17.9 s</td><td class="num hi">4.01 s</td><td class="num">4.5×</td></tr>
+</table></div>
+<div class="formula">each pass ≥ max(FLOPs ÷ peak FLOP/s, bytes read ÷ HBM bandwidth)
+H100 naive:   200 compute-bound passes, each ≥ 1,000 × 16.06 GFLOP ÷ 989 TFLOPS
+              = 16.2 ms and growing                                 → 3.57 s
+H100 cached:  prefill 16.2 ms + 199 memory-bound steps × 4.84 ms
+              (16.06 GB weights + cache ÷ 3.35 TB/s)                → 0.979 s</div>
+<p class="cap">Our recomputation, not in the book (a floor that ignores attention FLOPs and overheads). FLOPs fell 183×, but time only 3.6×. Each generation step still has to stream all the weights from memory to do only 16 GFLOP of work, so it's memory-bound. That's the "different beasts" the rest of the chapter is about. *Llama-3.1-8B's 16.06 GB doesn't fit one v5e's 16 GB; the row is "as if it did", only to show the ratio holds.</p>
+
+<h3 class="sec">&#9879;&#65039; Lab: a tiny decoder, both ways</h3>
+<p>A 2-layer numpy Transformer (D=32, 4 query heads sharing 2 KV heads, 64-token vocab) samples 20 tokens after an 8-token prompt, once naively and once with a KV cache, using the same random draws. The tokens are identical (max logit difference 2.7e-15). A counting matmul tallies the work:</p>
+<div class="tw"><table>
+  <tr><th>Tiny model, matmul FLOPs</th><th class="num">Naive</th><th class="num">KV cache</th><th class="num">Ratio</th></tr>
+  <tr><td>Projections + MLP</td><td class="num">17,285,120</td><td class="num">1,409,024</td><td class="num">12.3×</td></tr>
+  <tr><td>Attention q·k and p·v</td><td class="num">913,920</td><td class="num">96,768</td><td class="num">9.4×</td></tr>
+  <tr><td><b>Total</b></td><td class="num"><b>18,199,040</b></td><td class="num"><b>1,505,792</b></td><td class="num"><b>12.1×</b></td></tr>
+</table></div>
+<p class="lab-link"><a href="https://github.com/seyonv/explainers/blob/main/perf-2-scaling-book-inference/labs/kv-cache-sampling.py">Run it: labs/kv-cache-sampling.py</a> (numpy, &lt; 1 s). It also prints every Llama-3.1-8B number above. Try this: double n (200 → 400 → 800) and watch both ratios roughly double once n is much larger than the prompt.</p>
+
+<h2>Why it beats the alternatives</h2>
+<div class="grid2">
+  <div class="cell"><h3><span class="x">&#10007;</span> Naive recompute</h3><p>Needs no extra memory, but the work is quadratic: 219,900 token-passes instead of 1,199 here, and at 10,000 generated tokens it's 5,455× the FLOPs.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Cache each layer's hidden state</h3><p>Also skips re-running earlier layers, but costs D = 4,096 values per token per layer against K+V's 2·8·128 = 2,048 (2× the memory with GQA). Every step would also redo the K and V projections on all past tokens, which is O(n) work per step again.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> A fixed-size recurrent state (RNN / SSM)</h3><p>Constant memory per sequence, but it's a different architecture you'd have to train. It compresses history, so it can't replay exact attention over the past. You can't apply it to an already-trained Transformer.</p></div>
+  <div class="cell win"><h3><span class="ok">&#10003;</span> KV cache</h3><p>It stores exactly what future tokens need: K and V are the only per-token things attention reads later. Outputs don't change, and MLP work drops from O(n²) to O(n). Cost: 128 KiB per token for Llama-3.1-8B.</p></div>
+</div>
+
+<h2>Is it free, and always used?</h2>
+<div class="note">
+  <p><b>It trades compute for memory.</b> 157 MB for one 1,200-token sequence sounds small, but a server holds a cache for every sequence in the batch. On an 80 GB H100, the 63.9 GB left after weights fits about 488k tokens, only ~59 sequences of 8k tokens. From here on, <em>memory</em>, not FLOPs, is the constraint the chapter keeps running into (see <a href="params-vs-kv.html">parameters vs KV cache</a> and <a href="kv-tricks.html">tricks that shrink it</a>).</p>
+  <p><b>Sometimes there's nothing to cache.</b> One-shot scoring (the book's example is multiple-choice benchmarks that score the options' log-probs) runs one forward pass with no generation loop. That's why, as the book notes, research code often skips a proper KV cache and inference paths have "a lot of low hanging fruit".</p>
+  <p><b>Related ideas that build on it rather than replace it:</b> <a href="../llm-latency/prompt-caching.html">prefix (prompt) caching</a> reuses a shared prefix's KV <em>across requests</em>, and sliding-window attention caps the cache at the last W tokens at some cost in long-range recall. Both still use a KV cache.</p>
+</div>
+
+<p class="foot">Read next: Scaling Book Part 7, <a href="https://jax-ml.github.io/scaling-book/inference/">"The Basics of Transformer Inference"</a>. Read the intro, up to "What do we actually want to optimize?", in full (~5 min, including both figures).<br>
+Related: <a href="what-we-optimize.html">what we optimize</a> · <a href="params-vs-kv.html">parameters vs KV cache</a> · <a href="step-time.html">the step-time formula</a> · <a href="../perf-1-foundations/prefill-vs-decode-mac.html">prefill vs decode on your Mac</a> · <a href="../perf-1-foundations/attention.html">attention</a> · <a href="../llm-latency/prompt-caching.html">prompt caching</a><br>
+Sources: complexity claims, figures and quotes from Scaling Book Part 7 (Austin et al., 2025). Llama-3.1-8B shapes, H100 and TPU v5e specs from the course's shared facts (NVIDIA H100 datasheet; Scaling Book Parts 1, 7, 12). M3 measurements: Ollama 0.34.2, qwen3.5:4b Q4_K_M, 2026-09-22. All FLOP counts and time floors: <code>python3 labs/kv-cache-sampling.py</code>.</p>
+</article>
+</body>
+</html>

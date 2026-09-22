@@ -1,0 +1,328 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The transformer forward pass</title>
+<style>
+:root{
+  --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
+  --text:#1c1f23; --muted:#6b7068; --faint:#b9b9b3;
+  --accent:#4a9d77; --accent-bg:#dcefdf; --accent-border:#8cc79c;
+  --red:#c0492b; --red-bg:#fbeceb;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#15171a; --surface:#1d2024; --surface2:#24282d; --border:#32373d;
+    --text:#e6e8ea; --muted:#9aa1a9; --faint:#4a5057;
+    --accent:#5fb37f; --accent-bg:#1c2b22; --accent-border:#3f7a55;
+    --red:#e57368; --red-bg:#2e1f1e;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text)}
+.card{max-width:820px;margin:0 auto;padding:28px 32px;font-family:-apple-system,"Inter",system-ui,sans-serif;line-height:1.45}
+h1{font-size:26px;font-weight:600;margin:0 0 6px;letter-spacing:-0.01em}
+.sub{font-size:15px;color:var(--muted);margin:0 0 20px}
+h2{font-size:17px;font-weight:600;margin:26px 0 10px}
+p{font-size:15px;margin:0 0 10px}
+.cap{font-size:13px;color:var(--muted);margin:8px 0 0;text-align:center}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+
+/* Tables and formulas */
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border)}
+th{font-size:12px;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:none}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+.hi{color:var(--accent);font-weight:600} .lo{color:var(--red)}
+.formula{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin:10px 0;white-space:pre;overflow-x:auto;line-height:1.55}
+.tw{overflow-x:auto}
+
+/* 2x2 grid */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.cell{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.cell.win{background:var(--accent-bg);border-color:var(--accent-border);grid-column:1 / -1}
+.cell h3{font-size:16px;font-weight:600;margin:0 0 5px;display:flex;gap:8px;align-items:baseline}
+.cell p{font-size:14px;margin:0;color:var(--text)}
+.cell.win h3,.cell.win p{color:var(--accent)}
+.x{color:var(--red)} .ok{color:var(--accent)}
+
+/* Clarification box */
+.note{border:1px solid var(--border);border-radius:10px;padding:14px 18px;font-size:14px}
+.note p{font-size:14px} .note p:last-child{margin-bottom:0}
+.note ul{margin:4px 0 10px;padding-left:20px} .note li{margin-bottom:4px}
+
+.foot{margin-top:22px;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+.foot p{font-size:13px;margin:0 0 8px}
+svg{display:block;max-width:100%;height:auto}
+.sl{font-size:12px;fill:var(--muted)} .st{font-size:13px;fill:var(--text)} .sb{font-size:14px;font-weight:600;fill:var(--text)}
+.sm{font-size:11px;fill:var(--muted);font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.box{fill:var(--surface);stroke:var(--border);stroke-width:1.2}
+.box2{fill:var(--surface2);stroke:var(--faint);stroke-width:1.2}
+.frame{fill:none;stroke:var(--faint);stroke-width:1.2;stroke-dasharray:5 4}
+.ln{stroke:var(--muted);stroke-width:1.4;fill:none}
+.lnd{stroke:var(--muted);stroke-width:1.2;fill:none;stroke-dasharray:4 4}
+.stream{stroke:var(--text);stroke-width:2.2;fill:none}
+.ah{fill:var(--muted)} .ahs{fill:var(--text)}
+@media (max-width:560px){.grid2{grid-template-columns:1fr}.card{padding:22px 16px}}
+a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+
+/* MathML */
+.mathbox{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px 16px 12px;margin:10px 0;overflow-x:auto}
+.mathbox math{font-size:21px;color:var(--text);font-family:"STIX Two Math","Latin Modern Math","Cambria Math",math}
+.mathbox .t1{color:var(--text)} .mathbox .t2{color:var(--accent)} .mathbox .t3{color:var(--muted)}
+.mathbox .lab{font-size:12px;font-family:-apple-system,"Inter",system-ui,sans-serif;padding-top:3px;border-top:1.5px solid currentColor;margin-top:2px}
+.legend{display:grid;grid-template-columns:auto 1fr auto;column-gap:14px;row-gap:5px;font-size:13px;margin-top:12px;align-items:baseline}
+.legend .sym{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;text-align:right}
+.legend .v{color:var(--muted);text-align:right;font-variant-numeric:tabular-nums}
+@media (max-width:560px){.legend{grid-template-columns:auto 1fr}.legend .v{display:none}}
+
+/* Parameter table */
+.ptab td{vertical-align:top}
+.ptab .sub1 td{color:var(--muted);font-size:13px}
+.ptab .sub1 td:first-child{padding-left:24px}
+.ptab .tot td{font-weight:600;border-top:1.5px solid var(--text)}
+.ptab .grpr td{font-weight:600} .ptab .grpr td.mono{font-weight:400}
+
+/* Stacked share bar (weights are neutral) */
+.share{display:flex;height:26px;border-radius:4px;overflow:hidden;border:1px solid var(--border);margin:14px 0 6px}
+.share div{height:100%}
+.share .m{background:var(--muted)} .share .a{background:var(--faint)} .share .e{background:var(--surface2)}
+.shlab{display:flex;font-size:13px;color:var(--muted);font-variant-numeric:tabular-nums}
+.shlab span{white-space:nowrap} .shlab span:last-child{margin-left:auto}
+.shlab b{color:var(--text);font-weight:600}
+
+/* Two-examples term table */
+.parts td{vertical-align:top} .parts td:first-child{font-weight:600;white-space:nowrap}
+.parts .ex{font-size:13px} .parts .ex span{display:block;color:var(--muted)}
+.parts .what{font-size:14px}
+@media (max-width:560px){.parts .what{display:none}}
+.shapes td{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+.shapes td:first-child{font-family:-apple-system,"Inter",system-ui,sans-serif;font-size:14px}
+.lab-link{font-size:13px;color:var(--muted);margin:6px 0 0}
+</style>
+</head>
+<body>
+<article class="card">
+<h1>The transformer forward pass</h1>
+<p class="sub">Also called the decoder-only transformer, "a forward pass", or "one step of the model". Every prefill is one of these over the whole prompt, and every decode step is one of these over a single new token.</p>
+
+<h2>In one breath</h2>
+<p>Each token becomes a vector of numbers. That vector passes through L identical blocks: in each block, attention mixes in information from earlier tokens, and the MLP transforms each token on its own. At the end, the last token's vector is turned into a probability for every word in the vocabulary, and one is picked.</p>
+
+<h2>Worked example: one token through Llama-3.1-8B</h2>
+<svg viewBox="0 0 756 408" role="img" aria-label="Pipeline: token id, embedding lookup, 32 blocks of RMSNorm, attention, residual add, RMSNorm, SwiGLU MLP, residual add, then final norm, LM head, logits and sampling, with the sampled token fed back in for the next decode step.">
+  <defs>
+    <marker id="a" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L8,4 L0,8 z" class="ah"/></marker>
+    <marker id="as" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L8,4 L0,8 z" class="ahs"/></marker>
+  </defs>
+
+  <!-- Row 1: token id -> embedding -->
+  <rect class="box" x="40" y="10" width="120" height="50" rx="6"/>
+  <text class="sb" x="100" y="31" text-anchor="middle">token id</text>
+  <text class="sl" x="100" y="49" text-anchor="middle">one integer</text>
+  <line class="ln" x1="160" y1="35" x2="218" y2="35" marker-end="url(#a)"/>
+  <rect class="box2" x="220" y="10" width="220" height="50" rx="6"/>
+  <text class="sb" x="330" y="31" text-anchor="middle">Embedding lookup</text>
+  <text class="sl" x="330" y="49" text-anchor="middle">table 128256 × 4096 · 525.34M</text>
+  <line class="ln" x1="440" y1="35" x2="560" y2="35"/>
+  <text class="sm" x="500" y="28" text-anchor="middle">x [4096]</text>
+  <path class="ln" d="M560,35 L560,68 L26,68 L26,222" marker-end="url(#a)"/>
+
+  <!-- Block frame -->
+  <rect class="frame" x="14" y="80" width="734" height="176" rx="10"/>
+  <text class="sb" x="36" y="100">× 32 identical blocks</text>
+  <text class="sl" x="184" y="100">218.11M parameters each</text>
+
+  <!-- residual stream -->
+  <line class="stream" x1="26" y1="226" x2="734" y2="226"/>
+  <text class="sl" x="36" y="248">residual stream x [4096] — every sublayer reads it and adds its result back</text>
+
+  <!-- branch 1: norm -> attention -> add -->
+  <path class="ln" d="M60,226 L60,162" marker-end="url(#a)"/>
+  <rect class="box" x="36" y="120" width="88" height="40" rx="6"/>
+  <text class="st" x="80" y="145" text-anchor="middle">RMSNorm</text>
+  <line class="ln" x1="124" y1="140" x2="146" y2="140" marker-end="url(#a)"/>
+  <rect class="box2" x="148" y="112" width="190" height="62" rx="6"/>
+  <text class="sb" x="243" y="132" text-anchor="middle">Attention</text>
+  <text class="sm" x="243" y="149" text-anchor="middle">Wq Wk Wv Wo</text>
+  <text class="sl" x="243" y="166" text-anchor="middle">41.94M · mixes tokens</text>
+  <path class="ln" d="M338,143 L366,143 L366,212" marker-end="url(#a)"/>
+  <circle cx="366" cy="226" r="11" fill="var(--bg)" stroke="var(--text)" stroke-width="1.6"/>
+  <text class="sb" x="366" y="231" text-anchor="middle">+</text>
+
+  <!-- branch 2: norm -> MLP -> add -->
+  <path class="ln" d="M404,226 L404,162" marker-end="url(#a)"/>
+  <rect class="box" x="384" y="120" width="96" height="40" rx="6"/>
+  <text class="st" x="432" y="145" text-anchor="middle">RMSNorm</text>
+  <line class="ln" x1="480" y1="140" x2="502" y2="140" marker-end="url(#a)"/>
+  <rect class="box2" x="504" y="112" width="190" height="62" rx="6"/>
+  <text class="sb" x="599" y="132" text-anchor="middle">SwiGLU MLP</text>
+  <text class="sm" x="599" y="149" text-anchor="middle">W_gate W_up W_down</text>
+  <text class="sl" x="599" y="166" text-anchor="middle">176.16M · each token alone</text>
+  <path class="ln" d="M694,143 L712,143 L712,212" marker-end="url(#a)"/>
+  <circle cx="712" cy="226" r="11" fill="var(--bg)" stroke="var(--text)" stroke-width="1.6"/>
+  <text class="sb" x="712" y="231" text-anchor="middle">+</text>
+
+  <!-- exit block -->
+  <path class="ln" d="M723,226 L740,226 L740,268 L700,268 L700,286" marker-end="url(#a)"/>
+  <text class="sl" x="620" y="281" text-anchor="end">after block 32</text>
+
+  <!-- Row 3 (right to left): final norm -> LM head -> logits -> sample -->
+  <rect class="box" x="640" y="288" width="108" height="48" rx="6"/>
+  <text class="st" x="694" y="309" text-anchor="middle">final</text>
+  <text class="st" x="694" y="326" text-anchor="middle">RMSNorm</text>
+  <line class="ln" x1="640" y1="312" x2="572" y2="312" marker-end="url(#a)"/>
+  <rect class="box2" x="400" y="288" width="170" height="48" rx="6"/>
+  <text class="sb" x="485" y="308" text-anchor="middle">LM head</text>
+  <text class="sl" x="485" y="326" text-anchor="middle">4096 × 128256 · 525.34M</text>
+  <line class="ln" x1="400" y1="312" x2="342" y2="312" marker-end="url(#a)"/>
+  <rect class="box" x="210" y="288" width="130" height="48" rx="6"/>
+  <text class="sb" x="275" y="308" text-anchor="middle">logits</text>
+  <text class="sm" x="275" y="326" text-anchor="middle">[128256]</text>
+  <line class="ln" x1="210" y1="312" x2="162" y2="312" marker-end="url(#a)"/>
+  <rect class="box" x="30" y="288" width="130" height="48" rx="6"/>
+  <text class="st" x="95" y="308" text-anchor="middle">softmax + sample</text>
+  <text class="sl" x="95" y="326" text-anchor="middle">→ next token</text>
+
+  <!-- decode loop -->
+  <path class="lnd" d="M30,312 L5,312 L5,35 L38,35" marker-end="url(#a)"/>
+  <text class="sl" x="30" y="362">decode: the sampled token is fed back in as the next input — one full pass per generated token</text>
+  <text class="sl" x="30" y="382">prefill: the same pass over all prompt tokens at once, shapes [T, 4096]; only the last row's logits are sampled</text>
+  <text class="sl" x="30" y="400">grey boxes hold weights; white boxes hold almost none (RMSNorm: 4096 gains each)</text>
+</svg>
+<p class="cap">Shapes are for one token. Llama 3 is "pre-norm": each sublayer computes x + f(norm(x)). Parameter counts computed by the lab from the config below.</p>
+
+<h3 style="font-size:15px;margin:22px 0 6px">Where the parameters live</h3>
+<div class="mathbox">
+<math display="block">
+  <mi>P</mi><mo>=</mo><mi>L</mi><mo>&#183;</mo>
+  <mo stretchy="true" form="prefix" minsize="2.6em">(</mo>
+  <munder class="t3"><mrow><mn>2</mn><mi>D</mi><mo stretchy="false">(</mo><mi>N</mi><mo>+</mo><mi>K</mi><mo stretchy="false">)</mo><mi>H</mi></mrow><mtext class="lab">attention</mtext></munder>
+  <mo>+</mo>
+  <munder class="t1"><mrow><mn>3</mn><mi>D</mi><mi>F</mi></mrow><mtext class="lab">MLP</mtext></munder>
+  <mo>+</mo>
+  <munder class="t3"><mrow><mn>2</mn><mi>D</mi></mrow><mtext class="lab">norms</mtext></munder>
+  <mo stretchy="true" form="postfix" minsize="2.6em">)</mo>
+  <mo>+</mo>
+  <munder class="t3"><mrow><mn>2</mn><mi>V</mi><mi>D</mi></mrow><mtext class="lab">embedding + LM head</mtext></munder>
+  <mo>+</mo>
+  <munder class="t3"><mi>D</mi><mtext class="lab">final norm</mtext></munder>
+</math>
+<div class="legend">
+  <span class="sym">L</span><span>number of blocks (layers)</span><span class="v">32</span>
+  <span class="sym">D</span><span>width of the residual stream (d_model)</span><span class="v">4,096</span>
+  <span class="sym">F</span><span>MLP hidden width (d_ff)</span><span class="v">14,336 = 3.5 D</span>
+  <span class="sym">N, K</span><span>query heads, key/value heads (GQA: 4 query heads share a KV head)</span><span class="v">32, 8</span>
+  <span class="sym">H</span><span>size of one head</span><span class="v">128 (N·H = D)</span>
+  <span class="sym">V</span><span>vocabulary size</span><span class="v">128,256</span>
+</div>
+</div>
+
+<div class="tw">
+<table class="ptab">
+  <tr><th>Component</th><th>Weight shape</th><th class="num">Params</th><th class="num">× count</th><th class="num">Total</th><th class="num">Share</th></tr>
+  <tr class="grpr"><td>Embedding</td><td class="mono">V × D = 128256 × 4096</td><td class="num">525.34M</td><td class="num">1</td><td class="num">525.34M</td><td class="num">13.1% with head</td></tr>
+  <tr class="grpr"><td>Attention</td><td class="mono">per layer</td><td class="num">41.94M</td><td class="num">32</td><td class="num">1.34B</td><td class="num">16.7%</td></tr>
+  <tr class="sub1"><td>Wq, Wo</td><td class="mono">4096 × 4096 each</td><td class="num">16.78M each</td><td></td><td></td><td></td></tr>
+  <tr class="sub1"><td>Wk, Wv</td><td class="mono">4096 × 1024 each (8 × 128)</td><td class="num">4.19M each</td><td></td><td></td><td></td></tr>
+  <tr class="grpr"><td>MLP (SwiGLU)</td><td class="mono">per layer</td><td class="num">176.16M</td><td class="num">32</td><td class="num">5.64B</td><td class="num"><b>70.2%</b></td></tr>
+  <tr class="sub1"><td>W_gate, W_up</td><td class="mono">4096 × 14336 each</td><td class="num">58.72M each</td><td></td><td></td><td></td></tr>
+  <tr class="sub1"><td>W_down</td><td class="mono">14336 × 4096</td><td class="num">58.72M</td><td></td><td></td><td></td></tr>
+  <tr class="grpr"><td>RMSNorm gains</td><td class="mono">2 × 4096 per layer, + 4096</td><td class="num">8,192</td><td class="num">32 + 1</td><td class="num">266,240</td><td class="num">0.003%</td></tr>
+  <tr class="grpr"><td>LM head</td><td class="mono">D × V = 4096 × 128256</td><td class="num">525.34M</td><td class="num">1</td><td class="num">525.34M</td><td class="num">(in the 13.1%)</td></tr>
+  <tr class="tot"><td>Total</td><td></td><td></td><td></td><td class="num">8.03B</td><td class="num">100%</td></tr>
+</table>
+</div>
+
+<div class="formula">attention / layer  2 · 4096 · (32 + 8) · 128   =    41,943,040
+MLP / layer        3 · 4096 · 14336            =   176,160,768
+norms / layer      2 · 4096                    =         8,192
+32 layers          32 · 218,112,000            = 6,979,584,000
+embedding + head   2 · 128256 · 4096           = 1,050,673,152
+final norm         4096                        =         4,096
+total                                          = 8,030,261,248 ≈ 8.03B
+BF16 weights       8.03B × 2 bytes             = 16.06 GB
+share of 8.03B    MLP 5.64B = 70.2% · attention 1.34B = 16.7% · emb + head 1.05B = 13.1%</div>
+
+<div class="share" aria-hidden="true"><div class="m" style="width:70.2%"></div><div class="a" style="width:16.7%"></div><div class="e" style="width:13.1%"></div></div>
+<div class="shlab"><span style="width:70.2%"><b>MLP 70.2%</b> · 5.64B</span><span>attention 16.7%</span><span>emb + head 13.1%</span></div>
+<p class="cap">To scale. Every one of these 8.03B weights is read once per forward pass, which is why a decode step costs a full 16.06 GB read. Llama 3.1 does not tie embedding and LM head, so the vocabulary is paid for twice.</p>
+
+<h2>The parts, each with two examples</h2>
+<p>Analogy: the residual stream is a shared notebook per token. Each block has two editors. Attention copies in notes from earlier tokens' notebooks; the MLP rewrites this token's notes on its own. Neither erases; both add.</p>
+<div class="tw">
+<table class="parts">
+  <tr><th>Part</th><th class="what">What actually happens</th><th>Example A: Llama-3.1-8B</th><th>Example B: the lab's tiny model</th></tr>
+  <tr><td>Embedding</td><td class="what">Look up row <i>id</i> of a table. No multiplication, just a copy.</td>
+    <td class="ex"><b>128256 × 4096</b><span>525.34M params; one token → 4,096 numbers</span></td>
+    <td class="ex"><b>100 × 64</b><span>6,400 params; one token → 64 numbers</span></td></tr>
+  <tr><td>Attention</td><td class="what">Each token builds a query, compares it with the keys of every earlier token, and takes a weighted mix of their values. The only step where tokens talk to each other.</td>
+    <td class="ex"><b>32 query heads, 8 KV heads</b><span>41.94M params per layer (GQA)</span></td>
+    <td class="ex"><b>4 query heads, 2 KV heads</b><span>12,288 params per layer</span></td></tr>
+  <tr><td>MLP</td><td class="what">Widen, gate, shrink: SiLU(x·W_gate) ⊙ (x·W_up), then ·W_down. Applied to each token separately.</td>
+    <td class="ex"><b>4096 → 14336 → 4096</b><span>176.16M params per layer</span></td>
+    <td class="ex"><b>64 → 224 → 64</b><span>43,008 params per layer</span></td></tr>
+  <tr><td>Residual</td><td class="what">x = x + sublayer(norm(x)). Keeps the original signal and lets gradients and information skip layers. No parameters.</td>
+    <td class="ex"><b>64 additions</b><span>2 per block × 32 blocks, width 4,096</span></td>
+    <td class="ex"><b>4 additions</b><span>2 per block × 2 blocks, width 64</span></td></tr>
+  <tr><td>Norm</td><td class="what">RMSNorm: divide the vector by its root-mean-square, then multiply by a learned gain per channel. Keeps numbers in a stable range.</td>
+    <td class="ex"><b>65 norms, 266,240 params</b><span>0.003% of the model</span></td>
+    <td class="ex"><b>5 norms, 320 params</b><span>0.26% of the model</span></td></tr>
+  <tr><td>LM head</td><td class="what">Multiply the final vector by a D × V matrix: one score per vocabulary entry. Also called the unembedding.</td>
+    <td class="ex"><b>4096 × 128256</b><span>525.34M params, untied from the embedding</span></td>
+    <td class="ex"><b>64 × 100</b><span>6,400 params</span></td></tr>
+  <tr><td>Logits</td><td class="what">The raw scores. Softmax turns them into probabilities; temperature, top-k and top-p act here, and one token is sampled.</td>
+    <td class="ex"><b>128,256 scores</b><span>per position; only the last position's are sampled</span></td>
+    <td class="ex"><b>100 scores</b><span>top pick p = 0.064 (random weights, so meaningless)</span></td></tr>
+</table>
+</div>
+
+<h3 style="font-size:15px;margin:22px 0 6px">Tensor shapes for a 5-token prompt (prefill)</h3>
+<div class="tw">
+<table class="shapes">
+  <tr><th>Stage</th><th>Tiny lab model (printed)</th><th>Llama-3.1-8B (same code, real shapes)</th></tr>
+  <tr><td>token ids</td><td>[5]</td><td>[5]</td></tr>
+  <tr><td>embedding lookup</td><td>[5, 64]</td><td>[5, 4096]</td></tr>
+  <tr><td>q = h · Wq</td><td>[5, 4, 16]</td><td>[5, 32, 128]</td></tr>
+  <tr><td>k, v = h · Wk, h · Wv</td><td>[5, 2, 16]</td><td>[5, 8, 128]</td></tr>
+  <tr><td>attention scores (causal)</td><td>[4, 5, 5]</td><td>[32, 5, 5]</td></tr>
+  <tr><td>attention out, x + attn</td><td>[5, 64]</td><td>[5, 4096]</td></tr>
+  <tr><td>gate, up</td><td>[5, 224]</td><td>[5, 14336]</td></tr>
+  <tr><td>down, x + mlp</td><td>[5, 64]</td><td>[5, 4096]</td></tr>
+  <tr><td>logits</td><td>[5, 100]</td><td>[5, 128256]</td></tr>
+  <tr><td>next-token probabilities</td><td>[100]</td><td>[128256]</td></tr>
+</table>
+</div>
+<p class="cap">The stream stays [T, D] from start to finish; only inside attention (heads) and the MLP (width F) does it change shape. The k and v rows are exactly what the KV cache stores.</p>
+<p class="lab-link"><a href="https://github.com/seyonv/explainers/blob/main/perf-1-foundations/labs/transformer-forward.py">Run it: labs/transformer-forward.py</a> — prints the Llama-3.1-8B breakdown above, then runs this tiny 2-layer model in numpy (RMSNorm, RoPE, GQA, SwiGLU, causal mask) and prints every shape. Try setting K = N (plain multi-head attention): attention grows from 41.94M to 67.11M per layer and its share from 16.7% to 24.3%. Doubling F to 28,672 pushes the MLP share from 70.2% to 82.5%.</p>
+
+<h2>How it differs from related ideas</h2>
+<div class="grid2">
+  <div class="cell"><h3><span class="x">&#10007;</span> Encoder-only (BERT)</h3><p>Same blocks, but attention looks both left and right, and there is no generation loop: one pass gives a vector per token for search, classification or embeddings. Nothing to decode, so no growing KV cache.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Encoder-decoder (T5, Whisper)</h3><p>The original "Attention Is All You Need" layout: an encoder reads the input once, and a decoder generates while also cross-attending to it. Two stacks and two kinds of attention; common for translation and speech-to-text.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> MoE transformer (DeepSeek-V3)</h3><p>The MLP becomes 256 routed experts plus 1 shared, and each token uses 8 routed ones: 671B parameters stored, 37B active per token. Memory follows the 671B, compute per token follows the 37B.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> State-space and hybrids (Mamba)</h3><p>Replace most or all attention with a recurrence that carries a fixed-size state, so per-request memory does not grow with context length. Hybrids keep a few attention layers.</p></div>
+  <div class="cell win"><h3><span class="ok">&#10003;</span> Dense decoder-only (Llama, Qwen, Mistral)</h3><p>The model this series optimises. Every weight is used for every token, and every prefill and every decode step is exactly the pass above. Once you can count its parameters and its KV cache, the serving math in the next courses follows.</p></div>
+</div>
+
+<h2>Most parameters live in the MLP. Is that where the cost is?</h2>
+<div class="note">
+  <p>For weights, yes: 70.2% of Llama-3.1-8B is MLP. But <b>most per-request memory lives in attention's KV cache</b>. Attention's weights are 1.34B params (2.68 GB in BF16), shared by every request. On top of that, each request stores k and v for every token in every layer: 128 KiB per token, so <b>1.07 GB</b> per 8,192-token sequence. Fill the 63.9 GB left on an H100 after weights and you hold about 59 such sequences: about 4× the memory of the whole model, all of it attention's.</p>
+  <p>Where the parameter view misleads:</p>
+  <ul>
+    <li><b>MoE.</b> DeepSeek-V3 stores 671B but uses 37B per token. Count total parameters for memory and active parameters for FLOPs and per-token bandwidth.</li>
+    <li><b>Long context.</b> Weight matmuls cost about 2 FLOPs per parameter per token no matter the length, but attention's score and mix steps grow with the number of earlier tokens. The Scaling Book's rule of thumb (it assumes F = 4D and plain multi-head attention) says dot-product attention FLOPs overtake the matmuls once T &gt; 8D. For D = 4096 that would be about 32k tokens. This is my extrapolation: Llama's F = 3.5D and GQA shift the exact crossover.</li>
+    <li><b>Tied embeddings.</b> Small models often share one matrix for embedding and LM head, so the "13.1%" slice halves. Llama 3.1 8B doesn't share.</li>
+  </ul>
+</div>
+
+<div class="foot">
+  <p><b>Read next:</b> Attention Is All You Need, <a href="https://arxiv.org/abs/1706.03762">§3.1 "Encoder and Decoder Stacks" and §3.2 "Attention"</a>, all of both (~15 min; skip the encoder parts on a first pass). Scaling Book Part 4, <a href="https://jax-ml.github.io/scaling-book/transformers/">"Transformer Accounting" through "Other Operations", plus "What Should You Take Away from this Section?"</a> (~20 min; do Question 1). Kiely, <i>Inference Engineering</i> (2026), ch. 2.2 "LLM Inference Mechanics" through 2.2.2 "Transformer Blocks", book pp. 46–51 (~10 min).</p>
+  <p><b>Related:</b> <a href="attention.html">attention: Q, K, V and GQA</a> · <a href="flops-per-token.html">FLOPs per token</a> · <a href="gpu-machine.html">the GPU as a machine</a> · <a href="roofline-intuition.html">roofline intuition</a> · <a href="prefill-vs-decode-mac.html">prefill vs decode on your Mac</a> · <a href="serving-metrics.html">serving metrics</a> · <a href="_overview.html">overview</a> · <a href="../perf-2-scaling-book-inference/params-vs-kv.html">params vs KV cache (perf-2)</a> · <a href="../llm-latency/moe.html">mixture of experts</a> · <a href="../llm-latency/memory-bandwidth.html">memory-bandwidth-bound decoding</a></p>
+  <p><b>Sources:</b> Llama-3.1-8B shapes: <a href="https://arxiv.org/abs/2407.21783">Llama 3 paper, Table 3</a> (32 layers, model dim 4,096, FFN dim 14,336, 32 heads, 8 KV heads, SwiGLU, RoPE θ = 500,000). The paper rounds the vocabulary to 128,000; the exact 128,256 comes from the model's config, as recorded in this course's shared facts. Parameter formula and the T &gt; 8D rule: <a href="https://jax-ml.github.io/scaling-book/transformers/">Scaling Book Part 4</a>. DeepSeek-V3: <a href="https://arxiv.org/abs/2412.19437">arXiv 2412.19437</a>. KV cache and H100 numbers: this course's shared facts. All parameter counts computed by the lab, 2026-09-22.</p>
+</div>
+</article>
+</body>
+</html>

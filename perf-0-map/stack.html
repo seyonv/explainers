@@ -1,0 +1,296 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The inference stack in one picture</title>
+<style>
+:root{
+  --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
+  --text:#1c1f23; --muted:#6b7068; --faint:#b9b9b3;
+  --accent:#4a9d77; --accent-bg:#dcefdf; --accent-border:#8cc79c;
+  --red:#c0492b; --red-bg:#fbeceb;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#15171a; --surface:#1d2024; --surface2:#24282d; --border:#32373d;
+    --text:#e6e8ea; --muted:#9aa1a9; --faint:#4a5057;
+    --accent:#5fb37f; --accent-bg:#1c2b22; --accent-border:#3f7a55;
+    --red:#e57368; --red-bg:#2e1f1e;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text)}
+.card{max-width:820px;margin:0 auto;padding:28px 32px;font-family:-apple-system,"Inter",system-ui,sans-serif;line-height:1.45}
+h1{font-size:26px;font-weight:600;margin:0 0 6px;letter-spacing:-0.01em}
+.sub{font-size:15px;color:var(--muted);margin:0 0 20px}
+h2{font-size:17px;font-weight:600;margin:26px 0 10px}
+p{font-size:15px;margin:0 0 10px}
+.cap{font-size:13px;color:var(--muted);margin:8px 0 0;text-align:center}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+
+/* Tables and formulas */
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border)}
+th{font-size:12px;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:none}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+.hi{color:var(--accent);font-weight:600} .lo{color:var(--red)}
+.formula{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin:10px 0;white-space:pre;overflow-x:auto;line-height:1.55}
+.tw{overflow-x:auto}
+.layers td{vertical-align:top;font-size:13.5px}
+.layers td:first-child{font-weight:600;white-space:nowrap}
+.layers .ex{font-size:13px} .layers .ex span{display:block;color:var(--muted)}
+.layers .c{color:var(--accent);font-size:13px;white-space:nowrap}
+@media (max-width:560px){.layers .what{display:none}}
+
+/* Follow one request */
+ol.walk{margin:6px 0 4px;padding-left:22px;font-size:14.5px}
+ol.walk li{margin-bottom:7px}
+ol.walk li b{font-weight:600}
+ol.walk .t{color:var(--muted);font-size:13px}
+blockquote{margin:8px 0 12px;padding:2px 0 2px 14px;border-left:3px solid var(--border);font-size:14px;color:var(--text)}
+
+/* 2x2 grid */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.cell{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.cell.win{background:var(--accent-bg);border-color:var(--accent-border)}
+.cell h3{font-size:16px;font-weight:600;margin:0 0 5px;display:flex;gap:8px;align-items:baseline}
+.cell p{font-size:14px;margin:0;color:var(--text)}
+.cell.win h3,.cell.win p{color:var(--accent)}
+.x{color:var(--red)} .ok{color:var(--accent)}
+
+/* Clarification box */
+.note{border:1px solid var(--border);border-radius:10px;padding:14px 18px;font-size:14px}
+.note p{font-size:14px} .note p:last-child{margin-bottom:0}
+.note ul{margin:4px 0 10px;padding-left:20px} .note li{margin-bottom:4px}
+
+.foot{margin-top:22px;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+.foot p{font-size:13px;margin:0 0 6px}
+svg{display:block;max-width:100%}
+.sl{font-size:12px;fill:var(--muted)} .st{font-size:13px;fill:var(--text)}
+.lt{font-size:14px;font-weight:600;fill:var(--text)}
+.cr{font-size:12px;font-weight:600;fill:var(--accent)}
+.box{fill:var(--surface);stroke:var(--border)}
+.sb{fill:var(--bg);stroke:var(--border)}
+.brk{fill:none;stroke:var(--muted);stroke-width:1.2}
+.arr{stroke:var(--accent);stroke-width:2}
+.ah{fill:var(--accent)}
+.dot{fill:var(--accent)} .dn{font-size:11px;font-weight:700;fill:var(--bg)}
+@media (max-width:560px){.grid2{grid-template-columns:1fr}.card{padding:22px 16px}}
+a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+</style>
+</head>
+<body>
+<article class="card">
+<h1>The inference stack in one picture</h1>
+<p class="sub">Also called the serving stack, or "from API request to tensor core". This card is the map for the series: each layer below is covered by one course, perf-1 to perf-7. Kiely's <i>Inference Engineering</i> ch. 0 splits the same picture into runtime and infrastructure.</p>
+
+<h2>In one breath</h2>
+<p>A request passes down through layers: the API and router, a pool of autoscaled replicas, an inference engine (scheduler, KV cache manager, model runner), the kernels (attention, matmul), and finally the GPU's tensor cores and HBM. A company that serves inference cheaply wins by squeezing every layer. This series walks up the stack one course at a time.</p>
+
+<h2>The picture</h2>
+<svg viewBox="0 0 760 614" role="img" aria-label="The inference stack as six layers, from client and API at the top down to GPU hardware, with the series course that covers each layer">
+  <defs><marker id="ah" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="ah" d="M0,0 L10,5 L0,10 z"/></marker></defs>
+
+  <!-- Kiely's two layers -->
+  <path class="brk" d="M28 8 H21 V234 H28"/>
+  <text class="sl" transform="translate(14,121) rotate(-90)" text-anchor="middle">infrastructure</text>
+  <path class="brk" d="M28 252 H21 V606 H28"/>
+  <text class="sl" transform="translate(14,429) rotate(-90)" text-anchor="middle">runtime (one model, one instance)</text>
+
+  <!-- 1 Client & API -->
+  <rect class="box" x="36" y="8" width="444" height="56" rx="8"/>
+  <circle class="dot" cx="54" cy="26" r="9"/><text class="dn" x="54" y="30" text-anchor="middle">1</text>
+  <text class="lt" x="72" y="31">Client &amp; API</text>
+  <text class="sl" x="72" y="51">HTTP request in, tokenizer, tokens streamed back out</text>
+  <text class="cr" x="496" y="28">perf-1 metrics · perf-7 production</text>
+  <text class="sl" x="496" y="46">OpenAI-style HTTP API, streaming</text>
+
+  <line class="arr" x1="258" y1="65" x2="258" y2="79" marker-end="url(#ah)"/>
+
+  <!-- 2 Router -->
+  <rect class="box" x="36" y="82" width="444" height="56" rx="8"/>
+  <circle class="dot" cx="54" cy="100" r="9"/><text class="dn" x="54" y="104" text-anchor="middle">2</text>
+  <text class="lt" x="72" y="105">Router &amp; load balancer</text>
+  <text class="sl" x="72" y="125">picks a replica: KV/prefix-aware, LoRA-aware; queues overflow</text>
+  <text class="cr" x="496" y="102">perf-7 routing · perf-4 prefix cache</text>
+  <text class="sl" x="496" y="120">llm-d · Gateway API Inference Ext.</text>
+  <text class="sl" x="496" y="135">Dynamo KV-aware router</text>
+
+  <line class="arr" x1="258" y1="139" x2="258" y2="153" marker-end="url(#ah)"/>
+
+  <!-- 3 Autoscaler & replicas -->
+  <rect class="box" x="36" y="156" width="444" height="78" rx="8"/>
+  <circle class="dot" cx="54" cy="174" r="9"/><text class="dn" x="54" y="178" text-anchor="middle">3</text>
+  <text class="lt" x="72" y="179">Autoscaler &amp; replicas across GPUs and nodes</text>
+  <text class="sl" x="72" y="199">adds and removes replicas; splits big models (tensor, expert parallel)</text>
+  <text class="sl" x="72" y="217">separate prefill and decode workers (disaggregation)</text>
+  <text class="cr" x="496" y="176">perf-6 scale-out · perf-7 autoscaling</text>
+  <text class="sl" x="496" y="194">Kubernetes · Dynamo planner · llm-d</text>
+  <text class="sl" x="496" y="210">NVLink inside a node, InfiniBand between</text>
+
+  <line class="arr" x1="258" y1="235" x2="258" y2="249" marker-end="url(#ah)"/>
+
+  <!-- 4 Inference engine -->
+  <rect class="box" x="36" y="252" width="444" height="118" rx="8"/>
+  <circle class="dot" cx="54" cy="270" r="9"/><text class="dn" x="54" y="274" text-anchor="middle">4</text>
+  <text class="lt" x="72" y="275">Inference engine (inside one replica)</text>
+  <rect class="sb" x="52" y="286" width="97" height="74" rx="6"/>
+  <text class="st" x="100.5" y="307" text-anchor="middle">Scheduler</text>
+  <text class="sl" x="100.5" y="326" text-anchor="middle">continuous</text>
+  <text class="sl" x="100.5" y="342" text-anchor="middle">batching</text>
+  <rect class="sb" x="157" y="286" width="97" height="74" rx="6"/>
+  <text class="st" x="205.5" y="307" text-anchor="middle">KV cache mgr</text>
+  <text class="sl" x="205.5" y="326" text-anchor="middle">paging,</text>
+  <text class="sl" x="205.5" y="342" text-anchor="middle">prefix cache</text>
+  <rect class="sb" x="262" y="286" width="97" height="74" rx="6"/>
+  <text class="st" x="310.5" y="307" text-anchor="middle">Model runner</text>
+  <text class="sl" x="310.5" y="326" text-anchor="middle">forward pass,</text>
+  <text class="sl" x="310.5" y="342" text-anchor="middle">CUDA graphs</text>
+  <rect class="sb" x="367" y="286" width="97" height="74" rx="6"/>
+  <text class="st" x="415.5" y="307" text-anchor="middle">Sampler</text>
+  <text class="sl" x="415.5" y="326" text-anchor="middle">logits to</text>
+  <text class="sl" x="415.5" y="342" text-anchor="middle">next token</text>
+  <text class="cr" x="496" y="272">perf-5 engines · perf-4 KV cache</text>
+  <text class="cr" x="496" y="290">perf-2: the math of one step</text>
+  <text class="sl" x="496" y="312">vLLM · SGLang · TensorRT-LLM</text>
+  <text class="sl" x="496" y="328">PyTorch-backed; Dynamo on top</text>
+
+  <line class="arr" x1="258" y1="371" x2="258" y2="385" marker-end="url(#ah)"/>
+
+  <!-- 5 Kernels -->
+  <rect class="box" x="36" y="388" width="444" height="100" rx="8"/>
+  <circle class="dot" cx="54" cy="406" r="9"/><text class="dn" x="54" y="410" text-anchor="middle">5</text>
+  <text class="lt" x="72" y="411">Kernels (one GPU function each)</text>
+  <rect class="sb" x="52" y="422" width="132" height="58" rx="6"/>
+  <text class="st" x="118" y="441" text-anchor="middle">Attention</text>
+  <text class="sl" x="118" y="458" text-anchor="middle">FlashAttention,</text>
+  <text class="sl" x="118" y="473" text-anchor="middle">FlashInfer</text>
+  <rect class="sb" x="192" y="422" width="132" height="58" rx="6"/>
+  <text class="st" x="258" y="441" text-anchor="middle">GEMM (matmul)</text>
+  <text class="sl" x="258" y="458" text-anchor="middle">cuBLAS, CUTLASS,</text>
+  <text class="sl" x="258" y="473" text-anchor="middle">DeepGEMM</text>
+  <rect class="sb" x="332" y="422" width="132" height="58" rx="6"/>
+  <text class="st" x="398" y="441" text-anchor="middle">Quantized kernels</text>
+  <text class="sl" x="398" y="458" text-anchor="middle">FP8 GEMM,</text>
+  <text class="sl" x="398" y="473" text-anchor="middle">low-bit weights</text>
+  <text class="cr" x="496" y="408">perf-3 kernels · perf-4 attention</text>
+  <text class="sl" x="496" y="428">CUDA · cuBLAS · cuDNN · CUTLASS</text>
+  <text class="sl" x="496" y="444">FlashInfer · DeepGEMM · Triton</text>
+
+  <line class="arr" x1="258" y1="489" x2="258" y2="503" marker-end="url(#ah)"/>
+
+  <!-- 6 Hardware -->
+  <rect class="box" x="36" y="506" width="444" height="100" rx="8"/>
+  <circle class="dot" cx="54" cy="524" r="9"/><text class="dn" x="54" y="528" text-anchor="middle">6</text>
+  <text class="lt" x="72" y="529">Hardware (one H100 SXM)</text>
+  <rect class="sb" x="52" y="540" width="132" height="58" rx="6"/>
+  <text class="st" x="118" y="559" text-anchor="middle">SMs + tensor cores</text>
+  <text class="sl" x="118" y="576" text-anchor="middle">132 SMs,</text>
+  <text class="sl" x="118" y="591" text-anchor="middle">989 TFLOPS BF16</text>
+  <rect class="sb" x="192" y="540" width="132" height="58" rx="6"/>
+  <text class="st" x="258" y="559" text-anchor="middle">HBM</text>
+  <text class="sl" x="258" y="576" text-anchor="middle">80 GB,</text>
+  <text class="sl" x="258" y="591" text-anchor="middle">3.35 TB/s</text>
+  <rect class="sb" x="332" y="540" width="132" height="58" rx="6"/>
+  <text class="st" x="398" y="559" text-anchor="middle">Interconnect</text>
+  <text class="sl" x="398" y="576" text-anchor="middle">NVLink in a node,</text>
+  <text class="sl" x="398" y="591" text-anchor="middle">InfiniBand across</text>
+  <text class="cr" x="496" y="526">perf-1 GPU · perf-2 roofline</text>
+  <text class="sl" x="496" y="546">H100 · H200 · B200</text>
+  <text class="sl" x="496" y="562">ops:byte ≈ 295 on H100</text>
+</svg>
+<p class="cap">Green arrows: the path of one request down the stack; the generated tokens stream back up the same path. perf-7 also covers the economics ($/token), which cut across every layer. Kiely's third layer, tooling (the developer experience on top of runtime and infrastructure), isn't drawn. Where his "runtime" ends is our reading: he puts parallelism inside one instance in runtime, and autoscaling and multi-region capacity in infrastructure.</p>
+
+<p style="margin-top:14px">Kiely's words for the two halves (book p. 17): the <b>runtime</b> is "optimizing the performance of a single model on a single GPU-backed instance", and the <b>infrastructure</b> is "scaling across clusters, regions, and clouds without creating silos while maintaining excellent uptime". He lists six runtime techniques (p. 19), and each one lives at a specific layer of the picture:</p>
+<table class="layers">
+  <tr><th>Technique (Kiely p. 19)</th><th class="what">His one-line definition</th><th>Layer</th><th>Course</th></tr>
+  <tr><td>Batching</td><td class="what">"Run incoming requests in parallel, weaving them together on a token-by-token basis"</td><td>4 scheduler</td><td class="c">perf-5</td></tr>
+  <tr><td>Caching</td><td class="what">"Re-use the KV cache ... between requests that share prefixes"</td><td>4 KV mgr, 2 router</td><td class="c">perf-4</td></tr>
+  <tr><td>Quantization</td><td class="what">"Lower the precision of select pieces of the model"</td><td>5 kernels</td><td class="c">perf-3, perf-5</td></tr>
+  <tr><td>Speculation</td><td class="what">"Generate and validate draft tokens to produce more than one token per forward pass during decode"</td><td>4 runner + sampler</td><td class="c">perf-5</td></tr>
+  <tr><td>Parallelism</td><td class="what">"Efficiently leverage more than one GPU ... without introducing new bottlenecks"</td><td>3 replicas, 6 links</td><td class="c">perf-6</td></tr>
+  <tr><td>Disaggregation</td><td class="what">"Separate the two phases of LLM inference, prefill and decode, onto independently scaling workers"</td><td>3 replicas</td><td class="c">perf-6</td></tr>
+</table>
+<p class="cap">The software under the engine, bottom to top (Kiely ch. 4, pp. 95–99): CUDA → kernel libraries (cuBLAS, cuDNN, CUTLASS, FlashInfer, DeepGEMM) → PyTorch → engines (vLLM, SGLang, TensorRT-LLM) → Dynamo, which "sits on top of inference engines to power large-scale deployments".</p>
+
+<h2>What each layer decides</h2>
+<p>Each knob below shows two settings side by side. The settings are illustrative examples of real knobs, not recommendations.</p>
+<div class="tw">
+<table class="layers">
+  <tr><th>Layer</th><th class="what">What it decides</th><th>Example knob: A vs B</th><th>Metric it moves</th><th>Course</th></tr>
+  <tr><td>1 Client &amp; API</td><td class="what">What the user asks for and how the answer comes back</td>
+      <td class="ex">streaming on vs off<span>max_tokens 200 vs 2,000</span></td><td>perceived TTFT, end-to-end time</td><td class="c">perf-1, perf-7</td></tr>
+  <tr><td>2 Router</td><td class="what">Which replica gets this request</td>
+      <td class="ex">round-robin vs prefix-aware<span>prefix-aware sends it to the replica already holding its prompt's KV</span></td><td>TTFT (a hit skips prefill), P99</td><td class="c">perf-7, perf-4</td></tr>
+  <tr><td>3 Replicas</td><td class="what">How many GPUs are on, and how each model is split across them</td>
+      <td class="ex">min replicas 0 vs 2<span>cold start vs paying for idle GPUs; TP 1 vs TP 8</span></td><td>$/token, TTFT under load, uptime</td><td class="c">perf-6, perf-7</td></tr>
+  <tr><td>4 Engine</td><td class="what">Which requests share each forward step, and where each one's KV lives</td>
+      <td class="ex">max batch 8 vs 256<span>prefix cache off vs on; chunked prefill</span></td><td>throughput vs TPOT; TTFT</td><td class="c">perf-5, perf-4, perf-2</td></tr>
+  <tr><td>5 Kernels</td><td class="what">How close each op gets to the chip's ceilings</td>
+      <td class="ex">BF16 vs FP8 GEMM<span>naive attention vs FlashAttention</span></td><td>every latency, $/token</td><td class="c">perf-3, perf-4</td></tr>
+  <tr><td>6 Hardware</td><td class="what">The ceilings themselves: FLOP/s, bytes/s, bytes</td>
+      <td class="ex">H100 vs B200<span>1 GPU vs 8 over NVLink</span></td><td>sets every floor, and $/hr</td><td class="c">perf-1, perf-2, perf-6</td></tr>
+</table>
+</div>
+
+<h2>Follow one request</h2>
+<p>The running example: <b>Llama-3.1-8B in BF16 on one H100 SXM</b>, a 1,000-token prompt and 200 output tokens. The shapes and floors come from <a href="../perf-1-foundations/index.html">perf-1</a>'s shared facts.</p>
+<ol class="walk">
+  <li><b>Client &amp; API.</b> The prompt arrives and is tokenized into 1,000 tokens. <span class="t">Network and queue time aren't in the floors below: they depend on distance and load (see the consumer view in <a href="../llm-latency/ttft.html">llm-latency: TTFT</a>).</span></li>
+  <li><b>Router.</b> It picks a replica. If a replica already holds this prompt's prefix in its KV cache, those tokens skip prefill. <span class="t">Here: a cold request, no hit.</span></li>
+  <li><b>Replica.</b> One H100 is enough: the 16.06 GB of weights leave 80 − 16.06 = 63.9 GB for KV cache. <span class="t">A 70B model (about 140 GB in BF16) wouldn't fit on one GPU, so this layer would split it with tensor parallelism (perf-6).</span></li>
+  <li><b>Engine.</b> The scheduler adds the request to the running batch (continuous batching). The KV manager reserves pages for up to 1,200 tokens × 128 KiB = 157 MB. <span class="t">63.9 GB ÷ 157 MB ≈ 406 requests like this one fit at once.</span></li>
+  <li><b>Kernels + hardware, prefill.</b> All 1,000 prompt tokens go through in one forward pass. That's 2 × 8.03e9 × 1,000 ≈ 1.61e13 FLOP, which reuses each weight byte 1,000 times. 1,000 is above the H100's 295 FLOPs per byte, so prefill is <b>compute-bound</b>: the floor is <b class="hi">16.2 ms</b> of GEMMs and attention, and it produces the first token (TTFT).</li>
+  <li><b>Kernels + hardware, decode.</b> The other 199 tokens take one step each. Every step streams all 16.06 GB of weights from HBM to make 1 token: about 1 FLOP per byte, so decode is <b>memory-bound</b>. That's <b class="hi">4.79 ms/step</b>. <span class="t">KV reads add under 1%: at most 157 MB against 16 GB of weights.</span></li>
+  <li><b>Sampler → API.</b> Each step's logits become a token, which streams back up through the API as it's made.</li>
+</ol>
+<div class="formula">prefill  2 × 8.03e9 × 1,000 ÷ 989e12 FLOP/s        =  16.2 ms  (TTFT floor)
+decode   16.06 GB ÷ 3.35 TB/s = 4.79 ms × 199 steps =  954 ms   (TPOT floor 4.79 ms)
+total    16.2 + 954                                 ≈  970 ms   (GPU-only, batch 1)</div>
+<p>These are floors: 100% of peak FLOP/s and bandwidth, with no network, queue or engine overhead. A real engine is slower at every layer. A provider also doesn't run batch 1, because the same weight read can serve many users at once. Our computation, taking each request at its end-of-generation size of 1,200 tokens of KV:</p>
+<div class="formula">batch 1   16.06 GB ÷ 3.35 TB/s                    = 4.79 ms/step →   209 tok/s
+batch 64  (16.06 + 64 × 0.157 GB KV) ÷ 3.35 TB/s  = 7.80 ms/step → 8,206 tok/s
+          same GPU-hour, 39× the tokens; each user: 209 → 128 tok/s</div>
+<p class="cap">At batch 64 the matmuls need only 2 × 8.03e9 × 64 ÷ 989e12 = 1.04 ms, so the step is still memory-bound. That trade, cheaper tokens against a slower TPOT, is what layer 4 tunes all day (perf-2 step-time, perf-5).</p>
+
+<p style="margin-top:14px">The floors depend on the chip. Here's the same request on other hardware:</p>
+<div class="tw">
+<table>
+  <tr><th>Chip</th><th class="num">BF16 dense</th><th class="num">HBM bandwidth</th><th class="num">Prefill floor</th><th class="num">Decode step</th><th class="num">Request floor</th></tr>
+  <tr><td>H100 SXM</td><td class="num">989 TF/s</td><td class="num">3.35 TB/s</td><td class="num">16.2 ms</td><td class="num">4.79 ms</td><td class="num">970 ms</td></tr>
+  <tr><td>H200</td><td class="num">989 TF/s</td><td class="num">4.8 TB/s</td><td class="num">16.2 ms</td><td class="num">3.35 ms</td><td class="num">682 ms</td></tr>
+  <tr><td>B200</td><td class="num">2,250 TF/s</td><td class="num">8.0 TB/s</td><td class="num hi">7.1 ms</td><td class="num hi">2.01 ms</td><td class="num hi">407 ms</td></tr>
+  <tr><td>Your M3</td><td class="num">not sourced</td><td class="num">~100 GB/s</td><td class="num">—</td><td class="num lo">160.6 ms</td><td class="num lo">≥ 32 s</td></tr>
+</table>
+</div>
+<p class="cap">Our computation: request floor = prefill + 199 × decode step, at batch 1. The H200 has the H100's compute, so prefill is the same and only decode gets faster. The M3 row is the decode part only (16.06 GB ÷ 100 GB/s; 199 steps = 32.0 s). What you actually measured on the M3 was qwen3.5:4b at about 15 tok/s.</p>
+
+<h2>How it differs from related ideas</h2>
+<div class="grid2">
+  <div class="cell"><h3><span class="x">&#10007;</span> The training stack</h3><p>It optimizes one thing, throughput (MFU). There's no KV cache, no TTFT, and no router. It pays 6N FLOPs per token instead of 2N and shards weights, gradients and optimizer state with FSDP. The kernels and hardware are shared; the layers above them aren't (perf-7).</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> A single-user local stack</h3><p>llama.cpp or Ollama on your M3: one process, batch 1, no router and no autoscaler. Decode is memory-bound at about 15 tok/s (qwen3.5:4b, measured). Batching, the provider's main cost lever, never comes into play.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> A closed API, seen from outside</h3><p>The <a href="../llm-latency/index.html">llm-latency</a> view. You see TTFT, tok/s and a price, but every layer below the API is hidden. Your only levers are the prompt, the model choice and caching.</p></div>
+  <div class="cell win"><h3><span class="ok">&#10003;</span> The provider's inference stack</h3><p>You own all six layers and tune each one for $/token at a latency target, packing many users onto each GPU. It's the view this series teaches, and the one a job at an inference company needs.</p></div>
+</div>
+
+<h2>Where does a provider actually win, and what will you touch?</h2>
+<div class="note">
+  <p><b>Our view, not a sourced claim:</b></p>
+  <ul>
+    <li><b>Kernels and engine scheduling</b> decide $/token. The batch-64 line above shows the size of the lever: 39× more tokens from the same GPU-hour. Faster kernels then lower every one of those steps.</li>
+    <li><b>Routing and capacity</b> decide reliability and the tail. Kiely says multi-cloud capacity "improves reliability, protecting against downtime in any individual region or cloud provider" (p. 20).</li>
+  </ul>
+  <p><b>Day to day, most engineers work in the upper layers.</b> Kiely: "Most inference engineering today happens at the higher levels of abstraction, configuring and deploying inference engines and orchestrating inference across multiple GPUs" (p. 96), and "most inference engineers will never need to write their own kernels. However, kernel selection ... is an important part of inference optimization" (p. 98). A kernel-focused company is the exception. There, layer 5 is the product, which is why perf-3 exists.</p>
+  <p><b>Not every deployment has all six layers.</b> For Dynamo, Kiely writes: "Unless you're operating with enough volume for disaggregation and KV-aware routing to matter, Dynamo will be unnecessary work and excess overhead" (p. 112). A small deployment is one replica running an engine directly, so layers 2–3 shrink to almost nothing. The six boxes are also a simplification: "Routing occurs throughout the stack with load balancers injected at key points" (p. 191).</p>
+</div>
+
+<div class="foot">
+<p><b>Read next:</b> Kiely, <i>Inference Engineering</i>, ch. 0 "Inference" (book pp. 17–22): all of it, about 10 min. Then the ch. 4 intro plus 4.1.1–4.1.2 on kernels (pp. 95–99), about 10 min; 4.4 "NVIDIA Dynamo" (pp. 111–112), about 4 min; and 7.2.3 "Routing, Load Balancing, and Queueing" (pp. 190–191), about 3 min. Skim the section headings of the <a href="https://github.com/wafer-ai/gpu-perf-engineering-resources">gpu-perf-engineering-resources</a> list to see which layer each resource belongs to, about 5 min.</p>
+<p><b>Related:</b> <a href="reading-plan.html">reading plan</a> · <a href="../perf-1-foundations/index.html">perf-1 foundations</a> · <a href="../perf-2-scaling-book-inference/index.html">perf-2 Scaling Book inference</a> · <a href="../llm-latency/index.html">llm-latency (the outside view)</a> · <a href="../perf-1-foundations/serving-metrics.html">serving metrics</a> · <a href="../perf-1-foundations/gpu-machine.html">the GPU as a machine</a> · <a href="../perf-2-scaling-book-inference/inference-engine-design.html">designing an inference engine</a>. Not built yet: perf-3 kernels · perf-4 attention &amp; KV cache · perf-5 inference engines · perf-6 scaling out · perf-7 training &amp; economics.</p>
+<p><b>Sources:</b> Llama-3.1-8B shapes, 16.06 GB, 128 KiB/token, 16.2 ms and 4.8 ms floors, and H100 specs: perf-1 <code>_facts.md</code> (NVIDIA H100 datasheet; Scaling Book Part 12). H200 4.8 TB/s and 989 TF/s, and B200 2,250 TF/s and 8 TB/s: Scaling Book Part 12 table. M3 ~100 GB/s: Apple spec. qwen3.5:4b at ~15 tok/s: measured with Ollama 0.34.2, 2026-09-22. The batch-64, 406-request, hardware-table and 70B-fit numbers are our arithmetic from those inputs. Quotes: Kiely, <i>Inference Engineering</i> (Baseten Books, 2026), pp. 17, 19, 20, 96, 98, 112, 191.</p>
+</div>
+</article>
+</body>
+</html>

@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Linear layers and the critical batch size</title>
+<style>
+:root{
+  --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
+  --text:#1c1f23; --muted:#6b7068; --faint:#b9b9b3;
+  --accent:#4a9d77; --accent-bg:#dcefdf; --accent-border:#8cc79c;
+  --red:#c0492b; --red-bg:#fbeceb;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#15171a; --surface:#1d2024; --surface2:#24282d; --border:#32373d;
+    --text:#e6e8ea; --muted:#9aa1a9; --faint:#4a5057;
+    --accent:#5fb37f; --accent-bg:#1c2b22; --accent-border:#3f7a55;
+    --red:#e57368; --red-bg:#2e1f1e;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text)}
+.card{max-width:820px;margin:0 auto;padding:28px 32px;font-family:-apple-system,"Inter",system-ui,sans-serif;line-height:1.45}
+h1{font-size:26px;font-weight:600;margin:0 0 6px;letter-spacing:-0.01em}
+.sub{font-size:15px;color:var(--muted);margin:0 0 20px}
+h2{font-size:17px;font-weight:600;margin:26px 0 10px}
+p{font-size:15px;margin:0 0 10px}
+ul{font-size:15px;margin:0 0 10px;padding-left:20px}
+.cap{font-size:13px;color:var(--muted);margin:8px 0 0;text-align:center}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+blockquote{margin:10px 0;padding:8px 14px;border-left:3px solid var(--border);color:var(--muted);font-size:14px}
+
+/* Tables and formulas */
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border)}
+th{font-size:12px;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:none}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+.hi{color:var(--accent);font-weight:600} .lo{color:var(--red)} .mu{color:var(--muted)}
+.formula{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin:10px 0;white-space:pre;overflow-x:auto;line-height:1.55}
+.tw{overflow-x:auto}
+.tw table{min-width:640px}
+tr.crit td{border-top:2px dashed var(--red)}
+
+/* MathML */
+.mathbox{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px 16px 12px;margin:10px 0;overflow-x:auto}
+.mathbox math{font-size:21px;color:var(--text);font-family:"STIX Two Math","Latin Modern Math","Cambria Math",math}
+.mathbox .t1{color:var(--text)} .mathbox .t2{color:var(--accent)} .mathbox .t3{color:var(--muted)} .mathbox .t4{color:var(--red)}
+.mathbox .lab{font-size:12px;font-family:-apple-system,"Inter",system-ui,sans-serif;padding-top:3px;border-top:1.5px solid currentColor;margin-top:2px}
+.mathbox math + math{margin-top:16px}
+.legend{display:grid;grid-template-columns:auto 1fr auto;column-gap:14px;row-gap:5px;font-size:13px;margin-top:14px;align-items:baseline}
+.legend .sym{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;text-align:right}
+.legend .v{color:var(--muted);text-align:right;font-variant-numeric:tabular-nums}
+@media (max-width:560px){.legend{grid-template-columns:auto 1fr}.legend .v{display:none}}
+
+/* Two examples per term */
+.parts td{vertical-align:top} .parts td:first-child{font-weight:600;white-space:nowrap}
+.parts .ex{font-size:13px} .parts .ex span{display:block;color:var(--muted)}
+@media (max-width:560px){.parts .what{display:none}}
+
+/* 2x2 grid */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.cell{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.cell.win{background:var(--accent-bg);border-color:var(--accent-border)}
+.cell h3{font-size:16px;font-weight:600;margin:0 0 5px;display:flex;gap:8px;align-items:baseline}
+.cell p{font-size:14px;margin:0;color:var(--text)}
+.cell.win h3,.cell.win p{color:var(--accent)}
+.x{color:var(--red)} .ok{color:var(--accent)}
+
+/* Clarification box */
+.note{border:1px solid var(--border);border-radius:10px;padding:14px 18px;font-size:14px}
+.note p,.note li{font-size:14px} .note p:last-child{margin-bottom:0}
+
+.foot{margin-top:22px;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+.foot p{font-size:13px}
+.lab-link{display:inline-block;font-size:13px;border:1px solid var(--accent-border);background:var(--accent-bg);color:var(--accent);border-radius:6px;padding:4px 10px;margin:2px 0 10px;text-decoration:none}
+svg{display:block;max-width:100%;height:auto}
+.sl{font-size:12px;fill:var(--muted)} .st{font-size:13px;fill:var(--text)}
+.ax{stroke:var(--faint);stroke-width:1} .gridl{stroke:var(--border);stroke-width:1}
+.memz{fill:var(--surface2)}
+.memln{stroke:var(--faint);stroke-width:1.5;fill:none;stroke-dasharray:5 4}
+.cmpln{stroke:var(--accent);stroke-width:1.5;fill:none;stroke-dasharray:5 4}
+.stepm{stroke:var(--muted);stroke-width:4;fill:none;stroke-linecap:round}
+.stepc{stroke:var(--accent);stroke-width:4;fill:none;stroke-linecap:round}
+.crit{stroke:var(--red);stroke-width:1.5;stroke-dasharray:4 3}
+.tr{fill:var(--red);font-size:12px} .tg{fill:var(--accent);font-size:12px}
+.pt{fill:var(--text)}
+@media (max-width:560px){.grid2{grid-template-columns:1fr}.card{padding:20px 16px}}
+a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+</style>
+</head>
+<body>
+<article class="card">
+<h1>Linear layers and the critical batch size</h1>
+<p class="sub">Also called B<sub>crit</sub>, the batch-240 rule (TPU v5e), "~300 on H100", or the point where decode turns compute-bound. This is Scaling Book Part 7, "Linear operations: what bottlenecks us?". The book's numbers are TPU v5e; H100 and Llama-3.1-8B figures are our recomputation.</p>
+
+<h2>In one breath</h2>
+<p>A weight matrix is read from memory once per step, however many tokens use it. So the number of tokens in the step, B, <i>is</i> the arithmetic intensity of a linear layer. Above B<sub>crit</sub> (≈ 240 on v5e, ≈ 295 on H100) the layer stops waiting on memory and starts waiting on math.</p>
+
+<h2>The derivation</h2>
+<p>Every linear op in a Transformer has the same shape: the MLP's W<sub>in</sub>/W<sub>out</sub> and attention's W<sub>Q</sub>, W<sub>K</sub>, W<sub>V</sub>, W<sub>O</sub>. Each one is a <code>bf16[B, D] × bf16[D, F]</code> matmul. Load both arrays from HBM, multiply, and write the <code>[B, F]</code> result back.</p>
+<div class="mathbox">
+<math display="block">
+  <munder class="t2"><msub><mi>T</mi><mtext>math</mtext></msub><mtext class="lab">waiting on math</mtext></munder><mo>=</mo>
+  <mfrac><mrow><mn>2</mn><mi>B</mi><mi>D</mi><mi>F</mi></mrow><mtext>Accelerator FLOPs/s</mtext></mfrac>
+  <mspace width="1.4em"/>
+  <munder class="t3"><msub><mi>T</mi><mtext>comms</mtext></msub><mtext class="lab">waiting on memory</mtext></munder><mo>=</mo>
+  <mfrac><mrow><munder><mrow><mn>2</mn><mi>B</mi><mi>D</mi></mrow><mtext class="lab">input</mtext></munder><mo>+</mo><munder class="t1"><mrow><mn>2</mn><mi>D</mi><mi>F</mi></mrow><mtext class="lab">weights</mtext></munder><mo>+</mo><munder><mrow><mn>2</mn><mi>B</mi><mi>F</mi></mrow><mtext class="lab">output</mtext></munder></mrow><msub><mi>W</mi><mtext>hbm</mtext></msub></mfrac>
+</math>
+<math display="block">
+  <msub><mi>T</mi><mtext>math</mtext></msub><mo>&#8805;</mo><msub><mi>T</mi><mtext>comms</mtext></msub>
+  <mspace width="0.5em"/><mo>&#8660;</mo><mspace width="0.5em"/>
+  <mfrac><mrow><mn>2</mn><mi>B</mi><mi>D</mi><mi>F</mi></mrow><mrow><mn>2</mn><mi>B</mi><mi>D</mi><mo>+</mo><mn>2</mn><mi>D</mi><mi>F</mi><mo>+</mo><mn>2</mn><mi>B</mi><mi>F</mi></mrow></mfrac>
+  <munder class="t2"><mo>&#8776;</mo><mtext class="lab">B ≪ D, F</mtext></munder>
+  <mfrac><mrow><mn>2</mn><mi>B</mi><mi>D</mi><mi>F</mi></mrow><mrow><mn>2</mn><mi>D</mi><mi>F</mi></mrow></mfrac>
+  <mo>=</mo><mi>B</mi>
+  <mo>&#8805;</mo>
+  <mfrac><mn>1.97e14</mn><mn>8.20e11</mn></mfrac>
+  <mo>=</mo>
+  <munder class="t4"><mn>240</mn><mtext class="lab">B_crit, TPU v5e</mtext></munder>
+</math>
+<math display="block">
+  <munder class="t4"><msub><mi>B</mi><mtext>crit</mtext></msub><mtext class="lab">general form</mtext></munder><mo>=</mo>
+  <munder><mi>&#946;</mi><mtext class="lab">bits per param ÷ bits per activation</mtext></munder>
+  <mo>&#183;</mo>
+  <munder><msub><mi>&#945;</mi><mtext>hbm</mtext></msub><mtext class="lab">C ÷ W_hbm</mtext></munder>
+</math>
+<div class="legend">
+  <span class="sym">B</span><span>tokens in this step, per replica (not sequences)</span><span class="v">1 at batch-1 decode · 1,000 for one 1k prompt</span>
+  <span class="sym">D, F</span><span>the matrix's input and output widths</span><span class="v">Llama-3.1-8B MLP: 4096 × 14336</span>
+  <span class="sym">C</span><span>accelerator FLOPs/s (bf16, dense)</span><span class="v">v5e 1.97e14 · H100 9.89e14</span>
+  <span class="sym">W_hbm</span><span>HBM bandwidth, bytes/s</span><span class="v">v5e 8.2e11 · H100 3.35e12</span>
+  <span class="sym">α_hbm</span><span>hardware intensity: FLOPs the chip can do per byte it reads</span><span class="v">v5e 240 · H100 295 · B200 281</span>
+  <span class="sym">β</span><span>precision correction: weights narrower than the compute lower B_crit</span><span class="v">bf16/bf16 = 1 · int8 w, bf16 math = ½</span>
+</div>
+</div>
+<p class="cap">The book's step: "usually our batches are at most 500 and D and F &gt; 10k", so 2BD + 2DF + 2BF ≈ 2DF. The weight term dominates the bytes and is paid once per step, so the FLOPs-per-byte ratio is simply B.</p>
+
+<table class="parts" style="margin-top:14px">
+  <tr><th>Term</th><th class="what">What it means</th><th>Example A</th><th>Example B</th></tr>
+  <tr><td>Batch B</td><td class="what">All tokens that go through this weight matrix in one step, from any mix of sequences</td>
+      <td class="ex"><b>64</b><span>decode, 64 users, 1 new token each</span></td>
+      <td class="ex"><b class="ok">1,000</b><span>prefill, one 1,000-token prompt</span></td></tr>
+  <tr><td>α<sub>hbm</sub></td><td class="what">Peak FLOPs/s ÷ HBM bytes/s, the chip's "ridge"</td>
+      <td class="ex"><b>240</b><span>TPU v5e: 1.97e14 ÷ 8.2e11</span></td>
+      <td class="ex"><b>295</b><span>H100: 9.89e14 ÷ 3.35e12</span></td></tr>
+  <tr><td>β</td><td class="what">Bits per param ÷ bits per activation, the precision the math runs in</td>
+      <td class="ex"><b>1</b><span>bf16 weights, bf16 math; also int8 × int8</span></td>
+      <td class="ex"><b class="ok">½</b><span>int8 or fp8 weights, bf16 math</span></td></tr>
+  <tr><td>B<sub>crit</sub></td><td class="what">The smallest per-replica token batch that keeps the matmul units busy</td>
+      <td class="ex"><b class="lo">240 / 295</b><span>bf16 on v5e / H100</span></td>
+      <td class="ex"><b>120 / 148</b><span>int8 weights, bf16 math, v5e / H100</span></td></tr>
+</table>
+
+<h2>Worked example: one Llama-3.1-8B MLP matrix on an H100</h2>
+<p><code>bf16[B, 4096] × bf16[4096, 14336]</code>, the gate or up projection of one layer. Its weights are 2 · 4096 · 14336 = <b>117.4 MB</b>, and they are read every step whether B is 1 or 1,024.</p>
+<div class="tw">
+<table>
+  <tr><th class="num">B (tokens)</th><th class="num">FLOPs</th><th class="num">Bytes</th><th class="num">Intensity</th><th class="num">T<sub>math</sub></th><th class="num">T<sub>comms</sub></th><th>Bound</th><th class="num">Utilisation</th></tr>
+  <tr><td class="num">1</td><td class="num">1.174e8</td><td class="num">1.175e8</td><td class="num">1.0</td><td class="num">0.12 µs</td><td class="num">35.07 µs</td><td class="mu">memory</td><td class="num lo">0.3%</td></tr>
+  <tr><td class="num">16</td><td class="num">1.879e9</td><td class="num">1.180e8</td><td class="num">15.9</td><td class="num">1.90 µs</td><td class="num">35.23 µs</td><td class="mu">memory</td><td class="num">5.4%</td></tr>
+  <tr><td class="num">64</td><td class="num">7.516e9</td><td class="num">1.198e8</td><td class="num">62.7</td><td class="num">7.60 µs</td><td class="num">35.76 µs</td><td class="mu">memory</td><td class="num">21.3%</td></tr>
+  <tr><td class="num">256</td><td class="num">3.006e10</td><td class="num">1.269e8</td><td class="num">237.0</td><td class="num">30.40 µs</td><td class="num">37.87 µs</td><td class="mu">memory</td><td class="num">80.3%</td></tr>
+  <tr class="crit"><td class="num lo">295</td><td class="num">3.464e10</td><td class="num">1.283e8</td><td class="num">270.0</td><td class="num">35.03 µs</td><td class="num">38.30 µs</td><td class="mu">memory (just)</td><td class="num">91.5%</td></tr>
+  <tr><td class="num">512</td><td class="num">6.013e10</td><td class="num">1.363e8</td><td class="num">441.1</td><td class="num">60.80 µs</td><td class="num">40.69 µs</td><td class="hi">compute</td><td class="num hi">100%</td></tr>
+  <tr><td class="num">1024</td><td class="num">1.203e11</td><td class="num">1.552e8</td><td class="num">774.9</td><td class="num">121.60 µs</td><td class="num">46.33 µs</td><td class="hi">compute</td><td class="num hi">100%</td></tr>
+</table>
+</div>
+<div class="formula">Utilisation = T_math / max(T_math, T_comms)  (share of peak FLOPs the step can use)
+
+B = 1:    FLOPs = 2·1·4096·14336                            = 1.174e8
+          bytes = 2·1·4096 + 2·4096·14336 + 2·1·14336       = 1.175e8   (weights are 99.97%)
+          T_math = 1.174e8 / 9.89e14 = 0.12 µs    T_comms = 1.175e8 / 3.35e12 = 35.07 µs
+          utilisation = 0.12 / 35.07 = 0.34%  ≈ 1/295
+
+B = 512:  FLOPs = 6.013e10   bytes = 1.363e8
+          T_math = 60.80 µs  >  T_comms = 40.69 µs   → compute-bound, 100%</div>
+<p class="cap">From labs/critical-batch-size.py (our recomputation, not in the book). At B = 295 this matrix is still slightly memory-bound. B ≥ 295 is the B ≪ D, F approximation. With exact bytes, T<sub>math</sub> = T<sub>comms</sub> at <b>B = 325.4</b> on H100 and <b>259.8</b> on v5e, about 10% and 8% higher. Here B is not ≪ F, so the 2BD + 2BF terms still count.</p>
+
+<h2>Step time against batch</h2>
+<p>The same matrix on H100. The step takes max(T<sub>math</sub>, T<sub>comms</sub>). Up to B<sub>crit</sub>, extra tokens ride along almost free. Past it, every extra token costs its own FLOPs.</p>
+<svg viewBox="0 0 800 350" role="img" aria-label="Step time versus batch size for a 4096 by 14336 bf16 matmul on H100: flat memory floor near 35 microseconds until about B 325, then rising linearly to 122 microseconds at B 1024">
+  <rect class="memz" x="70" y="40" width="222.4" height="250"/>
+  <g class="gridl">
+    <line x1="70" y1="240" x2="770" y2="240"/><line x1="70" y1="190" x2="770" y2="190"/><line x1="70" y1="140" x2="770" y2="140"/><line x1="70" y1="90" x2="770" y2="90"/><line x1="70" y1="40" x2="770" y2="40"/>
+  </g>
+  <line class="ax" x1="70" y1="290" x2="770" y2="290"/><line class="ax" x1="70" y1="40" x2="70" y2="290"/>
+  <text class="sl" x="70" y="308" text-anchor="middle">0</text><text class="sl" x="245" y="308" text-anchor="middle">256</text><text class="sl" x="420" y="308" text-anchor="middle">512</text><text class="sl" x="595" y="308" text-anchor="middle">768</text><text class="sl" x="770" y="308" text-anchor="end">1024</text>
+  <text class="sl" x="420" y="332" text-anchor="middle">B, tokens in the step</text>
+  <text class="sl" x="62" y="294" text-anchor="end">0</text><text class="sl" x="62" y="244" text-anchor="end">25</text><text class="sl" x="62" y="194" text-anchor="end">50</text><text class="sl" x="62" y="144" text-anchor="end">75</text><text class="sl" x="62" y="94" text-anchor="end">100</text><text class="sl" x="62" y="44" text-anchor="end">125</text>
+  <text class="sl" x="18" y="165" text-anchor="middle" transform="rotate(-90 18 165)">step time, µs</text>
+  <!-- dashed: each bound on its own -->
+  <line class="memln" x1="292.4" y1="212.7" x2="770" y2="197.3"/>
+  <line class="cmpln" x1="70" y1="290" x2="292.4" y2="212.7"/>
+  <!-- solid: max of the two -->
+  <line class="stepm" x1="70" y1="219.9" x2="292.4" y2="212.7"/>
+  <line class="stepc" x1="292.4" y1="212.7" x2="770" y2="46.8"/>
+  <line class="crit" x1="271.7" y1="40" x2="271.7" y2="290"/>
+  <circle class="pt" cx="292.4" cy="212.7" r="4"/>
+  <text class="st" x="80" y="186">memory floor ≈ 35 µs</text>
+  <text class="sl" x="80" y="202">reading 117 MB of weights</text>
+  <text class="tr" x="266" y="58" text-anchor="end">B_crit ≈ 295</text>
+  <text class="sl" x="302" y="232">exact crossing 325.4, 38.6 µs</text>
+  <text class="sl" x="600" y="190">T_comms alone (dashed grey)</text>
+  <text class="tg" x="500" y="160" transform="rotate(-19.1 500 160)">compute: 2DF / C ≈ 0.119 µs per extra token</text>
+  <text class="st" x="760" y="36" text-anchor="end">121.6 µs at B = 1024</text>
+  <text class="sl" x="180" y="282">memory-bound</text>
+  <text class="tg" x="420" y="276" text-anchor="middle">compute-bound</text>
+</svg>
+<p class="cap">Grey: memory floor, where the step time is set by reading the weights. Green: compute. Red: B<sub>crit</sub> = C / W<sub>hbm</sub>. The bold line is max(T<sub>math</sub>, T<sub>comms</sub>). Going from B = 1 to 325 multiplies the tokens by 325 but the step time only by 1.1×, so throughput per chip rises almost for free. Past the knee, doubling B doubles the step time: throughput stops improving while per-token latency keeps rising. Numbers from labs/critical-batch-size.py.</p>
+
+<h2>What "batch" means: total tokens in the step, per replica</h2>
+<p>A matmul doesn't care which sequence a row came from. B is the number of rows in X, which is all tokens pushed through the same copy of the weights in one step.</p>
+<table class="parts">
+  <tr><th>Phase</th><th class="what">Rows in X this step</th><th>Example A</th><th>Example B</th></tr>
+  <tr><td>Prefill</td><td class="what">Every prompt token at once, since they are all known up front</td>
+      <td class="ex"><b class="ok">B = 1,000</b><span>one 1,000-token prompt; &gt; 295, compute-bound alone</span></td>
+      <td class="ex"><b>B = 120</b><span>a 120-token prompt; below B<sub>crit</sub>, but batching prompts "is typically not necessary"</span></td></tr>
+  <tr><td>Decode</td><td class="what">One new token per active sequence, summed over the sequences being served</td>
+      <td class="ex"><b class="lo">B = 1</b><span>one user; 0.3% of H100 peak on this matrix</span></td>
+      <td class="ex"><b>B = 295</b><span>295 users decoding together: 295 KV caches</span></td></tr>
+  <tr><td>Per replica</td><td class="what">Each independent copy of the weights sees only its own share</td>
+      <td class="ex"><b>B = 256</b><span>2,048 decode streams over 8 data-parallel copies</span></td>
+      <td class="ex"><b>unchanged</b><span>model sharding (e.g. tensor parallelism): compute and bandwidth scale together, so the ratio stays (book, Part 1)</span></td></tr>
+</table>
+<p class="cap">The 2,048-over-8 split is an illustrative example. The book's version, in Part 1, is 512 sequences × 4,096 tokens on 2,048 GPUs: a 2M-token global batch but only a 1k-token local batch.</p>
+
+<h2>Precision changes B<sub>crit</sub> (β)</h2>
+<p>With B ≪ D, F, the bytes are about DF × bytes-per-weight and the FLOPs are 2BDF, run at whatever precision the math uses. So B<sub>crit</sub> ≈ (C<sub>at that precision</sub> ÷ W<sub>hbm</sub>) × bytes-per-weight ÷ 2. Narrower weights halve it. Faster, narrower math doubles the ridge. Doing both cancels out. The book writes this as β · α<sub>hbm</sub>, with α taken at bf16.</p>
+<div class="tw">
+<table>
+  <tr><th>Weights × math</th><th class="num">β</th><th class="num">TPU v5e</th><th class="num">H100</th><th class="num">B200</th><th class="num">H100, exact (Llama MLP)</th></tr>
+  <tr><td>bf16 × bf16</td><td class="num">1</td><td class="num"><b>240</b> <span class="mu">book</span></td><td class="num"><b>295</b> <span class="mu">book</span></td><td class="num"><b>281</b> <span class="mu">book</span></td><td class="num">325</td></tr>
+  <tr><td>int8 / fp8 weights, bf16 math</td><td class="num">½</td><td class="num hi"><b>120</b> <span class="mu">book</span></td><td class="num hi">148</td><td class="num hi">141</td><td class="num">163</td></tr>
+  <tr><td>int8 × int8 / fp8 × fp8</td><td class="num">1</td><td class="num"><b>240</b> <span class="mu">book</span></td><td class="num">295</td><td class="num">281</td><td class="num">326</td></tr>
+  <tr><td>bf16 weights, int8 / fp8 math</td><td class="num">2</td><td class="num lo">480</td><td class="num lo">591</td><td class="num lo">562</td><td class="num">651</td></tr>
+</table>
+</div>
+<div class="formula">v5e int8 × int8:  1 byte/weight, C = 3.94e14
+  2B ≥ 3.94e14 / 8.2e11 = 480    → B ≥ 240
+H100 fp8 × fp8:   1 byte/weight, C = 1.979e15
+  2B ≥ 1.979e15 / 3.35e12 = 590.7 → B ≥ 295.4
+H100 fp8 w, bf16: 1 byte/weight, C = 9.89e14
+  2B ≥ 295.2                       → B ≥ 147.6</div>
+<p class="cap">"Book" marks the values the book states: Part 7 for v5e 240/120/240, Part 12 for H100 295 and B200 281. The book's Part 12 also says fp8 doubles the ridge to "590 and 562 … although in some sense it stays constant if … our weights will likely be loaded in fp8 as well". That is the 591 → 295 in rows 3 and 4. Every other H100 and B200 value, and the exact column, is our recomputation with labs/critical-batch-size.py. Row 4 (wide weights, narrow math) is a thought experiment, since you would normally quantize the weights too.</p>
+
+<h2>The book's takeaways</h2>
+<blockquote>"Transformer matmuls are compute-bound iff the per-replica token batch size is greater than B<sub>crit</sub> … For bf16 activations on TPU v5e, this is 240 tokens. For an H100, it is about 280 tokens."</blockquote>
+<blockquote>"During prefill, all matrix multiplications are basically always compute-bound." · "During generation, the total token batch size must be greater than B<sub>crit</sub> … this requires us to batch multiple requests together, which is hard!"</blockquote>
+<p class="cap">Two H100 numbers: Part 7's takeaway says "about 280"; Part 12 computes 990e12 / 3.35e12 = 295 (and says "around 280" as the GPU-family figure alongside B200's 281). This course uses 295 for H100.</p>
+
+<h2>Why it beats the alternatives</h2>
+<div class="grid2">
+  <div class="cell"><h3><span class="x">&#10007;</span> "Just use a bigger GPU"</h3><p>H100 → B200 raises FLOPs and bandwidth together: 295 → 281. Batch-1 decode stays memory-bound at well under 1% of peak on either chip. It runs faster, but it is no better used.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> "Batch 1 is fine"</h3><p>Lowest latency per token, but the H100 does 0.12 µs of math in a 35 µs step on this matrix: 0.3%, about 1/295 of peak. You pay for a whole GPU and use a sliver of it.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> "Use fp8 math for more FLOPs"</h3><p>Faster math on the same bytes doubles the ridge (295 → 591 on H100). It only pays off if the weights shrink too (fp8 × fp8 → back to 295). Weight-only int8/fp8 is what actually lowers B<sub>crit</sub>, to ≈ 148.</p></div>
+  <div class="cell win"><h3><span class="ok">&#10003;</span> Batch tokens up to B<sub>crit</sub></h3><p>Each weight byte read is reused by B tokens. From B = 1 to 325 the step only goes from 35.1 to 38.6 µs for 325× the tokens. Stop near the knee: past it, latency grows with no gain in throughput.</p></div>
+</div>
+
+<h2>If B<sub>crit</sub> is only ~300, why is decode so hard?</h2>
+<div class="note">
+  <p><b>Every decoding sequence needs its own KV cache.</b> The book: "a generate batch size of 240 means 240 concurrent requests … and 240 separate KV caches". On one H100 running Llama-3.1-8B, 63.9 GB of HBM is free after weights, which is 487,823 tokens of KV at 128 KiB/token. Spread over 295 sequences, that is only ~1,652 tokens of context each. At 8k context only 59 sequences fit, so the linear layers stay memory-bound (our recomputation; see <a href="params-vs-kv.html">params vs KV cache</a> and <a href="modeling-13b.html">modelling LLaMA 2-13B</a> for the book's version). Prefill has no such problem: one 1,000-token prompt already exceeds 295.</p>
+  <p><b>MoE raises the bar by E/k.</b> E experts' worth of weights are read, but each token only does k experts' worth of FLOPs, so the book's Q5 (E = 16, k = 2) needs 240 × 8 = <b>1,920</b> tokens on v5e (<a href="worked-problems.html">worked problems</a>).</p>
+  <p><b>When B<sub>crit</sub> is not the right target:</b></p>
+  <ul>
+    <li><b>Latency-first serving</b> (one interactive user, speculative decoding) deliberately runs below it and accepts idle FLOPs.</li>
+    <li><b>Attention doesn't follow this rule.</b> Its "weights" are each sequence's own KV cache, so batching doesn't reuse them, and decode attention stays memory-bound at any B (<a href="attention-intensity.html">attention's intensity</a>).</li>
+    <li><b>Small matrices</b> (D = F = 1024) cross much later than 295: exact ≈ 697 on H100, per the lab.</li>
+    <li><b>Real kernels</b> reach 80–85% of peak on GPUs (book, Part 1), so the real knee is softer than the plot's corner.</li>
+  </ul>
+</div>
+
+<div class="foot">
+<p><a class="lab-link" href="https://github.com/seyonv/explainers/blob/main/perf-2-scaling-book-inference/labs/critical-batch-size.py">Run it: labs/critical-batch-size.py</a> Prints the Llama-MLP table on v5e and H100, the exact crossing B, the β table for v5e/H100/B200, the KV headroom check and the SVG's points. Try this: set D = F = 1024 and watch the crossing move to ~697; switch H100 to fp8 × fp8 and watch B<sub>crit</sub> stay at ~295.</p>
+<p><b>Read next:</b> <a href="https://jax-ml.github.io/scaling-book/inference/">Scaling Book Part 7, "All About Transformer Inference"</a>, section "Linear operations: what bottlenecks us?" Read all of it (~15 min). Then <a href="https://jax-ml.github.io/scaling-book/roofline/">Part 1, "All About Rooflines"</a>: do Questions 1 and 2 (int8 × int8, and int8 weights with bf16 math) before you open the answers (~15 min).</p>
+<p><b>Related:</b> <a href="roofline.html">the roofline, properly</a> · <a href="attention-intensity.html">attention's arithmetic intensity</a> · <a href="step-time.html">the step-time formula</a> · <a href="params-vs-kv.html">params vs KV cache</a> · <a href="modeling-13b.html">modelling LLaMA 2-13B</a> · <a href="worked-problems.html">worked problems</a> · <a href="../perf-1-foundations/roofline-intuition.html">perf-1: the roofline intuition</a> · <a href="../llm-latency/memory-bandwidth.html">memory-bandwidth-bound decoding</a> · <a href="../llm-latency/moe.html">MoE</a></p>
+<p><b>Sources:</b> T<sub>math</sub>/T<sub>comms</sub>, B<sub>crit</sub> = β·α<sub>hbm</sub>, v5e 240/120/240, "about 280" for H100, the prefill/generation takeaways and the 240-KV-caches quote: <a href="https://jax-ml.github.io/scaling-book/inference/">Scaling Book Part 7</a>. v5e 1.97e14 bf16 / 3.94e14 int8, 8.2e11 B/s; model sharding leaves the ratio unchanged; 80–85% of peak on GPUs: <a href="https://jax-ml.github.io/scaling-book/roofline/">Part 1</a>. H100 9.89e14 dense bf16, 1.979e15 fp8, 3.35e12 B/s; H100 295, B200 2.25e15 / 8e12 = 281; fp8 "590 and 562": <a href="https://jax-ml.github.io/scaling-book/gpus/">Part 12</a>. MoE E/k and 1,920: Part 7 Worked Problem Q5. Llama-3.1-8B shapes, 16.06 GB weights and 128 KiB/token KV: course facts. All Llama/H100/B200 tables, exact crossings and KV headroom: our recomputation, labs/critical-batch-size.py.</p>
+</div>
+</article>
+</body>
+</html>

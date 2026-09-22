@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Modelling LLaMA 2-13B on 8 TPU v5e</title>
+<style>
+:root{
+  --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
+  --text:#1c1f23; --muted:#6b7068; --faint:#b9b9b3;
+  --accent:#4a9d77; --accent-bg:#dcefdf; --accent-border:#8cc79c;
+  --red:#c0492b; --red-bg:#fbeceb;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#15171a; --surface:#1d2024; --surface2:#24282d; --border:#32373d;
+    --text:#e6e8ea; --muted:#9aa1a9; --faint:#4a5057;
+    --accent:#5fb37f; --accent-bg:#1c2b22; --accent-border:#3f7a55;
+    --red:#e57368; --red-bg:#2e1f1e;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text)}
+.card{max-width:820px;margin:0 auto;padding:28px 32px;font-family:-apple-system,"Inter",system-ui,sans-serif;line-height:1.45}
+h1{font-size:26px;font-weight:600;margin:0 0 6px;letter-spacing:-0.01em}
+.sub{font-size:15px;color:var(--muted);margin:0 0 20px}
+h2{font-size:17px;font-weight:600;margin:26px 0 10px}
+h3.t{font-size:15px;font-weight:600;margin:18px 0 6px}
+p{font-size:15px;margin:0 0 10px}
+ul{font-size:15px;margin:0 0 10px;padding-left:20px}
+.cap{font-size:13px;color:var(--muted);margin:8px 0 0;text-align:center}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+blockquote{margin:10px 0;padding:8px 14px;border-left:3px solid var(--border);color:var(--muted);font-size:14px}
+
+/* Tables and formulas */
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border)}
+th{font-size:12px;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:none}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+.hi{color:var(--accent);font-weight:600} .lo{color:var(--red)} .mu{color:var(--muted)}
+.formula{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin:10px 0;white-space:pre;overflow-x:auto;line-height:1.55}
+.tw{overflow-x:auto}
+.tw table{min-width:600px}
+tr.crit td{border-top:2px dashed var(--red)}
+tr.oom td{background:var(--red-bg);color:var(--red)}
+tr.edge td.m{color:var(--red)}
+.lim{font-size:12px;color:var(--red);text-align:center;padding:3px 10px!important;border-bottom:none!important}
+
+/* MathML */
+.mathbox{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px 16px 12px;margin:10px 0;overflow-x:auto}
+.mathbox math{font-size:21px;color:var(--text);font-family:"STIX Two Math","Latin Modern Math","Cambria Math",math}
+.mathbox .t1{color:var(--text)} .mathbox .t2{color:var(--accent)} .mathbox .t3{color:var(--muted)} .mathbox .t4{color:var(--red)}
+.mathbox .lab{font-size:12px;font-family:-apple-system,"Inter",system-ui,sans-serif;padding-top:3px;border-top:1.5px solid currentColor;margin-top:2px}
+.mathbox math + math{margin-top:16px}
+.legend{display:grid;grid-template-columns:auto 1fr auto;column-gap:14px;row-gap:5px;font-size:13px;margin-top:14px;align-items:baseline}
+.legend .sym{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;text-align:right}
+.legend .v{color:var(--muted);text-align:right;font-variant-numeric:tabular-nums}
+@media (max-width:560px){.legend{grid-template-columns:auto 1fr}.legend .v{display:none}}
+
+/* Two examples per term */
+.parts td{vertical-align:top} .parts td:first-child{font-weight:600;white-space:nowrap}
+.parts .ex{font-size:13px} .parts .ex span{display:block;color:var(--muted)}
+@media (max-width:560px){.parts .what{display:none}}
+
+/* Our-recomputation panel */
+.panel{border:1px dashed var(--border);border-radius:10px;padding:12px 16px 14px;margin-top:14px;background:var(--surface)}
+.panel .tag{font-size:12px;color:var(--muted);font-weight:600;letter-spacing:.02em;margin:0 0 6px}
+.panel table{font-size:13px}
+
+/* 2x2 grid */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.cell{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.cell.win{background:var(--accent-bg);border-color:var(--accent-border)}
+.cell h3{font-size:16px;font-weight:600;margin:0 0 5px;display:flex;gap:8px;align-items:baseline}
+.cell p{font-size:14px;margin:0;color:var(--text)}
+.cell.win h3,.cell.win p{color:var(--accent)}
+.x{color:var(--red)} .ok{color:var(--accent)}
+
+/* Clarification box */
+.note{border:1px solid var(--border);border-radius:10px;padding:14px 18px;font-size:14px}
+.note p,.note li{font-size:14px} .note p:last-child{margin-bottom:0}
+
+.foot{margin-top:22px;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+.foot p{font-size:13px}
+.lab-link{display:inline-block;font-size:13px;border:1px solid var(--accent-border);background:var(--accent-bg);color:var(--accent);border-radius:6px;padding:4px 10px;margin:2px 0 10px;text-decoration:none}
+svg{display:block;max-width:100%;height:auto}
+.sl{font-size:12px;fill:var(--muted)} .st{font-size:13px;fill:var(--text)}
+.ax{stroke:var(--faint);stroke-width:1} .gridl{stroke:var(--border);stroke-width:1}
+.lm{stroke:var(--muted);stroke-width:2.5;fill:none;stroke-linejoin:round}
+.lg{stroke:var(--accent);stroke-width:2.5;fill:none;stroke-linejoin:round}
+.dsh{stroke-dasharray:5 4;stroke-width:1.5}
+.ceil{stroke-width:1;stroke-dasharray:2 4}
+.pm{fill:var(--muted)} .pg{fill:var(--accent)}
+.po{fill:var(--bg);stroke-width:1.5}
+.po.m{stroke:var(--muted)} .po.g{stroke:var(--accent)}
+.crit{stroke:var(--red);stroke-width:1.5;stroke-dasharray:4 3}
+.oomz{fill:var(--red-bg)}
+.tr{fill:var(--red);font-size:12px} .tg{fill:var(--accent);font-size:12px} .tm{fill:var(--muted);font-size:12px}
+@media (max-width:560px){.grid2{grid-template-columns:1fr}.card{padding:20px 16px}}
+a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+</style>
+</head>
+<body>
+<article class="card">
+<h1>Modelling LLaMA 2-13B on 8 TPU v5e</h1>
+<p class="sub">Also called the batch–throughput table, or "why GQA matters for serving". This is Scaling Book Part 7, "Modeling throughput and latency for LLaMA 2-13B": two tables that feed a real model's shapes into the step-time formula on 8 TPU v5e chips, first with full multi-head attention, then with a 5× smaller KV cache. The book's numbers are TPU v5e. The H100 and Llama-3.1-8B figures are our recomputation.</p>
+
+<h2>In one breath</h2>
+<p>Put real shapes into the step-time formula. With full multi-head attention the KV cache runs out of memory at batch ~16 (~790 tokens/s). A 5× smaller KV cache fits batch 64 and ~3,750 tokens/s. That is about <b>4.8× more throughput from the same chips</b>, and every batch size gets lower latency too.</p>
+
+<h2>The formula the tables come from</h2>
+<p>This is the general step time from <a href="step-time.html">the step-time formula</a>. Decode attention always waits on memory. The linear layers wait on memory until B passes B<sub>crit</sub>, which here is never, because the largest batch that fits is 16.</p>
+<div class="mathbox">
+<math display="block">
+  <msub><mi>T</mi><mtext>step</mtext></msub><mo>=</mo>
+  <munder class="t2"><mfrac><mrow><mi>B</mi><mo>&#183;</mo><msub><mtext>KV</mtext><mtext>seq</mtext></msub></mrow><msub><mi>W</mi><mtext>hbm</mtext></msub></mfrac><mtext class="lab">attention: every sequence's own KV cache</mtext></munder>
+  <mo>+</mo>
+  <munder class="t1"><mrow><mo>max</mo><mo>(</mo><mfrac><mrow><mn>2</mn><mi>B</mi><mi>P</mi></mrow><mi>C</mi></mfrac><mo>,</mo><mfrac><msub><mi>P</mi><mtext>bytes</mtext></msub><msub><mi>W</mi><mtext>hbm</mtext></msub></mfrac><mo>)</mo></mrow><mtext class="lab">params: read once, shared by the batch</mtext></munder>
+</math>
+<math display="block">
+  <mtext>throughput</mtext><mo>=</mo><mfrac><mi>B</mi><msub><mi>T</mi><mtext>step</mtext></msub></mfrac>
+  <munder class="t3"><mo>&#8776;</mo><mtext class="lab">memory-bound</mtext></munder>
+  <mfrac><mrow><mi>B</mi><mo>&#183;</mo><msub><mi>W</mi><mtext>hbm</mtext></msub></mrow><mrow><mi>B</mi><mo>&#183;</mo><msub><mtext>KV</mtext><mtext>seq</mtext></msub><mo>+</mo><msub><mi>P</mi><mtext>bytes</mtext></msub></mrow></mfrac>
+  <munder class="t4"><mo>&#8594;</mo><mtext class="lab">B → ∞</mtext></munder>
+  <mfrac><msub><mi>W</mi><mtext>hbm</mtext></msub><msub><mtext>KV</mtext><mtext>seq</mtext></msub></mfrac>
+</math>
+<div class="legend">
+  <span class="sym">B</span><span>sequences decoding together (one new token each, so also tokens per step)</span><span class="v">1 … 240</span>
+  <span class="sym">KV_seq</span><span>KV cache of one 8,192-token sequence, 2·2·H·K·L·T bytes</span><span class="v">6.7 GB (K = 40) · 1.34 GB (K = 8)</span>
+  <span class="sym">P, P_bytes</span><span>parameter count, and its size in bf16</span><span class="v">13e9 · 26 GB</span>
+  <span class="sym">W_hbm</span><span>total HBM bandwidth of the 8 chips</span><span class="v">8 × 8.2e11 = 6.56e12 B/s</span>
+  <span class="sym">C</span><span>total bf16 FLOP/s</span><span class="v">book: 1,600 TF/s (8 × 197)</span>
+</div>
+</div>
+<div class="formula">Filled in, MHA, batch 16 (the book's inputs):
+  attention  16 × 6.7e9 B / 6.56e12 B/s          = 16.34 ms
+  params     max(2·16·13e9 / 1.6e15 = 0.26 ms,  26e9 / 6.56e12 = 3.96 ms) = 3.96 ms
+  step       16.34 + 3.96                        = 20.30 ms   (book: 20.30)
+  throughput 16 / 0.02030 s                      = 787.99 tokens/s (book: 787.99)</div>
+<p class="cap">Every row of both tables is the same sum. Each MHA sequence adds 6.7 / 6.56 = 1.02 ms to the step and each GQA sequence adds 0.20 ms, on top of a 3.96 ms floor for reading the weights. From labs/modeling-13b.py.</p>
+
+<table class="parts" style="margin-top:14px">
+  <tr><th>Term</th><th class="what">What it is here</th><th>Example A: MHA (K = 40)</th><th>Example B: 1:5 GQA (K = 8)</th></tr>
+  <tr><td>KV per sequence</td><td class="what">Keys and values for all 8,192 past tokens, in all 40 layers</td>
+      <td class="ex"><b class="lo">6.7 GB</b><span>8192 × 40 × 128 × 40 × 2 × 2 B</span></td>
+      <td class="ex"><b class="ok">1.34 GB</b><span>8 KV heads shared by 40 query heads, so ÷ 5</span></td></tr>
+  <tr><td>Floor per step</td><td class="what">Reading 26 GB of weights once, for any batch</td>
+      <td class="ex"><b>3.96 ms</b><span>26e9 / 6.56e12</span></td>
+      <td class="ex"><b>3.96 ms</b><span>the book keeps the params the same</span></td></tr>
+  <tr><td>Cost per extra sequence</td><td class="what">One more KV cache to stream through the chips each step</td>
+      <td class="ex"><b class="lo">+1.02 ms</b><span>6.7e9 / 6.56e12</span></td>
+      <td class="ex"><b class="ok">+0.20 ms</b><span>1.34e9 / 6.56e12</span></td></tr>
+  <tr><td>Largest batch that fits</td><td class="what">(128 − 26) ÷ KV per sequence</td>
+      <td class="ex"><b class="lo">15 or 16</b><span>book: "we OOM beyond batch size 16"</span></td>
+      <td class="ex"><b class="ok">76 to 83</b><span>so batch 64 fits, 240 does not</span></td></tr>
+</table>
+
+<h2>Worked example: the book's two tables</h2>
+<p>8 × TPU v5e: 128 GiB of HBM, 6.5 TiB/s of bandwidth (0.82 each) and 1,600 TF/s, in the book's words. LLaMA 2-13B is L = 40, D = 5,120, F = 13,824, N = K = 40, H = 128, bf16, with 8,192-token sequences. The book runs batch sizes up to B<sub>crit</sub> = 240. Red rows don't fit in memory.</p>
+
+<h3 class="t">Table 1: full multi-head attention (K = 40)</h3>
+<div class="tw">
+<table>
+  <tr><th class="num">Batch</th><th class="num">KV cache (GiB)</th><th class="num">Total memory (GiB)</th><th class="num">Step time (ms)</th><th class="num">Throughput (tok/s)</th><th class="num">Per chip</th><th class="num">Per user (tok/s)</th></tr>
+  <tr><td class="num">1</td><td class="num">6.7</td><td class="num">32.7</td><td class="num">4.98</td><td class="num">200.61</td><td class="num">25.1</td><td class="num">200.8</td></tr>
+  <tr><td class="num">8</td><td class="num">53.6</td><td class="num">79.6</td><td class="num">12.13</td><td class="num">659.30</td><td class="num">82.4</td><td class="num">82.4</td></tr>
+  <tr class="edge"><td class="num"><b>16</b></td><td class="num">107.2</td><td class="num m">133.2*</td><td class="num">20.30</td><td class="num"><b>787.99</b></td><td class="num">98.5</td><td class="num">49.3</td></tr>
+  <tr><td colspan="7" class="lim">memory limit: 128 GiB. Everything below is out of memory</td></tr>
+  <tr class="oom crit"><td class="num">32</td><td class="num">214.4</td><td class="num">240.4</td><td class="num">36.65</td><td class="num">873.21</td><td class="num">109.2</td><td class="num">27.3</td></tr>
+  <tr class="oom"><td class="num">64</td><td class="num">428.8</td><td class="num">454.8</td><td class="num">69.33</td><td class="num">923.13</td><td class="num">115.4</td><td class="num">14.4</td></tr>
+  <tr class="oom"><td class="num">240</td><td class="num">1,608</td><td class="num">1,634</td><td class="num">249.09</td><td class="num">963.53</td><td class="num">120.4</td><td class="num">4.0</td></tr>
+</table>
+</div>
+
+<h3 class="t">Table 2: KV cache 5× smaller (1:5 GQA, K = 8), same parameters</h3>
+<div class="tw">
+<table>
+  <tr><th class="num">Batch</th><th class="num">KV cache (GiB)</th><th class="num">Total memory (GiB)</th><th class="num">Step time (ms)</th><th class="num">Throughput (tok/s)</th><th class="num">Per chip</th><th class="num">Per user (tok/s)</th></tr>
+  <tr><td class="num">1</td><td class="num">1.34</td><td class="num">27.34</td><td class="num">4.17</td><td class="num">239.94</td><td class="num">30.0</td><td class="num">239.8</td></tr>
+  <tr><td class="num">8</td><td class="num">10.72</td><td class="num">36.72</td><td class="num">5.60</td><td class="num">1,429.19</td><td class="num">178.6</td><td class="num">178.6</td></tr>
+  <tr><td class="num">16</td><td class="num">21.44</td><td class="num">47.44</td><td class="num">7.23</td><td class="num">2,212.48</td><td class="num">276.6</td><td class="num">138.3</td></tr>
+  <tr><td class="num">32</td><td class="num">42.88</td><td class="num">68.88</td><td class="num">10.50</td><td class="num">3,047.62</td><td class="num">381.0</td><td class="num">95.2</td></tr>
+  <tr><td class="num"><b>64</b></td><td class="num">85.76</td><td class="num">111.76</td><td class="num">17.04</td><td class="num hi">3,756.62</td><td class="num hi">469.6</td><td class="num">58.7</td></tr>
+  <tr><td colspan="7" class="lim">memory limit: 128 GiB</td></tr>
+  <tr class="oom crit"><td class="num">240</td><td class="num">321.6</td><td class="num">347.6</td><td class="num">52.99</td><td class="num">4,529.34</td><td class="num">566.2</td><td class="num">18.9</td></tr>
+</table>
+</div>
+<p class="cap">The first five columns are the book's, verbatim. "Per chip" is throughput ÷ 8, and "per user" is 1,000 ÷ step time in ms. Both are our arithmetic. *Batch 16 is on the edge. The table's "GiB" figures are really 10<sup>9</sup> bytes (see below), so 133.2 means 133.2 GB = 124.1 GiB. That fits in 128 GiB but not in 128 GB. With 128 GB the largest MHA batch is 15 (777.9 tok/s).</p>
+
+<svg viewBox="0 0 800 360" role="img" aria-label="Throughput against batch size on a log scale for LLaMA 2-13B on 8 TPU v5e. Multi-head attention flattens toward 979 tokens per second and runs out of memory beyond batch 16 at 788 tokens per second. The 5 times smaller KV cache climbs to 3,757 tokens per second at batch 64, which fits, and toward a ceiling of 4,896.">
+  <rect class="oomz" x="421" y="40" width="349" height="250" opacity="0.5"/>
+  <rect class="oomz" x="617" y="40" width="153" height="250" opacity="0.8"/>
+  <g class="gridl">
+    <line x1="70" y1="240" x2="770" y2="240"/><line x1="70" y1="190" x2="770" y2="190"/><line x1="70" y1="140" x2="770" y2="140"/><line x1="70" y1="90" x2="770" y2="90"/><line x1="70" y1="40" x2="770" y2="40"/>
+  </g>
+  <line class="ax" x1="70" y1="290" x2="770" y2="290"/><line class="ax" x1="70" y1="40" x2="70" y2="290"/>
+  <text class="sl" x="70" y="308" text-anchor="middle">1</text><text class="sl" x="157.5" y="308" text-anchor="middle">2</text><text class="sl" x="245" y="308" text-anchor="middle">4</text><text class="sl" x="332.5" y="308" text-anchor="middle">8</text><text class="sl" x="420" y="308" text-anchor="middle">16</text><text class="sl" x="507.5" y="308" text-anchor="middle">32</text><text class="sl" x="595" y="308" text-anchor="middle">64</text><text class="sl" x="682.5" y="308" text-anchor="middle">128</text><text class="sl" x="761.9" y="308" text-anchor="middle">240</text>
+  <text class="sl" x="420" y="334" text-anchor="middle">batch size B (log scale)</text>
+  <text class="sl" x="62" y="294" text-anchor="end">0</text><text class="sl" x="62" y="244" text-anchor="end">1k</text><text class="sl" x="62" y="194" text-anchor="end">2k</text><text class="sl" x="62" y="144" text-anchor="end">3k</text><text class="sl" x="62" y="94" text-anchor="end">4k</text><text class="sl" x="62" y="44" text-anchor="end">5k</text>
+  <text class="sl" x="18" y="165" text-anchor="middle" transform="rotate(-90 18 165)">throughput, tokens/s (8 chips)</text>
+  <!-- ceilings W/KV -->
+  <line class="lm ceil" x1="70" y1="241.1" x2="770" y2="241.1"/>
+  <line class="lg ceil" x1="70" y1="45.2" x2="770" y2="45.2"/>
+  <text class="tg" x="78" y="58">GQA ceiling W/KV = 4,896</text>
+  <text class="tm" x="78" y="234">MHA ceiling W/KV = 979</text>
+  <!-- memory cutoffs -->
+  <line class="crit" x1="421" y1="40" x2="421" y2="290"/>
+  <line class="crit" x1="617" y1="40" x2="617" y2="290"/>
+  <text class="tr" x="427" y="276">MHA out of memory past 16</text>
+  <text class="tr" x="623" y="276">GQA OOM past ~76</text>
+  <!-- MHA: solid while it fits, dashed after -->
+  <polyline class="lm" points="70,280 332.5,257 420,250.6"/>
+  <polyline class="lm dsh" points="420,250.6 507.5,246.3 595,243.8 761.9,241.8"/>
+  <!-- GQA -->
+  <polyline class="lg" points="70,278 332.5,218.5 420,179.4 507.5,137.6 595,102.2"/>
+  <polyline class="lg dsh" points="595,102.2 761.9,63.5"/>
+  <circle class="pm" cx="70" cy="280" r="3.5"/><circle class="pm" cx="332.5" cy="257" r="3.5"/><circle class="pm" cx="420" cy="250.6" r="4.5"/>
+  <circle class="po m" cx="507.5" cy="246.3" r="3.5"/><circle class="po m" cx="595" cy="243.8" r="3.5"/><circle class="po m" cx="761.9" cy="241.8" r="3.5"/>
+  <circle class="pg" cx="70" cy="278" r="3.5"/><circle class="pg" cx="332.5" cy="218.5" r="3.5"/><circle class="pg" cx="420" cy="179.4" r="3.5"/><circle class="pg" cx="507.5" cy="137.6" r="3.5"/><circle class="pg" cx="595" cy="102.2" r="4.5"/>
+  <circle class="po g" cx="761.9" cy="63.5" r="3.5"/>
+  <text class="st" x="412" y="268" text-anchor="end">788</text>
+  <text class="tg" x="587" y="98" text-anchor="end">3,757 at batch 64</text>
+  <text class="tg" x="326" y="212" text-anchor="end">1,429</text>
+  <text class="tm" x="326" y="276" text-anchor="end">659</text>
+  <text class="sl" x="755" y="84" text-anchor="end">4,529</text>
+  <text class="sl" x="755" y="262" text-anchor="end">964</text>
+</svg>
+<p class="cap">The book's throughput values. Filled dots fit in memory. Hollow dots and dashed lines are out of memory (shaded red). The dotted lines are each curve's ceiling, W<sub>hbm</sub> ÷ KV<sub>seq</sub>: 6.56e12 / 6.7e9 = 979 and 6.56e12 / 1.34e9 = 4,896 tok/s. Neither curve can pass its ceiling at any batch. The ceilings and cutoffs are our arithmetic on the book's inputs.</p>
+
+<h2>What the tables teach</h2>
+<p><b>1. Throughput has diminishing returns in batch.</b> Throughput = B·W / (B·KV + P) approaches W / KV. It is already halfway there when the batch's KV bytes equal the weight bytes, at B = P / KV = 26 / 6.7 = <b>3.9</b> sequences for MHA. From 1 → 8 MHA gains 3.3×, 8 → 16 only 1.2×, and 16 → 240 (15× the batch) just 1.22×. The book: "increasing the batch size does give us better throughput, but we suffer rapidly diminishing returns … we've hit a wall on the per chip throughput." Our aside: the per-chip wall is 0.82e12 / 6.7e9 = <b>122 tok/s</b> whatever the number of chips.</p>
+<p><b>2. Shrinking the KV cache moves both the wall and the memory limit.</b> With KV ÷ 5, the halfway point moves to 26 / 1.34 = 19.4 sequences, the ceiling rises 5× to 4,896, and the batch that fits rises from 16 to 64 or more. "The theoretical throughput per chip continues to scale up to batch size 240." At the largest batch that fits, 3,756.62 / 787.99 = <b>4.77×</b> the throughput from the same 8 chips (98.5 → 469.6 tok/s per chip).</p>
+<p><b>3. Latency improves too, at every batch.</b> The per-step time is each user's time per token. At batch 1 GQA is only 1.19× faster (4.98 → 4.17 ms, since the weights dominate), but at batch 16 it is 2.81× faster (20.30 → 7.23 ms). Even at 4× the batch, GQA's batch-64 step (17.04 ms, 58.7 tok/s per user) beats MHA's batch-16 step (20.30 ms, 49.3 tok/s per user). In the book's words: "The latency, maximum throughput, and maximum batch size all improve dramatically!" Later LLaMA generations did exactly this: LLaMA-3 8B has 32 query heads and 8 KV heads.</p>
+<blockquote>"In addition to params, the size of KV cache has a lot of bearing over the ultimate inference performance of the model. We want to keep it under control with a combination of architectural decisions and runtime optimizations."</blockquote>
+
+<h2>Recompute it: our numbers vs the book's</h2>
+<p>We rebuilt both tables three ways. (A) uses the book's inputs exactly. (B) uses exact bytes from the shapes: P = 3DFL + 4DNHL + 2VD = 13,015,449,600 params, which is 26.03 GB, and KV = 6,710,886,400 B. (C) reads the labels literally, as GiB of memory over 6.5 TiB/s.</p>
+<div class="tw">
+<table>
+  <tr><th>Recomputation</th><th>Inputs</th><th class="num">MHA batch 16 step</th><th class="num">Difference vs book, all 12 rows</th></tr>
+  <tr><td>(A) book's inputs</td><td>26e9 + B · 6.7e9 bytes, over 8 × 8.2e11 B/s</td><td class="num">20.30 ms</td><td class="num hi">throughput 0.00%; step ≤ 0.10% (book rounds to 0.01 ms)</td></tr>
+  <tr><td>(B) exact bytes</td><td>26.03e9 + B · 6.711e9, same bandwidth, C = 8 × 1.97e14</td><td class="num">20.34 ms</td><td class="num">+0.07% to +0.22%</td></tr>
+  <tr><td>(C) labels read literally</td><td>133.2 × 2<sup>30</sup> B over 6.5 × 2<sup>40</sup> B/s</td><td class="num">20.01 ms</td><td class="num lo">−1.35% to −1.50%</td></tr>
+</table>
+</div>
+<p class="cap">So the book computed in decimal units (10<sup>9</sup> bytes, 8.2e11 B/s) and then printed "GiB" and "TiB/s". 6.7e9 B is really 6.25 GiB, and 0.82e12 B/s is 0.75 TiB/s. Reading the units literally shifts every row by about 1.4%. The only place the mix-up matters is batch 16's fit (see Table 1). This is our inference from the arithmetic. The book doesn't say which unit it meant. From labs/modeling-13b.py.</p>
+
+<h2>Same exercise, our recomputation: Llama-3.1-8B on one H100</h2>
+<table>
+  <tr><th>Hardware</th><th class="num">HBM</th><th class="num">W<sub>hbm</sub></th><th class="num">bf16 FLOP/s</th><th class="num">B<sub>crit</sub></th><th class="num">Weight-read floor</th></tr>
+  <tr><td>8 × TPU v5e, LLaMA 2-13B (book)</td><td class="num">128 GiB</td><td class="num">6.56 TB/s</td><td class="num">1.6e15</td><td class="num">240</td><td class="num">26 / 6.56 = 3.96 ms</td></tr>
+  <tr><td>1 × H100 SXM, Llama-3.1-8B (ours)</td><td class="num">80 GB</td><td class="num">3.35 TB/s</td><td class="num">9.89e14</td><td class="num">295</td><td class="num">16.06 / 3.35 = 4.79 ms</td></tr>
+</table>
+<div class="panel">
+<p class="tag">OUR RECOMPUTATION, NOT IN THE BOOK · 8,192-token context · bf16 · same formula</p>
+<div class="tw">
+<table>
+  <tr><th>Attention</th><th class="num">KV per sequence</th><th class="num">Max batch in 63.9 GB free</th><th class="num">Step at max batch</th><th class="num">Throughput at max batch</th><th class="num">Ceiling W/KV</th></tr>
+  <tr><td>MHA, hypothetical (K = 32)</td><td class="num lo">4.29 GB</td><td class="num lo">14</td><td class="num">22.74 ms</td><td class="num">615.6 tok/s</td><td class="num">780</td></tr>
+  <tr><td>GQA-8, the real model (K = 8)</td><td class="num ok">1.07 GB</td><td class="num ok">59</td><td class="num">23.70 ms</td><td class="num hi">2,489.0 tok/s</td><td class="num">3,120</td></tr>
+</table>
+</div>
+<p class="cap" style="text-align:left">Same story: 4× smaller KV, 2,489.0 / 615.6 = <b>4.04×</b> the throughput at a similar step time (≈ 42–44 tokens/s per user). At equal batch 14, GQA's step is 9.28 ms vs 22.74 ms. MHA at batch 16 would need 84.8 GB (out of memory). Llama-3.1-8B has 4:1 GQA, not the book's 5:1, so the gain is 4× rather than 5×. From labs/modeling-13b.py.</p>
+</div>
+
+<h2>Why it beats the alternatives</h2>
+<div class="grid2">
+  <div class="cell"><h3><span class="x">&#10007;</span> Bigger batch, same KV</h3><p>Out of memory. MHA batch 32 needs 240.4 GB and batch 240 needs 1,634, 12.8× the 128 available. The book: "need an order of magnitude more memory to go near 240". Even if it fit, 240 would give only 1.22× batch 16's throughput.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Just add chips</h3><p>More HBM fits more sequences, but "a bigger topology can improve the latency, but we've hit a wall on the per chip throughput." Our recomputation: 8 → 64 chips moves MHA from 97 to only 119 tok/s per chip (wall 122). So cost per token barely falls.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Shorter contexts</h3><p>Halving T to 4k halves KV per sequence (3.35 GB) and roughly doubles the batch. But that limits the product: users who need 8k or 32k can't have it. At 32k, MHA fits only 3 sequences on 8 chips (our lab).</p></div>
+  <div class="cell win"><h3><span class="ok">&#10003;</span> Shrink the KV cache</h3><p>1:5 GQA with the same params: batch 64 fits, 3,757 tok/s (4.77×), and lower latency at every batch. It raises the per-chip wall 5×, which neither alternative can do. See <a href="kv-tricks.html">tricks that shrink the KV cache</a>.</p></div>
+</div>
+
+<h2>Are these the throughputs you'd actually get?</h2>
+<div class="note">
+  <p><b>No, they are ceilings.</b> They are roofline bounds that assume perfect overlap of loads and compute, and no prefill, sampling or communication time. The book lists why reality falls short. XLA doesn't overlap HBM reads perfectly with FLOPs. Sharded models often "start taking a latency hit on linears over BS=32" from ICI communication. So use the tables for ratios and limits, not as promised numbers. See <a href="sharding-kv-cache.html">sharding the KV cache</a> and <a href="serving-llama-70b.html">serving LLaMA 3-70B</a> for the fuller picture.</p>
+  <p><b>Per-chip throughput is what sets cost per token.</b> You rent chips by the hour, so $/token ∝ chips ÷ total tokens/s = 1 ÷ tokens/s per chip. That is why the 98.5 → 469.6 tok/s per chip jump matters more than the latency gain (<a href="what-we-optimize.html">what we optimize</a>).</p>
+  <p><b>When shrinking KV is not the lever:</b></p>
+  <ul>
+    <li><b>Short contexts.</b> At 1k tokens MHA's KV is only 0.84 GB per sequence and ~121 sequences fit (our arithmetic), so the weights, not KV, set the limit (<a href="params-vs-kv.html">params vs KV cache</a>).</li>
+    <li><b>Batch-1, latency-first serving.</b> KV is a small share of the bytes, so GQA only buys 1.19×. Our view: quantized weights or speculative decoding help more there (<a href="speculative-sampling.html">speculative sampling</a>).</li>
+    <li><b>Quality.</b> Sharing KV heads can cost some model quality. The book's list of tricks is explicitly "ignoring effects on quality", so check evals before assuming the gain is free (our caveat).</li>
+  </ul>
+</div>
+
+<div class="foot">
+<p><a class="lab-link" href="https://github.com/seyonv/explainers/blob/main/perf-2-scaling-book-inference/labs/modeling-13b.py">Run it: labs/modeling-13b.py</a> Rebuilds both tables three ways (book inputs, exact bytes, literal GiB/TiB) with % difference, the memory limits under 128 GB vs 128 GiB, the more-chips check, and the H100 / Llama-3.1-8B version. Try this: an int8 KV cache (MHA fits ~30 sequences, ceiling ~1,950 tok/s); a 32k context (MHA fits 3; GQA-8 on H100 drops from 59 to 14).</p>
+<p><b>Read next:</b> <a href="https://jax-ml.github.io/scaling-book/inference/">Scaling Book Part 7, "All About Transformer Inference"</a>, section "Modeling throughput and latency for LLaMA 2-13B". Read all of it (~15 min). First recompute one row yourself, say MHA batch 8 → 12.13 ms, 659.30 tok/s. Then read the "What about memory?" section just before it for the KV formula.</p>
+<p><b>Related:</b> <a href="step-time.html">the step-time formula</a> · <a href="params-vs-kv.html">params vs KV cache</a> · <a href="kv-tricks.html">tricks that shrink the KV cache</a> · <a href="critical-batch-size.html">linear layers and the critical batch size</a> · <a href="attention-intensity.html">attention's arithmetic intensity</a> · <a href="what-we-optimize.html">what we optimize</a> · <a href="../llm-latency/memory-bandwidth.html">memory-bandwidth-bound decoding</a></p>
+<p><b>Sources:</b> both tables, the 8 × v5e specs as stated ("128GiB of HBM, 6.5TiB/s … 1600TF/s"), the LLaMA 2-13B shapes, the KV formula, the "OOM beyond batch size 16", "order of magnitude more memory", "wall on the per chip throughput", 1:5 GMQA and LLaMA-3 8B quotes, and the practical nits: <a href="https://jax-ml.github.io/scaling-book/inference/">Scaling Book Part 7</a>. v5e 8.2e11 B/s and 1.97e14 FLOP/s: <a href="https://jax-ml.github.io/scaling-book/roofline/">Part 1</a>. H100 80 GB, 3.35 TB/s, 9.89e14 FLOP/s: <a href="https://jax-ml.github.io/scaling-book/gpus/">Part 12</a>. Llama-3.1-8B shapes and 16.06 GB: course facts. Recomputations (A)/(B)/(C), ceilings, per-chip and per-user columns, 128 GB vs GiB limits, the more-chips check and the H100 panel: ours, labs/modeling-13b.py.</p>
+</div>
+</article>
+</body>
+</html>

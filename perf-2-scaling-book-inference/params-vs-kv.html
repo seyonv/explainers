@@ -1,0 +1,256 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Memory: parameters vs the KV cache</title>
+<style>
+:root{
+  --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
+  --text:#1c1f23; --muted:#6b7068; --faint:#b9b9b3;
+  --accent:#4a9d77; --accent-bg:#dcefdf; --accent-border:#8cc79c;
+  --red:#c0492b; --red-bg:#fbeceb;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#15171a; --surface:#1d2024; --surface2:#24282d; --border:#32373d;
+    --text:#e6e8ea; --muted:#9aa1a9; --faint:#4a5057;
+    --accent:#5fb37f; --accent-bg:#1c2b22; --accent-border:#3f7a55;
+    --red:#e57368; --red-bg:#2e1f1e;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text)}
+.card{max-width:820px;margin:0 auto;padding:28px 32px;font-family:-apple-system,"Inter",system-ui,sans-serif;line-height:1.45}
+h1{font-size:26px;font-weight:600;margin:0 0 6px;letter-spacing:-0.01em}
+.sub{font-size:15px;color:var(--muted);margin:0 0 20px}
+h2{font-size:17px;font-weight:600;margin:26px 0 10px}
+p{font-size:15px;margin:0 0 10px}
+ul{font-size:15px;margin:0 0 10px;padding-left:20px}
+.cap{font-size:13px;color:var(--muted);margin:8px 0 0;text-align:center}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+
+/* Tables and formulas */
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border)}
+th{font-size:12px;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:none}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+.hi{color:var(--accent);font-weight:600} .lo{color:var(--red)}
+.formula{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin:10px 0;white-space:pre;overflow-x:auto;line-height:1.55}
+.tw{overflow-x:auto}
+.tw table{min-width:620px}
+tr.sep td{border-top:2px solid var(--border)}
+td.dim{color:var(--muted)}
+
+/* MathML */
+.mathbox{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px 16px 12px;margin:10px 0;overflow-x:auto}
+.mathbox math{font-size:21px;color:var(--text);font-family:"STIX Two Math","Latin Modern Math","Cambria Math",math}
+.mathbox .t1{color:var(--text)} .mathbox .t2{color:var(--accent)} .mathbox .t3{color:var(--muted)}
+.mathbox .lab{font-size:12px;font-family:-apple-system,"Inter",system-ui,sans-serif;padding-top:3px;border-top:1.5px solid currentColor;margin-top:2px}
+.legend{display:grid;grid-template-columns:auto 1fr auto;column-gap:14px;row-gap:5px;font-size:13px;margin-top:12px;align-items:baseline}
+.legend .sym{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;text-align:right}
+.legend .v{color:var(--muted);text-align:right;font-variant-numeric:tabular-nums}
+@media (max-width:560px){.legend{grid-template-columns:auto 1fr}.legend .v{display:none}}
+
+/* Two examples per term */
+.parts td{vertical-align:top} .parts td:first-child{font-weight:600;white-space:nowrap}
+.parts .ex{font-size:13px} .parts .ex span{display:block;color:var(--muted)}
+@media (max-width:560px){.parts .what{display:none}}
+
+/* HBM budget bars */
+.stack{display:grid;grid-template-columns:72px 1fr 150px;column-gap:12px;row-gap:10px;align-items:center;font-size:13px;margin-top:6px}
+.stack .hd{font-size:12px;color:var(--muted);font-weight:600}
+.stack .r{text-align:right;font-variant-numeric:tabular-nums}
+.stack .lbl{font-variant-numeric:tabular-nums}
+.stack .track{position:relative;height:22px}
+.stack .seg{position:absolute;top:0;height:22px}
+.stack .w{background:var(--muted);border-radius:3px 0 0 3px}
+.stack .kv{background:var(--accent)}
+.stack .fr{background:var(--surface2);border:1px solid var(--border);border-left:none;border-radius:0 3px 3px 0}
+.stack .cap80{position:absolute;top:-4px;bottom:-4px;border-left:2px dashed var(--red)}
+.stack .strong{font-weight:600}
+.stack .over{color:var(--red);font-weight:600}
+.key{display:flex;gap:16px;flex-wrap:wrap;font-size:13px;color:var(--muted);margin:4px 0 2px}
+.key i{display:inline-block;width:12px;height:12px;border-radius:2px;vertical-align:-1px;margin-right:5px}
+.key .kw{background:var(--muted)} .key .kk{background:var(--accent)} .key .kf{background:var(--surface2);border:1px solid var(--border)} .key .kc{border-left:2px dashed var(--red);width:2px;border-radius:0}
+
+/* 2x2 grid */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.cell{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.cell.win{background:var(--accent-bg);border-color:var(--accent-border)}
+.cell h3{font-size:16px;font-weight:600;margin:0 0 5px;display:flex;gap:8px;align-items:baseline}
+.cell p{font-size:14px;margin:0;color:var(--text)}
+.cell.win h3,.cell.win p{color:var(--accent)}
+.x{color:var(--red)} .ok{color:var(--accent)}
+
+/* Clarification box */
+.note{border:1px solid var(--border);border-radius:10px;padding:14px 18px;font-size:14px}
+.note p,.note li{font-size:14px} .note p:last-child{margin-bottom:0}
+
+.foot{margin-top:22px;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+.foot p{font-size:13px}
+.lab-link{display:inline-block;font-size:13px;border:1px solid var(--accent-border);background:var(--accent-bg);color:var(--accent);border-radius:6px;padding:4px 10px;margin:2px 0 10px;text-decoration:none}
+svg{display:block;max-width:100%;height:auto}
+@media (max-width:560px){.grid2{grid-template-columns:1fr}.card{padding:20px 16px}.stack{grid-template-columns:48px 1fr 96px}}
+a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+</style>
+</head>
+<body>
+<article class="card">
+<h1>Memory: parameters vs the KV cache</h1>
+<p class="sub">Also called the KV cache size formula, the HBM budget, or "how many users fit". This is Scaling Book Part 7, "What about memory?", in full: LLaMA 2-13B's parameter table, why training and inference memory differ, and 2·bytes·H·K·L·T. The book's numbers are LLaMA 2-13B; Llama-3.1-8B on an H100 and the fit tables are our recomputation.</p>
+
+<h2>In one breath</h2>
+<p>At inference you keep one copy of the weights, shared by every user, plus a KV cache for each sequence that grows with every token. For long contexts a handful of sequences outweigh the whole model, so KV memory, not the weights, caps your batch.</p>
+
+<h2>Step 1: count the parameters (the book's LLaMA 2-13B)</h2>
+<div class="tw">
+<table>
+  <tr><th>Hyperparameter</th><th class="num">L</th><th class="num">D</th><th class="num">F</th><th class="num">N</th><th class="num">K</th><th class="num">H</th><th class="num">V</th></tr>
+  <tr><td>LLaMA 2-13B</td><td class="num">40</td><td class="num">5,120</td><td class="num">13,824</td><td class="num">40</td><td class="num">40</td><td class="num">128</td><td class="num">32,000</td></tr>
+</table>
+</div>
+<div class="tw">
+<table style="margin-top:8px">
+  <tr><th>Params</th><th>Formula</th><th>Filled in</th><th class="num">Count</th></tr>
+  <tr><td>FFW</td><td>D² × ffw multiplier × 3 (SwiGLU gate, up, down) × L</td><td class="mono">5,120 × 5,120 × 2.7 × 3 × 40</td><td class="num">8.5e9</td></tr>
+  <tr><td>Vocab</td><td>2 (input + output embeddings) × V × D</td><td class="mono">2 × 32,000 × 5,120</td><td class="num">0.3e9</td></tr>
+  <tr><td>Attention</td><td>[2 (q, out) × D × N × H + 2 (k, v) × D × K × H] × L</td><td class="mono">(2·5,120·40·128 + 2·5,120·40·128) × 40</td><td class="num">4.2e9</td></tr>
+  <tr class="sep"><td><b>Total</b></td><td colspan="2">8.5e9 + 4.2e9 + 0.3e9, "just as expected"</td><td class="num"><b>13e9</b></td></tr>
+</table>
+</div>
+<p class="cap">The book's table. Exact values from labs/params-vs-kv.py: 8.4935e9 + 0.3277e9 + 4.1943e9 = 13.015e9 (2.7 = 13,824 / 5,120 exactly). Norm weights are left out, as in the book.</p>
+
+<h2>Step 2: training memory vs inference memory</h2>
+<div class="tw">
+<table>
+  <tr><th>What sits in memory</th><th>Training (book)</th><th>Inference (book)</th></tr>
+  <tr><td>Parameters</td><td>bf16</td><td>one bf16 copy: <b>26 GB</b> (quantization often does better)</td></tr>
+  <tr><td>Optimizer state, gradients</td><td>fp32 optimizer state: params + optimizer ≈ <b>100 GB</b></td><td class="hi">none</td></tr>
+  <tr><td>Activations</td><td>gradient checkpoints: <b class="lo">several TBs</b></td><td class="hi">≈ 80 MB for an 8k prefill: negligible</td></tr>
+  <tr><td>KV cache</td><td class="dim">not kept (our note: training processes whole sequences at once)</td><td><b class="ok">6.7 GB per 8k sequence</b>, one per sequence, growing</td></tr>
+</table>
+</div>
+<div class="formula">weights, bf16   13.015e9 × 2 B      = 26.03 GB (24.24 GiB)
+one activation  8,192 × 5,120 × 2 B = 83.9 MB (80 MiB)
+Adam moments    13.015e9 × 8 B      = 104 GB (our arithmetic;
+                the book only says "around 100GB")</div>
+<p class="cap">Why activations are tiny: nothing is kept for a backward pass, Flash Attention never materializes the attention matrix, and "longer prefills can be broken down into many smaller forward passes". Generation processes even fewer tokens.</p>
+
+<h2>Step 3: the KV cache formula</h2>
+<div class="mathbox">
+<math display="block">
+  <mtext>KV cache size</mtext><mo>=</mo>
+  <munder class="t3"><mn>2</mn><mtext class="lab">K and V</mtext></munder><mo>&#183;</mo>
+  <munder class="t3"><mtext>bytes</mtext><mtext class="lab">per number</mtext></munder><mo>&#183;</mo>
+  <munder class="t2"><mrow><mi>H</mi><mo>&#183;</mo><mi>K</mi><mo>&#183;</mo><mi>L</mi></mrow><mtext class="lab">architecture</mtext></munder><mo>&#183;</mo>
+  <munder class="t1"><mi>T</mi><mtext class="lab">tokens so far</mtext></munder>
+</math>
+<div class="legend">
+  <span class="sym">2</span><span>one key and one value vector per head, per layer, per token</span><span class="v">always 2</span>
+  <span class="sym">bytes</span><span>bytes per stored number</span><span class="v">bf16 2 · int8 / fp8 1</span>
+  <span class="sym">H</span><span>head dimension</span><span class="v">128 in all three models below</span>
+  <span class="sym">K</span><span>KV heads (not the key tensor). K = N is plain MHA; K &lt; N is GQA</span><span class="v">13B: 40 · 3.1-8B: 8</span>
+  <span class="sym">L</span><span>layers</span><span class="v">13B: 40 · 3.1-8B: 32</span>
+  <span class="sym">T</span><span>tokens in the sequence, bounded only by the max context</span><span class="v">8,192 here</span>
+</div>
+</div>
+<div class="formula">plain text: KV = 2 · bytes · H · K · L · T
+LLaMA 2-13B, one 8,192-token sequence, bf16:
+  8192 (T) × 40 (K) × 128 (H) × 40 (L) × 2 (bytes) × 2
+    = 6,710,886,400 B = 6.71 GB (6.25 GiB)
+  per token: 819,200 B = 800 KiB
+  4 sequences: 26.84 GB &gt; 26.03 GB of weights
+  KV = weights at 26.03 / 6.71 = 3.88 sequences</div>
+<p class="cap">The book: "Just 4 of these exceed the memory usage of our parameters!" It adds that LLaMA 2 "was not optimized for KV cache size at longer contexts (it isn't always this bad, since usually K is much smaller, as in LLaMA-3)".</p>
+
+<table class="parts" style="margin-top:14px">
+  <tr><th>Term</th><th class="what">What it is at inference</th><th>Example A: LLaMA 2-13B, 8k (book)</th><th>Example B: Llama-3.1-8B, 8k, H100 (ours)</th></tr>
+  <tr><td>Weights</td><td class="what">One copy, read every step, shared by the whole batch</td>
+      <td class="ex"><b>26 GB</b><span>13e9 × 2 B</span></td>
+      <td class="ex"><b>16.06 GB</b><span>8.03e9 × 2 B, 20% of the 80 GB HBM</span></td></tr>
+  <tr><td>KV cache</td><td class="what">Keys and values of every past token, one cache per sequence</td>
+      <td class="ex"><b class="lo">6.71 GB each</b><span>4 of them outweigh the model</span></td>
+      <td class="ex"><b class="ok">1.07 GB each</b><span>15 of them equal the model (GQA, K = 8)</span></td></tr>
+  <tr><td>Activations</td><td class="what">Intermediate tensors of the current forward pass</td>
+      <td class="ex"><b>≈ 80 MB</b><span>one 8,192 × 5,120 bf16 tensor</span></td>
+      <td class="ex"><b>≈ 67 MB</b><span>8,192 × 4,096 × 2 B (our arithmetic)</span></td></tr>
+  <tr><td>Optimizer state</td><td class="what">Adam moments, master weights, gradients</td>
+      <td class="ex"><b>0</b><span>training only (≈ 100 GB there)</span></td>
+      <td class="ex"><b>0</b><span>training only</span></td></tr>
+</table>
+
+<h2>Three models side by side (bf16)</h2>
+<div class="tw">
+<table>
+  <tr><th>Model</th><th>Attention</th><th class="num">Params</th><th class="num">Weights</th><th class="num">KV / token</th><th class="num">KV per 8k seq</th><th class="num">8k seqs whose KV = weights</th></tr>
+  <tr><td>LLaMA 2-13B (book)</td><td>MHA, K = N = 40, L = 40</td><td class="num">13.0B</td><td class="num">26.03 GB</td><td class="num lo">819,200 B (800 KiB)</td><td class="num lo">6.71 GB</td><td class="num lo">3.9</td></tr>
+  <tr><td>Llama-3.1-8B (ours)</td><td>GQA, K = 8 of 32, L = 32</td><td class="num">8.03B</td><td class="num">16.06 GB</td><td class="num">131,072 B (128 KiB)</td><td class="num">1.07 GB</td><td class="num hi">15.0</td></tr>
+  <tr><td>LLaMA 3-70B (Part 8)</td><td>GQA, K = 8 of 64, L = 80</td><td class="num">70B</td><td class="num">140 GB</td><td class="num">327,680 B (320 KiB)</td><td class="num">2.68 GB</td><td class="num">52.2</td></tr>
+</table>
+</div>
+<div class="formula">13B vs 8B: 819,200 / 131,072 = 6.25× = K 40/8 × L 40/32
+70B vs 8B: 327,680 / 131,072 = 2.5×  = L 80/32 (same K, H)</div>
+<p class="cap">From labs/params-vs-kv.py. Part 8 gives LLaMA 3-70B's KV as "2 * 8 * 128 * 80 = 160kB" per token in int8 (exactly 163,840 B) and lists 324kB for bf16 in its table; the formula gives 327,680 B. It uses 70e9 params (140 GB bf16); the same parameter formula gives 70.55B. GQA is why a 70B model's KV per token is smaller than a 13B's.</p>
+
+<h2>How many sequences fit</h2>
+<div class="tw">
+<table>
+  <tr><th>Model (weights)</th><th>Hardware</th><th class="num">Free after weights</th><th class="num">2k seqs</th><th class="num">8k seqs</th><th class="num">32k seqs</th></tr>
+  <tr><td>LLaMA 2-13B (26.03 GB)</td><td>H100, 80 GB</td><td class="num">53.97 GB</td><td class="num">32</td><td class="num">8</td><td class="num lo">2</td></tr>
+  <tr><td></td><td>8× v5e, 128 GiB</td><td class="num">111.41 GB</td><td class="num">66</td><td class="num">16</td><td class="num">4</td></tr>
+  <tr class="sep"><td><b>Llama-3.1-8B (16.06 GB)</b></td><td>H100, 80 GB</td><td class="num">63.94 GB</td><td class="num">238</td><td class="num hi">59</td><td class="num">14</td></tr>
+  <tr><td></td><td>8× v5e, 128 GiB</td><td class="num">121.38 GB</td><td class="num">452</td><td class="num">113</td><td class="num">28</td></tr>
+  <tr class="sep"><td>LLaMA 3-70B bf16 (140 GB)</td><td>H100 · 8× v5e</td><td class="num lo">−60.0 · −2.6 GB</td><td colspan="3" class="lo">weights alone don't fit</td></tr>
+  <tr><td>LLaMA 3-70B int8 (70 GB, int8 KV)</td><td>H100, 80 GB</td><td class="num">10.00 GB</td><td class="num">29</td><td class="num">7</td><td class="num lo">1</td></tr>
+  <tr><td></td><td>8× v5e, 128 GiB</td><td class="num">67.44 GB</td><td class="num">200</td><td class="num">50</td><td class="num">12</td></tr>
+</table>
+</div>
+<div class="formula">sequences = floor((HBM − weights) / (KV per token × T))
+13B, 8× v5e, 8k: (137.44 − 26.03) / 6.71 = 16.6 → 16
+the book: "We OOM beyond batch size 16"</div>
+<p class="cap">From labs/params-vs-kv.py; our recomputation apart from the 16. Ignores activations, framework buffers and fragmentation, so real counts are lower. Part 8's own int8 table uses 16 GB per v5e (128 GB for 8) and gets 43 caches at 8k; this table uses 128 GiB, as Part 7 does.</p>
+
+<h2>The HBM budget: Llama-3.1-8B on one H100</h2>
+<p>Weights are a fixed 16.06 GB. Each 8k sequence adds 8,192 × 131,072 B = 1.074 GB of KV. The batch grows until the red line.</p>
+<div class="key"><span><i class="kw"></i>weights (shared)</span><span><i class="kk"></i>KV cache, 1.074 GB per 8k sequence</span><span><i class="kf"></i>free HBM</span><span><i class="kc"></i>80 GB: out of memory</span></div>
+<div class="stack">
+  <div class="hd">8k seqs</div><div class="hd">GB of HBM (scale 0–85 GB)</div><div class="hd r">weights + KV = total</div>
+  <div class="lbl">1</div><div class="track"><div class="seg w" style="left:0;width:18.89%"></div><div class="seg kv" style="left:18.89%;width:1.26%"></div><div class="seg fr" style="left:20.16%;width:73.96%"></div><div class="cap80" style="left:94.12%"></div></div><div class="r">16.06 + 1.07 = 17.13</div>
+  <div class="lbl">16</div><div class="track"><div class="seg w" style="left:0;width:18.89%"></div><div class="seg kv" style="left:18.89%;width:20.21%"></div><div class="seg fr" style="left:39.11%;width:55.01%"></div><div class="cap80" style="left:94.12%"></div></div><div class="r">16.06 + 17.18 = 33.24</div>
+  <div class="lbl">32</div><div class="track"><div class="seg w" style="left:0;width:18.89%"></div><div class="seg kv" style="left:18.89%;width:40.42%"></div><div class="seg fr" style="left:59.32%;width:34.80%"></div><div class="cap80" style="left:94.12%"></div></div><div class="r">16.06 + 34.36 = 50.42</div>
+  <div class="lbl strong">59</div><div class="track"><div class="seg w" style="left:0;width:18.89%"></div><div class="seg kv" style="left:18.89%;width:74.53%"></div><div class="seg fr" style="left:93.42%;width:0.69%"></div><div class="cap80" style="left:94.12%"></div></div><div class="r strong">16.06 + 63.35 = 79.41</div>
+  <div class="lbl over">60</div><div class="track"><div class="seg w" style="left:0;width:18.89%"></div><div class="seg kv" style="left:18.89%;width:75.79%;border-radius:0 3px 3px 0"></div><div class="cap80" style="left:94.12%"></div></div><div class="r over">16.06 + 64.42 = 80.48 OOM</div>
+</div>
+<p class="cap">From labs/params-vs-kv.py (matches the course facts: 63.9 GB free ≈ 59 sequences of 8k). At batch 59 the KV cache is 80% of what's in HBM. The weights stop mattering once you're past about 15 sequences.</p>
+
+<h2>How it differs from related ideas</h2>
+<div class="grid2">
+  <div class="cell"><h3><span class="x">&#10007;</span> Weights: shared, fixed</h3><p>One copy serves every sequence in the batch, and its size doesn't change with users or context. 26 GB for LLaMA 2-13B is paid once. It decides whether the model fits, not how many users do.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Activations: tiny at inference</h3><p>No backward pass means nothing is checkpointed: ≈ 80 MB for an 8k prefill, and long prefills can be chunked. In training the same stuff is "several TBs".</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Optimizer state: training only</h3><p>The fp32 optimizer state that brings training to ≈ 100 GB for 13B simply doesn't exist at inference. This is why a model trained on a big cluster can be served on far less memory.</p></div>
+  <div class="cell win"><h3><span class="ok">&#10003;</span> KV cache: per sequence, grows</h3><p>Scales with batch × context: 2·bytes·H·K·L per token, for every token of every sequence. It is the binding constraint on batch size, and it's read every decode step too, so it drives latency as well.</p></div>
+</div>
+
+<h2>Is KV always the bigger problem?</h2>
+<div class="note">
+  <p>No. The weights still dominate when:</p>
+  <ul>
+    <li><b>Contexts are short or the batch is small.</b> At batch 1 with 8k, Llama-3.1-8B's KV is 1.07 GB next to 16.06 GB of weights. At 2k you need about 60 sequences before KV equals the weights.</li>
+    <li><b>The model is huge for the hardware.</b> LLaMA 3-70B in bf16 (140 GB) doesn't fit on one H100 or even 8× v5e. The first job is fitting the weights, with quantization or <a href="sharding-prefill-generation.html">sharding</a>; only then does KV cap the batch.</li>
+    <li><b>K is small.</b> MQA or aggressive GQA shrinks KV per token (see <a href="kv-tricks.html">KV tricks</a>), and int8/fp8 KV halves it.</li>
+  </ul>
+  <p>Also, "free HBM" isn't all KV in practice. Engines reserve a set share of memory for the cache up front. Kiely's <i>Inference Engineering</i> (p. 139) configures TensorRT-LLM to give 80% of the remaining memory to KV: a B200 with 180 GB of VRAM, 100 GB used for weights and buffers, gets 64 GB of KV cache. The book's step-time and throughput tables use the same accounting as this card; see <a href="modeling-13b.html">modelling LLaMA 2-13B</a>.</p>
+  <p>A unit warning: the book mixes GB and GiB. Its LLaMA 2-13B table lists "6.7" KV and 26 of weights in a row labelled GiB, but both are GB (6.71e9 B = 6.25 GiB; 26.03e9 B = 24.24 GiB). So its batch-16 total of 133.2 "GiB" looks over the 128 GiB limit, yet it says it OOMs only beyond 16. In consistent bytes, 16 sequences use 124.2 GiB (fits) and 17 use 130.5 GiB (OOM), so the conclusion holds.</p>
+</div>
+
+<div class="foot">
+<p><a class="lab-link" href="https://github.com/seyonv/explainers/blob/main/perf-2-scaling-book-inference/labs/params-vs-kv.py">Run it: labs/params-vs-kv.py</a> It counts the parameters of all three models, reproduces the book's 13e9 and 6.7 GB, prints KV per token and per 8k sequence, the 2k/8k/32k fit counts on an H100 and 8× v5e, and the H100 budget bars. Try this: store KV in int8/fp8 (bytes = 1), which doubles every fit count (13B: KV = weights at 7.8 sequences instead of 3.9). At 128k context, one Llama-3.1-8B sequence is 17.2 GB of KV, more than its weights, and only 3 fit on an H100.</p>
+<p><b>Read next:</b> <a href="https://jax-ml.github.io/scaling-book/inference/">Scaling Book Part 7, "What about memory?"</a>: all of it (~10 min). Then <a href="https://kipply.github.io/blog/transformer-inference-arithmetic/">kipply, "Transformer Inference Arithmetic"</a>: the "kv cache" and "capacity" sections (~10 min), which do the same per-token formula and a capacity example for a 52B model.</p>
+<p><b>Related:</b> <a href="step-time.html">the step-time formula</a> · <a href="modeling-13b.html">modelling LLaMA 2-13B on 8×v5e</a> · <a href="kv-tricks.html">tricks that shrink the KV cache</a> · <a href="attention-intensity.html">attention's arithmetic intensity</a> · <a href="kv-cache-sampling.html">sampling and the KV cache</a> · <a href="serving-llama-70b.html">serving LLaMA 3-70B</a> · <a href="../perf-1-foundations/attention.html">perf-1: attention (MHA 512 KiB / GQA 128 KiB / MQA 16 KiB per token)</a> · <a href="../llm-latency/memory-bandwidth.html">memory-bandwidth-bound decoding</a></p>
+<p><b>Sources:</b> LLaMA 2-13B shapes, the parameter table, "around 100GB", "several TBs", 26 GB, 80 MB, the KV formula, 6.7 GB, "just 4 of these" and "OOM beyond batch size 16": <a href="https://jax-ml.github.io/scaling-book/inference/">Scaling Book Part 7</a>. LLaMA 3-70B's 160kB int8 / 324kB bf16 per token, 70e9 params and the int8 fit table: <a href="https://jax-ml.github.io/scaling-book/applied-inference/">Scaling Book Part 8</a>. Llama-3.1-8B shapes, 16.06 GB, 131,072 B per token and H100 80 GB: this course's shared facts. B200 KV-reservation example: Philip Kiely, <i>Inference Engineering</i> (2026), §5.3.2, p. 139. The Llama-3.1-8B and 70B comparisons, fit counts, budget bars and the Adam arithmetic are our recomputation, not in the book.</p>
+</div>
+</article>
+</body>
+</html>
