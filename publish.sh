@@ -34,6 +34,7 @@ if [ "$unattended" -eq 1 ]; then
 else
   paths=(.)
   node sync-papers.mjs || echo "papers: sync failed, publishing without paper changes"
+  node perf-nav.mjs
   node build-hub.mjs
 fi
 git add -A -- "${paths[@]}"
