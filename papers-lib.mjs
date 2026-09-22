@@ -4,9 +4,11 @@ export function arxivId(src = "") {
   return src.match(/(\d{4}\.\d{4,5})(v\d+)?/)?.[1] || null;
 }
 
+// null when there's no arXiv id and paper.id isn't a plain token safe to use in a path.
 export function folderName(paper) {
   const id = arxivId(paper.source?.value);
-  return "paper-" + (id ? id.replace(".", "-") : paper.id);
+  if (id) return "paper-" + id.replace(".", "-");
+  return typeof paper.id === "string" && /^[\w.-]+$/.test(paper.id) && !/^\.+$/.test(paper.id) ? "paper-" + paper.id : null;
 }
 
 export function selectCards(cardsJson, fileNames) {

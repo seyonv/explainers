@@ -17,6 +17,10 @@ test("folderName prefers arxiv id, falls back to paper id", () => {
   assert.equal(folderName({ ...paper, source: { value: "x.pdf" } }), "paper-20260913-2305-01210-gp2n");
 });
 
+test("folderName returns null for an unsafe fallback id", () => {
+  for (const id of ["../x", "a/b", "", "..", undefined, 42]) assert.equal(folderName({ id, source: { value: "x.pdf" } }), null);
+});
+
 test("selectCards: ready only, file must exist, overview first, revisions ignored", () => {
   const cards = { cards: [
     { slug: "pass-at-k", title: "pass@k", kind: "concept", status: "ready" },

@@ -46,3 +46,59 @@ test("syncPapers groups per paper, filters, is idempotent, and prunes", () => {
   assert.equal(readFileSync(join(dest, "llm-latency", "index.html"), "utf8"), "keep");
   assert.ok(existsSync(join(dest, "paper-template.html")));
 });
+
+const ready = [{ slug: "_overview", title: "Overview", kind: "overview", status: "ready" },
+               { slug: "pass-at-k", title: "pass@k", kind: "concept", status: "ready" }];
+
+function destWithPaper() {
+  const dest = mkdtempSync(join(tmpdir(), "dest-"));
+  writeFileSync(join(dest, "paper-template.html"), "template");
+  mkdirSync(join(dest, "paper-2305-01210")); writeFileSync(join(dest, "paper-2305-01210", "index.html"), "old");
+  return dest;
+}
+
+test("syncPapers throws and deletes nothing when src is missing", () => {
+  const dest = destWithPaper();
+  assert.throws(() => syncPapers({ src: join(dest, "no-such-src"), dest }), /not found/);
+  assert.equal(readFileSync(join(dest, "paper-2305-01210", "index.html"), "utf8"), "old");
+});
+
+test("syncPapers throws and deletes nothing when src has no valid papers", () => {
+  const dest = destWithPaper(), src = mkdtempSync(join(tmpdir(), "src-"));
+  assert.throws(() => syncPapers({ src, dest }), /no valid papers/);
+  mkdirSync(join(src, "half-written"));
+  assert.throws(() => syncPapers({ src, dest }), /no valid papers/);
+  assert.equal(readFileSync(join(dest, "paper-2305-01210", "index.html"), "utf8"), "old");
+});
+
+test("a paper with 0 ready cards keeps its existing folder untouched", () => {
+  const src = mkdtempSync(join(tmpdir(), "src-")), dest = mkdtempSync(join(tmpdir(), "dest-"));
+  writeFileSync(join(dest, "paper-template.html"), "<h1><!--TITLE--></h1><!--SUB-->/*GROUPS*/[]");
+  const a = paperDir(src, "p1", "2305.01210", ready);
+  syncPapers({ src, dest });
+  const before = readdirSync(join(dest, "paper-2305-01210")).sort();
+  const idx = readFileSync(join(dest, "paper-2305-01210", "index.html"), "utf8");
+  rmSync(join(a, "cards"), { recursive: true }); mkdirSync(join(a, "cards"));
+  const r = syncPapers({ src, dest });
+  assert.deepEqual(r, { written: [], removed: [] });
+  assert.deepEqual(readdirSync(join(dest, "paper-2305-01210")).sort(), before);
+  assert.equal(readFileSync(join(dest, "paper-2305-01210", "index.html"), "utf8"), idx);
+  rmSync(join(a, "cards"), { recursive: true });
+  assert.deepEqual(syncPapers({ src, dest }).removed, []);
+});
+
+test("a paper title with $' and $& renders verbatim", () => {
+  const src = mkdtempSync(join(tmpdir(), "src-")), dest = mkdtempSync(join(tmpdir(), "dest-"));
+  writeFileSync(join(dest, "paper-template.html"), "<title><!--TITLE--></title><h1><!--TITLE--></h1><!--SUB-->/*GROUPS*/[]");
+  const d = paperDir(src, "p1", "2305.01210", ready);
+  const p = JSON.parse(readFileSync(join(d, "paper.json"), "utf8"));
+  p.title = "Cost $' and $& and $$ tricks"; p.authors = ["A $& B"];
+  writeFileSync(join(d, "paper.json"), JSON.stringify(p));
+  writeFileSync(join(d, "cards.json"), JSON.stringify({ cards: ready.map((c) => ({ ...c, title: c.title + " $'" })) }));
+  syncPapers({ src, dest });
+  const idx = readFileSync(join(dest, "paper-2305-01210", "index.html"), "utf8");
+  assert.equal(idx.split("<h1>Cost $' and $&amp; and $$ tricks</h1>").length, 2);
+  assert.equal(idx.split("<title>Cost $' and $&amp; and $$ tricks</title>").length, 2);
+  assert.ok(idx.includes("A $&amp; B"));
+  assert.ok(idx.includes(`"Overview $'"`));
+});

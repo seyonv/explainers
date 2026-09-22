@@ -2,6 +2,7 @@
 // Builds index.html: one tile per explainer folder in this repo.
 // A folder with index.html is a curriculum; a folder with one card is a single explainer.
 // Optional <folder>/explainer.json overrides {"title","description","date"}.
+// --tracked: only folders with files in the git index (unattended publishes skip unstaged work).
 import { readdirSync, readFileSync, writeFileSync, existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -17,10 +18,14 @@ function firstCommitDate(dir) {
   } catch { return null; }
 }
 
+const tracked = process.argv.includes("--tracked")
+  ? new Set(execFileSync("git", ["ls-files"], { cwd: root, encoding: "utf8" }).split("\n").map((f) => f.split("/")[0]))
+  : null;
+
 const entries = [];
 for (const slug of readdirSync(root).sort()) {
   const dir = join(root, slug);
-  if (slug.startsWith(".") || !statSync(dir).isDirectory()) continue;
+  if (slug.startsWith(".") || !statSync(dir).isDirectory() || (tracked && !tracked.has(slug))) continue;
   const htmls = readdirSync(dir).filter((f) => f.endsWith(".html")).sort();
   if (!htmls.length) continue;
   const isCurriculum = htmls.includes("index.html");
@@ -43,8 +48,8 @@ for (const slug of readdirSync(root).sort()) {
 entries.sort((a, b) => b.date.localeCompare(a.date) || a.title.localeCompare(b.title));
 
 const page = readFileSync(join(root, "hub-template.html"), "utf8")
-  .replace("/*ENTRIES*/[]", JSON.stringify(entries, null, 1))
-  .replace("<!--COUNT-->", `${entries.length} explainer${entries.length === 1 ? "" : "s"}, ${entries.reduce((n, e) => n + e.cards, 0)} cards`);
+  .replace("/*ENTRIES*/[]", () => JSON.stringify(entries, null, 1).replace(/</g, "\\u003c"))
+  .replace("<!--COUNT-->", () => `${entries.length} explainer${entries.length === 1 ? "" : "s"}, ${entries.reduce((n, e) => n + e.cards, 0)} cards`);
 writeFileSync(join(root, "index.html"), page);
 writeFileSync(join(root, "hub.json"), JSON.stringify({
   explainers: entries.length,
