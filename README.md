@@ -39,9 +39,14 @@ course is finished.
 `.nojekyll` must stay: without it, GitHub Pages drops every file whose name starts with `_`, such
 as `_overview.html`.
 
-## The AI perf engineering series
+## Course navigation
 
-The `perf-*` folders form one linked series. `perf-series.json` lists the courses in order, what each course needs, and each card's prerequisites. `perf-nav.mjs` reads that file plus each course's `index.html` card order, then writes breadcrumbs, a "before this" line and a "next up" preview into every card, and a course strip and contents sidebar into every course index. `publish.sh` runs it on every manual publish, so a new course only needs an entry in `perf-series.json`.
+`course-nav.mjs` gives every course the same navigation. A course is any folder whose `index.html`
+has a `GROUPS` list. Each card gets breadcrumbs with prev/next at the top and a big "next up"
+preview at the bottom, and each course index gets a contents sidebar in the reader. `publish.sh`
+runs it on every publish (papers included), so a new course picks it up with no extra step.
+
+The `perf-*` folders form one linked series. `perf-series.json` lists the courses in order, what each course needs, and each card's prerequisites. For those courses the navigation also adds a course strip, a "before this" line on each card, and "next up" links that cross into the next course. Adding a course to the series only needs an entry in `perf-series.json`.
 
 ## Papers
 
