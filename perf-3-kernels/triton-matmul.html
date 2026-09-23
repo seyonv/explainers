@@ -1,0 +1,872 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Triton matmul: grouped ordering and autotuning</title>
+<style>
+:root{
+  --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
+  --text:#1c1f23; --muted:#6b7068; --faint:#b9b9b3;
+  --accent:#4a9d77; --accent-bg:#dcefdf; --accent-border:#8cc79c;
+  --red:#c0492b; --red-bg:#fbeceb;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#15171a; --surface:#1d2024; --surface2:#24282d; --border:#32373d;
+    --text:#e6e8ea; --muted:#9aa1a9; --faint:#4a5057;
+    --accent:#5fb37f; --accent-bg:#1c2b22; --accent-border:#3f7a55;
+    --red:#e57368; --red-bg:#2e1f1e;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text)}
+.card{max-width:820px;margin:0 auto;padding:28px 32px;font-family:-apple-system,"Inter",system-ui,sans-serif;line-height:1.45}
+h1{font-size:26px;font-weight:600;margin:0 0 6px;letter-spacing:-0.01em}
+.sub{font-size:15px;color:var(--muted);margin:0 0 20px}
+h2{font-size:17px;font-weight:600;margin:26px 0 10px}
+h3.mini{font-size:15px;font-weight:600;margin:18px 0 6px}
+p{font-size:15px;margin:0 0 10px}
+ul{font-size:15px;margin:0 0 10px;padding-left:22px} li{margin-bottom:3px}
+.cap{font-size:13px;color:var(--muted);margin:8px 0 0;text-align:center}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+
+/* Horizontal bar chart */
+.bars{display:grid;grid-template-columns:150px 1fr;column-gap:14px;row-gap:9px;align-items:center;font-size:14px}
+.bars .grp{grid-column:1 / -1;font-size:12px;font-weight:600;color:var(--muted);letter-spacing:.02em;margin-top:8px;border-bottom:1px solid var(--border);padding-bottom:3px}
+.bars .grp span{font-weight:400}
+.bars .lab{font-size:14px}
+.bars .track{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted);font-variant-numeric:tabular-nums}
+.bars .bar{height:18px;border-radius:3px;background:var(--accent);flex:none}
+.bars .track b{color:var(--text);font-weight:600}
+.bars .out{color:var(--muted)}
+.bars .track.out .bar{background:var(--faint)}
+.bars .track.ref .bar{background:var(--surface2);border:1.5px dashed var(--red)}
+
+/* Tables and formulas */
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border)}
+th{font-size:12px;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:none}
+td small{display:block;color:var(--muted);font-size:12px}
+.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.hi{color:var(--accent);font-weight:600} .lo{color:var(--red)}
+tr.side td{color:var(--muted)}
+.formula{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin:10px 0;white-space:pre;overflow-x:auto;line-height:1.55}
+.tw{overflow-x:auto}
+
+/* Two-examples term table */
+.parts td{vertical-align:top} .parts td:first-child{font-weight:600;white-space:nowrap}
+.parts .ex{font-size:13px} .parts .ex span{display:block;color:var(--muted)}
+
+/* Lab banner */
+.labnote{border:1px solid var(--border);border-radius:10px;padding:10px 14px;font-size:13px;color:var(--muted);margin:0 0 18px;background:var(--surface)}
+.labnote b{color:var(--text)}
+
+/* 2x2 grid */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.cell{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.cell.win{background:var(--accent-bg);border-color:var(--accent-border)}
+.cell h3{font-size:16px;font-weight:600;margin:0 0 5px;display:flex;gap:8px;align-items:baseline}
+.cell p{font-size:14px;margin:0;color:var(--text)}
+.cell.win h3,.cell.win p{color:var(--accent)}
+.x{color:var(--red)} .ok{color:var(--accent)}
+
+/* Clarification box */
+.note{border:1px solid var(--border);border-radius:10px;padding:14px 18px;font-size:14px}
+.note p,.note li{font-size:14px} .note p:last-child{margin-bottom:0}
+
+.foot{margin-top:22px;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+.foot p{font-size:13px;margin:0 0 8px}
+svg{display:block;max-width:100%;height:auto}
+.sl{font-size:12px;fill:var(--muted)} .st{font-size:13px;fill:var(--text)} .sb{font-size:13px;fill:var(--text);font-weight:600}
+.sa{font-size:12px;fill:var(--accent);font-weight:600} .sr{font-size:12px;fill:var(--red)}
+.tile{fill:var(--surface);stroke:var(--muted);stroke-width:1.2}
+.grid{stroke:var(--faint);stroke-width:1;fill:none}
+.hot{fill:var(--accent-bg);stroke:var(--accent);stroke-width:1.6}
+.me{fill:var(--accent);stroke:none}
+.link{stroke:var(--faint);stroke-width:1;stroke-dasharray:4 3;fill:none}
+.axis{stroke:var(--muted);stroke-width:1;fill:none}
+.lim{stroke:var(--red);stroke-width:1.5;stroke-dasharray:5 4;fill:none}
+.curve{stroke:var(--accent);stroke-width:2.5;fill:none}
+.dot{fill:var(--accent)}
+@media (max-width:560px){.card{padding:20px 16px}.grid2{grid-template-columns:1fr}.bars{grid-template-columns:96px 1fr}.parts .what{display:none}}
+a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+.mathbox{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px 16px 12px;margin:10px 0;overflow-x:auto}
+.mathbox math{font-size:21px;color:var(--text);font-family:"STIX Two Math","Latin Modern Math","Cambria Math",math}
+.mathbox .t1{color:var(--text)} .mathbox .t2{color:var(--accent)} .mathbox .t3{color:var(--muted)}
+.mathbox .lab{font-size:12px;font-family:-apple-system,"Inter",system-ui,sans-serif;padding-top:3px;border-top:1.5px solid currentColor;margin-top:2px}
+.legend{display:grid;grid-template-columns:auto 1fr auto;column-gap:14px;row-gap:5px;font-size:13px;margin-top:12px;align-items:baseline}
+.legend .sym{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;text-align:right}
+.legend .v{color:var(--muted);text-align:right;font-variant-numeric:tabular-nums}
+.pn{font-size:10px;fill:var(--bg);font-weight:600}
+@media (max-width:560px){.legend{grid-template-columns:auto 1fr}.legend .v{display:none}}
+/* series-nav */
+.sn{max-width:820px;margin:0 auto;padding:16px 32px 0;font-family:-apple-system,"Inter",system-ui,sans-serif;font-size:13px;line-height:1.5;color:var(--muted)}
+.sn a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+.sn .crumbs{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 7px}
+.sn .crumbs b{color:var(--text);font-weight:600}
+.sn .sep{color:var(--faint)}
+.sn .step{margin-left:auto;white-space:nowrap}
+.sn .dep{margin-top:5px;padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface)}
+.sn .dep .ok{color:var(--accent);font-weight:600}
+.snx{max-width:820px;margin:0 auto;padding:6px 32px 44px;font-family:-apple-system,"Inter",system-ui,sans-serif}
+.snx .nx{display:grid;grid-template-columns:280px 1fr;text-decoration:none;color:var(--text);background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.snx .nx:hover,.snx .nx:focus-visible{border-color:var(--accent-border);outline:none}
+.snx .mini{position:relative;height:210px;overflow:hidden;background:var(--bg);border-right:1px solid var(--border);padding:14px 16px}
+.snx .mini span{display:block}
+.snx .mini .m1{font-size:12.5px;font-weight:600;margin:0 0 4px;line-height:1.3}
+.snx .mini .m2{font-size:9px;color:var(--muted);margin:0 0 8px;line-height:1.4}
+.snx .mini .m3{font-size:8.5px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;margin:0 0 3px}
+.snx .mini .m4{font-size:9.5px;margin:0;line-height:1.45}
+.snx .tx{padding:16px 20px}
+.snx .lab{font-size:12px;font-weight:600;color:var(--accent);letter-spacing:.04em;text-transform:uppercase}
+.snx .tt{display:block;font-size:20px;font-weight:600;margin:5px 0 4px;line-height:1.25}
+.snx .ds{display:block;font-size:14px;color:var(--muted)}
+.snx .nd{display:block;font-size:13px;color:var(--muted);margin-top:10px}
+.snx .go{display:block;margin-top:12px;font-size:14px;font-weight:600;color:var(--accent)}
+.snx .aux{display:flex;justify-content:space-between;gap:12px;margin-top:10px;font-size:13px;color:var(--muted)}
+.snx .aux a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+@media (max-width:560px){.sn,.snx{padding-left:16px;padding-right:16px}.snx .nx{grid-template-columns:1fr}.snx .mini{display:none}.sn .step{margin-left:0}}
+/* /series-nav */
+</style>
+
+</head>
+<body>
+<!-- series-nav:top -->
+<nav class="sn" aria-label="Series navigation"><div class="crumbs"><a href="../perf-0-map/index.html" target="_top">AI perf engineering</a><span class="sep">›</span><a href="index.html" target="_top">3 · GPU kernels</a><span class="sep">›</span><b>16 / 17</b><span class="step"><a href="index.html#triton-programming-model" target="_top">← prev</a> · <a href="index.html#profiling" target="_top">next →</a></span></div>
+<div class="dep"><b>Before this:</b> <a href="index.html#triton-programming-model" target="_top">Triton: programming blocks, not threads</a> · <a href="index.html#matmul-warptiling" target="_top">Matmul IV: vectorize, autotune, warptile</a></div></nav>
+<!-- /series-nav:top -->
+<article class="card">
+<h1>Triton matmul: grouped ordering and autotuning</h1>
+<p class="sub">Also called Triton tutorial 03, GROUP_SIZE_M, L2 swizzling or super-grouping, and <code>@triton.autotune</code>. It walks through tutorial 03 section by section: an FP16 matmul in 29 lines of kernel body that matches cuBLAS at 4096² on the tutorial's own (unnamed) GPU. Grouped launch order turns 90 block loads into 54, and an autotuner picks from 16 tile configs.</p>
+
+<p class="labnote"><b>Labs.</b> [L] <a href="https://github.com/seyonv/explainers/blob/main/perf-3-kernels/labs/grouped-ordering.py">Run it: labs/grouped-ordering.py</a> runs on your Mac in under a second. It uses the tutorial's own pid mapping to reproduce 90 vs 54, the generalization table and the Llama numbers below. Every count on this card comes from its output. [C] <a href="https://colab.research.google.com/github/seyonv/explainers/blob/main/perf-3-kernels/labs/triton-matmul.ipynb">Open in Colab: labs/triton-matmul.ipynb</a> · <a href="https://github.com/seyonv/explainers/blob/main/perf-3-kernels/labs/triton-matmul.ipynb">view on GitHub</a>: the tutorial kernel (MIT License), checked against torch, benchmarked in fp16 on a T4, with the autotuner's pick and GROUP_SIZE_M = 1 vs 8. <b>Not yet run by the author. Numbers on this card are from Triton's tutorial page (GPU not named) and its A100 remark; your T4 run is the exercise.</b></p>
+
+<h2>In one breath</h2>
+<p>A Triton matmul gives each program one tile of C. The program walks along K, loading one block of A and one block of B per step and adding their product into an fp32 accumulator on tensor cores. Two things decide how fast it runs. The first is the tile shape, which the autotuner picks by timing. The second is <i>which tiles run at the same time</i>. Programs that run together share L2, so launching them as a compact square of C instead of a long row means fewer distinct blocks have to come from DRAM.</p>
+
+<h2>1. Motivation: the blocked algorithm, one program per tile</h2>
+<p>The tutorial's pitch is that vendor libraries like cuBLAS are fast but "cannot be easily customized … (e.g., fused activation functions)". Its algorithm is the same blocking siboehm builds by hand, except the two outer loops become parallel programs:</p>
+<div class="formula"># Do in parallel                      ← one Triton program per (m, n)
+for m in range(0, M, BLOCK_SIZE_M):
+  # Do in parallel
+  for n in range(0, N, BLOCK_SIZE_N):
+    acc = zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=float32)
+    for k in range(0, K, BLOCK_SIZE_K):       ← sequential inside the program
+      acc += dot(A[m:m+BM, k:k+BK], B[k:k+BK, n:n+BN])
+    C[m:m+BM, n:n+BN] = acc</div>
+<p>What you no longer write: which thread loads which element, the shared-memory staging, <code>__syncthreads</code>, the warp tile, the per-thread register tile and the vectorized loads. The <a href="triton-programming-model.html">Triton compiler</a> does all of that. siboehm needed ten kernels to reach 93.7% of cuBLAS in FP32 on CUDA cores. The tutorial's kernel body is 29 lines (our count, without comments and the <code>tl.assume</code> hints), and it runs FP16 on tensor cores.</p>
+
+<h2>2. Pointer arithmetic: a block of addresses at once</h2>
+<p>For a row-major 2-D tensor the tutorial uses one formula:</p>
+<div class="mathbox">
+<math display="block">
+  <mo>&amp;</mo><mi>X</mi><mo>[</mo><mi>i</mi><mo>,</mo><mi>j</mi><mo>]</mo><mo>=</mo>
+  <mi>X</mi><mo>+</mo>
+  <munder class="t2"><mrow><mi>i</mi><mo>&#183;</mo><msub><mtext>stride</mtext><mi>xi</mi></msub></mrow><mtext class="lab">row offset</mtext></munder>
+  <mo>+</mo>
+  <munder class="t1"><mrow><mi>j</mi><mo>&#183;</mo><msub><mtext>stride</mtext><mi>xj</mi></msub></mrow><mtext class="lab">column offset</mtext></munder>
+</math>
+<div class="legend">
+  <span class="sym">stride_xi</span><span>elements to skip to go down one row</span><span class="v">K for a row-major M×K matrix</span>
+  <span class="sym">stride_xj</span><span>elements to skip to go right one column</span><span class="v">1 for row-major</span>
+</div>
+</div>
+<p>Triton applies it to whole vectors. <code>tl.arange</code> gives a vector of row indices and a vector of column indices, and broadcasting (<code>[:, None]</code> plus <code>[None, :]</code>) turns them into a 2-D block of pointers:</p>
+<div class="formula">offs_am = (pid_m*BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)) % M
+offs_bn = (pid_n*BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)) % N
+offs_k  = tl.arange(0, BLOCK_SIZE_K)
+a_ptrs  = a_ptr + (offs_am[:, None]*stride_am + offs_k[None, :]*stride_ak)   # BM × BK
+b_ptrs  = b_ptr + (offs_k[:, None]*stride_bk + offs_bn[None, :]*stride_bn)   # BK × BN
+...                          # each K step:
+a_ptrs += BLOCK_SIZE_K * stride_ak ;  b_ptrs += BLOCK_SIZE_K * stride_bk</div>
+<div class="formula">Tiny example (lab, section 0): A is 8×8 row-major
+(stride_am = 8, stride_ak = 1), BM = BK = 4, pid_m = 1
+offs_am = [4, 5, 6, 7]   offs_k = [0, 1, 2, 3]
+k-step 0:  [[32 33 34 35]      after += 4·1:  [[36 37 38 39]
+            [40 41 42 43]                      [44 45 46 47]
+            [48 49 50 51]                      [52 53 54 55]
+            [56 57 58 59]]                     [60 61 62 63]]</div>
+<p class="cap">The <code>% M</code> and <code>% N</code> wrap handle edges. With M = 1,000 and BLOCK_SIZE_M = 128 there are 8 row tiles. The last covers rows 896–1,023, and the wrap sends the 24 rows past the end back to rows 0–23. Those rows are "useless values" that the masked store at the end never writes.</p>
+
+<h2>3. The K loop: tl.dot, an fp32 accumulator and the K-tail mask</h2>
+<div class="formula">accumulator = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
+for k in range(0, tl.cdiv(K, BLOCK_SIZE_K)):
+    a = tl.load(a_ptrs, mask=offs_k[None, :] &lt; K - k*BLOCK_SIZE_K, other=0.0)
+    b = tl.load(b_ptrs, mask=offs_k[:, None] &lt; K - k*BLOCK_SIZE_K, other=0.0)
+    accumulator = tl.dot(a, b, accumulator)     # tensor-core MMA, fp16 in, fp32 accumulate
+    a_ptrs += BLOCK_SIZE_K*stride_ak ;  b_ptrs += BLOCK_SIZE_K*stride_bk
+c = accumulator.to(tl.float16)</div>
+<ul>
+  <li><b>fp32 accumulation.</b> The inputs are fp16, but the running sum is fp32 "for higher accuracy". It is rounded to fp16 once, after the loop. See <a href="tensor-cores-low-precision.html">tensor cores and low precision</a> for why summing thousands of products in fp16 would lose bits.</li>
+  <li><b>K-tail mask.</b> K = 1,000 with BLOCK_SIZE_K = 64 takes cdiv = 16 steps. The last step keeps 40 of its 64 columns and masks 24. <code>other=0.0</code> makes the masked lanes contribute 0 × b = 0, so the dot product stays exact without a separate cleanup loop.</li>
+  <li><b>One tile per program, no split-K.</b> Each program owns its whole K loop. Contrast cuBLAS's split-K at 256², covered on the <a href="matmul-warptiling.html">warptiling card</a>.</li>
+</ul>
+
+<h2>4. L2 cache optimizations: launch order decides reuse</h2>
+<p>Each program writes a different tile, but neighbouring tiles read the same inputs: tiles in one row of C share an A strip, and tiles in one column share a B strip. The simple row-major mapping "is just not going to cut it":</p>
+<div class="formula"># row-major
+pid    = tl.program_id(axis=0)
+grid_n = tl.cdiv(N, BLOCK_SIZE_N)
+pid_m  = pid // grid_n
+pid_n  = pid %  grid_n
+
+# grouped ("super-grouping": GROUP_SIZE_M rows at a time)
+num_pid_in_group = GROUP_SIZE_M * num_pid_n
+group_id     = pid // num_pid_in_group
+first_pid_m  = group_id * GROUP_SIZE_M
+group_size_m = min(num_pid_m - first_pid_m, GROUP_SIZE_M)
+pid_m = first_pid_m + ((pid % num_pid_in_group) % group_size_m)
+pid_n = (pid % num_pid_in_group) // group_size_m</div>
+<p>Inside a group the order is column-major. It goes down GROUP_SIZE_M rows, then steps right one column. With GROUP_SIZE_M = 1 the grouped code gives exactly the row-major order (the lab checks this for all 1,792 tiles of a 32 × 56 grid), which is how the notebook compares the two.</p>
+
+<h3 class="mini">The tutorial's example: 9 × 9 blocks, first 9 outputs</h3>
+<svg viewBox="0 0 760 388" role="img" aria-label="Nine by nine block matmul: the first nine programs in row-major order load 90 distinct blocks of A and B; in grouped order with group size 3 they load 54">
+  <text class="sb" x="20" y="12">Row-major (GROUP_SIZE_M = 1)</text>
+  <text class="sl" x="20" y="28">programs 0–8 sweep one row of C</text>
+  <rect class="hot" x="165" y="58" width="15" height="15"/>
+  <rect class="hot" x="180" y="58" width="15" height="15"/>
+  <rect class="hot" x="195" y="58" width="15" height="15"/>
+  <rect class="hot" x="210" y="58" width="15" height="15"/>
+  <rect class="hot" x="225" y="58" width="15" height="15"/>
+  <rect class="hot" x="240" y="58" width="15" height="15"/>
+  <rect class="hot" x="255" y="58" width="15" height="15"/>
+  <rect class="hot" x="270" y="58" width="15" height="15"/>
+  <rect class="hot" x="285" y="58" width="15" height="15"/>
+  <rect class="hot" x="165" y="73" width="15" height="15"/>
+  <rect class="hot" x="180" y="73" width="15" height="15"/>
+  <rect class="hot" x="195" y="73" width="15" height="15"/>
+  <rect class="hot" x="210" y="73" width="15" height="15"/>
+  <rect class="hot" x="225" y="73" width="15" height="15"/>
+  <rect class="hot" x="240" y="73" width="15" height="15"/>
+  <rect class="hot" x="255" y="73" width="15" height="15"/>
+  <rect class="hot" x="270" y="73" width="15" height="15"/>
+  <rect class="hot" x="285" y="73" width="15" height="15"/>
+  <rect class="hot" x="165" y="88" width="15" height="15"/>
+  <rect class="hot" x="180" y="88" width="15" height="15"/>
+  <rect class="hot" x="195" y="88" width="15" height="15"/>
+  <rect class="hot" x="210" y="88" width="15" height="15"/>
+  <rect class="hot" x="225" y="88" width="15" height="15"/>
+  <rect class="hot" x="240" y="88" width="15" height="15"/>
+  <rect class="hot" x="255" y="88" width="15" height="15"/>
+  <rect class="hot" x="270" y="88" width="15" height="15"/>
+  <rect class="hot" x="285" y="88" width="15" height="15"/>
+  <rect class="hot" x="165" y="103" width="15" height="15"/>
+  <rect class="hot" x="180" y="103" width="15" height="15"/>
+  <rect class="hot" x="195" y="103" width="15" height="15"/>
+  <rect class="hot" x="210" y="103" width="15" height="15"/>
+  <rect class="hot" x="225" y="103" width="15" height="15"/>
+  <rect class="hot" x="240" y="103" width="15" height="15"/>
+  <rect class="hot" x="255" y="103" width="15" height="15"/>
+  <rect class="hot" x="270" y="103" width="15" height="15"/>
+  <rect class="hot" x="285" y="103" width="15" height="15"/>
+  <rect class="hot" x="165" y="118" width="15" height="15"/>
+  <rect class="hot" x="180" y="118" width="15" height="15"/>
+  <rect class="hot" x="195" y="118" width="15" height="15"/>
+  <rect class="hot" x="210" y="118" width="15" height="15"/>
+  <rect class="hot" x="225" y="118" width="15" height="15"/>
+  <rect class="hot" x="240" y="118" width="15" height="15"/>
+  <rect class="hot" x="255" y="118" width="15" height="15"/>
+  <rect class="hot" x="270" y="118" width="15" height="15"/>
+  <rect class="hot" x="285" y="118" width="15" height="15"/>
+  <rect class="hot" x="165" y="133" width="15" height="15"/>
+  <rect class="hot" x="180" y="133" width="15" height="15"/>
+  <rect class="hot" x="195" y="133" width="15" height="15"/>
+  <rect class="hot" x="210" y="133" width="15" height="15"/>
+  <rect class="hot" x="225" y="133" width="15" height="15"/>
+  <rect class="hot" x="240" y="133" width="15" height="15"/>
+  <rect class="hot" x="255" y="133" width="15" height="15"/>
+  <rect class="hot" x="270" y="133" width="15" height="15"/>
+  <rect class="hot" x="285" y="133" width="15" height="15"/>
+  <rect class="hot" x="165" y="148" width="15" height="15"/>
+  <rect class="hot" x="180" y="148" width="15" height="15"/>
+  <rect class="hot" x="195" y="148" width="15" height="15"/>
+  <rect class="hot" x="210" y="148" width="15" height="15"/>
+  <rect class="hot" x="225" y="148" width="15" height="15"/>
+  <rect class="hot" x="240" y="148" width="15" height="15"/>
+  <rect class="hot" x="255" y="148" width="15" height="15"/>
+  <rect class="hot" x="270" y="148" width="15" height="15"/>
+  <rect class="hot" x="285" y="148" width="15" height="15"/>
+  <rect class="hot" x="165" y="163" width="15" height="15"/>
+  <rect class="hot" x="180" y="163" width="15" height="15"/>
+  <rect class="hot" x="195" y="163" width="15" height="15"/>
+  <rect class="hot" x="210" y="163" width="15" height="15"/>
+  <rect class="hot" x="225" y="163" width="15" height="15"/>
+  <rect class="hot" x="240" y="163" width="15" height="15"/>
+  <rect class="hot" x="255" y="163" width="15" height="15"/>
+  <rect class="hot" x="270" y="163" width="15" height="15"/>
+  <rect class="hot" x="285" y="163" width="15" height="15"/>
+  <rect class="hot" x="165" y="178" width="15" height="15"/>
+  <rect class="hot" x="180" y="178" width="15" height="15"/>
+  <rect class="hot" x="195" y="178" width="15" height="15"/>
+  <rect class="hot" x="210" y="178" width="15" height="15"/>
+  <rect class="hot" x="225" y="178" width="15" height="15"/>
+  <rect class="hot" x="240" y="178" width="15" height="15"/>
+  <rect class="hot" x="255" y="178" width="15" height="15"/>
+  <rect class="hot" x="270" y="178" width="15" height="15"/>
+  <rect class="hot" x="285" y="178" width="15" height="15"/>
+  <rect class="hot" x="20" y="203" width="15" height="15"/>
+  <rect class="hot" x="35" y="203" width="15" height="15"/>
+  <rect class="hot" x="50" y="203" width="15" height="15"/>
+  <rect class="hot" x="65" y="203" width="15" height="15"/>
+  <rect class="hot" x="80" y="203" width="15" height="15"/>
+  <rect class="hot" x="95" y="203" width="15" height="15"/>
+  <rect class="hot" x="110" y="203" width="15" height="15"/>
+  <rect class="hot" x="125" y="203" width="15" height="15"/>
+  <rect class="hot" x="140" y="203" width="15" height="15"/>
+  <rect class="tile" x="20" y="218" width="15" height="15"/>
+  <rect class="tile" x="35" y="218" width="15" height="15"/>
+  <rect class="tile" x="50" y="218" width="15" height="15"/>
+  <rect class="tile" x="65" y="218" width="15" height="15"/>
+  <rect class="tile" x="80" y="218" width="15" height="15"/>
+  <rect class="tile" x="95" y="218" width="15" height="15"/>
+  <rect class="tile" x="110" y="218" width="15" height="15"/>
+  <rect class="tile" x="125" y="218" width="15" height="15"/>
+  <rect class="tile" x="140" y="218" width="15" height="15"/>
+  <rect class="tile" x="20" y="233" width="15" height="15"/>
+  <rect class="tile" x="35" y="233" width="15" height="15"/>
+  <rect class="tile" x="50" y="233" width="15" height="15"/>
+  <rect class="tile" x="65" y="233" width="15" height="15"/>
+  <rect class="tile" x="80" y="233" width="15" height="15"/>
+  <rect class="tile" x="95" y="233" width="15" height="15"/>
+  <rect class="tile" x="110" y="233" width="15" height="15"/>
+  <rect class="tile" x="125" y="233" width="15" height="15"/>
+  <rect class="tile" x="140" y="233" width="15" height="15"/>
+  <rect class="tile" x="20" y="248" width="15" height="15"/>
+  <rect class="tile" x="35" y="248" width="15" height="15"/>
+  <rect class="tile" x="50" y="248" width="15" height="15"/>
+  <rect class="tile" x="65" y="248" width="15" height="15"/>
+  <rect class="tile" x="80" y="248" width="15" height="15"/>
+  <rect class="tile" x="95" y="248" width="15" height="15"/>
+  <rect class="tile" x="110" y="248" width="15" height="15"/>
+  <rect class="tile" x="125" y="248" width="15" height="15"/>
+  <rect class="tile" x="140" y="248" width="15" height="15"/>
+  <rect class="tile" x="20" y="263" width="15" height="15"/>
+  <rect class="tile" x="35" y="263" width="15" height="15"/>
+  <rect class="tile" x="50" y="263" width="15" height="15"/>
+  <rect class="tile" x="65" y="263" width="15" height="15"/>
+  <rect class="tile" x="80" y="263" width="15" height="15"/>
+  <rect class="tile" x="95" y="263" width="15" height="15"/>
+  <rect class="tile" x="110" y="263" width="15" height="15"/>
+  <rect class="tile" x="125" y="263" width="15" height="15"/>
+  <rect class="tile" x="140" y="263" width="15" height="15"/>
+  <rect class="tile" x="20" y="278" width="15" height="15"/>
+  <rect class="tile" x="35" y="278" width="15" height="15"/>
+  <rect class="tile" x="50" y="278" width="15" height="15"/>
+  <rect class="tile" x="65" y="278" width="15" height="15"/>
+  <rect class="tile" x="80" y="278" width="15" height="15"/>
+  <rect class="tile" x="95" y="278" width="15" height="15"/>
+  <rect class="tile" x="110" y="278" width="15" height="15"/>
+  <rect class="tile" x="125" y="278" width="15" height="15"/>
+  <rect class="tile" x="140" y="278" width="15" height="15"/>
+  <rect class="tile" x="20" y="293" width="15" height="15"/>
+  <rect class="tile" x="35" y="293" width="15" height="15"/>
+  <rect class="tile" x="50" y="293" width="15" height="15"/>
+  <rect class="tile" x="65" y="293" width="15" height="15"/>
+  <rect class="tile" x="80" y="293" width="15" height="15"/>
+  <rect class="tile" x="95" y="293" width="15" height="15"/>
+  <rect class="tile" x="110" y="293" width="15" height="15"/>
+  <rect class="tile" x="125" y="293" width="15" height="15"/>
+  <rect class="tile" x="140" y="293" width="15" height="15"/>
+  <rect class="tile" x="20" y="308" width="15" height="15"/>
+  <rect class="tile" x="35" y="308" width="15" height="15"/>
+  <rect class="tile" x="50" y="308" width="15" height="15"/>
+  <rect class="tile" x="65" y="308" width="15" height="15"/>
+  <rect class="tile" x="80" y="308" width="15" height="15"/>
+  <rect class="tile" x="95" y="308" width="15" height="15"/>
+  <rect class="tile" x="110" y="308" width="15" height="15"/>
+  <rect class="tile" x="125" y="308" width="15" height="15"/>
+  <rect class="tile" x="140" y="308" width="15" height="15"/>
+  <rect class="tile" x="20" y="323" width="15" height="15"/>
+  <rect class="tile" x="35" y="323" width="15" height="15"/>
+  <rect class="tile" x="50" y="323" width="15" height="15"/>
+  <rect class="tile" x="65" y="323" width="15" height="15"/>
+  <rect class="tile" x="80" y="323" width="15" height="15"/>
+  <rect class="tile" x="95" y="323" width="15" height="15"/>
+  <rect class="tile" x="110" y="323" width="15" height="15"/>
+  <rect class="tile" x="125" y="323" width="15" height="15"/>
+  <rect class="tile" x="140" y="323" width="15" height="15"/>
+  <rect class="me" x="165" y="203" width="15" height="15" style="stroke:var(--bg);stroke-width:1"/>
+  <text class="pn" x="172.5" y="214" text-anchor="middle">0</text>
+  <rect class="me" x="180" y="203" width="15" height="15" style="stroke:var(--bg);stroke-width:1"/>
+  <text class="pn" x="187.5" y="214" text-anchor="middle">1</text>
+  <rect class="me" x="195" y="203" width="15" height="15" style="stroke:var(--bg);stroke-width:1"/>
+  <text class="pn" x="202.5" y="214" text-anchor="middle">2</text>
+  <rect class="me" x="210" y="203" width="15" height="15" style="stroke:var(--bg);stroke-width:1"/>
+  <text class="pn" x="217.5" y="214" text-anchor="middle">3</text>
+  <rect class="me" x="225" y="203" width="15" height="15" style="stroke:var(--bg);stroke-width:1"/>
+  <text class="pn" x="232.5" y="214" text-anchor="middle">4</text>
+  <rect class="me" x="240" y="203" width="15" height="15" style="stroke:var(--bg);stroke-width:1"/>
+  <text class="pn" x="247.5" y="214" text-anchor="middle">5</text>
+  <rect class="me" x="255" y="203" width="15" height="15" style="stroke:var(--bg);stroke-width:1"/>
+  <text class="pn" x="262.5" y="214" text-anchor="middle">6</text>
+  <rect class="me" x="270" y="203" width="15" height="15" style="stroke:var(--bg);stroke-width:1"/>
+  <text class="pn" x="277.5" y="214" text-anchor="middle">7</text>
+  <rect class="me" x="285" y="203" width="15" height="15" style="stroke:var(--bg);stroke-width:1"/>
+  <text class="pn" x="292.5" y="214" text-anchor="middle">8</text>
+  <rect class="tile" x="165" y="218" width="15" height="15"/>
+  <rect class="tile" x="180" y="218" width="15" height="15"/>
+  <rect class="tile" x="195" y="218" width="15" height="15"/>
+  <rect class="tile" x="210" y="218" width="15" height="15"/>
+  <rect class="tile" x="225" y="218" width="15" height="15"/>
+  <rect class="tile" x="240" y="218" width="15" height="15"/>
+  <rect class="tile" x="255" y="218" width="15" height="15"/>
+  <rect class="tile" x="270" y="218" width="15" height="15"/>
+  <rect class="tile" x="285" y="218" width="15" height="15"/>
+  <rect class="tile" x="165" y="233" width="15" height="15"/>
+  <rect class="tile" x="180" y="233" width="15" height="15"/>
+  <rect class="tile" x="195" y="233" width="15" height="15"/>
+  <rect class="tile" x="210" y="233" width="15" height="15"/>
+  <rect class="tile" x="225" y="233" width="15" height="15"/>
+  <rect class="tile" x="240" y="233" width="15" height="15"/>
+  <rect class="tile" x="255" y="233" width="15" height="15"/>
+  <rect class="tile" x="270" y="233" width="15" height="15"/>
+  <rect class="tile" x="285" y="233" width="15" height="15"/>
+  <rect class="tile" x="165" y="248" width="15" height="15"/>
+  <rect class="tile" x="180" y="248" width="15" height="15"/>
+  <rect class="tile" x="195" y="248" width="15" height="15"/>
+  <rect class="tile" x="210" y="248" width="15" height="15"/>
+  <rect class="tile" x="225" y="248" width="15" height="15"/>
+  <rect class="tile" x="240" y="248" width="15" height="15"/>
+  <rect class="tile" x="255" y="248" width="15" height="15"/>
+  <rect class="tile" x="270" y="248" width="15" height="15"/>
+  <rect class="tile" x="285" y="248" width="15" height="15"/>
+  <rect class="tile" x="165" y="263" width="15" height="15"/>
+  <rect class="tile" x="180" y="263" width="15" height="15"/>
+  <rect class="tile" x="195" y="263" width="15" height="15"/>
+  <rect class="tile" x="210" y="263" width="15" height="15"/>
+  <rect class="tile" x="225" y="263" width="15" height="15"/>
+  <rect class="tile" x="240" y="263" width="15" height="15"/>
+  <rect class="tile" x="255" y="263" width="15" height="15"/>
+  <rect class="tile" x="270" y="263" width="15" height="15"/>
+  <rect class="tile" x="285" y="263" width="15" height="15"/>
+  <rect class="tile" x="165" y="278" width="15" height="15"/>
+  <rect class="tile" x="180" y="278" width="15" height="15"/>
+  <rect class="tile" x="195" y="278" width="15" height="15"/>
+  <rect class="tile" x="210" y="278" width="15" height="15"/>
+  <rect class="tile" x="225" y="278" width="15" height="15"/>
+  <rect class="tile" x="240" y="278" width="15" height="15"/>
+  <rect class="tile" x="255" y="278" width="15" height="15"/>
+  <rect class="tile" x="270" y="278" width="15" height="15"/>
+  <rect class="tile" x="285" y="278" width="15" height="15"/>
+  <rect class="tile" x="165" y="293" width="15" height="15"/>
+  <rect class="tile" x="180" y="293" width="15" height="15"/>
+  <rect class="tile" x="195" y="293" width="15" height="15"/>
+  <rect class="tile" x="210" y="293" width="15" height="15"/>
+  <rect class="tile" x="225" y="293" width="15" height="15"/>
+  <rect class="tile" x="240" y="293" width="15" height="15"/>
+  <rect class="tile" x="255" y="293" width="15" height="15"/>
+  <rect class="tile" x="270" y="293" width="15" height="15"/>
+  <rect class="tile" x="285" y="293" width="15" height="15"/>
+  <rect class="tile" x="165" y="308" width="15" height="15"/>
+  <rect class="tile" x="180" y="308" width="15" height="15"/>
+  <rect class="tile" x="195" y="308" width="15" height="15"/>
+  <rect class="tile" x="210" y="308" width="15" height="15"/>
+  <rect class="tile" x="225" y="308" width="15" height="15"/>
+  <rect class="tile" x="240" y="308" width="15" height="15"/>
+  <rect class="tile" x="255" y="308" width="15" height="15"/>
+  <rect class="tile" x="270" y="308" width="15" height="15"/>
+  <rect class="tile" x="285" y="308" width="15" height="15"/>
+  <rect class="tile" x="165" y="323" width="15" height="15"/>
+  <rect class="tile" x="180" y="323" width="15" height="15"/>
+  <rect class="tile" x="195" y="323" width="15" height="15"/>
+  <rect class="tile" x="210" y="323" width="15" height="15"/>
+  <rect class="tile" x="225" y="323" width="15" height="15"/>
+  <rect class="tile" x="240" y="323" width="15" height="15"/>
+  <rect class="tile" x="255" y="323" width="15" height="15"/>
+  <rect class="tile" x="270" y="323" width="15" height="15"/>
+  <rect class="tile" x="285" y="323" width="15" height="15"/>
+  <text class="sl" x="232.5" y="53" text-anchor="middle">B (K × N)</text>
+  <text class="sl" x="87.5" y="198" text-anchor="middle">A (M × K)</text>
+  <text class="sl" x="232.5" y="354" text-anchor="middle">C: first 9 programs, pid shown</text>
+  <text class="sr" x="20" y="378">A 1×9 = 9 + B 9×9 = 81 = 90 blocks</text>
+  <text class="sb" x="400" y="12">Grouped (GROUP_SIZE_M = 3)</text>
+  <text class="sl" x="400" y="28">programs 0–8 go down 3 rows, then right</text>
+  <rect class="hot" x="545" y="58" width="15" height="15"/>
+  <rect class="hot" x="560" y="58" width="15" height="15"/>
+  <rect class="hot" x="575" y="58" width="15" height="15"/>
+  <rect class="tile" x="590" y="58" width="15" height="15"/>
+  <rect class="tile" x="605" y="58" width="15" height="15"/>
+  <rect class="tile" x="620" y="58" width="15" height="15"/>
+  <rect class="tile" x="635" y="58" width="15" height="15"/>
+  <rect class="tile" x="650" y="58" width="15" height="15"/>
+  <rect class="tile" x="665" y="58" width="15" height="15"/>
+  <rect class="hot" x="545" y="73" width="15" height="15"/>
+  <rect class="hot" x="560" y="73" width="15" height="15"/>
+  <rect class="hot" x="575" y="73" width="15" height="15"/>
+  <rect class="tile" x="590" y="73" width="15" height="15"/>
+  <rect class="tile" x="605" y="73" width="15" height="15"/>
+  <rect class="tile" x="620" y="73" width="15" height="15"/>
+  <rect class="tile" x="635" y="73" width="15" height="15"/>
+  <rect class="tile" x="650" y="73" width="15" height="15"/>
+  <rect class="tile" x="665" y="73" width="15" height="15"/>
+  <rect class="hot" x="545" y="88" width="15" height="15"/>
+  <rect class="hot" x="560" y="88" width="15" height="15"/>
+  <rect class="hot" x="575" y="88" width="15" height="15"/>
+  <rect class="tile" x="590" y="88" width="15" height="15"/>
+  <rect class="tile" x="605" y="88" width="15" height="15"/>
+  <rect class="tile" x="620" y="88" width="15" height="15"/>
+  <rect class="tile" x="635" y="88" width="15" height="15"/>
+  <rect class="tile" x="650" y="88" width="15" height="15"/>
+  <rect class="tile" x="665" y="88" width="15" height="15"/>
+  <rect class="hot" x="545" y="103" width="15" height="15"/>
+  <rect class="hot" x="560" y="103" width="15" height="15"/>
+  <rect class="hot" x="575" y="103" width="15" height="15"/>
+  <rect class="tile" x="590" y="103" width="15" height="15"/>
+  <rect class="tile" x="605" y="103" width="15" height="15"/>
+  <rect class="tile" x="620" y="103" width="15" height="15"/>
+  <rect class="tile" x="635" y="103" width="15" height="15"/>
+  <rect class="tile" x="650" y="103" width="15" height="15"/>
+  <rect class="tile" x="665" y="103" width="15" height="15"/>
+  <rect class="hot" x="545" y="118" width="15" height="15"/>
+  <rect class="hot" x="560" y="118" width="15" height="15"/>
+  <rect class="hot" x="575" y="118" width="15" height="15"/>
+  <rect class="tile" x="590" y="118" width="15" height="15"/>
+  <rect class="tile" x="605" y="118" width="15" height="15"/>
+  <rect class="tile" x="620" y="118" width="15" height="15"/>
+  <rect class="tile" x="635" y="118" width="15" height="15"/>
+  <rect class="tile" x="650" y="118" width="15" height="15"/>
+  <rect class="tile" x="665" y="118" width="15" height="15"/>
+  <rect class="hot" x="545" y="133" width="15" height="15"/>
+  <rect class="hot" x="560" y="133" width="15" height="15"/>
+  <rect class="hot" x="575" y="133" width="15" height="15"/>
+  <rect class="tile" x="590" y="133" width="15" height="15"/>
+  <rect class="tile" x="605" y="133" width="15" height="15"/>
+  <rect class="tile" x="620" y="133" width="15" height="15"/>
+  <rect class="tile" x="635" y="133" width="15" height="15"/>
+  <rect class="tile" x="650" y="133" width="15" height="15"/>
+  <rect class="tile" x="665" y="133" width="15" height="15"/>
+  <rect class="hot" x="545" y="148" width="15" height="15"/>
+  <rect class="hot" x="560" y="148" width="15" height="15"/>
+  <rect class="hot" x="575" y="148" width="15" height="15"/>
+  <rect class="tile" x="590" y="148" width="15" height="15"/>
+  <rect class="tile" x="605" y="148" width="15" height="15"/>
+  <rect class="tile" x="620" y="148" width="15" height="15"/>
+  <rect class="tile" x="635" y="148" width="15" height="15"/>
+  <rect class="tile" x="650" y="148" width="15" height="15"/>
+  <rect class="tile" x="665" y="148" width="15" height="15"/>
+  <rect class="hot" x="545" y="163" width="15" height="15"/>
+  <rect class="hot" x="560" y="163" width="15" height="15"/>
+  <rect class="hot" x="575" y="163" width="15" height="15"/>
+  <rect class="tile" x="590" y="163" width="15" height="15"/>
+  <rect class="tile" x="605" y="163" width="15" height="15"/>
+  <rect class="tile" x="620" y="163" width="15" height="15"/>
+  <rect class="tile" x="635" y="163" width="15" height="15"/>
+  <rect class="tile" x="650" y="163" width="15" height="15"/>
+  <rect class="tile" x="665" y="163" width="15" height="15"/>
+  <rect class="hot" x="545" y="178" width="15" height="15"/>
+  <rect class="hot" x="560" y="178" width="15" height="15"/>
+  <rect class="hot" x="575" y="178" width="15" height="15"/>
+  <rect class="tile" x="590" y="178" width="15" height="15"/>
+  <rect class="tile" x="605" y="178" width="15" height="15"/>
+  <rect class="tile" x="620" y="178" width="15" height="15"/>
+  <rect class="tile" x="635" y="178" width="15" height="15"/>
+  <rect class="tile" x="650" y="178" width="15" height="15"/>
+  <rect class="tile" x="665" y="178" width="15" height="15"/>
+  <rect class="hot" x="400" y="203" width="15" height="15"/>
+  <rect class="hot" x="415" y="203" width="15" height="15"/>
+  <rect class="hot" x="430" y="203" width="15" height="15"/>
+  <rect class="hot" x="445" y="203" width="15" height="15"/>
+  <rect class="hot" x="460" y="203" width="15" height="15"/>
+  <rect class="hot" x="475" y="203" width="15" height="15"/>
+  <rect class="hot" x="490" y="203" width="15" height="15"/>
+  <rect class="hot" x="505" y="203" width="15" height="15"/>
+  <rect class="hot" x="520" y="203" width="15" height="15"/>
+  <rect class="hot" x="400" y="218" width="15" height="15"/>
+  <rect class="hot" x="415" y="218" width="15" height="15"/>
+  <rect class="hot" x="430" y="218" width="15" height="15"/>
+  <rect class="hot" x="445" y="218" width="15" height="15"/>
+  <rect class="hot" x="460" y="218" width="15" height="15"/>
+  <rect class="hot" x="475" y="218" width="15" height="15"/>
+  <rect class="hot" x="490" y="218" width="15" height="15"/>
+  <rect class="hot" x="505" y="218" width="15" height="15"/>
+  <rect class="hot" x="520" y="218" width="15" height="15"/>
+  <rect class="hot" x="400" y="233" width="15" height="15"/>
+  <rect class="hot" x="415" y="233" width="15" height="15"/>
+  <rect class="hot" x="430" y="233" width="15" height="15"/>
+  <rect class="hot" x="445" y="233" width="15" height="15"/>
+  <rect class="hot" x="460" y="233" width="15" height="15"/>
+  <rect class="hot" x="475" y="233" width="15" height="15"/>
+  <rect class="hot" x="490" y="233" width="15" height="15"/>
+  <rect class="hot" x="505" y="233" width="15" height="15"/>
+  <rect class="hot" x="520" y="233" width="15" height="15"/>
+  <rect class="tile" x="400" y="248" width="15" height="15"/>
+  <rect class="tile" x="415" y="248" width="15" height="15"/>
+  <rect class="tile" x="430" y="248" width="15" height="15"/>
+  <rect class="tile" x="445" y="248" width="15" height="15"/>
+  <rect class="tile" x="460" y="248" width="15" height="15"/>
+  <rect class="tile" x="475" y="248" width="15" height="15"/>
+  <rect class="tile" x="490" y="248" width="15" height="15"/>
+  <rect class="tile" x="505" y="248" width="15" height="15"/>
+  <rect class="tile" x="520" y="248" width="15" height="15"/>
+  <rect class="tile" x="400" y="263" width="15" height="15"/>
+  <rect class="tile" x="415" y="263" width="15" height="15"/>
+  <rect class="tile" x="430" y="263" width="15" height="15"/>
+  <rect class="tile" x="445" y="263" width="15" height="15"/>
+  <rect class="tile" x="460" y="263" width="15" height="15"/>
+  <rect class="tile" x="475" y="263" width="15" height="15"/>
+  <rect class="tile" x="490" y="263" width="15" height="15"/>
+  <rect class="tile" x="505" y="263" width="15" height="15"/>
+  <rect class="tile" x="520" y="263" width="15" height="15"/>
+  <rect class="tile" x="400" y="278" width="15" height="15"/>
+  <rect class="tile" x="415" y="278" width="15" height="15"/>
+  <rect class="tile" x="430" y="278" width="15" height="15"/>
+  <rect class="tile" x="445" y="278" width="15" height="15"/>
+  <rect class="tile" x="460" y="278" width="15" height="15"/>
+  <rect class="tile" x="475" y="278" width="15" height="15"/>
+  <rect class="tile" x="490" y="278" width="15" height="15"/>
+  <rect class="tile" x="505" y="278" width="15" height="15"/>
+  <rect class="tile" x="520" y="278" width="15" height="15"/>
+  <rect class="tile" x="400" y="293" width="15" height="15"/>
+  <rect class="tile" x="415" y="293" width="15" height="15"/>
+  <rect class="tile" x="430" y="293" width="15" height="15"/>
+  <rect class="tile" x="445" y="293" width="15" height="15"/>
+  <rect class="tile" x="460" y="293" width="15" height="15"/>
+  <rect class="tile" x="475" y="293" width="15" height="15"/>
+  <rect class="tile" x="490" y="293" width="15" height="15"/>
+  <rect class="tile" x="505" y="293" width="15" height="15"/>
+  <rect class="tile" x="520" y="293" width="15" height="15"/>
+  <rect class="tile" x="400" y="308" width="15" height="15"/>
+  <rect class="tile" x="415" y="308" width="15" height="15"/>
+  <rect class="tile" x="430" y="308" width="15" height="15"/>
+  <rect class="tile" x="445" y="308" width="15" height="15"/>
+  <rect class="tile" x="460" y="308" width="15" height="15"/>
+  <rect class="tile" x="475" y="308" width="15" height="15"/>
+  <rect class="tile" x="490" y="308" width="15" height="15"/>
+  <rect class="tile" x="505" y="308" width="15" height="15"/>
+  <rect class="tile" x="520" y="308" width="15" height="15"/>
+  <rect class="tile" x="400" y="323" width="15" height="15"/>
+  <rect class="tile" x="415" y="323" width="15" height="15"/>
+  <rect class="tile" x="430" y="323" width="15" height="15"/>
+  <rect class="tile" x="445" y="323" width="15" height="15"/>
+  <rect class="tile" x="460" y="323" width="15" height="15"/>
+  <rect class="tile" x="475" y="323" width="15" height="15"/>
+  <rect class="tile" x="490" y="323" width="15" height="15"/>
+  <rect class="tile" x="505" y="323" width="15" height="15"/>
+  <rect class="tile" x="520" y="323" width="15" height="15"/>
+  <rect class="me" x="545" y="203" width="15" height="15" style="stroke:var(--bg);stroke-width:1"/>
+  <text class="pn" x="552.5" y="214" text-anchor="middle">0</text>
+  <rect class="me" x="560" y="203" width="15" height="15" style="stroke:var(--bg);stroke-width:1"/>
+  <text class="pn" x="567.5" y="214" text-anchor="middle">3</text>
+  <rect class="me" x="575" y="203" width="15" height="15" style="stroke:var(--bg);stroke-width:1"/>
+  <text class="pn" x="582.5" y="214" text-anchor="middle">6</text>
+  <rect class="tile" x="590" y="203" width="15" height="15"/>
+  <rect class="tile" x="605" y="203" width="15" height="15"/>
+  <rect class="tile" x="620" y="203" width="15" height="15"/>
+  <rect class="tile" x="635" y="203" width="15" height="15"/>
+  <rect class="tile" x="650" y="203" width="15" height="15"/>
+  <rect class="tile" x="665" y="203" width="15" height="15"/>
+  <rect class="me" x="545" y="218" width="15" height="15" style="stroke:var(--bg);stroke-width:1"/>
+  <text class="pn" x="552.5" y="229" text-anchor="middle">1</text>
+  <rect class="me" x="560" y="218" width="15" height="15" style="stroke:var(--bg);stroke-width:1"/>
+  <text class="pn" x="567.5" y="229" text-anchor="middle">4</text>
+  <rect class="me" x="575" y="218" width="15" height="15" style="stroke:var(--bg);stroke-width:1"/>
+  <text class="pn" x="582.5" y="229" text-anchor="middle">7</text>
+  <rect class="tile" x="590" y="218" width="15" height="15"/>
+  <rect class="tile" x="605" y="218" width="15" height="15"/>
+  <rect class="tile" x="620" y="218" width="15" height="15"/>
+  <rect class="tile" x="635" y="218" width="15" height="15"/>
+  <rect class="tile" x="650" y="218" width="15" height="15"/>
+  <rect class="tile" x="665" y="218" width="15" height="15"/>
+  <rect class="me" x="545" y="233" width="15" height="15" style="stroke:var(--bg);stroke-width:1"/>
+  <text class="pn" x="552.5" y="244" text-anchor="middle">2</text>
+  <rect class="me" x="560" y="233" width="15" height="15" style="stroke:var(--bg);stroke-width:1"/>
+  <text class="pn" x="567.5" y="244" text-anchor="middle">5</text>
+  <rect class="me" x="575" y="233" width="15" height="15" style="stroke:var(--bg);stroke-width:1"/>
+  <text class="pn" x="582.5" y="244" text-anchor="middle">8</text>
+  <rect class="tile" x="590" y="233" width="15" height="15"/>
+  <rect class="tile" x="605" y="233" width="15" height="15"/>
+  <rect class="tile" x="620" y="233" width="15" height="15"/>
+  <rect class="tile" x="635" y="233" width="15" height="15"/>
+  <rect class="tile" x="650" y="233" width="15" height="15"/>
+  <rect class="tile" x="665" y="233" width="15" height="15"/>
+  <rect class="tile" x="545" y="248" width="15" height="15"/>
+  <rect class="tile" x="560" y="248" width="15" height="15"/>
+  <rect class="tile" x="575" y="248" width="15" height="15"/>
+  <rect class="tile" x="590" y="248" width="15" height="15"/>
+  <rect class="tile" x="605" y="248" width="15" height="15"/>
+  <rect class="tile" x="620" y="248" width="15" height="15"/>
+  <rect class="tile" x="635" y="248" width="15" height="15"/>
+  <rect class="tile" x="650" y="248" width="15" height="15"/>
+  <rect class="tile" x="665" y="248" width="15" height="15"/>
+  <rect class="tile" x="545" y="263" width="15" height="15"/>
+  <rect class="tile" x="560" y="263" width="15" height="15"/>
+  <rect class="tile" x="575" y="263" width="15" height="15"/>
+  <rect class="tile" x="590" y="263" width="15" height="15"/>
+  <rect class="tile" x="605" y="263" width="15" height="15"/>
+  <rect class="tile" x="620" y="263" width="15" height="15"/>
+  <rect class="tile" x="635" y="263" width="15" height="15"/>
+  <rect class="tile" x="650" y="263" width="15" height="15"/>
+  <rect class="tile" x="665" y="263" width="15" height="15"/>
+  <rect class="tile" x="545" y="278" width="15" height="15"/>
+  <rect class="tile" x="560" y="278" width="15" height="15"/>
+  <rect class="tile" x="575" y="278" width="15" height="15"/>
+  <rect class="tile" x="590" y="278" width="15" height="15"/>
+  <rect class="tile" x="605" y="278" width="15" height="15"/>
+  <rect class="tile" x="620" y="278" width="15" height="15"/>
+  <rect class="tile" x="635" y="278" width="15" height="15"/>
+  <rect class="tile" x="650" y="278" width="15" height="15"/>
+  <rect class="tile" x="665" y="278" width="15" height="15"/>
+  <rect class="tile" x="545" y="293" width="15" height="15"/>
+  <rect class="tile" x="560" y="293" width="15" height="15"/>
+  <rect class="tile" x="575" y="293" width="15" height="15"/>
+  <rect class="tile" x="590" y="293" width="15" height="15"/>
+  <rect class="tile" x="605" y="293" width="15" height="15"/>
+  <rect class="tile" x="620" y="293" width="15" height="15"/>
+  <rect class="tile" x="635" y="293" width="15" height="15"/>
+  <rect class="tile" x="650" y="293" width="15" height="15"/>
+  <rect class="tile" x="665" y="293" width="15" height="15"/>
+  <rect class="tile" x="545" y="308" width="15" height="15"/>
+  <rect class="tile" x="560" y="308" width="15" height="15"/>
+  <rect class="tile" x="575" y="308" width="15" height="15"/>
+  <rect class="tile" x="590" y="308" width="15" height="15"/>
+  <rect class="tile" x="605" y="308" width="15" height="15"/>
+  <rect class="tile" x="620" y="308" width="15" height="15"/>
+  <rect class="tile" x="635" y="308" width="15" height="15"/>
+  <rect class="tile" x="650" y="308" width="15" height="15"/>
+  <rect class="tile" x="665" y="308" width="15" height="15"/>
+  <rect class="tile" x="545" y="323" width="15" height="15"/>
+  <rect class="tile" x="560" y="323" width="15" height="15"/>
+  <rect class="tile" x="575" y="323" width="15" height="15"/>
+  <rect class="tile" x="590" y="323" width="15" height="15"/>
+  <rect class="tile" x="605" y="323" width="15" height="15"/>
+  <rect class="tile" x="620" y="323" width="15" height="15"/>
+  <rect class="tile" x="635" y="323" width="15" height="15"/>
+  <rect class="tile" x="650" y="323" width="15" height="15"/>
+  <rect class="tile" x="665" y="323" width="15" height="15"/>
+  <text class="sl" x="612.5" y="53" text-anchor="middle">B (K × N)</text>
+  <text class="sl" x="467.5" y="198" text-anchor="middle">A (M × K)</text>
+  <text class="sl" x="612.5" y="354" text-anchor="middle">C: first 9 programs, pid shown</text>
+  <text class="sa" x="400" y="378">A 3×9 = 27 + B 3×9 = 27 = 54 blocks</text>
+</svg>
+
+<p class="cap">Each C tile needs its full row of A (9 blocks along K) and its full column of B (9 blocks). Row-major touches 1 A strip and 9 B strips: 9 + 81 = <b>90</b>. Grouped with GROUP_SIZE_M = 3 touches 3 + 3 strips: 27 + 27 = <b>54</b>. The tutorial's words are "load 90 blocks into SRAM". Our reading is that these count <i>distinct</i> blocks. Each program still copies its own 18 blocks into its own shared memory, 162 copies either way. What changes is how many of them can be L2 hits instead of DRAM reads.</p>
+<div style="height:10px"></div>
+<p>Tutorial's result: "more than 10% on some hardware architecture (e.g., 220 to 245 TFLOPS on A100)" (245 / 220 = 1.11×). That is the only measured number the tutorial gives for grouping.</p>
+
+<h3 class="mini">Generalization: W programs running at once, groups of g rows</h3>
+<p>What matters is the set of programs resident on the GPU <i>at the same time</i>, call it W (for example one per SM: 40 on a T4, 132 on an H100). If those W programs cover r rows and c columns of C, they touch this many distinct blocks:</p>
+<div class="mathbox">
+<math display="block">
+  <mtext>blocks</mtext><mo>=</mo><msub><mi>K</mi><mtext>b</mtext></msub><mo>&#183;</mo><mo>(</mo>
+  <munder class="t1"><mi>r</mi><mtext class="lab">A strips</mtext></munder><mo>+</mo>
+  <munder class="t1"><mi>c</mi><mtext class="lab">B strips</mtext></munder><mo>)</mo>
+</math>
+<math display="block">
+  <mtext>row-major:</mtext><mspace width="0.4em"/><mi>r</mi><mo>&#8776;</mo><mo>&#8968;</mo><mi>W</mi><mo>/</mo><msub><mi>n</mi><mtext>pid_n</mtext></msub><mo>&#8969;</mo><mo>,</mo><mspace width="0.3em"/><mi>c</mi><mo>=</mo><mi>min</mi><mo>(</mo><mi>W</mi><mo>,</mo><msub><mi>n</mi><mtext>pid_n</mtext></msub><mo>)</mo>
+  <mspace width="1.5em"/><mtext>grouped:</mtext><mspace width="0.4em"/><mi>r</mi><mo>=</mo><mi>g</mi><mo>,</mo><mspace width="0.3em"/><mi>c</mi><mo>&#8776;</mo><mo>&#8968;</mo><mi>W</mi><mo>/</mo><mi>g</mi><mo>&#8969;</mo>
+</math>
+<div class="legend">
+  <span class="sym">K_b</span><span>blocks along K (K / BLOCK_SIZE_K)</span><span class="v">9 in the example</span>
+  <span class="sym">W</span><span>programs resident at the same time</span><span class="v">9 · 40 · 132</span>
+  <span class="sym">g</span><span>GROUP_SIZE_M</span><span class="v">1 = row-major</span>
+</div>
+</div>
+<p>r + c is smallest when the footprint is square, g ≈ √W. The grouped formula holds while the W programs stay inside one group (W ≤ g × num_pid_n); the lab counts exactly either way. The table uses a 32 × 32 grid of output tiles with K_b = 32 (for example 4096² with 128 × 128 tiles). Each cell gives distinct blocks and, in brackets, blocks per output tile. Green marks the best in each row, red the worst.</p>
+<div class="tw"><table>
+  <tr><th class="num">W</th><th class="num">g = 1 (row-major)</th><th class="num">2</th><th class="num">4</th><th class="num">8 (tutorial)</th><th class="num">16</th><th class="num">32 (col-major)</th><th class="num">√W</th></tr>
+  <tr><td class="num">9 <small>tutorial</small></td><td class="num lo">320 (35.6)</td><td class="num hi">224 (24.9)</td><td class="num hi">224 (24.9)</td><td class="num lo">320 (35.6)</td><td class="num lo">320 (35.6)</td><td class="num lo">320 (35.6)</td><td class="num">3.0</td></tr>
+  <tr><td class="num">40 <small>T4 SMs</small></td><td class="num lo">1,088 (27.2)</td><td class="num">704 (17.6)</td><td class="num">448 (11.2)</td><td class="num hi">416 (10.4)</td><td class="num">608 (15.2)</td><td class="num lo">1,088 (27.2)</td><td class="num">6.3</td></tr>
+  <tr><td class="num">132 <small>H100 SMs</small></td><td class="num">1,184 (9.0)</td><td class="num">1,216 (9.2)</td><td class="num lo">1,280 (9.7)</td><td class="num hi">800 (6.1)</td><td class="num hi">800 (6.1)</td><td class="num">1,184 (9.0)</td><td class="num">11.5</td></tr>
+</table></div>
+<p class="cap">From labs/grouped-ordering.py, section 2. On a T4-sized wave, g = 8 touches 2.62× fewer blocks than row-major (8 rows + 5 columns vs 2 + 32). On an H100-sized wave it touches 1.48× fewer (8 + 17 vs 5 + 32). Two surprises. g = 8 does nothing for 9 programs, because they fit in two columns of one group. Small groups (g = 2, 4) can be slightly <i>worse</i> than row-major once W spans several groups.</p>
+
+<h3 class="mini">Running example: Llama-3.1-8B prefill up-projection on one H100 (our recomputation)</h3>
+<p>A 4,096-token prefill multiplies activations (M = 4,096 tokens × K = 4,096) by the up-projection weight (4,096 × N = 14,336) in BF16. We use the tutorial's first config, 128 × 256 tiles, and assume one program per SM (the rough shared-memory estimate is 144 KB, and an H100 SM has 256 KB of L1/SMEM).</p>
+<div class="tw"><table>
+  <tr><th>Launch order</th><th class="num">Strips touched by the first 132 programs</th><th class="num">Distinct bytes</th><th class="num">vs 50 MB L2</th><th class="num">FLOP per DRAM byte</th></tr>
+  <tr><td>No reuse at all</td><td class="num">132 × (1 A + 1 B)</td><td class="num lo">415 MB</td><td class="num lo">8.3×</td><td class="num lo">85</td></tr>
+  <tr><td>Row-major</td><td class="num">3 A + 56 B = 3×1 + 56×2 MiB</td><td class="num lo">120.6 MB</td><td class="num lo">exceeds</td><td class="num">294</td></tr>
+  <tr><td>GROUP_SIZE_M = 8</td><td class="num">8 A + 17 B = 8×1 + 17×2 MiB</td><td class="num hi">44.0 MB</td><td class="num hi">fits</td><td class="num hi">805</td></tr>
+  <tr class="side"><td>GROUP_SIZE_M = 16</td><td class="num">16 A + 9 B</td><td class="num">35.7 MB</td><td class="num">fits</td><td class="num">994</td></tr>
+</table></div>
+<div class="formula">tiles       = 4096/128 × 14336/256 = 32 × 56 = 1,792   → 1,792 / 132 = 13.6 waves
+A strip     = 128 × 4096 × 2 B = 1 MiB      B strip = 4096 × 256 × 2 B = 2 MiB
+FLOPs/wave  = 132 × 2 × 128 × 256 × 4096 = 3.54e10
+one tile alone, every block from DRAM:  BM·BN / (BM+BN) = 32768 / 384 = 85.3 FLOP/B
+row-major:  3.54e10 / 120.6 MB = 294 FLOP/B   ≈ H100 ridge 989e12 / 3.35e12 = 295
+grouped 8:  3.54e10 /  44.0 MB = 805 FLOP/B   (120.6 / 44.0 = 2.7× fewer DRAM bytes per FLOP)</div>
+<p class="cap">This is a model, not a measurement, and it makes three simplifications. It counts whole K strips, which is everything a wave touches over its life. That is an upper bound on what must sit in L2 at once, because programs that start together also move through K roughly together. It assumes each distinct strip comes from DRAM once per wave and nothing carries over between waves. And it ignores writes of C. The point it makes is sound anyway. A single 128 × 256 tile streaming from DRAM would sit at 85 FLOP/B, far below the H100's ridge, so this GEMM <i>depends</i> on L2 reuse to be compute-bound. Launch order is what sets that reuse.</p>
+
+<h2>5. Autotuning: 16 configs, re-tuned per shape</h2>
+<div class="formula">@triton.autotune(configs=get_autotune_config(), key=['M', 'N', 'K'])
+@triton.jit
+def matmul_kernel(..., BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexpr,
+                  BLOCK_SIZE_K: tl.constexpr, GROUP_SIZE_M: tl.constexpr,
+                  ACTIVATION: tl.constexpr)
+# config 1 of 16:
+triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 256,
+               'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 8}, num_stages=3, num_warps=8)</div>
+<p>The first time the kernel sees a new (M, N, K), the <b>key</b>, it compiles and times every config, then caches the winner for that shape. The tutorial lists 16 CUDA configs, all with GROUP_SIZE_M = 8. Tiles range from 32 × 64 to 256 × 128, BLOCK_SIZE_K is 32, 64 or 128, with 3–5 stages and 2, 4 or 8 warps. A comment marks the BK = 128 group as a "good config for fp8 inputs". siboehm searched about 400 configs with a bash script, once, for one GPU. Here the search is a decorator that runs again whenever the shape changes.</p>
+<p>Each knob, with its siboehm equivalent (think of it as ordering a delivery: box size, how many boxes on the truck at once, crew size, and the route):</p>
+<div class="tw"><table class="parts">
+  <tr><th>Knob</th><th class="what">What it controls</th><th>Example A: tutorial config 1</th><th>Example B: siboehm kernel 10 (A6000)</th></tr>
+  <tr><td>BLOCK_SIZE_M / N</td><td class="what">Output tile per program. Bigger tiles mean more reuse per load (FLOP/B = BM·BN/(BM+BN)) but fewer tiles to spread across SMs.</td><td class="ex"><b>128 × 256</b><span>85.3 FLOP/B per tile</span></td><td class="ex"><b>BM = BN = 128</b><span>same role, one thread block</span></td></tr>
+  <tr><td>BLOCK_SIZE_K</td><td class="what">Width of the A and B slices loaded per K step</td><td class="ex"><b>64</b><span>64 steps for K = 4,096</span></td><td class="ex"><b>BK = 16</b><span>autotuned in kernel 9</span></td></tr>
+  <tr><td>num_warps</td><td class="what">Threads per program ÷ 32. The compiler splits the tile among the warps.</td><td class="ex"><b>8 warps = 256 threads</b><span>128 outputs per thread</span></td><td class="ex"><b>4 warps = 128 threads</b><span>you write the warp tile (64 × 64) and thread tile (8 × 4) yourself</span></td></tr>
+  <tr><td>num_stages</td><td class="what">How many K slices are in flight: the next ones load while the current one is multiplied (software pipelining)</td><td class="ex"><b>3</b><span>roughly 2 slices loading ahead of the one in use</span></td><td class="ex"><b>none</b><span>kernel 11's double buffering (2 stages) was slower as written: 74.3%</span></td></tr>
+  <tr><td>GROUP_SIZE_M</td><td class="what">Launch order of tiles, for L2 reuse</td><td class="ex"><b>8</b><span>every CUDA config</span></td><td class="ex"><b>thread swizzling</b><span>tried, no gain, removed</span></td></tr>
+</table></div>
+<p style="margin-top:10px">The warp tile and thread tile, siboehm's WM/WN/TM/TN, are not knobs in Triton: the compiler chooses them. So is the tensor-core instruction, which siboehm's FP32 kernels never use. Per-SM limits also prune the list. Our rough estimate of shared memory is stages × (BM·BK + BK·BN) × 2 bytes. On a T4 (64 KB per SM) only 6 of the 16 configs fit: 64×32, 32×64, 128×32 and both 128×64 and 64×128 with BK 32. 128 × 128 × 32 × 4 stages lands exactly on 64 KB. The first config needs about 144 KB. The autotuner skips configs that fail to compile, so on a T4 it searches a much smaller space than on an A100 or H100 (lab, section 4).</p>
+
+<h2>6. The fused epilogue: leaky_relu while still fp32</h2>
+<div class="formula">if ACTIVATION == "leaky_relu":   # tl.constexpr: decided at compile time
+    accumulator = leaky_relu(accumulator)   # tl.where(x &gt;= 0, x, 0.01*x)
+c = accumulator.to(tl.float16)</div>
+<p>The activation runs on the tile while it is still in registers, and in fp32. It adds no extra kernel launch and no round trip of C through HBM. This is the customization the motivation section says cuBLAS makes hard. For a 4,096 × 14,336 BF16 output like the Llama up-projection, an unfused activation would write C (117 MB) and read it back again (our arithmetic: 4,096 × 14,336 × 2 B). See <a href="fusion-cuda-graphs.html">kernel fusion</a> for the general case.</p>
+
+<h2>7. Unit test and the benchmark</h2>
+<p>The test multiplies two 512 × 512 fp16 matrices of uniform values in [−0.5, 0.5) and checks <code>torch.allclose(triton, torch, atol=1e-2, rtol=0)</code> against <code>torch.matmul</code> (cuBLAS). An fp8 (e5m2) variant uses <code>atol=0.125</code>. The benchmark sweeps square sizes 256–4,096 in steps of 128, timed with <code>triton.testing.do_bench</code> (median of repeated runs) at TFLOPS = 2·M·N·K / t.</p>
+<div class="tw"><table>
+  <tr><th class="num">Size</th><th class="num">cuBLAS fp16</th><th class="num">Triton fp16</th><th class="num">Triton / cuBLAS</th><th class="num">Triton fp8</th></tr>
+  <tr><td class="num">1024</td><td class="num">104.9</td><td class="num">95.3</td><td class="num">91%</td><td class="num">91.2</td></tr>
+  <tr><td class="num">2048</td><td class="num">217.9</td><td class="num lo">184.4</td><td class="num lo">85%</td><td class="num">162.9</td></tr>
+  <tr><td class="num">4096</td><td class="num">221.1</td><td class="num hi">219.7</td><td class="num hi">99%</td><td class="num">206.2</td></tr>
+</table></div>
+<p class="cap">TFLOPS from the tutorial's rendered page. <b>The page doesn't name the GPU.</b> Ratios are our recomputation. Across all 31 sizes, Triton ties or beats cuBLAS at 9 and is strictly faster at 4 (384, 896, 1,792, 3,968). At 1,792 it gets 204.4 against 172.9. Both columns are jagged from size to size. The page doesn't say why. The fp8 run gets no cuBLAS comparison because "torch.matmul doesn't support fp8 at the moment".</p>
+
+<h3 class="mini">Which GPU changes the numbers</h3>
+<div class="tw"><table>
+  <tr><th>GPU</th><th>Precision on tensor cores</th><th class="num">Peak</th><th class="num">Tutorial 03 Triton</th></tr>
+  <tr><td>Unnamed (tutorial page)</td><td>FP16, FP8</td><td class="num">not stated</td><td class="num">219.7 TF fp16 at 4096²</td></tr>
+  <tr><td>A100 (tutorial text)</td><td>FP16</td><td class="num">not stated</td><td class="num">220 → 245 TF from grouping</td></tr>
+  <tr><td>T4 (Colab, your lab)</td><td>FP16 only: no BF16/FP8 tensor cores</td><td class="num">65 TF</td><td class="num">your run</td></tr>
+  <tr><td>H100 SXM (running example)</td><td>BF16 / FP8</td><td class="num">989 / 1,979 TF</td><td class="num">not published</td></tr>
+</table></div>
+<p class="cap">The notebook prints Triton and <code>torch.matmul</code> as a % of 65 TF. Colab's T4 is capped at 70 W and its clocks vary, so run the benchmark twice.</p>
+
+<h2>8. Same idea, two results: siboehm's swizzling vs Triton's grouping</h2>
+<p>siboehm implemented the same trick, remapping <code>blockIdx</code> to C tiles for L2 locality, in his FP32 kernel on an RTX A6000: "It didn't increase performance, presumably because L2 hit rate is already fairly high at 80%". He removed it. Triton reports "more than 10%" on an A100 in FP16 on tensor cores. The two setups differ in GPU, matrix size (4092² vs a sweep), precision and compute unit, so the results are not in conflict. <b>Neither source explains the difference, and we don't claim a reason.</b> The honest summary: grouping is cheap to try, it can matter, and only a measurement on your shape and GPU tells you whether it does. The notebook's GROUP_SIZE_M 1 vs 8 cell is exactly that measurement for a T4.</p>
+
+<h2>9. Where this leads: tutorial 06 and the next reading</h2>
+<p>Tutorial 06 (fused attention) is "a Triton implementation of the Flash Attention v2 algorithm from Tri Dao". It is the same program-per-tile pattern, with a running softmax held in registers across the K/V loop. It is also autotuned, keyed on context length, head dim, FP8 output and warp specialization. On the tutorial page (GPU unnamed), batch 4, 32 heads, head dim 64, fp16 forward, non-causal: 139.3 TFLOPS at 1,024 context, rising to 171.3 at 16,384 (1.23×). This is the subject of the attention and KV cache course, perf-4 (not built yet). Next reading in the same folder, going by the tutorial titles: 08 grouped GEMM (many matmuls of different sizes in one launch; MoE expert layers are our example of where that shows up), 09 persistent matmul (a fixed set of programs loops over the tiles), and 10 block-scaled matmul (the scaled low-precision formats on the <a href="tensor-cores-low-precision.html">low-precision card</a>).</p>
+
+<h2>Why it beats the alternatives</h2>
+<div class="grid2">
+  <div class="cell"><h3><span class="x">&#10007;</span> Row-major launch order</h3><p>The obvious <code>pid // grid_n</code>. Concurrent programs sweep a long row of C and pull in every B strip: 90 blocks for 9 outputs, and 120.6 MB for one H100 wave of the Llama up-projection, more than the 50 MB L2.</p></div>
+  <div class="cell win"><h3><span class="ok">&#10003;</span> Grouped ordering + autotune</h3><p>Six lines of index math make each wave a compact block of C: 54 blocks instead of 90, 44 MB instead of 121 MB. The autotuner then picks the tile and pipeline depth per shape. Result: 99% of cuBLAS at 4096² in a kernel you can edit and fuse into.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Hand-written CUDA warptiling (siboehm)</h3><p>Full control, and 93.7% of cuBLAS in FP32, but it took ten kernels and six weekends. It uses CUDA cores, not tensor cores, and the swizzling he tried gave nothing on his setup.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Just call cuBLAS</h3><p>Still the fastest at many sizes (105 vs 95 TF at 1024, 218 vs 184 at 2048). But it's closed, and you can't fuse your own epilogue into it, which is the whole reason the tutorial exists.</p></div>
+</div>
+
+<h2>Why does launch order matter if every tile is computed anyway?</h2>
+<div class="note">
+  <p><b>Because only the programs running at the same moment share L2.</b> Over the whole kernel, every tile is computed and every block of A and B is needed many times, whatever the order. But L2 is small (50 MB on an H100, while the Llama up-projection's inputs total about 151 MB: A 33.5 MB + B 117 MB). A block helps only if the next program that needs it runs while the block is still cached. The order decides which programs run together, and therefore whether they find their blocks in L2 or re-read them from HBM. The total work is the same. What changes is the DRAM traffic.</p>
+  <p><b>It is not always worth it.</b> (1) Decode: with a batch of 128 tokens or fewer and BLOCK_SIZE_M = 128, num_pid_m = 1. Every order is then the same, because there is only one row of tiles (lab, try-this 3). (2) Small matrices: at 1024² fp16, A and B are 2 MB each and fit in an H100's 50 MB L2 whatever the order (our inference). (3) A high hit rate already: siboehm measured about 80% and saw no gain. (4) Too few programs: with 9 concurrent programs, g = 8 is no better than row-major (table above). Where it does matter, production kernels go further. Persistent kernels (tutorial 09) keep one program per SM and walk the tiles in a chosen order, and Shankhdhar's H100 worklog orders tiles along a Hilbert curve (see the <a href="matmul-warptiling.html">warptiling card</a>).</p>
+</div>
+
+<div class="foot">
+  <p><b>Read next:</b> Triton tutorial 03, <a href="https://triton-lang.org/main/getting-started/tutorials/03-matrix-multiplication.html">"Matrix Multiplication"</a>. Read all of it and run it, about 45 min: Motivations, Pointer Arithmetic, L2 Cache Optimizations, Final Result, Unit Test, Benchmark. Then the header and the <code>_attn_fwd</code> autotune block of <a href="https://github.com/triton-lang/triton/blob/main/python/tutorials/06-fused-attention.py">tutorial 06, fused attention</a> (for perf-4), about 10 min. Optional: tutorial 09, persistent matmul, in the <a href="https://github.com/triton-lang/triton/tree/main/python/tutorials">tutorials folder</a>, about 30 min.</p>
+  <p><b>Run it:</b> <a href="https://github.com/seyonv/explainers/blob/main/perf-3-kernels/labs/grouped-ordering.py">Run it: labs/grouped-ordering.py</a> · <a href="https://colab.research.google.com/github/seyonv/explainers/blob/main/perf-3-kernels/labs/triton-matmul.ipynb">Open in Colab: labs/triton-matmul.ipynb</a> · <a href="https://github.com/seyonv/explainers/blob/main/perf-3-kernels/labs/triton-matmul.ipynb">view on GitHub</a> (the notebook has not yet been run by the author).</p>
+  <p><b>Related:</b> <a href="triton-programming-model.html">Triton: programming blocks, not threads</a> · <a href="matmul-warptiling.html">Matmul IV: vectorize, autotune, warptile</a> · <a href="matmul-blocktiling.html">Matmul III: 1D and 2D blocktiling</a> · <a href="tensor-cores-low-precision.html">Tensor cores and low precision</a> · <a href="fusion-cuda-graphs.html">Kernel fusion and CUDA graphs</a> · <a href="profiling.html">Profiling</a> · <a href="../perf-2-scaling-book-inference/critical-batch-size.html">Critical batch size</a> · <a href="_overview.html">overview</a></p>
+  <p><b>Sources:</b> kernel code, the 90 vs 54 example, the "220 to 245 TFLOPS on A100" remark, the 16 CUDA configs, the test tolerances and the benchmark table: Triton tutorial 03, <a href="https://github.com/triton-lang/triton/blob/main/python/tutorials/03-matrix-multiplication.py">source</a> and <a href="https://triton-lang.org/main/getting-started/tutorials/03-matrix-multiplication.html">rendered page with printed output</a> (MIT License, <a href="https://github.com/triton-lang/triton/blob/main/LICENSE">LICENSE</a>). FlashAttention v2 numbers: <a href="https://triton-lang.org/main/getting-started/tutorials/06-fused-attention.html">tutorial 06 rendered page</a>. Swizzling result, kernel 10 settings and kernel 11: <a href="https://siboehm.com/articles/22/CUDA-MMM">siboehm, Dec 2022</a>. H100 989 TF, 3.35 TB/s, 50 MB L2, 132 SMs, T4 65 TF FP16 and 40 SMs, and the Llama-3.1-8B shapes: this course's shared facts. The block counts, the Llama footprints and FLOP/B, the shared-memory estimates, the ratios and the 29-line count are our recomputation (labs/grouped-ordering.py).</p>
+</div>
+</article>
+<!-- series-nav:bottom -->
+<div class="snx"><a class="nx" href="index.html#profiling" target="_top">
+<span class="mini" aria-hidden="true"><span class="m1">Profiling and benchmarking hygiene</span><span class="m2">Also called: Nsight Systems (nsys), Nsight Compute (ncu), Compute Sanitizer, do_bench. NVIDIA's two profilers answer two different questions, the sanitizer checks correctness before you time anything,…</span><span class="m3">In one breath</span><span class="m4">First make the kernel correct (Compute Sanitizer), then find where the time goes across the whole program (Nsight Systems' timeline), then put the single most expensive kernel under a microscope (Nsight Compute: how close it is to the memory or compute roof, and why its warps stall). Every number you report comes from a timing…</span></span>
+<span class="tx"><span class="lab">Next up · 17 / 17</span><span class="tt">Profiling and benchmarking hygiene</span><span class="ds">Nsight Systems, Nsight Compute, Sanitizer, and honest timing</span><span class="nd">Builds on: Occupancy and latency hiding, Matmul II: coalescing and shared-memory caching.</span><span class="go">Continue →</span></span></a><div class="aux"><span><a href="index.html#triton-programming-model" target="_top">← Triton: programming blocks, not threads</a></span><a href="index.html" target="_top">All cards in 3 · GPU kernels</a></div></div>
+<!-- /series-nav:bottom -->
+</body>
+</html>

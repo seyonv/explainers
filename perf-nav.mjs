@@ -147,7 +147,7 @@ const INDEX_CSS = `/* series-nav */
 function patchIndex(c) {
   const f = join(root, c.slug, "index.html");
   let html = readFileSync(f, "utf8");
-  html = html.replace(/\n?\/\* series-nav \*\/[\s\S]*?\/\* \/series-nav \*\//, "").replace(/\n?<!-- series-nav -->[\s\S]*?<!-- \/series-nav -->/, "").replace(/\n?\/\/ series-nav[\s\S]*?\/\/ \/series-nav/, "");
+  html = html.replace(/\n?\/\* series-nav \*\/[\s\S]*?\/\* \/series-nav \*\//, "").replace(/\n?<!-- series-nav -->[\s\S]*?<!-- \/series-nav -->/g, "").replace(/\n?\/\/ series-nav[\s\S]*?\/\/ \/series-nav/, "");
   html = html.replace(/<\/style>/, `${INDEX_CSS}\n</style>`);
   const strip = courses.map((x) => x.built
     ? `<a href="../${x.slug}/index.html"${x.slug === c.slug ? ' class="cur" aria-current="page"' : ""}>${esc(courseLabel(x))}</a>`

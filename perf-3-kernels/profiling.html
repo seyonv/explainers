@@ -1,0 +1,342 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Profiling and benchmarking hygiene</title>
+<style>
+:root{
+  --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
+  --text:#1c1f23; --muted:#6b7068; --faint:#b9b9b3;
+  --accent:#4a9d77; --accent-bg:#dcefdf; --accent-border:#8cc79c;
+  --red:#c0492b; --red-bg:#fbeceb;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#15171a; --surface:#1d2024; --surface2:#24282d; --border:#32373d;
+    --text:#e6e8ea; --muted:#9aa1a9; --faint:#4a5057;
+    --accent:#5fb37f; --accent-bg:#1c2b22; --accent-border:#3f7a55;
+    --red:#e57368; --red-bg:#2e1f1e;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text)}
+.card{max-width:820px;margin:0 auto;padding:28px 32px;font-family:-apple-system,"Inter",system-ui,sans-serif;line-height:1.45}
+h1{font-size:26px;font-weight:600;margin:0 0 6px;letter-spacing:-0.01em}
+.sub{font-size:15px;color:var(--muted);margin:0 0 20px}
+h2{font-size:17px;font-weight:600;margin:26px 0 10px}
+p{font-size:15px;margin:0 0 10px}
+.cap{font-size:13px;color:var(--muted);margin:8px 0 0;text-align:center}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+
+/* Tables and formulas */
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border)}
+th{font-size:12px;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:none}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+.hi{color:var(--accent);font-weight:600} .lo{color:var(--red)}
+.formula{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin:10px 0;white-space:pre;overflow-x:auto;line-height:1.55}
+
+/* 2x2 grid */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.cell{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.cell.win{background:var(--accent-bg);border-color:var(--accent-border)}
+.cell h3{font-size:16px;font-weight:600;margin:0 0 5px;display:flex;gap:8px;align-items:baseline}
+.cell p{font-size:14px;margin:0;color:var(--text)}
+.cell.win h3,.cell.win p{color:var(--accent)}
+.x{color:var(--red)} .ok{color:var(--accent)}
+
+/* Clarification box */
+.note{border:1px solid var(--border);border-radius:10px;padding:14px 18px;font-size:14px}
+.note p{font-size:14px} .note p:last-child{margin-bottom:0}
+.note ul{margin:4px 0 10px;padding-left:20px}
+
+.foot{margin-top:22px;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+.foot p{font-size:13px;margin:0 0 8px}
+svg{display:block;max-width:100%;height:auto}
+.sl{font-size:12px;fill:var(--muted)} .st{font-size:13px;fill:var(--text)}
+a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+
+/* Lab links */
+.lab{font-size:14px;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px 14px;margin:0 0 6px}
+.lab a{font-weight:600}
+.lab .m{color:var(--muted);font-size:13px}
+
+/* MathML */
+.mathbox{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px 16px 12px;margin:10px 0;overflow-x:auto}
+.mathbox math{font-size:21px;color:var(--text);font-family:"STIX Two Math","Latin Modern Math","Cambria Math",math}
+.mathbox .t1{color:var(--text)} .mathbox .t2{color:var(--accent)} .mathbox .t3{color:var(--muted)}
+.mathbox .lab2{font-size:12px;font-family:-apple-system,"Inter",system-ui,sans-serif;padding-top:3px;border-top:1.5px solid currentColor;margin-top:2px}
+.legend{display:grid;grid-template-columns:auto 1fr auto;column-gap:14px;row-gap:5px;font-size:13px;margin-top:12px;align-items:baseline}
+.legend .sym{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;text-align:right}
+.legend .v{color:var(--muted);text-align:right;font-variant-numeric:tabular-nums}
+
+/* Code with callouts */
+.code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin:10px 0;white-space:pre;overflow-x:auto;line-height:1.65}
+.code .c{color:var(--muted)}
+.code .m{display:inline-block;min-width:18px;height:18px;line-height:18px;border-radius:9px;text-align:center;font-size:11px;font-weight:600;background:var(--accent-bg);color:var(--accent);border:1px solid var(--accent-border);margin-left:6px;font-family:-apple-system,"Inter",system-ui,sans-serif}
+.co{display:grid;grid-template-columns:26px 1fr;column-gap:8px;row-gap:8px;font-size:14px;margin:6px 0 4px}
+.co .m{display:inline-block;width:20px;height:20px;line-height:20px;border-radius:10px;text-align:center;font-size:11px;font-weight:600;background:var(--accent-bg);color:var(--accent);border:1px solid var(--accent-border)}
+
+/* Parts table (two examples) */
+.parts td{vertical-align:top} .parts td:first-child{font-weight:600;white-space:nowrap}
+.parts .ex{font-size:13px;font-variant-numeric:tabular-nums} .parts .ex span{display:block;color:var(--muted)}
+
+/* Speedup bars (log scale) */
+.sp{display:flex;align-items:center;gap:8px;white-space:nowrap}
+.sp em{display:block;width:110px;flex:none;height:8px;border-radius:2px;background:var(--surface2)}
+.sp i{display:block;height:8px;border-radius:2px;background:var(--accent)}
+.sp i.g{background:var(--faint)} .sp i.r{background:var(--red)}
+tr.ref td{color:var(--muted)}
+
+/* Error box */
+.errbox{border:1px solid var(--red);border-radius:10px;padding:14px 18px;margin:10px 0}
+.errbox h3{font-size:15px;font-weight:600;margin:0 0 6px;color:var(--red)}
+.errbox p{font-size:14px}
+.errbox .code{background:var(--bg)}
+
+
+/* Hot vs cold bars */
+.bars{display:grid;grid-template-columns:150px 1fr 90px;column-gap:12px;row-gap:8px;align-items:center;font-size:14px;margin:10px 0}
+.bars .track{height:14px;background:var(--surface2);border-radius:3px}
+.bars .fill{height:14px;border-radius:3px}
+.bars .v{text-align:right;font-variant-numeric:tabular-nums}
+
+@media (max-width:560px){
+  .card{padding:22px 16px}.grid2{grid-template-columns:1fr}
+  .legend{grid-template-columns:auto 1fr}.legend .v{display:none}
+  .parts .what{display:none}.hide-s{display:none}
+  .bars{grid-template-columns:100px 1fr 70px}
+}
+/* series-nav */
+.sn{max-width:820px;margin:0 auto;padding:16px 32px 0;font-family:-apple-system,"Inter",system-ui,sans-serif;font-size:13px;line-height:1.5;color:var(--muted)}
+.sn a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+.sn .crumbs{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 7px}
+.sn .crumbs b{color:var(--text);font-weight:600}
+.sn .sep{color:var(--faint)}
+.sn .step{margin-left:auto;white-space:nowrap}
+.sn .dep{margin-top:5px;padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface)}
+.sn .dep .ok{color:var(--accent);font-weight:600}
+.snx{max-width:820px;margin:0 auto;padding:6px 32px 44px;font-family:-apple-system,"Inter",system-ui,sans-serif}
+.snx .nx{display:grid;grid-template-columns:280px 1fr;text-decoration:none;color:var(--text);background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.snx .nx:hover,.snx .nx:focus-visible{border-color:var(--accent-border);outline:none}
+.snx .mini{position:relative;height:210px;overflow:hidden;background:var(--bg);border-right:1px solid var(--border);padding:14px 16px}
+.snx .mini span{display:block}
+.snx .mini .m1{font-size:12.5px;font-weight:600;margin:0 0 4px;line-height:1.3}
+.snx .mini .m2{font-size:9px;color:var(--muted);margin:0 0 8px;line-height:1.4}
+.snx .mini .m3{font-size:8.5px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;margin:0 0 3px}
+.snx .mini .m4{font-size:9.5px;margin:0;line-height:1.45}
+.snx .tx{padding:16px 20px}
+.snx .lab{font-size:12px;font-weight:600;color:var(--accent);letter-spacing:.04em;text-transform:uppercase}
+.snx .tt{display:block;font-size:20px;font-weight:600;margin:5px 0 4px;line-height:1.25}
+.snx .ds{display:block;font-size:14px;color:var(--muted)}
+.snx .nd{display:block;font-size:13px;color:var(--muted);margin-top:10px}
+.snx .go{display:block;margin-top:12px;font-size:14px;font-weight:600;color:var(--accent)}
+.snx .aux{display:flex;justify-content:space-between;gap:12px;margin-top:10px;font-size:13px;color:var(--muted)}
+.snx .aux a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+@media (max-width:560px){.sn,.snx{padding-left:16px;padding-right:16px}.snx .nx{grid-template-columns:1fr}.snx .mini{display:none}.sn .step{margin-left:0}}
+/* /series-nav */
+</style>
+</head>
+<body>
+<!-- series-nav:top -->
+<nav class="sn" aria-label="Series navigation"><div class="crumbs"><a href="../perf-0-map/index.html" target="_top">AI perf engineering</a><span class="sep">›</span><a href="index.html" target="_top">3 · GPU kernels</a><span class="sep">›</span><b>17 / 17</b><span class="step"><a href="index.html#triton-matmul" target="_top">← prev</a></span></div>
+<div class="dep"><b>Before this:</b> <a href="index.html#occupancy" target="_top">Occupancy and latency hiding</a> · <a href="index.html#matmul-coalescing-smem" target="_top">Matmul II: coalescing and shared-memory caching</a></div></nav>
+<!-- /series-nav:top -->
+<article class="card">
+<h1>Profiling and benchmarking hygiene</h1>
+<p class="sub">Also called: Nsight Systems (<code>nsys</code>), Nsight Compute (<code>ncu</code>), Compute Sanitizer, <code>do_bench</code>. NVIDIA's two profilers answer two different questions, the sanitizer checks correctness before you time anything, and CUTLASS's measurement guide plus Triton's <code>do_bench</code> define what an honest kernel timing looks like.</p>
+
+<p class="lab"><a href="https://colab.research.google.com/github/seyonv/explainers/blob/main/perf-3-kernels/labs/profiling.ipynb">Open in Colab: labs/profiling.ipynb</a> <span class="m">(<a href="https://github.com/seyonv/explainers/blob/main/perf-3-kernels/labs/profiling.ipynb">view on GitHub</a>)</span><br>
+<span class="m">On the Colab T4 it builds a naive and a shared-memory transpose, runs <code>nsys profile --stats=true</code> and <code>ncu --section SpeedOfLight --section MemoryWorkloadAnalysis</code>, runs Compute Sanitizer on four deliberately broken kernels, and compares <code>time.time()</code>, CUDA events and <code>do_bench</code> in PyTorch, including a hot-L2 vs cold-L2 GEMV. Colab images may lack <code>nsys</code>/<code>ncu</code> or block the performance counters, so the notebook checks with <code>which</code>, tries an install, and skips cleanly otherwise. <b>Not yet run by the author. The numbers on this card come from NVIDIA's docs, CUTLASS, Triton's source and the Scaling Book; your T4 run is the exercise.</b></span></p>
+<p class="lab"><a href="https://github.com/seyonv/explainers/blob/main/perf-3-kernels/labs/h100-ncu-roofline.sh">H100 script: labs/h100-ncu-roofline.sh</a><br>
+<span class="m">For a rented H100 (any Ubuntu box with the CUDA toolkit). It times a BF16 GEMM (4096³) and the batch-1 Llama-3.1-8B up-projection (1 × 4096 × 14336), prints TFLOPS and GB/s against 989 TF and 3.35 TB/s, and profiles both with ncu's Speed of Light and roofline sections into <code>.ncu-rep</code> files for the Nsight Compute GUI. About 10–15 min, about $0.50–1.00 at $2–3.50/hr (course GPU budget cap: $300–400). Also not yet run by the author.</span></p>
+
+<h2>In one breath</h2>
+<p>First make the kernel correct (Compute Sanitizer), then find where the time goes across the whole program (Nsight Systems' timeline), then put the single most expensive kernel under a microscope (Nsight Compute: how close it is to the memory or compute roof, and why its warps stall). Every number you report comes from a timing that runs on the GPU, after warm-up, with cold caches, repeated many times, and summarised as a median plus a spread, never a single <code>time.time()</code> around an asynchronous launch.</p>
+
+<h2>The loop these tools serve</h2>
+<svg viewBox="0 0 780 150" role="img" aria-label="Optimization loop: measure with nsys, pick the top kernel, place it on the roofline with ncu, fix the bound, re-measure">
+  <g font-size="13">
+    <rect x="4" y="30" width="138" height="58" rx="6" fill="var(--surface)" stroke="var(--border)"/>
+    <text x="73" y="54" text-anchor="middle" class="st">1. Measure</text>
+    <text x="73" y="72" text-anchor="middle" class="sl">nsys timeline</text>
+    <rect x="160" y="30" width="138" height="58" rx="6" fill="var(--surface)" stroke="var(--border)"/>
+    <text x="229" y="54" text-anchor="middle" class="st">2. Pick top kernel</text>
+    <text x="229" y="72" text-anchor="middle" class="sl">largest GPU time</text>
+    <rect x="316" y="30" width="148" height="58" rx="6" fill="var(--accent-bg)" stroke="var(--accent-border)"/>
+    <text x="390" y="54" text-anchor="middle" class="st" style="fill:var(--accent)">3. ncu: roofline</text>
+    <text x="390" y="72" text-anchor="middle" class="sl">which bound?</text>
+    <rect x="482" y="30" width="138" height="58" rx="6" fill="var(--surface)" stroke="var(--border)"/>
+    <text x="551" y="54" text-anchor="middle" class="st">4. Fix the bound</text>
+    <text x="551" y="72" text-anchor="middle" class="sl">coalesce, tile, fuse</text>
+    <rect x="638" y="30" width="138" height="58" rx="6" fill="var(--surface)" stroke="var(--border)"/>
+    <text x="707" y="54" text-anchor="middle" class="st">5. Re-measure</text>
+    <text x="707" y="72" text-anchor="middle" class="sl">duration = truth</text>
+  </g>
+  <g stroke="var(--muted)" stroke-width="1.5" fill="none">
+    <path d="M142 59 H156"/><path d="M298 59 H312"/><path d="M464 59 H478"/><path d="M620 59 H634"/>
+    <path d="M707 88 V118 H73 V92"/>
+  </g>
+  <g fill="var(--muted)">
+    <path d="M156 55 L162 59 L156 63Z"/><path d="M312 55 L318 59 L312 63Z"/><path d="M478 55 L484 59 L478 63Z"/><path d="M634 55 L640 59 L634 63Z"/><path d="M69 94 L73 88 L77 94Z"/>
+  </g>
+  <text x="390" y="136" text-anchor="middle" class="sl">repeat until the top kernel sits near its roof, then the next kernel becomes the top one</text>
+  <text x="4" y="16" class="sl">Before step 1: Compute Sanitizer says the kernel is correct. The overview card expands each step.</text>
+</svg>
+
+<h2>Two tools, two questions</h2>
+<p>Everyday analogy: nsys is the CCTV of the whole factory floor over a shift; ncu is pulling one machine into the lab and running it again and again with sensors attached. The two examples are the running example's two shapes on an H100: a prefill-like BF16 GEMM, 4096 × 4096 × 4096, and the batch-1 decode GEMV through Llama-3.1-8B's up-projection, 1 × 4096 × 14336. What each row "shows" for them is our inference from the arithmetic below, not a profile we ran.</p>
+<table class="parts">
+  <tr><th>Tool / section</th><th class="what">What it tells you</th><th>Example A: GEMM 4096³</th><th>Example B: GEMV 1×4096×14336</th></tr>
+  <tr><td>nsys timeline</td><td class="what">CPU threads, CUDA API calls, kernel launches, memcpys and the <b>gaps</b> between them, one pass, nothing replayed. "Where did the time go?"</td><td class="ex"><b>one long kernel</b><span>floor 139 µs; launch gaps are noise</span></td><td class="ex"><b>short kernel, visible gaps</b><span>floor 35 µs; a few µs of launch per kernel matters (see <a href="fusion-cuda-graphs.html">fusion and CUDA graphs</a>)</span></td></tr>
+  <tr><td>ncu Speed of Light</td><td class="what">Achieved % of the theoretical maximum for compute and for memory, with the biggest contributor in each</td><td class="ex"><b class="ok">compute % high</b><span>tensor pipe is the limiter</span></td><td class="ex"><b class="ok">memory % high</b><span>DRAM is the limiter; compute % near zero</span></td></tr>
+  <tr><td>ncu roofline chart</td><td class="what">The kernel as a dot: FLOP/s against arithmetic intensity, under a sloped memory roof and a flat compute roof meeting at the <b>ridge</b></td><td class="ex"><b>1,365 FLOP/B</b><span>right of the ridge (295): compute-bound</span></td><td class="ex"><b class="lo">1.0 FLOP/B</b><span>far left of the ridge: memory-bound</span></td></tr>
+  <tr><td>Memory workload analysis</td><td class="what">Traffic through L1, L2 and DRAM, hit rates, and whether units, bandwidth or memory-instruction issue is saturated</td><td class="ex"><b>high L2/SMEM reuse</b><span>each tile is reused many times</span></td><td class="ex"><b>≈ 117 MB DRAM read</b><span>each weight byte used once</span></td></tr>
+  <tr><td>Warp stall reasons</td><td class="what">Why warps could not issue: <code>long_scoreboard</code> (waiting on L1TEX/global data), <code>math_pipe_throttle</code> (a math pipe is oversubscribed), <code>barrier</code> (waiting at <code>__syncthreads</code> for slower warps), MIO throttle (shared-memory / special-math instruction queue full)</td><td class="ex"><b>math_pipe_throttle</b><span>the good problem: you are compute-bound</span></td><td class="ex"><b>long_scoreboard</b><span>waiting on global loads</span></td></tr>
+</table>
+<p class="cap">siboehm used exactly this view on his kernel 3: its warps mostly sat in "Stall MIO Throttle", waiting on shared-memory loads, which motivated computing more results per thread (<a href="matmul-coalescing-smem.html">Matmul II</a>). The Profiling Guide warns that stalls matter only when schedulers fail to issue every cycle, and that <code>long_scoreboard</code> means memory-<i>latency</i>-bound, not necessarily bandwidth-bound.</p>
+
+<div class="formula">GEMM  FLOPs 2·4096³            = 137.4 GFLOP
+      bytes 3·4096²·2 B (BF16)  = 100.7 MB   → 1,365 FLOP/B
+      compute floor 137.4e9 / 989e12  = 139 µs
+      memory floor  100.7e6 / 3.35e12 =  30 µs
+GEMV  FLOPs 2·4096·14336         = 117.4 MFLOP
+      bytes (4096·14336 + 4096 + 14336)·2 B
+                                 = 117.5 MB   → 1.0 FLOP/B
+      compute floor 0.12 µs
+      memory floor  117.5e6 / 3.35e12 = 35.1 µs
+ridge  989 / 3.35 ≈ 295 FLOP/B                      (our recomputation)</div>
+
+<h3 style="font-size:15px;margin:18px 0 8px">Why ncu's duration is not your production duration</h3>
+<p>To make metrics deterministic, Nsight Compute changes how the kernel runs. The Profiling Guide's FAQ lists the differences from Nsight Systems:</p>
+<table>
+  <tr><th>What changes</th><th>ncu (by default)</th><th>nsys</th></tr>
+  <tr><td>Replay</td><td>Runs the kernel in several passes when the metrics don't fit in one, saving and restoring the memory it writes between passes</td><td>One pass</td></tr>
+  <tr><td>Caches</td><td class="lo">Flushes all GPU caches before each pass (<code>--cache-control all</code>)</td><td>No flush</td></tr>
+  <tr><td>Launches</td><td class="lo">Serializes kernel launches</td><td>Concurrent kernels overlap as in the app</td></tr>
+  <tr><td>Clocks</td><td class="lo">Locks them: <code>--clock-control base</code> in versions 2024.1–2025.4, <code>boost</code> from 2026.1 (current docs: 2026.3.1)</td><td>Does not lock clocks</td></tr>
+</table>
+<p class="cap">NVIDIA's advice when comparing the two: lock clocks yourself with <code>nvidia-smi</code> and pass <code>--clock-control none</code> to ncu; for cache-sensitive work use <code>--replay-mode application --cache-control none</code>. Use ncu for <i>why</i>, and nsys or CUDA events for <i>how long</i>.</p>
+
+<h2>Correctness first: Compute Sanitizer</h2>
+<p>A fast wrong kernel is worthless, and GPU memory bugs are often silent: an off-by-one write can land in allocation padding and the program still "works". <code>compute-sanitizer</code> ships with the CUDA toolkit. Run it before any timing, and never time under it.</p>
+<table class="parts">
+  <tr><th>Tool</th><th class="what">What it catches (docs)</th><th>Example bug (the notebook's)</th><th>Fix</th></tr>
+  <tr><td>memcheck <span style="font-weight:400;color:var(--muted)">(default)</span></td><td class="what">Out-of-bounds and misaligned accesses to global, local and shared memory; hardware exceptions; leaks</td><td class="ex"><code>if (i &lt;= n) a[i] = 1;</code><span>thread 1000 writes past a 1,000-float buffer</span></td><td class="ex"><code>i &lt; n</code></td></tr>
+  <tr><td>racecheck</td><td class="what">Shared-memory data hazards (read-after-write, write-after-read, write-after-write); shared memory only</td><td class="ex">block sum: thread 0 reads <code>s[k]</code><span>with no <code>__syncthreads()</code> after the writes</span></td><td class="ex"><code>__syncthreads()</code> (or <code>__syncwarp()</code> within a warp)</td></tr>
+  <tr><td>initcheck</td><td class="what">Reads of global memory that no kernel, memcpy or memset ever wrote</td><td class="ex"><code>cudaMalloc</code> then read<span>no copy, no memset</span></td><td class="ex">copy or <code>cudaMemset</code> first</td></tr>
+  <tr><td>synccheck</td><td class="what">Invalid use of <code>__syncthreads()</code>, <code>__syncwarp()</code> and cooperative-groups barriers</td><td class="ex"><code>if (tid &lt; 16) __syncthreads();</code><span>barrier only some threads reach</span></td><td class="ex">move the barrier out of the branch</td></tr>
+</table>
+<p class="cap">initcheck and synccheck do no bounds checking, so the docs say to run memcheck clean first.</p>
+
+<h2>Worked example: the benchmark that lies by 1.6×</h2>
+<p>A GEMV that reads 16 MB of weights (illustrative size) on an H100 with its 50 MB L2. Time it in a tight loop and, after the first run, the weights are already sitting in L2, so every later run reads them from L2 instead of HBM. NVIDIA doesn't publish H100 L2 bandwidth; the Scaling Book quotes a measured ~5.5 TB/s, "roughly 1.6x the HBM bandwidth".</p>
+<div class="mathbox">
+<math display="block">
+  <mfrac>
+    <munder class="t3"><msub><mi>t</mi><mtext>cold</mtext></msub><mtext class="lab2">real decode: weights come from HBM</mtext></munder>
+    <munder class="t2"><msub><mi>t</mi><mtext>hot</mtext></msub><mtext class="lab2">tight loop: weights already in L2</mtext></munder>
+  </mfrac>
+  <mo>=</mo>
+  <mfrac>
+    <mrow><mi>W</mi><mo>/</mo><msub><mi>B</mi><mtext>HBM</mtext></msub></mrow>
+    <mrow><mi>W</mi><mo>/</mo><msub><mi>B</mi><mtext>L2</mtext></msub></mrow>
+  </mfrac>
+  <mo>=</mo>
+  <mfrac><mrow><mn>5.5</mn><mtext>&#8201;TB/s</mtext></mrow><mrow><mn>3.35</mn><mtext>&#8201;TB/s</mtext></mrow></mfrac>
+  <mo>&#8776;</mo><mn>1.64</mn>
+</math>
+<div class="legend">
+  <span class="sym">W</span><span>weight bytes read per call</span><span class="v">16 MB (illustrative)</span>
+  <span class="sym">B_HBM</span><span>H100 SXM HBM3 bandwidth</span><span class="v">3.35 TB/s</span>
+  <span class="sym">B_L2</span><span>H100 L2 bandwidth, measured (Scaling Book)</span><span class="v">~5.5 TB/s</span>
+</div>
+</div>
+<div class="bars">
+  <span>hot loop (L2)</span><div class="track"><div class="fill" style="width:60.9%;background:var(--red)"></div></div><span class="v lo">2.91 µs</span>
+  <span>cold (HBM), real</span><div class="track"><div class="fill" style="width:100%;background:var(--accent)"></div></div><span class="v hi">4.78 µs</span>
+</div>
+<div class="formula">hot:   16e6 B / 5.5e12 B/s  = 2.91 µs
+       reports "5.5 TB/s", more than HBM can deliver
+cold:  16e6 B / 3.35e12 B/s = 4.78 µs
+       what decode actually pays
+ratio: 4.78 / 2.91 = 1.64×
+       (our recomputation; bandwidth floors only)</div>
+<p>The tell: a hot-loop GEMV that "achieves" more than 3.35 TB/s is reading from cache. The real up-projection (117.5 MB) is bigger than L2, so it mostly can't stay resident, but smaller per-layer matrices and small batches can (our inference). Two standard cures:</p>
+<ul style="font-size:15px;margin:0 0 10px;padding-left:20px">
+  <li><b>Rotate buffers</b> (CUTLASS): allocate copies of every input until they total ≥ 2× L2 (at least two per tensor) and switch copy each iteration. On H100: ≥ 100 MB, so 7 copies of the 16 MB weights (112 MB).</li>
+  <li><b>Flush L2</b> (Triton's <code>do_bench</code>): zero a 256 MB buffer before each timed run. 256 MiB = 268 MB, 5.4× the H100's L2.</li>
+</ul>
+
+<h3 style="font-size:15px;margin:18px 0 8px">The rest of the hygiene checklist</h3>
+<div class="errbox">
+<h3>time.time() around a launch measures the launch, not the kernel</h3>
+<div class="code"><span class="c"># ✗ stops the clock as soon as the launch is queued</span>
+t0 = time.time(); y = W @ x; t1 = time.time()
+
+<span class="c"># ✓ timestamps recorded on the GPU stream (ms)</span>
+s = torch.cuda.Event(enable_timing=True)
+e = torch.cuda.Event(enable_timing=True)
+s.record(); y = W @ x; e.record()
+torch.cuda.synchronize(); ms = s.elapsed_time(e)
+
+<span class="c"># ✓ warm-up, L2 flush, events, many runs</span>
+ms = triton.testing.do_bench(lambda: W @ x,
+                             quantiles=[0.5, 0.9])</div>
+<p>CUDA launches are asynchronous: the CPU queues the kernel and moves on, so the first line times a few microseconds of Python and driver work however long the matmul takes. Adding <code>torch.cuda.synchronize()</code> makes it correct but folds in launch and sync overhead. Events are recorded on the GPU's own stream.</p>
+</div>
+<table>
+  <tr><th>Practice</th><th>What the source says</th></tr>
+  <tr><td>Warm up, separately</td><td>CUTLASS: separate warm-up and timed loops (split by <code>cudaEventRecord</code> or <code>cudaProfilerStart/Stop</code>); all buffers allocated before either loop; no other GPU work between launches. Back-to-back GEMMs saw clocks oscillate for about the first <b>3 s</b> before settling.</td></tr>
+  <tr><td>Enough iterations</td><td>CUTLASS: <b>&gt; 1,000</b> timed iterations gave stable results at ~4096³; smaller problems need more. Its Blackwell example: 10,000 warm-ups, 4,000 iterations, 1 s cool-down.</td></tr>
+  <tr><td>Fixed frequency vs fixed power</td><td>Fixed-frequency tests lock clocks to study efficiency; use <b>zero-fill</b> there, since it draws less power and helps hold the clock. Fixed-power tests mimic real use (DVFS on); fill with <b>Uniform[−1, 1]</b> (scales [0, 1]), because low-entropy data flips fewer bits and flatters power-limited speed.</td></tr>
+  <tr><td><code>do_bench</code> defaults</td><td><code>warmup=25</code>, <code>rep=100</code>, both in <b>milliseconds</b> of runtime, not iterations (it estimates the kernel time from 5 runs, then picks counts). Flushes L2 before every run, times each run with events, returns the <b>mean</b> unless you pass <code>return_mode</code> or <code>quantiles</code>.</td></tr>
+  <tr><td>Report the spread</td><td>Give the <b>median and p90</b> of many runs (<code>quantiles=[0.5, 0.9]</code>), not the min alone: the min is the luckiest run, and p90 shows clock and contention noise. (Our recommendation; CUTLASS reports averages with monitored clocks.)</td></tr>
+</table>
+
+<h2>Same rules, two GPUs</h2>
+<table>
+  <tr><th>Hygiene number</th><th class="num">H100 SXM (running example)</th><th class="num">T4 (Colab lab)</th></tr>
+  <tr><td>L2 size</td><td class="num">50 MB</td><td class="num">printed by the notebook (<code>L2_cache_size</code>)</td></tr>
+  <tr><td>DRAM bandwidth (a hot loop above this is reading cache)</td><td class="num">3.35 TB/s</td><td class="num">320 GB/s <span style="color:var(--muted)">(datasheet: 300)</span></td></tr>
+  <tr><td>CUTLASS rotation target, ≥ 2× L2</td><td class="num">≥ 100 MB</td><td class="num">2× your printed L2</td></tr>
+  <tr><td><code>do_bench</code>'s 256 MiB flush ÷ L2</td><td class="num">5.4×</td><td class="num">larger still</td></tr>
+  <tr><td>Where to profile</td><td class="num">ncu on a box you control (the script)</td><td class="num">nsys/ncu if the image allows; the sanitizer should work</td></tr>
+</table>
+<p class="cap">Colab's T4 clocks and availability vary between sessions, which is one more reason to report a median and a p90.</p>
+
+<h2>Why it beats the alternatives</h2>
+<div class="grid2">
+  <div class="cell"><h3><span class="x">&#10007;</span> time.time() around a launch</h3><p>Measures the asynchronous launch, not the kernel: microseconds whatever the kernel does. With a sync added it's correct but includes launch and sync overhead, and one run tells you nothing about the spread.</p></div>
+  <div class="cell win"><h3><span class="ok">&#10003;</span> CUDA events / do_bench: for timing</h3><p>GPU-side timestamps, warm-up, many runs, cold L2 (do_bench flushes; CUTLASS rotates buffers ≥ 2× L2). Report the median and p90. This is the number you quote.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> nsys alone</h3><p>The right first step, and CUTLASS accepts its kernel durations, but a timeline only says <i>which</i> kernel is slow and where the gaps are. It can't say why a kernel is slow.</p></div>
+  <div class="cell win"><h3><span class="ok">&#10003;</span> ncu: for diagnosis</h3><p>Speed of Light, the roofline dot and stall reasons say what bounds the kernel and what to fix. Its duration is taken with replayed passes, flushed caches, serialized launches and locked clocks, so don't quote it as production time.</p></div>
+</div>
+<p class="cap">Two winners on purpose: events and do_bench answer "how long?", ncu answers "why?". You need both.</p>
+
+<h2>Why does my kernel run faster in the benchmark than in production?</h2>
+<div class="note">
+  <ul>
+    <li><b>Hot caches.</b> A tight loop re-reads inputs from L2; production reads them from HBM after other kernels have evicted them. On H100 that alone is up to ~1.6× for a bandwidth-bound kernel (worked example above).</li>
+    <li><b>Clocks.</b> ncu locks clocks (base or boost, by version); a short benchmark may run at boost before power limits pull clocks down, while a busy server runs at its settled, power-limited clock. CUTLASS saw ~3 s of clock oscillation before settling.</li>
+    <li><b>No contention.</b> Alone on the GPU, the kernel gets every SM and all the bandwidth. In an engine, kernels overlap on streams, share L2, and wait on communication; ncu even serializes launches on purpose.</li>
+    <li><b>Zero-filled data.</b> <code>torch.zeros</code> inputs flip fewer bits and draw less power, so a power-limited GPU clocks higher than on real activations. Use Uniform[−1, 1] or real data.</li>
+    <li><b>Launch overhead hidden.</b> Back-to-back launches overlap the CPU launch cost; a decode step with hundreds of small kernels pays it (see <a href="fusion-cuda-graphs.html">CUDA graphs</a>).</li>
+  </ul>
+  <p>When is a hot-cache number the right one? When production really does reuse data that fits in L2, for example a small matrix applied repeatedly inside one fused step. Then measure hot, on purpose, and say so. And for end-to-end serving questions (tokens/s, latency under load), skip kernel microbenchmarks altogether and benchmark the engine with real traffic.</p>
+</div>
+
+<div class="foot">
+<p><b>Read next:</b> Nsight Compute <a href="https://docs.nvidia.com/nsight-compute/ProfilingGuide/index.html">Profiling Guide</a>: sections 2.2 (sets, replay, overhead), 2.6 (reproducibility, clock and cache control), 2.9 (roofline charts) and 2.4.7 (warp stall reasons), ~45 min. Nsight Systems <a href="https://docs.nvidia.com/nsight-systems/UserGuide/index.html">User Guide</a>: the Timeline View and CLI profiling sections, ~30 min. CUTLASS <a href="https://docs.nvidia.com/cutlass/latest/media/docs/cpp/gemm_performance_measurement_methodology_guidelines.html">GEMM Performance Measurement Methodology Guidelines</a>: all of it, ~15 min. <a href="https://docs.nvidia.com/compute-sanitizer/ComputeSanitizer/index.html">Compute Sanitizer</a>: the introduction and the memcheck, racecheck, initcheck and synccheck sections, ~15 min. GPU Mode <a href="https://github.com/gpu-mode/lectures/tree/main/lecture_001">lecture 1</a> (how to profile CUDA kernels in PyTorch): the recording and notebook, ~1 h.</p>
+<p><b>Related:</b> <a href="occupancy.html">occupancy and latency hiding</a> · <a href="matmul-coalescing-smem.html">Matmul II: coalescing and shared memory (MIO throttle)</a> · <a href="fusion-cuda-graphs.html">fusion, launch overhead and CUDA graphs</a> · <a href="coalescing.html">memory coalescing</a> · <a href="shared-memory-transpose.html">shared-memory transpose</a> · <a href="../perf-1-foundations/roofline-intuition.html">roofline intuition</a> · <a href="../perf-2-scaling-book-inference/roofline.html">roofline (rigorous)</a> · <a href="../perf-1-foundations/gpu-machine.html">the GPU as a machine</a></p>
+<p><b>Sources:</b> ncu replay, save/restore, cache flush, serialization, clock locking, nsys differences, section names (<code>SpeedOfLight</code>, <code>SpeedOfLight_RooflineChart</code>, <code>SpeedOfLight_HierarchicalTensorRooflineChart</code>, <code>MemoryWorkloadAnalysis</code>), stall definitions: Nsight Compute Profiling Guide v2026.3.1 (link above). <code>--clock-control</code> default <code>base</code> in 2024.1–2025.4 and <code>boost</code> in 2026.1+: <a href="https://docs.nvidia.com/nsight-compute/NsightComputeCli/index.html">Nsight Compute CLI docs</a> and their versioned copies. MIO throttle on kernel 3: <a href="https://siboehm.com/articles/22/CUDA-MMM">siboehm, "How to Optimize a CUDA Matmul Kernel"</a>. Warm-up, 3 s oscillation, &gt; 1,000 iterations, buffer rotation ≥ 2× L2, fills, fixed frequency vs fixed power, Blackwell 10,000/4,000/1 s: CUTLASS guide (link above). Sanitizer tools: Compute Sanitizer docs (link above). <code>do_bench</code> defaults, 256 MB flush, mean: <a href="https://github.com/triton-lang/triton/blob/main/python/triton/testing.py">triton/testing.py</a> and <a href="https://github.com/triton-lang/triton/blob/main/third_party/nvidia/backend/driver.py">nvidia/backend/driver.py</a>. <code>torch.cuda.Event(enable_timing=True)</code>, <code>elapsed_time</code> in ms: <a href="https://github.com/pytorch/pytorch/blob/main/torch/cuda/streams.py">torch/cuda/streams.py</a>. H100 L2 ~5.5 TB/s measured, "roughly 1.6x" HBM, 50 MB L2: <a href="https://jax-ml.github.io/scaling-book/gpus/">Scaling Book Part 12</a>. H100 989 TF BF16, 3.35 TB/s; T4 320 GB/s (datasheet 300): course facts. 16 MB GEMV size is illustrative; all FLOP, byte and time floors are our recomputation.</p>
+</div>
+</article>
+<!-- series-nav:bottom -->
+<div class="snx"><a class="nx" href="../perf-0-map/index.html" target="_top"><span class="mini" aria-hidden="true"><span class="m1">You've reached the end of the published courses</span></span>
+<span class="tx"><span class="lab">End of the series so far</span><span class="tt">Back to the map</span><span class="ds">Next to be built: 4 · Attention &amp; KV cache.</span><span class="go">Open the map →</span></span></a><div class="aux"><span><a href="index.html#triton-matmul" target="_top">← Triton matmul: grouped ordering and autotuning</a></span><a href="index.html" target="_top">All cards in 3 · GPU kernels</a></div></div>
+<!-- /series-nav:bottom -->
+</body>
+</html>

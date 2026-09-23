@@ -1,0 +1,259 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kernel optimization loop</title>
+<style>
+:root{
+  --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
+  --text:#1c1f23; --muted:#6b7068; --faint:#b9b9b3;
+  --accent:#4a9d77; --accent-bg:#dcefdf; --accent-border:#8cc79c;
+  --red:#c0492b; --red-bg:#fbeceb;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#15171a; --surface:#1d2024; --surface2:#24282d; --border:#32373d;
+    --text:#e6e8ea; --muted:#9aa1a9; --faint:#4a5057;
+    --accent:#5fb37f; --accent-bg:#1c2b22; --accent-border:#3f7a55;
+    --red:#e57368; --red-bg:#2e1f1e;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text)}
+.card{max-width:820px;margin:0 auto;padding:28px 32px;font-family:-apple-system,"Inter",system-ui,sans-serif;line-height:1.45}
+h1{font-size:26px;font-weight:600;margin:0 0 6px;letter-spacing:-0.01em}
+.sub{font-size:15px;color:var(--muted);margin:0 0 20px}
+h2{font-size:17px;font-weight:600;margin:26px 0 10px}
+p{font-size:15px;margin:0 0 10px}
+.cap{font-size:13px;color:var(--muted);margin:8px 0 0;text-align:center}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+
+/* Horizontal bar chart with running total and cutoff */
+.bars{display:grid;grid-template-columns:110px 1fr 90px;column-gap:14px;row-gap:12px;align-items:center;font-size:14px}
+.bars .hd{font-size:13px;color:var(--muted)}
+.bars .hd.r,.bars .tot{text-align:right;font-variant-numeric:tabular-nums}
+.bars .tok{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:15px}
+.bars .track{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted)}
+.bars .bar{height:22px;border-radius:3px;background:var(--accent)}
+.bars .tot{font-size:15px}
+.bars .strong{font-weight:600}
+.bars .out,.bars .out .tok{color:var(--muted)}
+.bars .track.out .bar{background:var(--faint)}
+.bars .out .tot{font-size:13px}
+.cutoff{grid-column:1 / -1;border-top:2px dashed var(--red);margin-top:4px;padding-top:6px;text-align:center;font-size:13px;color:var(--red)}
+
+/* Tables and formulas */
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border)}
+th{font-size:12px;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:none}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+.hi{color:var(--accent);font-weight:600} .lo{color:var(--red)}
+.formula{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin:10px 0;white-space:pre;overflow-x:auto;line-height:1.55}
+
+/* 2x2 grid */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.cell{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.cell.win{background:var(--accent-bg);border-color:var(--accent-border)}
+.cell h3{font-size:16px;font-weight:600;margin:0 0 5px;display:flex;gap:8px;align-items:baseline}
+.cell p{font-size:14px;margin:0;color:var(--text)}
+.cell.win h3,.cell.win p{color:var(--accent)}
+.x{color:var(--red)} .ok{color:var(--accent)}
+
+/* Clarification box */
+.note{border:1px solid var(--border);border-radius:10px;padding:14px 18px;font-size:14px}
+.note p{font-size:14px} .note p:last-child{margin-bottom:0}
+
+.foot{margin-top:22px;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+svg{display:block;max-width:100%}
+.sl{font-size:12px;fill:var(--muted)} .st{font-size:13px;fill:var(--text)}
+@media (max-width:560px){.grid2{grid-template-columns:1fr}.bars{grid-template-columns:70px 1fr 64px}}
+a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+
+/* Rendered formula (native MathML, no script) */
+.mathbox{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px 16px 12px;margin:10px 0;overflow-x:auto}
+.mathbox math{font-size:21px;color:var(--text);font-family:"STIX Two Math","Latin Modern Math","Cambria Math",math}
+.mathbox .t1{color:var(--text)} .mathbox .t2{color:var(--accent)} .mathbox .t3{color:var(--muted)}
+.mathbox .lab{font-size:12px;font-family:-apple-system,"Inter",system-ui,sans-serif;padding-top:3px;border-top:1.5px solid currentColor;margin-top:2px}
+.legend{display:grid;grid-template-columns:auto 1fr auto;column-gap:14px;row-gap:5px;font-size:13px;margin-top:12px;align-items:baseline}
+.legend .sym{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;text-align:right}
+.legend .v{color:var(--muted);text-align:right;font-variant-numeric:tabular-nums}
+.plain{font-size:13px;color:var(--muted);margin:14px 0 0}
+
+/* Ranked table with groups and log-scale bars */
+.rank td{vertical-align:top}
+.rank .grp td{padding-top:16px;font-size:12px;font-weight:600;color:var(--muted);letter-spacing:.02em;border-bottom:1px solid var(--border)}
+.rank .grp td span{font-weight:400}
+.rank .what{font-weight:600}
+.rank .what small{display:block;font-weight:400;color:var(--muted);font-size:13px;margin-top:2px}
+.rank .ex{color:var(--muted);font-size:13px}
+.rank .ex b{color:var(--text);font-weight:500}
+.sp{display:flex;align-items:center;gap:8px;white-space:nowrap}
+.sp em{display:block;width:90px;flex:none;height:8px;border-radius:2px;background:var(--surface2)}
+.sp i{display:block;height:8px;border-radius:2px;background:var(--accent)}
+.sp.add i{background:var(--faint)}
+.sp span{font-variant-numeric:tabular-nums;white-space:nowrap}
+@media (max-width:560px){.rank .ex{display:none}.legend{grid-template-columns:auto 1fr}.legend .v{display:none}}
+.gloss{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+@media (max-width:560px){.gloss{grid-template-columns:1fr}}
+/* series-nav */
+.sn{max-width:820px;margin:0 auto;padding:16px 32px 0;font-family:-apple-system,"Inter",system-ui,sans-serif;font-size:13px;line-height:1.5;color:var(--muted)}
+.sn a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+.sn .crumbs{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 7px}
+.sn .crumbs b{color:var(--text);font-weight:600}
+.sn .sep{color:var(--faint)}
+.sn .step{margin-left:auto;white-space:nowrap}
+.sn .dep{margin-top:5px;padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface)}
+.sn .dep .ok{color:var(--accent);font-weight:600}
+.snx{max-width:820px;margin:0 auto;padding:6px 32px 44px;font-family:-apple-system,"Inter",system-ui,sans-serif}
+.snx .nx{display:grid;grid-template-columns:280px 1fr;text-decoration:none;color:var(--text);background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.snx .nx:hover,.snx .nx:focus-visible{border-color:var(--accent-border);outline:none}
+.snx .mini{position:relative;height:210px;overflow:hidden;background:var(--bg);border-right:1px solid var(--border);padding:14px 16px}
+.snx .mini span{display:block}
+.snx .mini .m1{font-size:12.5px;font-weight:600;margin:0 0 4px;line-height:1.3}
+.snx .mini .m2{font-size:9px;color:var(--muted);margin:0 0 8px;line-height:1.4}
+.snx .mini .m3{font-size:8.5px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;margin:0 0 3px}
+.snx .mini .m4{font-size:9.5px;margin:0;line-height:1.45}
+.snx .tx{padding:16px 20px}
+.snx .lab{font-size:12px;font-weight:600;color:var(--accent);letter-spacing:.04em;text-transform:uppercase}
+.snx .tt{display:block;font-size:20px;font-weight:600;margin:5px 0 4px;line-height:1.25}
+.snx .ds{display:block;font-size:14px;color:var(--muted)}
+.snx .nd{display:block;font-size:13px;color:var(--muted);margin-top:10px}
+.snx .go{display:block;margin-top:12px;font-size:14px;font-weight:600;color:var(--accent)}
+.snx .aux{display:flex;justify-content:space-between;gap:12px;margin-top:10px;font-size:13px;color:var(--muted)}
+.snx .aux a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+@media (max-width:560px){.sn,.snx{padding-left:16px;padding-right:16px}.snx .nx{grid-template-columns:1fr}.snx .mini{display:none}.sn .step{margin-left:0}}
+/* /series-nav */
+</style>
+</head>
+<body>
+<!-- series-nav:top -->
+<nav class="sn" aria-label="Series navigation"><div class="crumbs"><a href="../perf-0-map/index.html" target="_top">AI perf engineering</a><span class="sep">›</span><a href="index.html" target="_top">3 · GPU kernels</a><span class="sep">›</span><b>01 / 17</b><span class="step"><a href="../perf-2-scaling-book-inference/index.html#speculative-sampling" target="_top">← prev</a> · <a href="index.html#execution-model" target="_top">next →</a></span></div>
+<div class="dep"><span class="ok">Overview.</span> Read it first as the map, or last as a recap. This course needs perf-1.</div></nav>
+<!-- /series-nav:top -->
+<article class="card">
+<h1>The kernel optimization loop</h1>
+<p class="sub">Overview of perf-3 (also called GPU kernel tuning, the roofline method, or "speed of light" analysis). It ties together the course's four walked-through sources: Harris's transpose and reduction, siboehm's matmul worklog, the Triton tutorials, and Volkov on occupancy. Most source numbers come from older GPUs (G80, M2050, A6000, V100), and each is named with its GPU. H100 and T4 numbers are our recomputation.</p>
+
+<h2>In one breath</h2>
+<p>A kernel can't finish faster than the <b>larger</b> of two floors: the time to do its math at peak, and the time to move the bytes <em>it actually moves</em> at peak bandwidth. Then add whatever the GPU spends idle: launches, stalls, waiting on latency. Almost every trick in this course does one of four things. It <b>moves fewer bytes</b> (coalescing, tiling, fusion, lower precision), <b>makes the math faster</b> (tensor cores, FP8), <b>keeps enough work in flight</b> to hide latency (occupancy, ILP, more work per thread), or <b>removes overhead</b> (CUDA graphs). The loop is always the same: measure, put the kernel on the roofline, fix whichever bound it hits, and measure again.</p>
+
+<div class="mathbox">
+<math display="block">
+  <msub><mi>T</mi><mtext>kernel</mtext></msub><mo>&#8805;</mo>
+  <mi>max</mi>
+  <mo stretchy="true" form="prefix" minsize="2.6em">(</mo>
+  <munder class="t2"><mfrac><mi>F</mi><mi>C</mi></mfrac><mtext class="lab">math</mtext></munder>
+  <mo>,</mo>
+  <munder class="t3"><mfrac><msub><mi>Q</mi><mtext>moved</mtext></msub><mi>W</mi></mfrac><mtext class="lab">bytes moved</mtext></munder>
+  <mo stretchy="true" form="postfix" minsize="2.6em">)</mo>
+  <mo>+</mo>
+  <munder class="t1"><msub><mi>T</mi><mtext>idle</mtext></msub><mtext class="lab">launch, stalls</mtext></munder>
+</math>
+<div class="legend">
+  <span class="sym">F</span><span>FLOPs the kernel must do (fixed by the problem)</span><span class="v">137 GFLOP for a 4092² matmul</span>
+  <span class="sym">Q<sub>moved</sub></span><span>bytes it actually moves through DRAM, which the kernel design sets. Its floor is the minimum the problem needs</span><span class="v">268 MB min · 548 GB naive</span>
+  <span class="sym">C, W</span><span>peak FLOP/s and DRAM bandwidth; C/W is the ridge point</span><span class="v">A6000 30 TF / 768 GB/s</span>
+  <span class="sym">T<sub>idle</sub></span><span>launch gaps, unhidden latency, synchronisation</span><span class="v">~2 µs per launch (H100)</span>
+</div>
+</div>
+<p class="cap">Filled in for siboehm's 4092² FP32 matmul on an RTX A6000: the math floor is <b>4.57 ms</b> and the minimum-bytes floor is 0.35 ms, so a good kernel is compute-bound. The naive kernel still takes <b>0.444 s</b> (309 GFLOP/s) because with no reuse it would move 548 GB, 2,046× the minimum. Warptiling (kernel 10) gets to <b>6.29 ms</b> (21.8 TFLOP/s), within 1.07× of cuBLAS's 5.89 ms.</p>
+<p class="plain">The same thing in plain text:</p>
+<div class="formula">time ≥ max( FLOPs ÷ peak FLOP/s,
+           bytes actually moved ÷ peak bandwidth )
+       + idle time (launches, stalls)
+intensity = FLOPs ÷ bytes moved
+  below C/W → memory-bound: move fewer bytes
+  above C/W → compute-bound: faster math units</div>
+
+<h2>The mental model: the loop, and which card fixes which bound</h2>
+<svg viewBox="0 0 760 330" role="img" aria-label="The optimization loop: measure, place on the roofline, then one of four fixes by bound, then re-measure">
+  <defs><marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--muted)"/></marker></defs>
+  <g style="stroke:var(--faint);stroke-width:1.5;fill:none" marker-end="url(#ar)">
+    <path d="M180,52 L228,52"/>
+    <path d="M400,52 C440,52 440,52 468,52"/>
+    <path d="M560,74 C560,95 120,95 110,122"/>
+    <path d="M560,74 C560,100 300,100 290,122"/>
+    <path d="M560,74 C560,105 480,105 470,122"/>
+    <path d="M560,74 C600,105 650,105 650,122"/>
+    <path d="M380,262 C380,300 60,300 60,80"/>
+  </g>
+  <g style="fill:var(--surface);stroke:var(--border)">
+    <rect x="10" y="30" width="170" height="44" rx="6"/>
+    <rect x="230" y="30" width="170" height="44" rx="6"/>
+    <rect x="470" y="30" width="180" height="44" rx="6"/>
+  </g>
+  <rect x="20" y="124" width="170" height="130" rx="6" style="fill:var(--surface2);stroke:var(--border)"/>
+  <rect x="200" y="124" width="170" height="130" rx="6" style="fill:var(--accent-bg);stroke:var(--accent-border)"/>
+  <rect x="380" y="124" width="170" height="130" rx="6" style="fill:var(--surface);stroke:var(--border)"/>
+  <rect x="560" y="124" width="180" height="130" rx="6" style="fill:var(--surface);stroke:var(--red)"/>
+  <text class="sl" x="10" y="20">1 · MEASURE</text><text class="sl" x="230" y="20">2 · PICK THE TOP KERNEL</text><text class="sl" x="470" y="20">3 · PLACE IT</text>
+  <text class="st" x="22" y="49">nsys timeline</text><text class="sl" x="22" y="65">where did the time go?</text>
+  <text class="st" x="242" y="49">ncu on that kernel</text><text class="sl" x="242" y="65">Speed of Light, stalls (card 16)</text>
+  <text class="st" x="482" y="49">intensity vs ridge</text><text class="sl" x="482" y="65">% of peak FLOP/s and GB/s</text>
+  <text class="st" x="32" y="146">Memory-bound</text>
+  <text class="sl" x="32" y="166">coalesce accesses</text><text class="sl" x="32" y="184">tile in shared memory</text><text class="sl" x="32" y="202">fuse kernels</text><text class="sl" x="32" y="220">fewer bytes per value</text><text class="sl" x="32" y="240">cards 3, 4, 8–10, 13–15</text>
+  <text class="st" x="212" y="146" style="fill:var(--accent);font-weight:600">Compute-bound</text>
+  <text class="sl" x="212" y="166">use tensor cores</text><text class="sl" x="212" y="184">BF16 → FP8 → FP4</text><text class="sl" x="212" y="202">(the good place to be)</text><text class="sl" x="212" y="240">card 12</text>
+  <text class="st" x="392" y="146">Latency-bound</text>
+  <text class="sl" x="392" y="166">enough warps in flight</text><text class="sl" x="392" y="184">ILP, more outputs/thread</text><text class="sl" x="392" y="202">unroll, cascade</text><text class="sl" x="392" y="220">vector loads, autotune</text><text class="sl" x="392" y="240">cards 5, 6–7, 10–11</text>
+  <text class="st" x="572" y="146" style="fill:var(--red)">Overhead-bound</text>
+  <text class="sl" x="572" y="166">launch gaps, Python</text><text class="sl" x="572" y="184">CUDA graphs</text><text class="sl" x="572" y="202">fuse or use megakernels</text><text class="sl" x="572" y="220">2× batch → +10% time?</text><text class="sl" x="572" y="240">card 13</text>
+  <text class="sl" x="220" y="318">4 · RE-MEASURE: the fix moves the kernel, and often a different bound takes over</text>
+</svg>
+<p class="cap">Card numbers follow the course order. How to tell the four bounds apart comes from Horace He: an overhead-bound program barely slows when you double the batch. Nsight Compute's stall reasons separate latency (long_scoreboard) from bandwidth (memory throughput near peak). siboehm's kernel 3 was bound neither by DRAM nor by math but by shared-memory instruction throughput (MIO throttle), which is why the course calls it "latency and instruction" work.</p>
+
+<h2>What matters most</h2>
+<p>Each lever's measured effect is grouped by the bound it attacks. Bars are log-scale, and a full bar is 2,000×. Every number comes from the source named on its card, on the GPU given. They don't transfer exactly to a T4 or H100, and the Colab notebooks are there for you to measure them yourself.</p>
+<table class="rank">
+  <colgroup><col style="width:27%"><col style="width:37%"><col style="width:19%"><col style="width:17%"></colgroup>
+  <tr><th>Lever</th><th>Before → after (GPU)</th><th>Speed-up</th><th>Card</th></tr>
+  <tr class="grp"><td colspan="4">USE THE WHOLE GPU <span>· the first 1,000× is just launching enough threads</span></td></tr>
+  <tr><td class="what">Many blocks, grid-stride loop<small>vs 1 thread, vector add</small></td><td class="ex">T4: <b>91.8 ms</b> → <b>47.5 µs</b>, 265 GB/s (83% of peak)</td><td><div class="sp"><em><i style="width:99.5%"></i></em><span class="hi">1,932×</span></div></td><td><a href="first-kernel.html">first-kernel</a></td></tr>
+  <tr><td class="what">Prefetch unified memory<small>no page faults inside the kernel</small></td><td class="ex">T4, many blocks: <b>4.51 ms</b> → <b>47.5 µs</b></td><td><div class="sp"><em><i style="width:59.9%"></i></em><span>95×</span></div></td><td><a href="first-kernel.html">first-kernel</a></td></tr>
+  <tr class="grp"><td colspan="4">MOVE FEWER BYTES <span>· memory-bound kernels</span></td></tr>
+  <tr><td class="what">Coalesce global accesses<small>one index change</small></td><td class="ex">siboehm kernel 1 → 2 (A6000): <b>309</b> → <b>1,987</b> GFLOP/s; GMEM 15 → 110 GB/s</td><td><div class="sp"><em><i style="width:24.5%"></i></em><span>6.4×</span></div></td><td><a href="matmul-coalescing-smem.html">matmul II</a></td></tr>
+  <tr><td class="what">Stage through shared memory, pad banks<small>transpose</small></td><td class="ex">Harris (M2050): naive <b>18.8</b> → padded <b>99.5</b> GB/s, 95% of copy</td><td><div class="sp"><em><i style="width:21.9%"></i></em><span>5.3×</span></div></td><td><a href="shared-memory-transpose.html">transpose</a></td></tr>
+  <tr><td class="what">Tile in SMEM, then in registers<small>more results per thread</small></td><td class="ex">siboehm kernel 3 → 5: GMEM loads per result K/16 → K/64; <b>2,980</b> → <b>15,972</b> GFLOP/s</td><td><div class="sp"><em><i style="width:22.1%"></i></em><span>5.4×</span></div></td><td><a href="matmul-blocktiling.html">matmul III</a></td></tr>
+  <tr><td class="what">Fuse elementwise kernels<small>one pass over memory</small></td><td class="ex">Horace He: <code>x.cos().cos()</code> 4 → 2 memory trips. Llama-3.1-8B prefill tail: 225 → 152 MB per layer (our recomputation)</td><td><div class="sp"><em><i style="width:9.1%"></i></em><span>2×</span></div></td><td><a href="fusion-cuda-graphs.html">fusion</a></td></tr>
+  <tr><td class="what">Grouped launch order<small>L2 reuse between programs</small></td><td class="ex">Triton tutorial 03 (A100): <b>220</b> → <b>245</b> TFLOPS. siboehm's swizzle didn't help (L2 hit rate already ~80%)</td><td><div class="sp"><em><i style="width:1.4%"></i></em><span>1.11×</span></div></td><td><a href="triton-matmul.html">triton matmul</a></td></tr>
+  <tr class="grp"><td colspan="4">FASTER MATH <span>· compute-bound kernels</span></td></tr>
+  <tr><td class="what">Tensor cores instead of FP32 cores<small>peak ratio</small></td><td class="ex">H100: 67 TF FP32 → <b>989</b> TF BF16 (T4: 8.1 → 65, 8×). H100 worklog: SIMT kernel 32 TF → tensor cores + TMA <b>764</b> TF (beats cuBLAS's 716)</td><td><div class="sp"><em><i style="width:35.5%"></i></em><span class="hi">14.8×</span></div></td><td><a href="tensor-cores-low-precision.html">tensor cores</a></td></tr>
+  <tr><td class="what">BF16 → FP8<small>peak, and bytes per weight</small></td><td class="ex">H100 <b>989</b> → <b>1,979</b> TF; Llama-3.1-8B decode ceiling 209 → 417 tok/s</td><td><div class="sp"><em><i style="width:9.1%"></i></em><span>2×</span></div></td><td><a href="tensor-cores-low-precision.html">tensor cores</a></td></tr>
+  <tr class="grp"><td colspan="4">HIDE LATENCY, CUT INSTRUCTIONS <span>· neither DRAM nor math is saturated</span></td></tr>
+  <tr><td class="what">Fix the algorithm first<small>reduction: addressing, cascading</small></td><td class="ex">Harris (G80): algorithmic changes combined <b>11.84×</b>; unrolling only <b>2.54×</b>; all 7 kernels 30×, 62.7 GB/s</td><td><div class="sp"><em><i style="width:32.5%"></i></em><span>11.8×</span></div></td><td><a href="reduction-unrolling.html">reduction II</a></td></tr>
+  <tr><td class="what">More outputs per thread<small>at lower occupancy</small></td><td class="ex">Volkov (GTX480 matmul): <b>242</b> → <b>485</b> Gflop/s as occupancy falls 67% → 33%</td><td><div class="sp"><em><i style="width:9.1%"></i></em><span>2.0×</span></div></td><td><a href="occupancy.html">occupancy</a></td></tr>
+  <tr><td class="what">Vectorize, autotune, warptile<small>the last 20%</small></td><td class="ex">siboehm kernels 5 → 10: 68.7% → <b>93.7%</b> of cuBLAS, after 4 more weekends (the first 80% took 2)</td><td><div class="sp"><em><i style="width:5.0%"></i></em><span>1.36×</span></div></td><td><a href="matmul-warptiling.html">matmul IV</a></td></tr>
+  <tr class="grp"><td colspan="4">REMOVE OVERHEAD <span>· many small kernels</span></td></tr>
+  <tr><td class="what">CUDA graph replay<small>vs sync after every launch</small></td><td class="ex">NVIDIA blog (V100, 20 kernels): <b>9.6</b> → <b>3.4 µs</b> per kernel (2.9 µs is the kernel itself). At Llama-3.1-8B batch-1 decode, launch gaps are ~9–34% of a step (illustrative kernel count)</td><td><div class="sp"><em><i style="width:13.7%"></i></em><span>2.8×</span></div></td><td><a href="fusion-cuda-graphs.html">fusion &amp; graphs</a></td></tr>
+</table>
+<p class="cap">The rows don't multiply cleanly. siboehm's whole ladder is 75× from naive to warptiling, not the product of every row. The first four steps give 51.7× and the last four give 1.46×, which is the power law of effort. The kernel-10 → 5 row is 21,779 ÷ 15,972 = 1.36×. Tensor-core and FP8 rows are peak ratios; real kernels land below them.</p>
+
+<h2>The words people use</h2>
+<div class="gloss">
+  <div class="cell"><h3>Coalescing, bank conflicts</h3><p>Global memory is served to a warp in 32-byte sectors: stride-1 floats use 4 sectors, stride-32 uses 32 (12.5% useful). Shared memory has 32 four-byte banks; 32 threads hitting one bank serialise 32 ways. The fix is a pad (<code>[32][33]</code>) or an XOR swizzle.</p></div>
+  <div class="cell"><h3>Occupancy, ILP</h3><p>Occupancy is active warps ÷ the maximum, capped by threads, registers and shared memory (siboehm's kernel 3: 66% on A6000, 50% on H100). It is one way to put latency × throughput worth of work in flight; ILP and bigger loads are the others.</p></div>
+  <div class="cell"><h3>Tensor core, MMA; FP8, MX, NVFP4</h3><p>A warp-wide matrix multiply-accumulate on small tiles (16×16×16 in WMMA). Low-precision formats cut bytes and raise peak: E4M3/E5M2 FP8, MX blocks of 32 with a power-of-two scale, NVFP4 blocks of 16 with an FP8 scale (4.5 bits per value).</p></div>
+  <div class="cell win"><h3>Arithmetic intensity at each level</h3><p>FLOPs per byte, counted separately for DRAM → SMEM (siboehm's loads per result) and for SMEM → registers (loads per FMA: 2 → 1.125 → 0.25). The whole matmul ladder is raising intensity at both levels until the math wins.</p></div>
+  <div class="cell"><h3>TMA, clusters, warp specialization (Hopper)</h3><p>TMA is a hardware unit that copies tiles between global and shared memory asynchronously. Thread-block clusters (up to 8 portable, 16 opt-in on H100) share distributed shared memory. Warp specialization gives some warps loading and others MMA. siboehm's unfinished kernel 11 and the H100 worklog point here.</p></div>
+  <div class="cell"><h3>Triton, CUTLASS, cuBLAS</h3><p>Triton writes kernels over blocks, and its compiler does the coalescing, shared memory and tensor-core selection. Its tutorial matmul reaches 99% of cuBLAS at 4096 (fp16, GPU unnamed). CUTLASS is NVIDIA's C++ template library. cuBLAS is many prebuilt kernels picked by shape, including split-K for small sizes.</p></div>
+</div>
+
+<h2>The takeaway</h2>
+<div class="note">
+  <p><b>Don't guess; measure, locate, then fix the bound you're actually at.</b> Most of the speed comes from the first few structural steps: launch enough threads, coalesce, tile, and reuse data from registers. That got siboehm to 80% of cuBLAS in two weekends and Harris 11.8× from the algorithm alone. After that, tuning pays in single-digit percent and doesn't transfer between GPUs: siboehm's best A6000 config is 6% off the best one on an A100. For LLM serving, the kernels that matter are tensor-core GEMMs in BF16/FP8/FP4, attention (perf-4), and fused elementwise and norm kernels. At small batch, launch overhead matters too.</p>
+  <p>Where this doesn't apply as-is: most inference engineers pick kernels rather than write them. Kiely: "most inference engineers will never need to write their own kernels", but kernel selection matters. At a kernel company that's inverted. The source numbers come from G80 to A6000 GPUs, so the ratios teach the mechanism but aren't predictions for an H100. On Hopper and Blackwell the top of the ladder looks different: TMA, warp specialization and tcgen05 instead of hand-tuned FP32 FMAs. And none of the Colab notebooks has been run by the author, so your T4 numbers are the real result.</p>
+</div>
+
+<p class="foot">Cards: <a href="execution-model.html">execution-model</a> · <a href="first-kernel.html">first-kernel</a> · <a href="coalescing.html">coalescing</a> · <a href="shared-memory-transpose.html">shared-memory-transpose</a> · <a href="occupancy.html">occupancy</a> · <a href="reduction-divergence.html">reduction I</a> · <a href="reduction-unrolling.html">reduction II</a> · <a href="matmul-naive.html">matmul I</a> · <a href="matmul-coalescing-smem.html">matmul II</a> · <a href="matmul-blocktiling.html">matmul III</a> · <a href="matmul-warptiling.html">matmul IV</a> · <a href="tensor-cores-low-precision.html">tensor cores</a> · <a href="fusion-cuda-graphs.html">fusion &amp; CUDA graphs</a> · <a href="triton-programming-model.html">Triton basics</a> · <a href="triton-matmul.html">Triton matmul</a> · <a href="profiling.html">profiling</a><br>
+Where to look it up: <a href="https://docs.nvidia.com/cuda/cuda-programming-guide/01-introduction/programming-model.html">CUDA programming model</a> · <a href="https://developer.nvidia.com/blog/efficient-matrix-transpose-cuda-cc/">Harris: matrix transpose</a> · <a href="https://developer.download.nvidia.com/assets/cuda/files/reduction.pdf">Harris: parallel reduction</a> · <a href="https://siboehm.com/articles/22/CUDA-MMM">siboehm: CUDA matmul worklog</a> · <a href="https://www.nvidia.com/content/GTC-2010/pdfs/2238_GTC2010.pdf">Volkov: better performance at lower occupancy</a> · <a href="https://github.com/triton-lang/triton/tree/main/python/tutorials">Triton tutorials</a> · <a href="https://horace.io/brrr_intro.html">Horace He: Go Brrrr</a> · <a href="https://docs.nvidia.com/nsight-compute/ProfilingGuide/">Nsight Compute profiling guide</a> · <a href="https://docs.nvidia.com/cuda/hopper-tuning-guide/">Hopper tuning guide</a> · <a href="https://cudaforfun.substack.com/p/outperforming-cublas-on-h100-a-worklog">Outperforming cuBLAS on H100</a><br>
+Source quirks noted on the cards: siboehm gives 268 and 278 MB, 30 and 38.7 TFLOPS, and says "A100" for an A6000 result; Harris's <code>volatile</code> warp trick is unsafe since Volta; T4 bandwidth is 320 GB/s (Turing whitepaper) or 300 GB/s (datasheet). Previous course: <a href="../perf-1-foundations/index.html">Foundations</a>. Kiely quote: <i>Inference Engineering</i> p. 98.</p>
+</article>
+<!-- series-nav:bottom -->
+<div class="snx"><a class="nx" href="index.html#execution-model" target="_top">
+<span class="mini" aria-hidden="true"><span class="m1">The CUDA execution model</span><span class="m2">Also: grid → block → warp → thread, SIMT, CTA (cooperative thread array, the hardware name for a thread block). This card walks CUDA Programming Guide §1.2 "Programming Model" section by section, with…</span><span class="m3">In one breath</span><span class="m4">You write one function (a kernel) as if for a single thread, and launch it as a grid of up to millions of threads, cut into blocks. Each block lands whole on one SM and its threads can share memory and synchronise; blocks run in any order, so they must not depend on each other. Inside a block, hardware runs threads in warps of…</span></span>
+<span class="tx"><span class="lab">Next up · 02 / 17</span><span class="tt">The CUDA execution model</span><span class="ds">Grid, block, warp, thread: SIMT, SMs and the memory spaces</span><span class="nd">Builds on: The GPU as a machine.</span><span class="go">Continue →</span></span></a><div class="aux"><span><a href="../perf-2-scaling-book-inference/index.html#speculative-sampling" target="_top">← Speculative sampling, and is batch &gt; 240 real?</a></span><a href="index.html" target="_top">All cards in 3 · GPU kernels</a></div></div>
+<!-- /series-nav:bottom -->
+</body>
+</html>

@@ -1,0 +1,330 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Parallel reduction II: unrolling and cascading</title>
+<style>
+:root{
+  --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
+  --text:#1c1f23; --muted:#6b7068; --faint:#b9b9b3;
+  --accent:#4a9d77; --accent-bg:#dcefdf; --accent-border:#8cc79c;
+  --red:#c0492b; --red-bg:#fbeceb;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#15171a; --surface:#1d2024; --surface2:#24282d; --border:#32373d;
+    --text:#e6e8ea; --muted:#9aa1a9; --faint:#4a5057;
+    --accent:#5fb37f; --accent-bg:#1c2b22; --accent-border:#3f7a55;
+    --red:#e57368; --red-bg:#2e1f1e;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text)}
+.card{max-width:820px;margin:0 auto;padding:28px 32px;font-family:-apple-system,"Inter",system-ui,sans-serif;line-height:1.45}
+h1{font-size:26px;font-weight:600;margin:0 0 6px;letter-spacing:-0.01em}
+.sub{font-size:15px;color:var(--muted);margin:0 0 20px}
+h2{font-size:17px;font-weight:600;margin:26px 0 10px}
+h3.k{font-size:15px;font-weight:600;margin:18px 0 6px}
+h3.k span{font-weight:400;color:var(--muted);font-size:13px}
+p{font-size:15px;margin:0 0 10px}
+ul{font-size:15px;margin:0 0 10px;padding-left:22px}
+.cap{font-size:13px;color:var(--muted);margin:8px 0 0;text-align:center}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+
+/* Bars: % of the G80's 86.4 GB/s */
+.bars{display:grid;grid-template-columns:190px 1fr 118px;column-gap:14px;row-gap:9px;align-items:center;font-size:14px}
+.bars .hd{font-size:13px;color:var(--muted)}
+.bars .hd.r,.bars .tot{text-align:right;font-variant-numeric:tabular-nums}
+.bars .nm small{display:block;font-size:12px;color:var(--muted)}
+.bars .track span{white-space:nowrap}
+.bars .track{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted);font-variant-numeric:tabular-nums}
+.bars .bar{height:20px;border-radius:3px;background:var(--accent);flex:none}
+.bars .tot{font-size:14px}
+.bars .out,.bars .out small{color:var(--muted)}
+.bars .track.out .bar{background:var(--faint)}
+.bars .strong{font-weight:600}
+.bars .peak{grid-column:2 / 3;border-top:2px dashed var(--red);padding-top:4px;font-size:12px;color:var(--red);text-align:right}
+
+/* Tables and formulas */
+.tw{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border)}
+th{font-size:12px;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:none}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+.hi{color:var(--accent);font-weight:600} .lo{color:var(--red)}
+.dim td{color:var(--muted)}
+.formula{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin:10px 0;white-space:pre;overflow-x:auto;line-height:1.55}
+.formula .c{color:var(--muted)} .formula .g{color:var(--accent)} .formula .r{color:var(--red)}
+
+/* busy-lane mini bars */
+.lane{display:flex;align-items:center;gap:8px;white-space:nowrap;font-variant-numeric:tabular-nums}
+.lane em{display:block;width:110px;flex:none;height:8px;border-radius:2px;background:var(--surface2)}
+.lane i{display:block;height:8px;border-radius:2px;background:var(--accent)}
+
+/* MathML */
+.mathbox{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px 16px 12px;margin:10px 0;overflow-x:auto}
+.mathbox math{font-size:21px;color:var(--text);font-family:"STIX Two Math","Latin Modern Math","Cambria Math",math}
+.mathbox .t1{color:var(--text)} .mathbox .t2{color:var(--accent)} .mathbox .t3{color:var(--muted)}
+.mathbox .lab{font-size:12px;font-family:-apple-system,"Inter",system-ui,sans-serif;padding-top:3px;border-top:1.5px solid currentColor;margin-top:2px}
+.legend{display:grid;grid-template-columns:auto 1fr auto;column-gap:14px;row-gap:5px;font-size:13px;margin-top:12px;align-items:baseline}
+.legend .sym{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;text-align:right}
+.legend .v{color:var(--muted);text-align:right;font-variant-numeric:tabular-nums}
+
+/* term table */
+.parts td{vertical-align:top} .parts td:first-child{font-weight:600}
+.parts .ex{font-size:13px} .parts .ex span{display:block;color:var(--muted)}
+
+/* 2x2 grid */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.cell{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.cell.win{background:var(--accent-bg);border-color:var(--accent-border)}
+.cell h3{font-size:16px;font-weight:600;margin:0 0 5px;display:flex;gap:8px;align-items:baseline}
+.cell .kind{font-size:12px;color:var(--muted);margin:0 0 5px}
+.cell p{font-size:14px;margin:0;color:var(--text)}
+.cell.win h3,.cell.win p{color:var(--accent)}
+.x{color:var(--red)} .ok{color:var(--accent)}
+
+/* Clarification box */
+.note{border:1px solid var(--border);border-radius:10px;padding:14px 18px;font-size:14px}
+.note p,.note li{font-size:14px} .note p:last-child{margin-bottom:0}
+.quote{border-left:3px solid var(--border);padding:2px 0 2px 12px;margin:8px 0 10px;font-size:14px;color:var(--muted)}
+.labbox{font-size:14px;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px 14px;margin:12px 0}
+.labbox p{font-size:14px;margin:0 0 4px} .labbox p:last-child{margin:0}
+
+.foot{margin-top:22px;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+.foot p{font-size:13px;margin:0 0 8px}
+svg{display:block;max-width:100%}
+a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+@media (max-width:560px){
+  .card{padding:22px 16px}
+  .grid2{grid-template-columns:1fr}
+  .bars{grid-template-columns:92px 1fr 64px}
+  .bars .nm small,.bars .track span{display:none}
+  .legend{grid-template-columns:auto 1fr}.legend .v{display:none}
+  .hide-s{display:none}
+  .lane em{width:60px}
+}
+/* series-nav */
+.sn{max-width:820px;margin:0 auto;padding:16px 32px 0;font-family:-apple-system,"Inter",system-ui,sans-serif;font-size:13px;line-height:1.5;color:var(--muted)}
+.sn a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+.sn .crumbs{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 7px}
+.sn .crumbs b{color:var(--text);font-weight:600}
+.sn .sep{color:var(--faint)}
+.sn .step{margin-left:auto;white-space:nowrap}
+.sn .dep{margin-top:5px;padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface)}
+.sn .dep .ok{color:var(--accent);font-weight:600}
+.snx{max-width:820px;margin:0 auto;padding:6px 32px 44px;font-family:-apple-system,"Inter",system-ui,sans-serif}
+.snx .nx{display:grid;grid-template-columns:280px 1fr;text-decoration:none;color:var(--text);background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.snx .nx:hover,.snx .nx:focus-visible{border-color:var(--accent-border);outline:none}
+.snx .mini{position:relative;height:210px;overflow:hidden;background:var(--bg);border-right:1px solid var(--border);padding:14px 16px}
+.snx .mini span{display:block}
+.snx .mini .m1{font-size:12.5px;font-weight:600;margin:0 0 4px;line-height:1.3}
+.snx .mini .m2{font-size:9px;color:var(--muted);margin:0 0 8px;line-height:1.4}
+.snx .mini .m3{font-size:8.5px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;margin:0 0 3px}
+.snx .mini .m4{font-size:9.5px;margin:0;line-height:1.45}
+.snx .tx{padding:16px 20px}
+.snx .lab{font-size:12px;font-weight:600;color:var(--accent);letter-spacing:.04em;text-transform:uppercase}
+.snx .tt{display:block;font-size:20px;font-weight:600;margin:5px 0 4px;line-height:1.25}
+.snx .ds{display:block;font-size:14px;color:var(--muted)}
+.snx .nd{display:block;font-size:13px;color:var(--muted);margin-top:10px}
+.snx .go{display:block;margin-top:12px;font-size:14px;font-weight:600;color:var(--accent)}
+.snx .aux{display:flex;justify-content:space-between;gap:12px;margin-top:10px;font-size:13px;color:var(--muted)}
+.snx .aux a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+@media (max-width:560px){.sn,.snx{padding-left:16px;padding-right:16px}.snx .nx{grid-template-columns:1fr}.snx .mini{display:none}.sn .step{margin-left:0}}
+/* /series-nav */
+</style>
+</head>
+<body>
+<!-- series-nav:top -->
+<nav class="sn" aria-label="Series navigation"><div class="crumbs"><a href="../perf-0-map/index.html" target="_top">AI perf engineering</a><span class="sep">›</span><a href="index.html" target="_top">3 · GPU kernels</a><span class="sep">›</span><b>08 / 17</b><span class="step"><a href="index.html#reduction-divergence" target="_top">← prev</a> · <a href="index.html#matmul-naive" target="_top">next →</a></span></div>
+<div class="dep"><b>Before this:</b> <a href="index.html#reduction-divergence" target="_top">Parallel reduction I: divergence and bank conflicts</a> · <a href="index.html#occupancy" target="_top">Occupancy and latency hiding</a></div></nav>
+<!-- /series-nav:top -->
+<article class="card">
+<h1>Parallel reduction II: unrolling and cascading</h1>
+<p class="sub">Also called warp unrolling, template unrolling, algorithm cascading, Brent's theorem, grid-stride reduction. This card covers slides 16–38 of Mark Harris's "Optimizing Parallel Reduction in CUDA": kernels 4 to 7 on a G80 summing 2<sup>22</sup> ints with 128-thread blocks, taking the sum from 17 to 63 GB/s (73 GB/s on 32M elements).</p>
+
+<h2>In one breath</h2>
+<p>A tree reduction leaves most threads idle and spends its instructions on loop bookkeeping, not on adding. The fix that matters most is algorithmic: give each thread many elements to add on its own first (algorithm cascading, justified by Brent's theorem), then run a short tree. Unrolling the loop, especially the last warp, trims the remaining overhead. On GPUs since Volta you write that last warp with <code>__shfl_down_sync</code>, not the slides' <code>volatile</code> trick.</p>
+
+<h2>Worked example: the full ladder on the G80</h2>
+<p>Harris's metric is bandwidth, because a sum does one add per element loaded. The G80's peak is 86.4 GB/s. Each bar shows % of that peak (GB/s ÷ 86.4). Rows 1–3 are covered in <a href="reduction-divergence.html">part I</a>.</p>
+<div class="bars">
+  <div class="hd">Kernel (slides' name)</div><div class="hd">% of 86.4 GB/s peak · time for 2<sup>22</sup> ints</div><div class="hd r">GB/s · step</div>
+
+  <div class="nm out">1 interleaved, divergent<small>part I</small></div><div class="track out"><div class="bar" style="width:2.4%"></div><span>2.4% · 8.054 ms</span></div><div class="tot out">2.083 · –</div>
+  <div class="nm out">2 interleaved, bank conflicts<small>part I</small></div><div class="track out"><div class="bar" style="width:5.6%"></div><span>5.6% · 3.456 ms</span></div><div class="tot out">4.854 · 2.33×</div>
+  <div class="nm out">3 sequential addressing<small>part I</small></div><div class="track out"><div class="bar" style="width:11.3%"></div><span>11.3% · 1.722 ms</span></div><div class="tot out">9.741 · 2.01×</div>
+  <div class="nm">4 first add during load<small>algorithmic</small></div><div class="track"><div class="bar" style="width:20.1%"></div><span>20.1% · 0.965 ms</span></div><div class="tot">17.377 · 1.78×</div>
+  <div class="nm">5 unroll last warp<small>code</small></div><div class="track"><div class="bar" style="width:36.2%"></div><span>36.2% · 0.536 ms</span></div><div class="tot">31.289 · 1.8×</div>
+  <div class="nm">6 completely unrolled<small>code</small></div><div class="track"><div class="bar" style="width:50.9%"></div><span>50.9% · 0.381 ms</span></div><div class="tot">43.996 · 1.41×</div>
+  <div class="nm strong">7 multiple elements per thread<small>algorithmic</small></div><div class="track"><div class="bar" style="width:72.5%"></div><span>72.5% · 0.268 ms</span></div><div class="tot strong">62.671 · 1.42×</div>
+  <div class="nm">7 on 32M elements<small>slide 34</small></div><div class="track"><div class="bar" style="width:84.5%"></div><span>84.5%</span></div><div class="tot">73</div>
+  <div></div><div class="peak">86.4 GB/s = 100%</div><div></div>
+</div>
+<p class="cap">Times, GB/s and step speedups are the slides' (G80). Cumulative speedup after kernel 7: 30.04× (8.054 ÷ 0.268 = 30.05, rounding). The % column is our recomputation, e.g. 62.671 ÷ 86.4 = 72.5% and 73 ÷ 86.4 = 84.5%.</p>
+
+<h3 class="k">Kernel 4: first add during load <span>· slides 17–19 · 1.722 → 0.965 ms, 1.78×</span></h3>
+<p>Kernel 3's loop starts at <code>s = blockDim.x/2</code>, so "half of the threads are idle on first loop iteration." Kernel 4 halves the number of blocks and has every thread load two elements and add them on the way into shared memory:</p>
+<div class="formula"><span class="c">// kernel 3: one load per thread</span>
+unsigned int i = blockIdx.x*blockDim.x + threadIdx.x;
+sdata[tid] = g_idata[i];
+<span class="c">// kernel 4: two loads, first add of the reduction</span>
+unsigned int i = blockIdx.x*(blockDim.x*2) + threadIdx.x;
+sdata[tid] = <span class="g">g_idata[i] + g_idata[i+blockDim.x]</span>;</div>
+<p>The lab walks one 128-thread block (4 warps) step by step. The new load step is fully busy, but every tree step after it is still mostly idle:</p>
+<div class="tw"><table>
+<tr><th>Step</th><th class="num">Active threads</th><th class="num hide-s">Warps with work</th><th>Busy lanes</th></tr>
+<tr><td class="hi">load: a[i] + a[i+128] (kernel 4 only)</td><td class="num">128 / 128</td><td class="num hide-s">4 / 4</td><td><div class="lane"><em><i style="width:100%"></i></em>100%</div></td></tr>
+<tr><td>s = 64</td><td class="num">64</td><td class="num hide-s">2 / 4</td><td><div class="lane"><em><i style="width:50%"></i></em>50%</div></td></tr>
+<tr><td>s = 32</td><td class="num">32</td><td class="num hide-s">1 / 4</td><td><div class="lane"><em><i style="width:25%"></i></em>25%</div></td></tr>
+<tr><td>s = 16, 8, 4, 2, 1</td><td class="num">16 … 1</td><td class="num hide-s">1 / 4</td><td><div class="lane"><em><i style="width:12.5%"></i></em>12.5% … 0.8%</div></td></tr>
+</table></div>
+<p class="cap">Our recomputation (lab section 2). Kernel 3: 127 adds in 7 steps, 127 of 896 lane-steps busy = 14.2%, 32,768 blocks. Kernel 4: 255 adds in 8 steps, 255 / 1,024 = 24.9% busy, 16,384 blocks.</p>
+
+<h3 class="k">The diagnosis: an instruction bottleneck <span>· slide 20</span></h3>
+<p>"At 17 GB/s, we're far from bandwidth bound", and a reduction has low arithmetic intensity, so the likely bottleneck is instruction overhead: "address arithmetic and loop overhead". The strategy is to unroll loops. This is the course's loop in miniature: measure, compare with the peak, name the bound, fix that bound.</p>
+
+<h3 class="k">Kernel 5: unroll the last warp <span>· slides 21–23 · 0.965 → 0.536 ms, 1.8×</span></h3>
+<p>Once <code>s ≤ 32</code>, only one warp has work. The slides reason that instructions are "SIMD synchronous within a warp", so the last six steps need neither <code>__syncthreads()</code> nor <code>if (tid &lt; s)</code>:</p>
+<div class="formula">__device__ void warpReduce(<span class="r">volatile</span> int* sdata, int tid) {
+    sdata[tid] += sdata[tid + 32];  sdata[tid] += sdata[tid + 16];
+    sdata[tid] += sdata[tid + 8];   sdata[tid] += sdata[tid + 4];
+    sdata[tid] += sdata[tid + 2];   sdata[tid] += sdata[tid + 1];
+}
+for (unsigned int s=blockDim.x/2; s&gt;32; s&gt;&gt;=1) {   <span class="c">// loop now stops at 64</span>
+    if (tid &lt; s) sdata[tid] += sdata[tid + s];
+    __syncthreads();
+}
+if (tid &lt; 32) warpReduce(sdata, tid);</div>
+<p>The slides stress this "saves useless work in all warps, not just the last one": without unrolling, all warps run every loop iteration. In our model of a 128-thread block (lab section 3), kernel 4 runs 7 iterations × 4 warps = 28 warp-iterations (compare, branch, <code>__syncthreads</code>), and kernel 5 runs 1 × 4 = 4, then six straight-line adds in warp 0. That's a count of loop iterations, not of machine instructions.</p>
+
+<h3 class="k">Kernel 6: complete unrolling with templates <span>· slides 24–28 · 0.536 → 0.381 ms, 1.41×</span></h3>
+<p>The block size is a power of two with a hardware maximum (512 threads on the G80; 1,024 today), so the whole tree can be unrolled if the compiler knows the block size. Harris makes it a template parameter, <code>template &lt;unsigned int blockSize&gt;</code>. Every <code>if (blockSize &gt;= 512)</code> is then decided at compile time, and a <code>switch (threads)</code> over the 10 possible sizes (512 down to 1) picks the right instantiation at launch.</p>
+
+<h3 class="k">Complexity, cost and Brent's theorem <span>· slides 29–30</span></h3>
+<p>A tree over N = 2<sup>D</sup> elements takes log N steps and does N − 1 adds in total, the same as a serial loop, so it is work-efficient. With P processors the time is O(N/P + log N). The slides then define the cost of a parallel algorithm as processors × time. With one thread per element (P = N) the time is O(log N), so the cost is O(N log N): "not cost efficient!" Brent's theorem suggests O(N / log N) threads, each doing O(log N) serial work first.</p>
+<div class="mathbox">
+<math display="block">
+  <munder class="t3"><mrow><mi>C</mi><mo stretchy="false">(</mo><mi>P</mi><mo stretchy="false">)</mo></mrow><mtext class="lab">cost</mtext></munder>
+  <mo>=</mo><mi>P</mi><mo>&#215;</mo>
+  <mo stretchy="true" form="prefix" minsize="2.2em">(</mo>
+  <munder class="t2"><mfrac><mi>N</mi><mi>P</mi></mfrac><mtext class="lab">serial adds</mtext></munder>
+  <mo>+</mo>
+  <munder class="t1"><mrow><msub><mi>log</mi><mn>2</mn></msub><mi>N</mi></mrow><mtext class="lab">tree steps</mtext></munder>
+  <mo stretchy="true" form="postfix" minsize="2.2em">)</mo>
+  <mspace width="1em"/>
+  <mtext>with</mtext><mspace width="0.4em"/>
+  <mi>P</mi><mo>=</mo><mfrac><mi>N</mi><mrow><msub><mi>log</mi><mn>2</mn></msub><mi>N</mi></mrow></mfrac>
+  <mo>&#8658;</mo>
+  <mi>C</mi><mo>=</mo><mn>2</mn><mi>N</mi><mo>=</mo><mi>O</mi><mo stretchy="false">(</mo><mi>N</mi><mo stretchy="false">)</mo>
+</math>
+<div class="legend">
+  <span class="sym">N</span><span>elements to sum</span><span class="v">2<sup>22</sup> = 4,194,304 in the slides</span>
+  <span class="sym">P</span><span>threads (the slides' stand-in for processors)</span><span class="v">N, or N / 22 ≈ 190,650</span>
+  <span class="sym">N/P</span><span>elements each thread adds on its own before the tree</span><span class="v">1 vs 22</span>
+  <span class="sym">log₂N</span><span>steps of the tree</span><span class="v">22</span>
+  <span class="sym">C</span><span>processors × time: machine time spent, busy or idle</span><span class="v">92.3M vs 8.4M</span>
+</div>
+</div>
+<div class="formula">N = 2^22 = 4,194,304,  log2 N = 22,  tree adds = N - 1 = 4,194,303
+P = N:            time = log2 N = 22 steps     cost = 4,194,304 x 22 = <span class="r">92,274,688</span>  (22 N)
+P = N/22 = 190,650: time = 22 + 22 = 44 steps  cost = 190,650 x 44  = <span class="g">8,388,608</span>   (2 N)
+  exact count:    22 elements/thread = 21 serial adds, + 18 tree steps (ceil log2 190,651)
+                  = 39 steps, cost = 190,651 x 39 = 7,435,389  (1.77 N)
+same sum, <span class="g">11x</span> less machine time (92.3M / 8.4M)</div>
+<p class="cap">Our recomputation (lab section 4). The big-O line sets every constant to 1, the exact line counts adds. More P rows: P = 2<sup>17</sup> costs 1.50 N, P = 8,192 (the slides' 64 blocks × 128 threads) costs 1.02 N.</p>
+
+<h3 class="k">Algorithm cascading <span>· slide 31</span></h3>
+<p>Cascading combines a serial sum per thread with the tree in shared memory. Brent says each thread should sum O(log n) elements, "i.e. 1024 or 2048 elements per block vs. 256". Harris found it "beneficial to push it even further": more work per thread may hide latency better (see <a href="occupancy.html">occupancy</a>, Volkov), and fewer blocks shrink the tree of recursive kernel launches, whose last levels have few blocks and high launch overhead. On the G80 the best was 64–256 blocks of 128 threads, 1,024–4,096 elements per thread. Our recomputation: 64 × 128 = 8,192 threads give 512 elements per thread at 2<sup>22</sup> and 4,096 at 32M (2<sup>25</sup>).</p>
+
+<h3 class="k">Kernel 7: multiple elements per thread <span>· slides 32–35 · 0.381 → 0.268 ms, 1.42×, 30.04× total</span></h3>
+<div class="formula">unsigned int i = blockIdx.x*(blockSize*2) + tid;
+unsigned int gridSize = blockSize*2*gridDim.x;  <span class="c">// "to maintain coalescing!"</span>
+sdata[tid] = 0;
+while (i &lt; n) { sdata[tid] += <span class="g">g_idata[i] + g_idata[i+blockSize]</span>; i += gridSize; }
+__syncthreads();
+<span class="c">// then kernel 6's unrolled tree, ending in warpReduce</span></div>
+<p>Each pass of the loop moves the whole grid forward by <code>gridSize</code>, so neighbouring threads still read neighbouring addresses (see <a href="coalescing.html">coalescing</a> and the grid-stride loop in <a href="first-kernel.html">your first kernel</a>). The slides' final kernel (slide 35) is kernel 6's tree plus this loop. At 2<sup>22</sup> with 64 blocks, a thread does 512 serial adds before a 7-step tree, so the tree is a small tail. Our lab replays this with numpy and gets the exact sum.</p>
+
+<h3 class="k">Types of optimization <span>· slides 37–38</span></h3>
+<div class="formula">algorithmic (addressing, cascading): 2.33 x 2.01 x 1.78 x 1.42 = <span class="g">11.84x</span>  (kernels 2, 3, 4, 7)
+code (loop unrolling):                1.8 x 1.41               =  2.54x   (kernels 5, 6)
+all six step speedups multiplied = 30.04x  (slides: 30.04x; 8.054 / 0.268 = 30.05x)</div>
+<p>The conclusion slide: understand coalescing, divergence, bank conflicts and latency hiding; use peak performance to guide you; know the complexity theory; identify the bottleneck (memory, core computation or instruction overhead); "Optimize your algorithm, then unroll loops"; use templates to generate optimal code.</p>
+
+<h2>The modern note: <code>volatile</code> warp code is unsafe on Volta and later</h2>
+<p>Kernel 5 relies on the 32 threads of a warp running in lock-step, so each lane sees its neighbours' writes without any synchronization. NVIDIA's blog "Using CUDA Warp-Level Primitives" (Yuan Lin and Vinod Grover, 2018) says code like this is not guaranteed to work:</p>
+<p class="quote">"Such implicit warp-synchronous programming is unsafe and may not work correctly." … "Implicit lock-step execution is not guaranteed. Remember, thread convergence is guaranteed only within explicitly synchronous warp-level primitives." … "Volta independent thread scheduling enables interleaved execution of statements from divergent branches."</p>
+<p>The blog's advice for "any form of implicit warp-synchronous programming (such as communicating between threads of a warp without synchronization)" is to "update the code to use the sync version of the primitives", or to use Cooperative Groups, whose collectives "are implemented on top of the warp primitives". The slides' <code>warpReduce</code> is exactly that pattern: warp lanes communicating through shared memory with no sync (our application of the blog's rule; the blog itself doesn't discuss Harris's slides). The replacement adds in registers with the blog's Listing 1 loop, here wrapped as a function:</p>
+<div class="formula">__inline__ __device__ int warpReduceSum(int val) {
+  for (int offset = 16; offset &gt; 0; offset /= 2)
+    val += <span class="g">__shfl_down_sync(0xffffffff, val, offset)</span>;  <span class="c">// lane X reads lane X+offset</span>
+  return val;                                                 <span class="c">// lane 0 holds the warp's sum</span>
+}</div>
+<p>The blog: the exchange "is performed between registers, and more efficient than going through shared memory, which requires a load, a store and an extra register to hold the address." If you do keep a shared-memory warp tree, <code>__syncwarp()</code> must separate every read from the next write (the blog's Listings 7 and 8). The legacy mask-less <code>__shfl</code> primitives are "deprecated starting in CUDA 9.0."</p>
+
+<h2>Each term, then and now</h2>
+<p>Think of an office summing receipts: instead of everyone passing one receipt up a chain of managers, each clerk first totals a thick stack, and only the clerks' totals go up the chain.</p>
+<div class="tw"><table class="parts">
+<tr><th>Term</th><th class="hide-s">What actually happens</th><th>In the slides (G80)</th><th>Today (Volta+, T4 or H100)</th></tr>
+<tr><td>First add during load</td><td class="hide-s">Each thread loads two elements and adds them before the tree starts.</td>
+    <td class="ex"><b>kernel 4, 1.78×</b><span>16,384 blocks instead of 32,768</span></td><td class="ex"><b>subsumed by cascading</b><span>a grid-stride loop adds many, not two</span></td></tr>
+<tr><td>Warp unrolling</td><td class="hide-s">The last 5–6 tree steps run inside one warp without a loop or block-wide barrier.</td>
+    <td class="ex"><b>kernel 5, 1.8×</b><span><code>volatile</code> shared memory, no sync</span></td><td class="ex"><b class="ok">__shfl_down_sync</b><span>5 register exchanges (16, 8, 4, 2, 1)</span></td></tr>
+<tr><td>Template unrolling</td><td class="hide-s">Block size is a compile-time constant, so every branch on it disappears.</td>
+    <td class="ex"><b>kernel 6, 1.41×</b><span>switch over 10 sizes, 512 … 1</span></td><td class="ex"><b>still common</b><span>libraries template on block size (our note)</span></td></tr>
+<tr><td>Algorithm cascading</td><td class="hide-s">Serial sums per thread first, tree second, as Brent's theorem suggests.</td>
+    <td class="ex"><b class="ok">kernel 7, 1.42×</b><span>64–256 blocks × 128 threads</span></td><td class="ex"><b>same idea</b><span>e.g. 4,096-wide RMSNorm row in 128 threads = 32 each (illustrative)</span></td></tr>
+<tr><td>Grid-stride loop</td><td class="hide-s">Each loop pass jumps by the whole grid, so a warp's reads stay adjacent.</td>
+    <td class="ex"><b><code>i += gridSize</code></b><span>gridSize = blockSize·2·gridDim.x</span></td><td class="ex"><b>vector add</b><span>see <a href="first-kernel.html">your first kernel</a></span></td></tr>
+</table></div>
+
+<h2>Where this lands on your GPUs</h2>
+<p>A sum is memory-bound, so the target is the time to read the bytes once: 2<sup>22</sup> × 4 B = 16.78 MB. Our recomputation of that floor, with each GPU's peak bandwidth:</p>
+<div class="tw"><table>
+<tr><th>GPU</th><th class="num">Peak bandwidth</th><th class="num">16.78 MB read, floor</th><th>Warp-level code</th></tr>
+<tr><td>G80 (slides)</td><td class="num">86.4 GB/s</td><td class="num">194 µs</td><td>pre-Volta: lock-step <code>volatile</code> trick worked in practice</td></tr>
+<tr><td>T4 (Colab lab, Turing sm_75)</td><td class="num">320 GB/s</td><td class="num">52.4 µs</td><td class="lo">Volta+ scheduling: use <code>__shfl_down_sync</code></td></tr>
+<tr><td>H100 SXM (running example)</td><td class="num">3,350 GB/s</td><td class="num">5.0 µs</td><td class="lo">Volta+ scheduling: use <code>__shfl_down_sync</code></td></tr>
+</table></div>
+<p class="cap">Kernel 7's 0.268 ms on the G80 is 1.38× its 194 µs floor (= 1 ÷ 72.5%). On an H100 the whole read is 5 µs, so fixed per-launch costs (the slides use the kernel launch as the global sync) weigh relatively more than on the G80 (our inference); see <a href="fusion-cuda-graphs.html">fusion and CUDA graphs</a>. T4 availability and clocks vary on Colab.</p>
+
+<div class="labbox">
+<p><a href="https://github.com/seyonv/explainers/blob/main/perf-3-kernels/labs/reduction-cost.py">Run it: labs/reduction-cost.py</a> (Mac, numpy, &lt; 1 s): the % of peak column, idle lanes per step, loop-iteration counts, Brent's cost table for six values of P, and exact-sum checks of the tree, kernel 7's grid-stride mapping and the shuffle tree.</p>
+<p>CUDA on a T4: <a href="https://colab.research.google.com/github/seyonv/explainers/blob/main/perf-3-kernels/labs/reduction.ipynb">Open in Colab: labs/reduction.ipynb</a> (<a href="https://github.com/seyonv/explainers/blob/main/perf-3-kernels/labs/reduction.ipynb">view on GitHub</a>), shared with part I. Not yet run by the author. Numbers on this card are from Harris's slides (G80); your T4 run is the exercise.</p>
+</div>
+
+<h2>Why cascading beats the other fixes</h2>
+<div class="grid2">
+  <div class="cell"><h3><span class="x">&#10007;</span> Kernel 4: first add during load</h3><p class="kind">algorithmic · fewer idle threads</p><p>No thread is idle on the first step and half the blocks are gone, but each thread still adds only two elements before a 7-step tree that is 14% busy. It reaches 17.4 GB/s, 20% of peak, and is instruction-bound.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Kernels 5–6: unrolling</h3><p class="kind">code · less loop overhead</p><p>Removes loop counters, branches and barriers: 1.8 × 1.41 = 2.54× combined. It makes a mostly idle tree cheaper instead of shorter, and its <code>volatile</code> warp step is unsafe on Volta and later.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Warp shuffles alone</h3><p class="kind">modern · correct last warp</p><p>The right way to write the last 5 steps: registers, no shared memory, safe under independent scheduling. But they only touch the tail of each block. Without cascading each thread still starts from two elements.</p></div>
+  <div class="cell win"><h3><span class="ok">&#10003;</span> Kernel 7: cascading</h3><p class="kind">algorithmic · the winner</p><p>A grid-stride loop makes each thread sum hundreds of elements, cutting Brent's cost from 22 N toward N. 62.7 GB/s = 72.5% of peak, 73 GB/s (84.5%) on 32M elements, 30× over kernel 1.</p></div>
+</div>
+
+<h2>Why optimize the algorithm before unrolling?</h2>
+<div class="note">
+  <p>Because the algorithm decides how much work there is and unrolling only makes each piece cheaper. In the slides the algorithmic changes (addressing and cascading) gave 11.84× combined and loop unrolling 2.54×. Unrolling kernel 4's tree speeds up steps where up to 99% of lanes are idle. After cascading, a thread does 512 serial adds and 7 tree steps, so the tree barely matters and unrolling it is a final polish. Harris's order: "Optimize your algorithm, then unroll loops."</p>
+  <p>When this isn't the right move:</p>
+  <ul>
+    <li><b>Small inputs.</b> With a few thousand elements there is little to cascade, and launch cost can outweigh the work (our inference; slide 31 names "high kernel launch overhead in last levels with few blocks"). A common answer is to fuse the reduction into a bigger kernel, as fused RMSNorm and softmax kernels do (our note).</li>
+    <li><b>Writing it yourself at all.</b> In practice you would usually call a library reduction (CUB's <code>DeviceReduce</code>, or <code>torch.sum</code>) and write your own only when fusing it into something else. This is our note, not the slides'.</li>
+    <li><b>Copying the slides' code verbatim.</b> Replace <code>warpReduce</code> with shuffles. Source quirks: the templated kernels are named <code>reduce5</code> (kernel 6) and <code>reduce6</code> (kernel 7), slide 35 calls <code>warpReduce</code> without <code>&lt;blockSize&gt;</code>, and the 512-thread block limit is the G80's.</li>
+  </ul>
+</div>
+
+<div class="foot">
+<p><b>Read next:</b> Harris, <a href="https://developer.download.nvidia.com/assets/cuda/files/reduction.pdf">"Optimizing Parallel Reduction in CUDA"</a>, slides 16–38 (kernel 4 through the conclusion), all of them, ~30 min. Lin and Grover, <a href="https://developer.nvidia.com/blog/using-cuda-warp-level-primitives/">"Using CUDA Warp-Level Primitives"</a>, all of it, ~15 min; Listing 1 and "Implicit Warp-Synchronous Programming is Unsafe" are the parts for this card.</p>
+<p><b>Related:</b> <a href="reduction-divergence.html">parallel reduction I: divergence and bank conflicts</a> · <a href="occupancy.html">occupancy and latency hiding</a> (more work per thread, Volkov) · <a href="fusion-cuda-graphs.html">fusion and CUDA graphs</a> (the kernel launch as a global sync costs time) · <a href="first-kernel.html">your first kernel</a> (grid-stride loop) · <a href="coalescing.html">memory coalescing</a> · <a href="execution-model.html">the CUDA execution model</a> (warps) · <a href="../perf-1-foundations/roofline-intuition.html">roofline intuition</a></p>
+<p><b>Sources:</b> all G80 times, GB/s, speedups, 86.4 GB/s, 73 GB/s, 11.84× / 2.54× and the configuration advice are from Harris's slides (link above). Warp-level quotes and code are from NVIDIA's warp-primitives blog (link above, fetched 2026-09-22). T4 320 GB/s and H100 3.35 TB/s from this course's shared facts (NVIDIA datasheets). % of peak, Brent costs, idle-lane counts and bandwidth floors are our recomputation in <code>labs/reduction-cost.py</code>.</p>
+</div>
+</article>
+<!-- series-nav:bottom -->
+<div class="snx"><a class="nx" href="index.html#matmul-naive" target="_top">
+<span class="mini" aria-hidden="true"><span class="m1">Matmul I: the naive kernel and the lower bound</span><span class="m2">Also called SGEMM (single-precision general matrix multiply), siboehm's worklog, or "kernel 1". This is Simon Boehm's How to Optimize a CUDA Matmul Kernel for cuBLAS-like Performance (Dec 2022): the…</span><span class="m3">In one breath</span><span class="m4">Before you tune a kernel, work out the fastest it could possibly run: the FLOPs divided by peak compute, and the minimum bytes divided by peak bandwidth. A 4092² fp32 matmul needs 137 GFLOP but only 268 MB of traffic, so a good kernel is compute-bound. The naive kernel, one thread per output, re-reads the inputs until it moves…</span></span>
+<span class="tx"><span class="lab">Next up · 09 / 17</span><span class="tt">Matmul I: the naive kernel and the lower bound</span><span class="ds">137 GFLOP, 268 MB, and a kernel that moves 548 GB</span><span class="nd">Builds on: Memory coalescing, Compute-bound or memory-bound?.</span><span class="go">Continue →</span></span></a><div class="aux"><span><a href="index.html#reduction-divergence" target="_top">← Parallel reduction I: divergence and bank conflicts</a></span><a href="index.html" target="_top">All cards in 3 · GPU kernels</a></div></div>
+<!-- /series-nav:bottom -->
+</body>
+</html>

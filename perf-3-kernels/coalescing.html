@@ -1,0 +1,981 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Memory coalescing</title>
+<style>
+:root{
+  --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
+  --text:#1c1f23; --muted:#6b7068; --faint:#b9b9b3;
+  --accent:#4a9d77; --accent-bg:#dcefdf; --accent-border:#8cc79c;
+  --red:#c0492b; --red-bg:#fbeceb;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#15171a; --surface:#1d2024; --surface2:#24282d; --border:#32373d;
+    --text:#e6e8ea; --muted:#9aa1a9; --faint:#4a5057;
+    --accent:#5fb37f; --accent-bg:#1c2b22; --accent-border:#3f7a55;
+    --red:#e57368; --red-bg:#2e1f1e;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text)}
+.card{max-width:820px;margin:0 auto;padding:28px 32px;font-family:-apple-system,"Inter",system-ui,sans-serif;line-height:1.45}
+h1{font-size:26px;font-weight:600;margin:0 0 6px;letter-spacing:-0.01em}
+.sub{font-size:15px;color:var(--muted);margin:0 0 20px}
+h2{font-size:17px;font-weight:600;margin:26px 0 10px}
+p{font-size:15px;margin:0 0 10px}
+.cap{font-size:13px;color:var(--muted);margin:8px 0 0;text-align:center}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+
+/* Tables and formulas */
+.tw{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border)}
+th{font-size:12px;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:none}
+.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.hi{color:var(--accent);font-weight:600} .lo{color:var(--red)} .mu{color:var(--muted)}
+.formula{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin:10px 0;white-space:pre;overflow-x:auto;line-height:1.55}
+
+/* MathML formula (patterns.md §1) */
+.mathbox{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px 16px 12px;margin:10px 0;overflow-x:auto}
+.mathbox math{font-size:21px;color:var(--text);font-family:"STIX Two Math","Latin Modern Math","Cambria Math",math}
+.mathbox .t1{color:var(--accent)} .mathbox .t2{color:var(--muted)}
+.mathbox .lab{font-size:12px;font-family:-apple-system,"Inter",system-ui,sans-serif;padding-top:3px;border-top:1.5px solid currentColor;margin-top:2px}
+.mathrow{display:flex;flex-wrap:wrap;gap:10px 40px;justify-content:center;margin-top:14px}
+.mathrow math{font-size:19px}
+.legend{display:grid;grid-template-columns:auto 1fr auto;column-gap:14px;row-gap:5px;font-size:13px;margin-top:14px;align-items:baseline}
+.legend .sym{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;text-align:right}
+.legend .v{color:var(--muted);text-align:right;font-variant-numeric:tabular-nums}
+@media (max-width:560px){.legend{grid-template-columns:auto 1fr}.legend .v{display:none}}
+
+/* Two-examples term table (patterns.md §3) */
+.parts td{vertical-align:top} .parts td:first-child{font-weight:600}
+.parts .ex{font-size:13px} .parts .ex span{display:block;color:var(--muted)}
+@media (max-width:560px){.parts .what{display:none}}
+
+
+/* 2x2 grid */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.cell{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.cell.win{background:var(--accent-bg);border-color:var(--accent-border)}
+.cell h3{font-size:16px;font-weight:600;margin:0 0 5px;display:flex;gap:8px;align-items:baseline}
+.cell p{font-size:14px;margin:0;color:var(--text)}
+.cell.win h3,.cell.win p{color:var(--accent)}
+.x{color:var(--red)} .ok{color:var(--accent)}
+
+/* Clarification box */
+.note{border:1px solid var(--border);border-radius:10px;padding:14px 18px;font-size:14px}
+.note p{font-size:14px} .note p:last-child{margin-bottom:0}
+.note ul{margin:4px 0 10px;padding-left:20px} .note li{margin-bottom:4px}
+
+.labline{font-size:14px;border:1px solid var(--border);border-radius:8px;padding:8px 12px;background:var(--surface)}
+.foot{margin-top:22px;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+.foot p{font-size:13px;margin:0 0 8px}
+svg{display:block;max-width:100%;height:auto}
+.sl{font-size:12px;fill:var(--muted)} .st{font-size:13px;fill:var(--text)}
+.sr{font-size:12px;fill:var(--red)} .sa{font-size:13px;fill:var(--accent)}
+@media (max-width:560px){.card{padding:20px 16px}.grid2{grid-template-columns:1fr}}
+a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+/* Warp-to-sector diagram */
+.lane{fill:var(--muted)} .ln{stroke:var(--faint);stroke-width:.8}
+.use{fill:var(--accent)} .waste{fill:var(--faint)} .sec{fill:none;stroke:var(--muted);stroke-width:.7}
+
+/* series-nav */
+.sn{max-width:820px;margin:0 auto;padding:16px 32px 0;font-family:-apple-system,"Inter",system-ui,sans-serif;font-size:13px;line-height:1.5;color:var(--muted)}
+.sn a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+.sn .crumbs{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 7px}
+.sn .crumbs b{color:var(--text);font-weight:600}
+.sn .sep{color:var(--faint)}
+.sn .step{margin-left:auto;white-space:nowrap}
+.sn .dep{margin-top:5px;padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface)}
+.sn .dep .ok{color:var(--accent);font-weight:600}
+.snx{max-width:820px;margin:0 auto;padding:6px 32px 44px;font-family:-apple-system,"Inter",system-ui,sans-serif}
+.snx .nx{display:grid;grid-template-columns:280px 1fr;text-decoration:none;color:var(--text);background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.snx .nx:hover,.snx .nx:focus-visible{border-color:var(--accent-border);outline:none}
+.snx .mini{position:relative;height:210px;overflow:hidden;background:var(--bg);border-right:1px solid var(--border);padding:14px 16px}
+.snx .mini span{display:block}
+.snx .mini .m1{font-size:12.5px;font-weight:600;margin:0 0 4px;line-height:1.3}
+.snx .mini .m2{font-size:9px;color:var(--muted);margin:0 0 8px;line-height:1.4}
+.snx .mini .m3{font-size:8.5px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;margin:0 0 3px}
+.snx .mini .m4{font-size:9.5px;margin:0;line-height:1.45}
+.snx .tx{padding:16px 20px}
+.snx .lab{font-size:12px;font-weight:600;color:var(--accent);letter-spacing:.04em;text-transform:uppercase}
+.snx .tt{display:block;font-size:20px;font-weight:600;margin:5px 0 4px;line-height:1.25}
+.snx .ds{display:block;font-size:14px;color:var(--muted)}
+.snx .nd{display:block;font-size:13px;color:var(--muted);margin-top:10px}
+.snx .go{display:block;margin-top:12px;font-size:14px;font-weight:600;color:var(--accent)}
+.snx .aux{display:flex;justify-content:space-between;gap:12px;margin-top:10px;font-size:13px;color:var(--muted)}
+.snx .aux a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+@media (max-width:560px){.sn,.snx{padding-left:16px;padding-right:16px}.snx .nx{grid-template-columns:1fr}.snx .mini{display:none}.sn .step{margin-left:0}}
+/* /series-nav */
+</style>
+</head>
+<body>
+<!-- series-nav:top -->
+<nav class="sn" aria-label="Series navigation"><div class="crumbs"><a href="../perf-0-map/index.html" target="_top">AI perf engineering</a><span class="sep">›</span><a href="index.html" target="_top">3 · GPU kernels</a><span class="sep">›</span><b>04 / 17</b><span class="step"><a href="index.html#first-kernel" target="_top">← prev</a> · <a href="index.html#shared-memory-transpose" target="_top">next →</a></span></div>
+<div class="dep"><b>Before this:</b> <a href="index.html#first-kernel" target="_top">Your first kernel: vector add</a></div></nav>
+<!-- /series-nav:top -->
+<article class="card">
+<h1>Memory coalescing</h1>
+<p class="sub">Also called coalesced access, 32-byte sectors, or its failure modes: uncoalesced, misaligned or strided access. This card covers Harris's "How to Access Global Memory Efficiently" (offset and stride kernels) and the copy vs naive-transpose rows of his transpose blog, then checks them against the CUDA Best Practices Guide's modern rule.</p>
+
+<h2>In one breath</h2>
+<p>The 32 threads of a warp issue each load or store together, and the GPU fetches memory for them in aligned 32-byte chunks called <b>sectors</b>. If neighbouring threads touch neighbouring addresses, 32 four-byte floats fill exactly 4 sectors and every byte moved is used. If they're scattered, each thread drags in its own 32-byte sector to use 4 bytes of it, and <b class="lo">7/8 of the bandwidth is thrown away</b>.</p>
+<p class="mu" style="font-size:14px">Everyday version: a delivery van that only carries full crates of 8 bottles. Order 32 bottles from one shelf and 4 crates arrive. Order one bottle from each of 32 shelves and 32 crates arrive, 224 bottles you didn't want included.</p>
+
+<h2>The rule, as NVIDIA states it today</h2>
+<p>CUDA C++ Best Practices Guide §10.2.1: "For devices of compute capability 6.0 or higher, the requirements can be summarized quite easily: the concurrent accesses of the threads of a warp will coalesce into a number of transactions equal to the number of 32-byte transactions necessary to service all of the threads of the warp." The guide says "32-byte transactions" or "segments". Nsight Compute's metric names and NVIDIA's 2025 update of Harris's blog call them <b>sectors</b>. Four sectors make one 128-byte cache line.</p>
+<div class="mathbox">
+<math display="block">
+  <mi>&#951;</mi><mo>=</mo>
+  <mfrac>
+    <munder class="t1"><mrow><mn>32</mn><mo>&#215;</mo><mi>b</mi></mrow><mtext class="lab">bytes the warp asked for</mtext></munder>
+    <munder class="t2"><mrow><mn>32</mn><mtext>&#8201;B</mtext><mo>&#215;</mo><mi>S</mi></mrow><mtext class="lab">bytes actually moved</mtext></munder>
+  </mfrac>
+  <mspace width="1.2em"/>
+  <msub><mi>T</mi><mtext>mem</mtext></msub><mo>=</mo>
+  <mfrac><mtext>useful bytes</mtext><mrow><mi>&#951;</mi><mo>&#215;</mo><mi>W</mi></mrow></mfrac>
+</math>
+<div class="legend">
+  <span class="sym">b</span><span>bytes each thread reads (element size)</span><span class="v">float: 4 · bf16: 2 · float4: 16</span>
+  <span class="sym">S</span><span>distinct 32-byte sectors the 32 addresses fall in</span><span class="v">4 at best, 32 at worst (for 4-byte loads)</span>
+  <span class="sym">&#951;</span><span>sector efficiency: share of moved bytes that are used</span><span class="v">100% … 12.5%</span>
+  <span class="sym">W</span><span>DRAM bandwidth</span><span class="v">T4 320 GB/s · H100 3.35 TB/s</span>
+</div>
+</div>
+<div class="formula">η = (32 × b) / (32 B × S)        memory time = useful bytes / (η × W)</div>
+<p class="cap">Arrays from <code>cudaMalloc()</code> are "aligned to at least 256 bytes" (Best Practices Guide §10.2.1.2), so element 0 always starts a sector.</p>
+
+<h2>Worked example: one warp reading 4-byte floats</h2>
+<p>Lane k (thread k of the warp) reads element <code>offset + k × stride</code>. The lines show where each lane's 4 bytes land; each box is one 32-byte sector.</p>
+<svg viewBox="0 0 780 458" role="img" aria-label="Four warp access patterns mapped onto 32-byte sectors: stride 1 uses 4 sectors, offset 1 uses 5, stride 2 uses 8, stride 32 uses 32">
+<text class="st" x="56" y="22"><tspan font-weight="600">stride 1 · coalesced</tspan></text>
+<text class="sa" x="750" y="22" text-anchor="end">4 sectors · 128 B moved · 100.0% useful</text>
+<line x1="62.0" y1="41" x2="361.2" y2="76" class="ln"/>
+<line x1="84.0" y1="41" x2="363.8" y2="76" class="ln"/>
+<line x1="106.0" y1="41" x2="366.2" y2="76" class="ln"/>
+<line x1="128.0" y1="41" x2="368.8" y2="76" class="ln"/>
+<line x1="150.0" y1="41" x2="371.2" y2="76" class="ln"/>
+<line x1="172.0" y1="41" x2="373.8" y2="76" class="ln"/>
+<line x1="194.0" y1="41" x2="376.2" y2="76" class="ln"/>
+<line x1="216.0" y1="41" x2="378.8" y2="76" class="ln"/>
+<line x1="238.0" y1="41" x2="383.2" y2="76" class="ln"/>
+<line x1="260.0" y1="41" x2="385.8" y2="76" class="ln"/>
+<line x1="282.0" y1="41" x2="388.2" y2="76" class="ln"/>
+<line x1="304.0" y1="41" x2="390.8" y2="76" class="ln"/>
+<line x1="326.0" y1="41" x2="393.2" y2="76" class="ln"/>
+<line x1="348.0" y1="41" x2="395.8" y2="76" class="ln"/>
+<line x1="370.0" y1="41" x2="398.2" y2="76" class="ln"/>
+<line x1="392.0" y1="41" x2="400.8" y2="76" class="ln"/>
+<line x1="414.0" y1="41" x2="405.2" y2="76" class="ln"/>
+<line x1="436.0" y1="41" x2="407.8" y2="76" class="ln"/>
+<line x1="458.0" y1="41" x2="410.2" y2="76" class="ln"/>
+<line x1="480.0" y1="41" x2="412.8" y2="76" class="ln"/>
+<line x1="502.0" y1="41" x2="415.2" y2="76" class="ln"/>
+<line x1="524.0" y1="41" x2="417.8" y2="76" class="ln"/>
+<line x1="546.0" y1="41" x2="420.2" y2="76" class="ln"/>
+<line x1="568.0" y1="41" x2="422.8" y2="76" class="ln"/>
+<line x1="590.0" y1="41" x2="427.2" y2="76" class="ln"/>
+<line x1="612.0" y1="41" x2="429.8" y2="76" class="ln"/>
+<line x1="634.0" y1="41" x2="432.2" y2="76" class="ln"/>
+<line x1="656.0" y1="41" x2="434.8" y2="76" class="ln"/>
+<line x1="678.0" y1="41" x2="437.2" y2="76" class="ln"/>
+<line x1="700.0" y1="41" x2="439.8" y2="76" class="ln"/>
+<line x1="722.0" y1="41" x2="442.2" y2="76" class="ln"/>
+<line x1="744.0" y1="41" x2="444.8" y2="76" class="ln"/>
+<rect x="57" y="32" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="79" y="32" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="101" y="32" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="123" y="32" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="145" y="32" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="167" y="32" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="189" y="32" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="211" y="32" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="233" y="32" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="255" y="32" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="277" y="32" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="299" y="32" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="321" y="32" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="343" y="32" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="365" y="32" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="387" y="32" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="409" y="32" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="431" y="32" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="453" y="32" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="475" y="32" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="497" y="32" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="519" y="32" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="541" y="32" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="563" y="32" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="585" y="32" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="607" y="32" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="629" y="32" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="651" y="32" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="673" y="32" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="695" y="32" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="717" y="32" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="739" y="32" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="360.00" y="76" width="2.50" height="14" class="use"/>
+<rect x="362.50" y="76" width="2.50" height="14" class="use"/>
+<rect x="365.00" y="76" width="2.50" height="14" class="use"/>
+<rect x="367.50" y="76" width="2.50" height="14" class="use"/>
+<rect x="370.00" y="76" width="2.50" height="14" class="use"/>
+<rect x="372.50" y="76" width="2.50" height="14" class="use"/>
+<rect x="375.00" y="76" width="2.50" height="14" class="use"/>
+<rect x="377.50" y="76" width="2.50" height="14" class="use"/>
+<rect x="360.00" y="76" width="20" height="14" class="sec"/>
+<rect x="382.00" y="76" width="2.50" height="14" class="use"/>
+<rect x="384.50" y="76" width="2.50" height="14" class="use"/>
+<rect x="387.00" y="76" width="2.50" height="14" class="use"/>
+<rect x="389.50" y="76" width="2.50" height="14" class="use"/>
+<rect x="392.00" y="76" width="2.50" height="14" class="use"/>
+<rect x="394.50" y="76" width="2.50" height="14" class="use"/>
+<rect x="397.00" y="76" width="2.50" height="14" class="use"/>
+<rect x="399.50" y="76" width="2.50" height="14" class="use"/>
+<rect x="382.00" y="76" width="20" height="14" class="sec"/>
+<rect x="404.00" y="76" width="2.50" height="14" class="use"/>
+<rect x="406.50" y="76" width="2.50" height="14" class="use"/>
+<rect x="409.00" y="76" width="2.50" height="14" class="use"/>
+<rect x="411.50" y="76" width="2.50" height="14" class="use"/>
+<rect x="414.00" y="76" width="2.50" height="14" class="use"/>
+<rect x="416.50" y="76" width="2.50" height="14" class="use"/>
+<rect x="419.00" y="76" width="2.50" height="14" class="use"/>
+<rect x="421.50" y="76" width="2.50" height="14" class="use"/>
+<rect x="404.00" y="76" width="20" height="14" class="sec"/>
+<rect x="426.00" y="76" width="2.50" height="14" class="use"/>
+<rect x="428.50" y="76" width="2.50" height="14" class="use"/>
+<rect x="431.00" y="76" width="2.50" height="14" class="use"/>
+<rect x="433.50" y="76" width="2.50" height="14" class="use"/>
+<rect x="436.00" y="76" width="2.50" height="14" class="use"/>
+<rect x="438.50" y="76" width="2.50" height="14" class="use"/>
+<rect x="441.00" y="76" width="2.50" height="14" class="use"/>
+<rect x="443.50" y="76" width="2.50" height="14" class="use"/>
+<rect x="426.00" y="76" width="20" height="14" class="sec"/>
+<text class="st" x="56" y="126"><tspan font-weight="600">offset 1 · misaligned</tspan></text>
+<text class="sl" x="750" y="126" text-anchor="end">5 sectors · 160 B moved · 80.0% useful</text>
+<line x1="62.0" y1="145" x2="352.8" y2="180" class="ln"/>
+<line x1="84.0" y1="145" x2="355.2" y2="180" class="ln"/>
+<line x1="106.0" y1="145" x2="357.8" y2="180" class="ln"/>
+<line x1="128.0" y1="145" x2="360.2" y2="180" class="ln"/>
+<line x1="150.0" y1="145" x2="362.8" y2="180" class="ln"/>
+<line x1="172.0" y1="145" x2="365.2" y2="180" class="ln"/>
+<line x1="194.0" y1="145" x2="367.8" y2="180" class="ln"/>
+<line x1="216.0" y1="145" x2="372.2" y2="180" class="ln"/>
+<line x1="238.0" y1="145" x2="374.8" y2="180" class="ln"/>
+<line x1="260.0" y1="145" x2="377.2" y2="180" class="ln"/>
+<line x1="282.0" y1="145" x2="379.8" y2="180" class="ln"/>
+<line x1="304.0" y1="145" x2="382.2" y2="180" class="ln"/>
+<line x1="326.0" y1="145" x2="384.8" y2="180" class="ln"/>
+<line x1="348.0" y1="145" x2="387.2" y2="180" class="ln"/>
+<line x1="370.0" y1="145" x2="389.8" y2="180" class="ln"/>
+<line x1="392.0" y1="145" x2="394.2" y2="180" class="ln"/>
+<line x1="414.0" y1="145" x2="396.8" y2="180" class="ln"/>
+<line x1="436.0" y1="145" x2="399.2" y2="180" class="ln"/>
+<line x1="458.0" y1="145" x2="401.8" y2="180" class="ln"/>
+<line x1="480.0" y1="145" x2="404.2" y2="180" class="ln"/>
+<line x1="502.0" y1="145" x2="406.8" y2="180" class="ln"/>
+<line x1="524.0" y1="145" x2="409.2" y2="180" class="ln"/>
+<line x1="546.0" y1="145" x2="411.8" y2="180" class="ln"/>
+<line x1="568.0" y1="145" x2="416.2" y2="180" class="ln"/>
+<line x1="590.0" y1="145" x2="418.8" y2="180" class="ln"/>
+<line x1="612.0" y1="145" x2="421.2" y2="180" class="ln"/>
+<line x1="634.0" y1="145" x2="423.8" y2="180" class="ln"/>
+<line x1="656.0" y1="145" x2="426.2" y2="180" class="ln"/>
+<line x1="678.0" y1="145" x2="428.8" y2="180" class="ln"/>
+<line x1="700.0" y1="145" x2="431.2" y2="180" class="ln"/>
+<line x1="722.0" y1="145" x2="433.8" y2="180" class="ln"/>
+<line x1="744.0" y1="145" x2="438.2" y2="180" class="ln"/>
+<rect x="57" y="136" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="79" y="136" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="101" y="136" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="123" y="136" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="145" y="136" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="167" y="136" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="189" y="136" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="211" y="136" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="233" y="136" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="255" y="136" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="277" y="136" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="299" y="136" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="321" y="136" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="343" y="136" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="365" y="136" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="387" y="136" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="409" y="136" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="431" y="136" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="453" y="136" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="475" y="136" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="497" y="136" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="519" y="136" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="541" y="136" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="563" y="136" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="585" y="136" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="607" y="136" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="629" y="136" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="651" y="136" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="673" y="136" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="695" y="136" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="717" y="136" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="739" y="136" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="349.00" y="180" width="2.50" height="14" class="waste"/>
+<rect x="351.50" y="180" width="2.50" height="14" class="use"/>
+<rect x="354.00" y="180" width="2.50" height="14" class="use"/>
+<rect x="356.50" y="180" width="2.50" height="14" class="use"/>
+<rect x="359.00" y="180" width="2.50" height="14" class="use"/>
+<rect x="361.50" y="180" width="2.50" height="14" class="use"/>
+<rect x="364.00" y="180" width="2.50" height="14" class="use"/>
+<rect x="366.50" y="180" width="2.50" height="14" class="use"/>
+<rect x="349.00" y="180" width="20" height="14" class="sec"/>
+<rect x="371.00" y="180" width="2.50" height="14" class="use"/>
+<rect x="373.50" y="180" width="2.50" height="14" class="use"/>
+<rect x="376.00" y="180" width="2.50" height="14" class="use"/>
+<rect x="378.50" y="180" width="2.50" height="14" class="use"/>
+<rect x="381.00" y="180" width="2.50" height="14" class="use"/>
+<rect x="383.50" y="180" width="2.50" height="14" class="use"/>
+<rect x="386.00" y="180" width="2.50" height="14" class="use"/>
+<rect x="388.50" y="180" width="2.50" height="14" class="use"/>
+<rect x="371.00" y="180" width="20" height="14" class="sec"/>
+<rect x="393.00" y="180" width="2.50" height="14" class="use"/>
+<rect x="395.50" y="180" width="2.50" height="14" class="use"/>
+<rect x="398.00" y="180" width="2.50" height="14" class="use"/>
+<rect x="400.50" y="180" width="2.50" height="14" class="use"/>
+<rect x="403.00" y="180" width="2.50" height="14" class="use"/>
+<rect x="405.50" y="180" width="2.50" height="14" class="use"/>
+<rect x="408.00" y="180" width="2.50" height="14" class="use"/>
+<rect x="410.50" y="180" width="2.50" height="14" class="use"/>
+<rect x="393.00" y="180" width="20" height="14" class="sec"/>
+<rect x="415.00" y="180" width="2.50" height="14" class="use"/>
+<rect x="417.50" y="180" width="2.50" height="14" class="use"/>
+<rect x="420.00" y="180" width="2.50" height="14" class="use"/>
+<rect x="422.50" y="180" width="2.50" height="14" class="use"/>
+<rect x="425.00" y="180" width="2.50" height="14" class="use"/>
+<rect x="427.50" y="180" width="2.50" height="14" class="use"/>
+<rect x="430.00" y="180" width="2.50" height="14" class="use"/>
+<rect x="432.50" y="180" width="2.50" height="14" class="use"/>
+<rect x="415.00" y="180" width="20" height="14" class="sec"/>
+<rect x="437.00" y="180" width="2.50" height="14" class="use"/>
+<rect x="439.50" y="180" width="2.50" height="14" class="waste"/>
+<rect x="442.00" y="180" width="2.50" height="14" class="waste"/>
+<rect x="444.50" y="180" width="2.50" height="14" class="waste"/>
+<rect x="447.00" y="180" width="2.50" height="14" class="waste"/>
+<rect x="449.50" y="180" width="2.50" height="14" class="waste"/>
+<rect x="452.00" y="180" width="2.50" height="14" class="waste"/>
+<rect x="454.50" y="180" width="2.50" height="14" class="waste"/>
+<rect x="437.00" y="180" width="20" height="14" class="sec"/>
+<text class="st" x="56" y="230"><tspan font-weight="600">stride 2</tspan></text>
+<text class="sl" x="750" y="230" text-anchor="end">8 sectors · 256 B moved · 50.0% useful</text>
+<line x1="62.0" y1="249" x2="317.2" y2="284" class="ln"/>
+<line x1="84.0" y1="249" x2="322.2" y2="284" class="ln"/>
+<line x1="106.0" y1="249" x2="327.2" y2="284" class="ln"/>
+<line x1="128.0" y1="249" x2="332.2" y2="284" class="ln"/>
+<line x1="150.0" y1="249" x2="339.2" y2="284" class="ln"/>
+<line x1="172.0" y1="249" x2="344.2" y2="284" class="ln"/>
+<line x1="194.0" y1="249" x2="349.2" y2="284" class="ln"/>
+<line x1="216.0" y1="249" x2="354.2" y2="284" class="ln"/>
+<line x1="238.0" y1="249" x2="361.2" y2="284" class="ln"/>
+<line x1="260.0" y1="249" x2="366.2" y2="284" class="ln"/>
+<line x1="282.0" y1="249" x2="371.2" y2="284" class="ln"/>
+<line x1="304.0" y1="249" x2="376.2" y2="284" class="ln"/>
+<line x1="326.0" y1="249" x2="383.2" y2="284" class="ln"/>
+<line x1="348.0" y1="249" x2="388.2" y2="284" class="ln"/>
+<line x1="370.0" y1="249" x2="393.2" y2="284" class="ln"/>
+<line x1="392.0" y1="249" x2="398.2" y2="284" class="ln"/>
+<line x1="414.0" y1="249" x2="405.2" y2="284" class="ln"/>
+<line x1="436.0" y1="249" x2="410.2" y2="284" class="ln"/>
+<line x1="458.0" y1="249" x2="415.2" y2="284" class="ln"/>
+<line x1="480.0" y1="249" x2="420.2" y2="284" class="ln"/>
+<line x1="502.0" y1="249" x2="427.2" y2="284" class="ln"/>
+<line x1="524.0" y1="249" x2="432.2" y2="284" class="ln"/>
+<line x1="546.0" y1="249" x2="437.2" y2="284" class="ln"/>
+<line x1="568.0" y1="249" x2="442.2" y2="284" class="ln"/>
+<line x1="590.0" y1="249" x2="449.2" y2="284" class="ln"/>
+<line x1="612.0" y1="249" x2="454.2" y2="284" class="ln"/>
+<line x1="634.0" y1="249" x2="459.2" y2="284" class="ln"/>
+<line x1="656.0" y1="249" x2="464.2" y2="284" class="ln"/>
+<line x1="678.0" y1="249" x2="471.2" y2="284" class="ln"/>
+<line x1="700.0" y1="249" x2="476.2" y2="284" class="ln"/>
+<line x1="722.0" y1="249" x2="481.2" y2="284" class="ln"/>
+<line x1="744.0" y1="249" x2="486.2" y2="284" class="ln"/>
+<rect x="57" y="240" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="79" y="240" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="101" y="240" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="123" y="240" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="145" y="240" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="167" y="240" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="189" y="240" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="211" y="240" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="233" y="240" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="255" y="240" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="277" y="240" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="299" y="240" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="321" y="240" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="343" y="240" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="365" y="240" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="387" y="240" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="409" y="240" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="431" y="240" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="453" y="240" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="475" y="240" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="497" y="240" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="519" y="240" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="541" y="240" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="563" y="240" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="585" y="240" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="607" y="240" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="629" y="240" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="651" y="240" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="673" y="240" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="695" y="240" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="717" y="240" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="739" y="240" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="316.00" y="284" width="2.50" height="14" class="use"/>
+<rect x="318.50" y="284" width="2.50" height="14" class="waste"/>
+<rect x="321.00" y="284" width="2.50" height="14" class="use"/>
+<rect x="323.50" y="284" width="2.50" height="14" class="waste"/>
+<rect x="326.00" y="284" width="2.50" height="14" class="use"/>
+<rect x="328.50" y="284" width="2.50" height="14" class="waste"/>
+<rect x="331.00" y="284" width="2.50" height="14" class="use"/>
+<rect x="333.50" y="284" width="2.50" height="14" class="waste"/>
+<rect x="316.00" y="284" width="20" height="14" class="sec"/>
+<rect x="338.00" y="284" width="2.50" height="14" class="use"/>
+<rect x="340.50" y="284" width="2.50" height="14" class="waste"/>
+<rect x="343.00" y="284" width="2.50" height="14" class="use"/>
+<rect x="345.50" y="284" width="2.50" height="14" class="waste"/>
+<rect x="348.00" y="284" width="2.50" height="14" class="use"/>
+<rect x="350.50" y="284" width="2.50" height="14" class="waste"/>
+<rect x="353.00" y="284" width="2.50" height="14" class="use"/>
+<rect x="355.50" y="284" width="2.50" height="14" class="waste"/>
+<rect x="338.00" y="284" width="20" height="14" class="sec"/>
+<rect x="360.00" y="284" width="2.50" height="14" class="use"/>
+<rect x="362.50" y="284" width="2.50" height="14" class="waste"/>
+<rect x="365.00" y="284" width="2.50" height="14" class="use"/>
+<rect x="367.50" y="284" width="2.50" height="14" class="waste"/>
+<rect x="370.00" y="284" width="2.50" height="14" class="use"/>
+<rect x="372.50" y="284" width="2.50" height="14" class="waste"/>
+<rect x="375.00" y="284" width="2.50" height="14" class="use"/>
+<rect x="377.50" y="284" width="2.50" height="14" class="waste"/>
+<rect x="360.00" y="284" width="20" height="14" class="sec"/>
+<rect x="382.00" y="284" width="2.50" height="14" class="use"/>
+<rect x="384.50" y="284" width="2.50" height="14" class="waste"/>
+<rect x="387.00" y="284" width="2.50" height="14" class="use"/>
+<rect x="389.50" y="284" width="2.50" height="14" class="waste"/>
+<rect x="392.00" y="284" width="2.50" height="14" class="use"/>
+<rect x="394.50" y="284" width="2.50" height="14" class="waste"/>
+<rect x="397.00" y="284" width="2.50" height="14" class="use"/>
+<rect x="399.50" y="284" width="2.50" height="14" class="waste"/>
+<rect x="382.00" y="284" width="20" height="14" class="sec"/>
+<rect x="404.00" y="284" width="2.50" height="14" class="use"/>
+<rect x="406.50" y="284" width="2.50" height="14" class="waste"/>
+<rect x="409.00" y="284" width="2.50" height="14" class="use"/>
+<rect x="411.50" y="284" width="2.50" height="14" class="waste"/>
+<rect x="414.00" y="284" width="2.50" height="14" class="use"/>
+<rect x="416.50" y="284" width="2.50" height="14" class="waste"/>
+<rect x="419.00" y="284" width="2.50" height="14" class="use"/>
+<rect x="421.50" y="284" width="2.50" height="14" class="waste"/>
+<rect x="404.00" y="284" width="20" height="14" class="sec"/>
+<rect x="426.00" y="284" width="2.50" height="14" class="use"/>
+<rect x="428.50" y="284" width="2.50" height="14" class="waste"/>
+<rect x="431.00" y="284" width="2.50" height="14" class="use"/>
+<rect x="433.50" y="284" width="2.50" height="14" class="waste"/>
+<rect x="436.00" y="284" width="2.50" height="14" class="use"/>
+<rect x="438.50" y="284" width="2.50" height="14" class="waste"/>
+<rect x="441.00" y="284" width="2.50" height="14" class="use"/>
+<rect x="443.50" y="284" width="2.50" height="14" class="waste"/>
+<rect x="426.00" y="284" width="20" height="14" class="sec"/>
+<rect x="448.00" y="284" width="2.50" height="14" class="use"/>
+<rect x="450.50" y="284" width="2.50" height="14" class="waste"/>
+<rect x="453.00" y="284" width="2.50" height="14" class="use"/>
+<rect x="455.50" y="284" width="2.50" height="14" class="waste"/>
+<rect x="458.00" y="284" width="2.50" height="14" class="use"/>
+<rect x="460.50" y="284" width="2.50" height="14" class="waste"/>
+<rect x="463.00" y="284" width="2.50" height="14" class="use"/>
+<rect x="465.50" y="284" width="2.50" height="14" class="waste"/>
+<rect x="448.00" y="284" width="20" height="14" class="sec"/>
+<rect x="470.00" y="284" width="2.50" height="14" class="use"/>
+<rect x="472.50" y="284" width="2.50" height="14" class="waste"/>
+<rect x="475.00" y="284" width="2.50" height="14" class="use"/>
+<rect x="477.50" y="284" width="2.50" height="14" class="waste"/>
+<rect x="480.00" y="284" width="2.50" height="14" class="use"/>
+<rect x="482.50" y="284" width="2.50" height="14" class="waste"/>
+<rect x="485.00" y="284" width="2.50" height="14" class="use"/>
+<rect x="487.50" y="284" width="2.50" height="14" class="waste"/>
+<rect x="470.00" y="284" width="20" height="14" class="sec"/>
+<text class="st" x="56" y="334"><tspan font-weight="600">stride 32 · also the naive transpose write</tspan></text>
+<text class="sr" x="750" y="334" text-anchor="end">32 sectors · 1024 B moved · 12.5% useful</text>
+<line x1="62.0" y1="353" x2="53.2" y2="388" class="ln"/>
+<line x1="84.0" y1="353" x2="75.2" y2="388" class="ln"/>
+<line x1="106.0" y1="353" x2="97.2" y2="388" class="ln"/>
+<line x1="128.0" y1="353" x2="119.2" y2="388" class="ln"/>
+<line x1="150.0" y1="353" x2="141.2" y2="388" class="ln"/>
+<line x1="172.0" y1="353" x2="163.2" y2="388" class="ln"/>
+<line x1="194.0" y1="353" x2="185.2" y2="388" class="ln"/>
+<line x1="216.0" y1="353" x2="207.2" y2="388" class="ln"/>
+<line x1="238.0" y1="353" x2="229.2" y2="388" class="ln"/>
+<line x1="260.0" y1="353" x2="251.2" y2="388" class="ln"/>
+<line x1="282.0" y1="353" x2="273.2" y2="388" class="ln"/>
+<line x1="304.0" y1="353" x2="295.2" y2="388" class="ln"/>
+<line x1="326.0" y1="353" x2="317.2" y2="388" class="ln"/>
+<line x1="348.0" y1="353" x2="339.2" y2="388" class="ln"/>
+<line x1="370.0" y1="353" x2="361.2" y2="388" class="ln"/>
+<line x1="392.0" y1="353" x2="383.2" y2="388" class="ln"/>
+<line x1="414.0" y1="353" x2="405.2" y2="388" class="ln"/>
+<line x1="436.0" y1="353" x2="427.2" y2="388" class="ln"/>
+<line x1="458.0" y1="353" x2="449.2" y2="388" class="ln"/>
+<line x1="480.0" y1="353" x2="471.2" y2="388" class="ln"/>
+<line x1="502.0" y1="353" x2="493.2" y2="388" class="ln"/>
+<line x1="524.0" y1="353" x2="515.2" y2="388" class="ln"/>
+<line x1="546.0" y1="353" x2="537.2" y2="388" class="ln"/>
+<line x1="568.0" y1="353" x2="559.2" y2="388" class="ln"/>
+<line x1="590.0" y1="353" x2="581.2" y2="388" class="ln"/>
+<line x1="612.0" y1="353" x2="603.2" y2="388" class="ln"/>
+<line x1="634.0" y1="353" x2="625.2" y2="388" class="ln"/>
+<line x1="656.0" y1="353" x2="647.2" y2="388" class="ln"/>
+<line x1="678.0" y1="353" x2="669.2" y2="388" class="ln"/>
+<line x1="700.0" y1="353" x2="691.2" y2="388" class="ln"/>
+<line x1="722.0" y1="353" x2="713.2" y2="388" class="ln"/>
+<line x1="744.0" y1="353" x2="735.2" y2="388" class="ln"/>
+<rect x="57" y="344" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="79" y="344" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="101" y="344" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="123" y="344" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="145" y="344" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="167" y="344" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="189" y="344" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="211" y="344" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="233" y="344" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="255" y="344" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="277" y="344" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="299" y="344" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="321" y="344" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="343" y="344" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="365" y="344" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="387" y="344" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="409" y="344" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="431" y="344" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="453" y="344" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="475" y="344" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="497" y="344" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="519" y="344" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="541" y="344" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="563" y="344" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="585" y="344" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="607" y="344" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="629" y="344" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="651" y="344" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="673" y="344" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="695" y="344" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="717" y="344" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="739" y="344" width="10" height="9" rx="1.5" class="lane"/>
+<rect x="52.00" y="388" width="2.50" height="14" class="use"/>
+<rect x="54.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="57.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="59.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="62.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="64.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="67.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="69.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="52.00" y="388" width="20" height="14" class="sec"/>
+<rect x="74.00" y="388" width="2.50" height="14" class="use"/>
+<rect x="76.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="79.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="81.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="84.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="86.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="89.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="91.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="74.00" y="388" width="20" height="14" class="sec"/>
+<rect x="96.00" y="388" width="2.50" height="14" class="use"/>
+<rect x="98.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="101.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="103.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="106.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="108.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="111.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="113.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="96.00" y="388" width="20" height="14" class="sec"/>
+<rect x="118.00" y="388" width="2.50" height="14" class="use"/>
+<rect x="120.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="123.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="125.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="128.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="130.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="133.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="135.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="118.00" y="388" width="20" height="14" class="sec"/>
+<rect x="140.00" y="388" width="2.50" height="14" class="use"/>
+<rect x="142.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="145.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="147.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="150.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="152.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="155.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="157.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="140.00" y="388" width="20" height="14" class="sec"/>
+<rect x="162.00" y="388" width="2.50" height="14" class="use"/>
+<rect x="164.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="167.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="169.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="172.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="174.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="177.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="179.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="162.00" y="388" width="20" height="14" class="sec"/>
+<rect x="184.00" y="388" width="2.50" height="14" class="use"/>
+<rect x="186.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="189.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="191.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="194.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="196.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="199.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="201.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="184.00" y="388" width="20" height="14" class="sec"/>
+<rect x="206.00" y="388" width="2.50" height="14" class="use"/>
+<rect x="208.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="211.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="213.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="216.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="218.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="221.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="223.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="206.00" y="388" width="20" height="14" class="sec"/>
+<rect x="228.00" y="388" width="2.50" height="14" class="use"/>
+<rect x="230.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="233.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="235.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="238.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="240.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="243.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="245.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="228.00" y="388" width="20" height="14" class="sec"/>
+<rect x="250.00" y="388" width="2.50" height="14" class="use"/>
+<rect x="252.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="255.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="257.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="260.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="262.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="265.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="267.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="250.00" y="388" width="20" height="14" class="sec"/>
+<rect x="272.00" y="388" width="2.50" height="14" class="use"/>
+<rect x="274.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="277.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="279.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="282.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="284.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="287.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="289.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="272.00" y="388" width="20" height="14" class="sec"/>
+<rect x="294.00" y="388" width="2.50" height="14" class="use"/>
+<rect x="296.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="299.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="301.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="304.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="306.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="309.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="311.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="294.00" y="388" width="20" height="14" class="sec"/>
+<rect x="316.00" y="388" width="2.50" height="14" class="use"/>
+<rect x="318.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="321.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="323.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="326.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="328.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="331.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="333.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="316.00" y="388" width="20" height="14" class="sec"/>
+<rect x="338.00" y="388" width="2.50" height="14" class="use"/>
+<rect x="340.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="343.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="345.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="348.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="350.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="353.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="355.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="338.00" y="388" width="20" height="14" class="sec"/>
+<rect x="360.00" y="388" width="2.50" height="14" class="use"/>
+<rect x="362.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="365.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="367.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="370.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="372.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="375.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="377.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="360.00" y="388" width="20" height="14" class="sec"/>
+<rect x="382.00" y="388" width="2.50" height="14" class="use"/>
+<rect x="384.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="387.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="389.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="392.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="394.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="397.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="399.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="382.00" y="388" width="20" height="14" class="sec"/>
+<rect x="404.00" y="388" width="2.50" height="14" class="use"/>
+<rect x="406.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="409.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="411.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="414.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="416.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="419.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="421.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="404.00" y="388" width="20" height="14" class="sec"/>
+<rect x="426.00" y="388" width="2.50" height="14" class="use"/>
+<rect x="428.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="431.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="433.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="436.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="438.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="441.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="443.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="426.00" y="388" width="20" height="14" class="sec"/>
+<rect x="448.00" y="388" width="2.50" height="14" class="use"/>
+<rect x="450.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="453.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="455.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="458.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="460.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="463.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="465.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="448.00" y="388" width="20" height="14" class="sec"/>
+<rect x="470.00" y="388" width="2.50" height="14" class="use"/>
+<rect x="472.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="475.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="477.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="480.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="482.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="485.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="487.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="470.00" y="388" width="20" height="14" class="sec"/>
+<rect x="492.00" y="388" width="2.50" height="14" class="use"/>
+<rect x="494.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="497.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="499.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="502.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="504.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="507.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="509.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="492.00" y="388" width="20" height="14" class="sec"/>
+<rect x="514.00" y="388" width="2.50" height="14" class="use"/>
+<rect x="516.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="519.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="521.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="524.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="526.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="529.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="531.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="514.00" y="388" width="20" height="14" class="sec"/>
+<rect x="536.00" y="388" width="2.50" height="14" class="use"/>
+<rect x="538.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="541.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="543.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="546.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="548.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="551.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="553.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="536.00" y="388" width="20" height="14" class="sec"/>
+<rect x="558.00" y="388" width="2.50" height="14" class="use"/>
+<rect x="560.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="563.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="565.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="568.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="570.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="573.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="575.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="558.00" y="388" width="20" height="14" class="sec"/>
+<rect x="580.00" y="388" width="2.50" height="14" class="use"/>
+<rect x="582.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="585.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="587.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="590.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="592.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="595.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="597.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="580.00" y="388" width="20" height="14" class="sec"/>
+<rect x="602.00" y="388" width="2.50" height="14" class="use"/>
+<rect x="604.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="607.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="609.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="612.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="614.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="617.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="619.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="602.00" y="388" width="20" height="14" class="sec"/>
+<rect x="624.00" y="388" width="2.50" height="14" class="use"/>
+<rect x="626.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="629.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="631.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="634.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="636.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="639.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="641.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="624.00" y="388" width="20" height="14" class="sec"/>
+<rect x="646.00" y="388" width="2.50" height="14" class="use"/>
+<rect x="648.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="651.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="653.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="656.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="658.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="661.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="663.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="646.00" y="388" width="20" height="14" class="sec"/>
+<rect x="668.00" y="388" width="2.50" height="14" class="use"/>
+<rect x="670.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="673.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="675.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="678.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="680.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="683.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="685.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="668.00" y="388" width="20" height="14" class="sec"/>
+<rect x="690.00" y="388" width="2.50" height="14" class="use"/>
+<rect x="692.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="695.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="697.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="700.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="702.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="705.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="707.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="690.00" y="388" width="20" height="14" class="sec"/>
+<rect x="712.00" y="388" width="2.50" height="14" class="use"/>
+<rect x="714.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="717.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="719.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="722.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="724.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="727.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="729.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="712.00" y="388" width="20" height="14" class="sec"/>
+<rect x="734.00" y="388" width="2.50" height="14" class="use"/>
+<rect x="736.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="739.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="741.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="744.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="746.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="749.00" y="388" width="2.50" height="14" class="waste"/>
+<rect x="751.50" y="388" width="2.50" height="14" class="waste"/>
+<rect x="734.00" y="388" width="20" height="14" class="sec"/>
+<text class="sl" x="56" y="432">top: 32 lanes of one warp (lane 0 left) · bottom: each box is one 32-byte sector, split into eight 4-byte slots</text>
+<rect x="56" y="439" width="12" height="10" class="use"/><text class="sl" x="72" y="448">bytes a lane asked for</text>
+<rect x="222" y="439" width="12" height="10" class="waste"/><text class="sl" x="238" y="448">bytes moved but not used</text>
+<text class="sl" x="412" y="448">stride-32 sectors are 128 B apart in memory; gaps not to scale</text>
+</svg>
+<p class="cap">Green = bytes a lane asked for, grey = bytes the sector carried that nobody used. Every pattern asks for the same 128 bytes. Only the number of sectors changes.</p>
+
+<div class="tw">
+<table>
+<tr><th>Pattern (one warp, 32 lanes)</th><th class="num">Sectors S</th><th class="num">128 B lines</th><th class="num">Bytes moved</th><th class="num">Useful</th><th class="num">η</th></tr>
+<tr><td>stride 1, offset 0 (coalesced)</td><td class="num">4</td><td class="num">1</td><td class="num">128</td><td class="num">128</td><td class="num hi">100%</td></tr>
+<tr><td>offset 1 (misaligned by 4 B)</td><td class="num">5</td><td class="num">2</td><td class="num">160</td><td class="num">128</td><td class="num">80.0%</td></tr>
+<tr><td>offset 8 (32 B, a sector boundary)</td><td class="num">4</td><td class="num">2</td><td class="num">128</td><td class="num">128</td><td class="num">100%</td></tr>
+<tr><td>stride 2</td><td class="num">8</td><td class="num">2</td><td class="num">256</td><td class="num">128</td><td class="num">50.0%</td></tr>
+<tr><td>stride 4</td><td class="num">16</td><td class="num">4</td><td class="num">512</td><td class="num">128</td><td class="num">25.0%</td></tr>
+<tr><td>stride 8, 16 or 32</td><td class="num">32</td><td class="num">8 · 16 · 32</td><td class="num">1,024</td><td class="num">128</td><td class="num lo">12.5%</td></tr>
+<tr><td>naive transpose write, stride 1,024 floats</td><td class="num">32</td><td class="num">32</td><td class="num">1,024</td><td class="num">128</td><td class="num lo">12.5%</td></tr>
+<tr><td>bf16 (2 B), stride 16</td><td class="num">32</td><td class="num">8</td><td class="num">1,024</td><td class="num">64</td><td class="num lo">6.2%</td></tr>
+<tr><td>float4 (16 B per lane), stride 1</td><td class="num">16</td><td class="num">4</td><td class="num">512</td><td class="num">512</td><td class="num hi">100%</td></tr>
+</table>
+</div>
+<div class="formula">stride 1:  bytes 0–127, contiguous    → S = 4   η = 128/128  = 100%
+offset 1:  bytes 4–131, 1 extra sector → S = 5   η = 128/160  = 80%
+stride 2:  4 lanes share a sector    → S = 8   η = 128/256  = 50%
+stride 32: lane k reads byte 128k    → S = 32  η = 128/1024 = 1/8
+  (any stride ≥ 8 floats = 32 B gives every lane its own sector)
+naive transpose write odata[x*1024 + y]:
+  lanes differ in x → 4,096 B apart  → S = 32</div>
+<p class="labline"><a href="https://github.com/seyonv/explainers/blob/main/perf-3-kernels/labs/coalescing.py">Run it: labs/coalescing.py</a> counts sectors and lines for any (offset, stride, element size), prints the full offset 0–32 and stride 1–32 sweeps, the transpose rows and the H100 cost below. Every number in this section comes from its output.</p>
+
+<h2>What the sources measured</h2>
+<p><b>Offsets and strides (Harris, 2012).</b> The blog runs <code>a[i] = a[i] + 1</code> with <code>i</code> shifted by an offset or multiplied by a stride, on three Tesla generations. Its results are only plots, so here is what the text says about them:</p>
+<ul style="font-size:15px;margin:0 0 10px;padding-left:20px">
+<li><b>Tesla C870</b> (compute capability 1.0) coalesced per half-warp of 16 threads. Any misaligned access became "16 separate 32-byte transactions", each carrying 4 useful bytes, so bandwidth fell by "a factor of eight". Any stride other than 1 gave "the familiar 1/8 bandwidth". That 1/8 is the same arithmetic as the stride-32 row above: 4 of 32 bytes.</li>
+<li><b>Tesla C1060</b> (1.3): misaligned access was "less problematic", served in "a few transactions that 'cover' the requested data".</li>
+<li><b>Tesla C2050</b> (2.0, Fermi) added an L1 cache with 128-byte lines, giving a "negligible effect of alignment on throughput". But "for large strides, the effective bandwidth is poor regardless of architecture version."</li>
+</ul>
+<p><b>The naive transpose (Harris's transpose blog).</b> <code>transposeNaive</code> is the copy kernel with the output indices swapped. Its reads stay coalesced, but "the writes to odata have a stride of 1024 elements or 4096 bytes between contiguous threads." 1024 × 1024 floats, 32 × 8 threads per tile, effective bandwidth = 2 × matrix size ÷ time, ECC on:</p>
+<div class="tw">
+<table>
+<tr><th>Kernel</th><th class="num">Tesla M2050</th><th class="num">Tesla K20c</th><th class="num">Sectors per warp step (lab)</th></tr>
+<tr><td>copy</td><td class="num hi">105.2 GB/s</td><td class="num hi">136.0 GB/s</td><td class="num">4 read + 4 write = 8</td></tr>
+<tr><td>transposeNaive</td><td class="num lo">18.8 GB/s</td><td class="num lo">55.3 GB/s</td><td class="num">4 read + 32 write = 36</td></tr>
+<tr><td>copy ÷ naive</td><td class="num">5.60×</td><td class="num">2.46×</td><td class="num">36 ÷ 8 = 4.50× the bytes</td></tr>
+</table>
+</div>
+<p class="cap">The sector count predicts 4.5× more DRAM traffic if nothing is merged in a cache. The M2050 lost even more (5.6×) and the K20c less (2.46×). Our inference, not stated in the blog: the other warps of the same block write the neighbouring floats of those same sectors, so a cache that holds partial sectors until they fill up can merge the writes, and how well that works depends on the GPU.</p>
+
+<h2>It depends on the GPU</h2>
+<div class="tw">
+<table>
+<tr><th>GPU</th><th>Coalescing unit</th><th>What the source reports</th></tr>
+<tr><td>Tesla C870 (CC 1.0)</td><td>half-warp, strict</td><td>misaligned or non-unit stride → ~1/8 bandwidth (Harris)</td></tr>
+<tr><td>Tesla C1060 (CC 1.3)</td><td>32/64/128 B segments</td><td>misalignment "less problematic"; stride gives "a smooth bandwidth curve" (Harris)</td></tr>
+<tr><td>Tesla C2050 (CC 2.0)</td><td>128 B L1 lines</td><td>alignment "negligible"; large strides still poor (Harris)</td></tr>
+<tr><td>Tesla M2050 / K20c</td><td>—</td><td>naive transpose at 18% / 41% of copy bandwidth (Harris transpose blog)</td></tr>
+<tr><td>Tesla V100</td><td>32 B sectors</td><td>≈ 790 GB/s aligned; misaligned "approximately 4/5th" expected, "approximately 9/10th" achieved (Best Practices §10.2.1.3)</td></tr>
+<tr><td>GH200</td><td>32 B sectors</td><td>"sectors-per-request ratio of 4 for the coalesced kernel versus 32 for the uncoalesced kernel" (NVIDIA, 2025)</td></tr>
+<tr><td>T4 (your lab GPU)</td><td>32 B sectors</td><td>not measured yet: the sector model caps useful bandwidth at 320 × 0.125 = <b>40 GB/s</b> for stride ≥ 8</td></tr>
+</table>
+</div>
+<p class="labline"><a href="https://colab.research.google.com/github/seyonv/explainers/blob/main/perf-3-kernels/labs/coalescing.ipynb">Open in Colab: labs/coalescing.ipynb</a> (<a href="https://github.com/seyonv/explainers/blob/main/perf-3-kernels/labs/coalescing.ipynb">view on GitHub</a>) runs Harris's offset and stride kernels for offsets 0–32 and strides 1–32, then copy vs transposeNaive on 1024 × 1024, and prints GB/s and % of the T4's 320 GB/s. <b>Not yet run by the author.</b> Numbers on this card are from Harris (C870/C1060/C2050, M2050, K20c) and NVIDIA (V100, GH200); your T4 run is the exercise. Colab's T4 clocks vary, so expect a few percent of noise.</p>
+
+<h2>Why every serving kernel reads weights contiguously</h2>
+<p>An H100 decode step for Llama-3.1-8B in BF16 streams all 16.06 GB of weights. Suppose a kernel read them so that only 1 byte in 8 of each sector was used (illustrative: no real engine does this):</p>
+<div class="formula">coalesced:  16.06 GB ÷ 3.35 TB/s                = 4.79 ms per step  → 209 tokens/s ceiling
+η = 12.5%:  16.06 GB ÷ 0.125 = 128.5 GB moved
+            128.5 GB ÷ 3.35 TB/s               = 38.4 ms per step  →  26 tokens/s</div>
+<p class="cap">Our recomputation from the course's shared facts, illustrative. Same model, same GPU, 8× slower, and the profiler would still show the memory bus 100% busy. That's why weight layouts, and the kernels that read them, are arranged so that neighbouring threads read neighbouring bytes, usually 16 bytes per thread at a time (the float4 row above).</p>
+
+<h2>The words, each with two examples</h2>
+<div class="tw">
+<table class="parts">
+<tr><th>Term</th><th class="what">What it means</th><th>Example A</th><th>Example B</th></tr>
+<tr><td>Warp request</td><td class="what">One load or store instruction issued by all 32 threads of a warp at once. Coalescing is decided per request.</td>
+  <td class="ex"><b>32 × 4 B = 128 B</b><span>float per lane</span></td><td class="ex"><b>32 × 16 B = 512 B</b><span>float4 per lane</span></td></tr>
+<tr><td>Sector</td><td class="what">An aligned 32-byte chunk: the unit global memory is accessed in on CC 6.0+.</td>
+  <td class="ex"><b class="ok">4 per request</b><span>stride 1</span></td><td class="ex"><b class="lo">32 per request</b><span>stride ≥ 8 floats</span></td></tr>
+<tr><td>Cache line</td><td class="what">128 bytes = 4 sectors. Fermi's L1 fetched whole lines, which is why the blog talks about 128-byte transactions.</td>
+  <td class="ex"><b>1 line</b><span>stride 1, offset 0</span></td><td class="ex"><b>2 lines</b><span>offset 8: 4 sectors, but it straddles a line</span></td></tr>
+<tr><td>Misaligned access</td><td class="what">Consecutive, but not starting on a sector boundary, so one extra sector is fetched.</td>
+  <td class="ex"><b>80%</b><span>offset 1 (sector model)</span></td><td class="ex"><b>≈ 9/10</b><span>V100 measured: caches reuse the extra sector</span></td></tr>
+<tr><td>Strided access</td><td class="what">Neighbouring threads touch addresses <i>stride</i> elements apart. The cache can't fix this.</td>
+  <td class="ex"><b>50%</b><span>stride 2</span></td><td class="ex"><b class="lo">12.5%</b><span>naive transpose writes, 4,096 B apart</span></td></tr>
+<tr><td>Effective bandwidth</td><td class="what">Useful bytes ÷ time. Harris's metric: wasted sector bytes don't count, which is exactly why strided kernels look slow.</td>
+  <td class="ex"><b class="ok">105.2 GB/s</b><span>copy, M2050</span></td><td class="ex"><b class="lo">18.8 GB/s</b><span>transposeNaive, M2050</span></td></tr>
+</table>
+</div>
+
+<h2>How the access patterns compare</h2>
+<div class="grid2">
+  <div class="cell"><h3><span class="x">&#10007;</span> Misaligned offset</h3><p>One extra sector per warp: 5 instead of 4, 80% efficient in the sector model. Since Fermi's L1 the measured cost is small (C2050 "negligible", V100 about 9/10), because the next warp uses the extra sector.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Strided access</h3><p>Stride 2 halves the useful bandwidth. From stride 8 on, every lane gets its own sector and you keep 1/8. Harris: poor "regardless of architecture version". The naive transpose's writes are this case, at 18.8 vs 105.2 GB/s on an M2050.</p></div>
+  <div class="cell"><h3>&#8594; When the algorithm needs a stride</h3><p>A transpose must read rows and write columns. Stage a 32 × 32 tile in shared memory: read it coalesced, write it out coalesced, and do the strided part on-chip, where a stride costs no DRAM sectors. See <a href="shared-memory-transpose.html">shared memory and tiling</a>.</p></div>
+  <div class="cell win"><h3><span class="ok">&#10003;</span> Stride 1, coalesced</h3><p>Thread k reads element k: 4 sectors per warp, 100% of moved bytes used. Map the fastest-varying thread index (<code>threadIdx.x</code>) to contiguous memory, and it's free: same instruction, same code size.</p></div>
+</div>
+
+<h2>Doesn't the L1/L2 cache fix bad access patterns?</h2>
+<div class="note">
+  <p>Partly, and only for offsets. On Fermi and later a misaligned warp's extra sector is usually the next warp's first sector, so it's already cached: Harris's C2050 shows almost no offset penalty, and the Best Practices Guide measures about 9/10 instead of the expected 4/5 on a V100.</p>
+  <p>It doesn't fix large strides. Bytes still move from DRAM in 32-byte sectors, so a lane that needs 4 bytes still costs a 32-byte sector. A cache only saves you if another warp uses the other 28 bytes before the sector is evicted, which is luck, not design. It may be why the K20c's naive transpose lost less than the M2050's, but even there it ran at 41% of copy.</p>
+  <p>When coalescing is <i>not</i> the thing to fix:</p>
+  <ul>
+    <li><b>Compute-bound kernels.</b> A well-tiled matmul reads each byte of DRAM once and spends its time in shared memory and registers. There, <a href="occupancy.html">occupancy</a>, <a href="shared-memory-transpose.html">bank conflicts</a> and tensor cores matter more.</li>
+    <li><b>Small, reused data.</b> A lookup table that fits in L1/L2 and is hit again and again can be read in any order.</li>
+    <li><b>When the stride is part of the algorithm</b> (transpose, column access, gathers), don't fight the index math: re-stage through shared memory, or change the data layout (for example, an array of structs to a struct of arrays).</li>
+  </ul>
+</div>
+
+<div class="foot">
+<p><b>Read next:</b> Harris, <a href="https://developer.nvidia.com/blog/how-access-global-memory-efficiently-cuda-c-kernels/">"How to Access Global Memory Efficiently in CUDA C/C++ Kernels"</a>: all of it, ~15 min. NVIDIA has published an updated version, <a href="https://developer.nvidia.com/blog/unlock-gpu-performance-global-memory-access-in-cuda/">"Unlock GPU Performance: Global Memory Access in CUDA"</a> (2025), with sector counts from Nsight Compute; skim its coalescing and strided sections, ~10 min. <a href="https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/#coalesced-access-to-global-memory">CUDA C++ Best Practices Guide §10.2.1 "Coalesced Access to Global Memory"</a>: all four subsections, ~15 min. Harris, <a href="https://developer.nvidia.com/blog/efficient-matrix-transpose-cuda-cc/">"An Efficient Matrix Transpose in CUDA C/C++"</a>: the intro, "Simple Matrix Copy" and "Naive Matrix Transpose" sections, ~5 min. The rest is the next card.</p>
+<p><b>Related:</b> <a href="shared-memory-transpose.html">shared memory, tiling and bank conflicts</a> (the fix) · <a href="matmul-coalescing-smem.html">matmul II: coalescing and shared-memory caching</a> (siboehm's kernel 2 is exactly this: changing which thread gets which output raises GMEM throughput from 15 to 110 GB/s) · <a href="execution-model.html">the CUDA execution model</a> · <a href="first-kernel.html">your first kernel</a> · <a href="matmul-naive.html">matmul I</a> · <a href="profiling.html">profiling</a> · <a href="../perf-1-foundations/gpu-machine.html">the GPU as a machine</a> · <a href="../perf-1-foundations/roofline-intuition.html">roofline intuition</a> · <a href="../llm-latency/memory-bandwidth.html">memory-bandwidth-bound decoding</a> · <a href="_overview.html">overview</a></p>
+<p><b>Sources:</b> 32-byte-transaction rule for CC 6.0+, 256-byte <code>cudaMalloc</code> alignment, four vs five 32-byte transactions, V100 ≈ 790 GB/s, 4/5 expected and 9/10 achieved, "stride of 2 results in a 50% of load/store efficiency": <a href="https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/#coalesced-access-to-global-memory">CUDA C++ Best Practices Guide §10.2.1</a>. C870/C1060/C2050 behaviour, 32/64/128-byte transactions, "1/8 bandwidth": <a href="https://developer.nvidia.com/blog/how-access-global-memory-efficiently-cuda-c-kernels/">Harris, NVIDIA blog (2012)</a>. Copy 105.2 / 136.0 and transposeNaive 18.8 / 55.3 GB/s (M2050 / K20c, ECC on), 4,096-byte write stride: <a href="https://developer.nvidia.com/blog/efficient-matrix-transpose-cuda-cc/">Harris, transpose blog</a>. GH200 4 vs 32 sectors per request: <a href="https://developer.nvidia.com/blog/unlock-gpu-performance-global-memory-access-in-cuda/">Devaramani, Bentz &amp; Scudiero, NVIDIA blog (2025)</a>. siboehm kernel 2, 15 → 110 GB/s on an RTX A6000: <a href="https://siboehm.com/articles/22/CUDA-MMM">siboehm's matmul worklog</a>. T4 320 GB/s, H100 3.35 TB/s and Llama-3.1-8B's 16.06 GB: this course's shared facts. Sector counts, efficiencies, the 4.5× transpose traffic ratio and the 38.4 ms step: computed by <a href="https://github.com/seyonv/explainers/blob/main/perf-3-kernels/labs/coalescing.py">labs/coalescing.py</a>.</p>
+</div>
+</article>
+<!-- series-nav:bottom -->
+<div class="snx"><a class="nx" href="index.html#shared-memory-transpose" target="_top">
+<span class="mini" aria-hidden="true"><span class="m1">Shared memory, tiling and bank conflicts</span><span class="m2">Also called SMEM, __shared__, the tiled transpose, or "padding the tile". This card walks Mark Harris's "An Efficient Matrix Transpose in CUDA C/C++" section by section: a 1024 × 1024 float matrix, 32…</span><span class="m3">In one breath</span><span class="m4">Shared memory is a small scratchpad on each SM that all threads of a block can read and write, with roughly 100× lower latency than uncached global memory. A block can load a tile from global memory in the order that is cheap, which is coalesced, rearrange it in shared memory, and write it out in the order that is cheap. Shared…</span></span>
+<span class="tx"><span class="lab">Next up · 05 / 17</span><span class="tt">Shared memory, tiling and bank conflicts</span><span class="ds">Harris's transpose, from 18.8 to 99.5 GB/s</span><span class="nd">Builds directly on this card.</span><span class="go">Continue →</span></span></a><div class="aux"><span><a href="index.html#first-kernel" target="_top">← Your first kernel: vector add</a></span><a href="index.html" target="_top">All cards in 3 · GPU kernels</a></div></div>
+<!-- /series-nav:bottom -->
+</body>
+</html>

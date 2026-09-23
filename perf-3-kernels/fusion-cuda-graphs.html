@@ -1,0 +1,320 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kernel fusion, launch overhead and CUDA graphs</title>
+<style>
+:root{
+  --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
+  --text:#1c1f23; --muted:#6b7068; --faint:#b9b9b3;
+  --accent:#4a9d77; --accent-bg:#dcefdf; --accent-border:#8cc79c;
+  --red:#c0492b; --red-bg:#fbeceb;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#15171a; --surface:#1d2024; --surface2:#24282d; --border:#32373d;
+    --text:#e6e8ea; --muted:#9aa1a9; --faint:#4a5057;
+    --accent:#5fb37f; --accent-bg:#1c2b22; --accent-border:#3f7a55;
+    --red:#e57368; --red-bg:#2e1f1e;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text)}
+.card{max-width:820px;margin:0 auto;padding:28px 32px;font-family:-apple-system,"Inter",system-ui,sans-serif;line-height:1.45}
+h1{font-size:26px;font-weight:600;margin:0 0 6px;letter-spacing:-0.01em}
+.sub{font-size:15px;color:var(--muted);margin:0 0 20px}
+h2{font-size:17px;font-weight:600;margin:26px 0 10px}
+p{font-size:15px;margin:0 0 10px}
+.cap{font-size:13px;color:var(--muted);margin:8px 0 0;text-align:center}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+
+/* Tables and formulas */
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border)}
+th{font-size:12px;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:none}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+.hi{color:var(--accent);font-weight:600} .lo{color:var(--red)}
+.formula{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin:10px 0;white-space:pre;overflow-x:auto;line-height:1.55}
+tr.ref td{color:var(--muted)}
+
+/* 2x2 grid */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.cell{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.cell.win{background:var(--accent-bg);border-color:var(--accent-border)}
+.cell h3{font-size:16px;font-weight:600;margin:0 0 5px;display:flex;gap:8px;align-items:baseline}
+.cell p{font-size:14px;margin:0;color:var(--text)}
+.cell.win h3,.cell.win p{color:var(--accent)}
+.x{color:var(--red)} .ok{color:var(--accent)}
+
+/* Clarification box */
+.note{border:1px solid var(--border);border-radius:10px;padding:14px 18px;font-size:14px}
+.note p{font-size:14px} .note p:last-child{margin-bottom:0}
+.note ul{margin:4px 0 10px;padding-left:20px}
+
+.foot{margin-top:22px;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+.foot p{font-size:13px;margin:0 0 8px}
+svg{display:block;max-width:100%;height:auto}
+.sl{font-size:12px;fill:var(--muted)} .st{font-size:13px;fill:var(--text)} .sb{font-size:13px;fill:var(--text);font-weight:600}
+a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+
+/* Lab links */
+.lab{font-size:14px;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px 14px;margin:0 0 6px}
+.lab a{font-weight:600}
+.lab .m{color:var(--muted);font-size:13px}
+
+/* MathML */
+.mathbox{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px 16px 12px;margin:10px 0;overflow-x:auto}
+.mathbox math{font-size:21px;color:var(--text);font-family:"STIX Two Math","Latin Modern Math","Cambria Math",math}
+.mathbox .t1{color:var(--text)} .mathbox .t2{color:var(--accent)} .mathbox .t3{color:var(--muted)}
+.mathbox .lab2{font-size:12px;font-family:-apple-system,"Inter",system-ui,sans-serif;padding-top:3px;border-top:1.5px solid currentColor;margin-top:2px}
+.legend{display:grid;grid-template-columns:auto 1fr auto;column-gap:14px;row-gap:5px;font-size:13px;margin-top:12px;align-items:baseline}
+.legend .sym{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;text-align:right}
+.legend .v{color:var(--muted);text-align:right;font-variant-numeric:tabular-nums}
+
+/* Parts table (two examples) */
+.parts td{vertical-align:top} .parts td:first-child{font-weight:600;white-space:nowrap}
+.parts .ex{font-size:13px;font-variant-numeric:tabular-nums} .parts .ex span{display:block;color:var(--muted)}
+
+/* Share bars */
+.sp{display:flex;align-items:center;gap:8px;white-space:nowrap}
+.sp em{display:block;width:110px;flex:none;height:8px;border-radius:2px;background:var(--surface2)}
+.sp i{display:block;height:8px;border-radius:2px;background:var(--faint)}
+.sp i.r{background:var(--red)}
+.nw{white-space:nowrap}
+
+@media (max-width:560px){
+  .card{padding:22px 16px}.grid2{grid-template-columns:1fr}
+  .legend{grid-template-columns:auto 1fr}.legend .v{display:none}
+  .parts .what{display:none}.hide-s{display:none}.sp em{width:60px}
+}
+/* series-nav */
+.sn{max-width:820px;margin:0 auto;padding:16px 32px 0;font-family:-apple-system,"Inter",system-ui,sans-serif;font-size:13px;line-height:1.5;color:var(--muted)}
+.sn a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+.sn .crumbs{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 7px}
+.sn .crumbs b{color:var(--text);font-weight:600}
+.sn .sep{color:var(--faint)}
+.sn .step{margin-left:auto;white-space:nowrap}
+.sn .dep{margin-top:5px;padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface)}
+.sn .dep .ok{color:var(--accent);font-weight:600}
+.snx{max-width:820px;margin:0 auto;padding:6px 32px 44px;font-family:-apple-system,"Inter",system-ui,sans-serif}
+.snx .nx{display:grid;grid-template-columns:280px 1fr;text-decoration:none;color:var(--text);background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.snx .nx:hover,.snx .nx:focus-visible{border-color:var(--accent-border);outline:none}
+.snx .mini{position:relative;height:210px;overflow:hidden;background:var(--bg);border-right:1px solid var(--border);padding:14px 16px}
+.snx .mini span{display:block}
+.snx .mini .m1{font-size:12.5px;font-weight:600;margin:0 0 4px;line-height:1.3}
+.snx .mini .m2{font-size:9px;color:var(--muted);margin:0 0 8px;line-height:1.4}
+.snx .mini .m3{font-size:8.5px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;margin:0 0 3px}
+.snx .mini .m4{font-size:9.5px;margin:0;line-height:1.45}
+.snx .tx{padding:16px 20px}
+.snx .lab{font-size:12px;font-weight:600;color:var(--accent);letter-spacing:.04em;text-transform:uppercase}
+.snx .tt{display:block;font-size:20px;font-weight:600;margin:5px 0 4px;line-height:1.25}
+.snx .ds{display:block;font-size:14px;color:var(--muted)}
+.snx .nd{display:block;font-size:13px;color:var(--muted);margin-top:10px}
+.snx .go{display:block;margin-top:12px;font-size:14px;font-weight:600;color:var(--accent)}
+.snx .aux{display:flex;justify-content:space-between;gap:12px;margin-top:10px;font-size:13px;color:var(--muted)}
+.snx .aux a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+@media (max-width:560px){.sn,.snx{padding-left:16px;padding-right:16px}.snx .nx{grid-template-columns:1fr}.snx .mini{display:none}.sn .step{margin-left:0}}
+/* /series-nav */
+</style>
+</head>
+<body>
+<!-- series-nav:top -->
+<nav class="sn" aria-label="Series navigation"><div class="crumbs"><a href="../perf-0-map/index.html" target="_top">AI perf engineering</a><span class="sep">›</span><a href="index.html" target="_top">3 · GPU kernels</a><span class="sep">›</span><b>14 / 17</b><span class="step"><a href="index.html#tensor-cores-low-precision" target="_top">← prev</a> · <a href="index.html#triton-programming-model" target="_top">next →</a></span></div>
+<div class="dep"><b>Before this:</b> <a href="index.html#first-kernel" target="_top">Your first kernel: vector add</a></div></nav>
+<!-- /series-nav:top -->
+<article class="card">
+<h1>Kernel fusion, launch overhead and CUDA graphs</h1>
+<p class="sub">Also called: operator fusion, being overhead-bound, graph capture and replay, <code>torch.compile</code>. Horace He's "Making Deep Learning Go Brrrr" splits GPU time into compute, memory bandwidth and overhead. Fusion attacks bandwidth, CUDA graphs attack overhead, and inference engines such as vLLM use both to cut the time of every decode step.</p>
+
+<p class="lab"><a href="https://colab.research.google.com/github/seyonv/explainers/blob/main/perf-3-kernels/labs/fusion-graphs.ipynb">Open in Colab: labs/fusion-graphs.ipynb</a> <span class="m">(<a href="https://github.com/seyonv/explainers/blob/main/perf-3-kernels/labs/fusion-graphs.ipynb">view on GitHub</a>)</span><br>
+<span class="m">Four PyTorch experiments on the T4: <code>x.cos().cos()</code> and a 10-op chain on 64M floats, eager vs <code>torch.compile</code>; Horace's repeat-multiply sweep; a 20-kernel tiny-tensor step, eager vs <code>torch.cuda.CUDAGraph</code> replay, plus the "double the size" test; and an optional profiler trace. It times with <code>torch.cuda.Event</code> after warm-up and leaves compile time out. <b>Not yet run by the author. The numbers on this card come from Horace He (A100), NVIDIA's CUDA Graphs blog (V100) and Hazy Research (H100). Running it on your own T4 is the exercise.</b> Colab's T4 clocks and availability vary, so expect some spread.</span></p>
+
+<h2>In one breath</h2>
+<p>Each PyTorch op is a separate kernel. It reads its inputs from DRAM, writes its output back to DRAM, and costs a few microseconds of CPU and driver work to launch. <b>Fusion</b> merges a chain of ops into one kernel, so the intermediates stay in registers and never go through DRAM. A <b>CUDA graph</b> records a whole sequence of launches once and replays it with a single call, which removes the per-launch CPU cost and the gaps between kernels. Fusion cuts bytes. Graphs cut launches. Neither makes a matmul any faster.</p>
+
+<h2>First, find your regime</h2>
+<p>Horace He's claim is that you should know which of the three costs dominates before you optimize anything, because a fix for one does nothing for the others.</p>
+<table>
+  <tr><th>Regime</th><th>Time goes to</th><th>How to tell</th><th>Horace's fixes</th></tr>
+  <tr><td><b>Overhead-bound</b></td><td>Python, the PyTorch dispatcher, kernel launches: "everything else"</td><td>Double the batch and the runtime rises by only ~10%. Or: the profiler shows gaps on the GPU row</td><td>Tracing, operator fusion, don't use Python, a real JIT (CUDA graphs are his lower-level option)</td></tr>
+  <tr><td><b>Bandwidth-bound</b></td><td>Moving tensors between DRAM and the SMs</td><td>Achieved GB/s is near peak and achieved FLOPS is low</td><td>Operator fusion</td></tr>
+  <tr><td><b>Compute-bound</b></td><td>Floating-point math, mostly matmuls</td><td>Achieved FLOPS is near peak (at 80% of peak you are "at least 80% compute bound")</td><td>Use tensor cores, "give Nvidia more money"</td></tr>
+</table>
+<p class="cap">Horace's summary table and tests, paraphrased. The "double the batch" test works because overhead doesn't grow with problem size, but compute and memory do.</p>
+
+<h2>The picture: where the gaps come from</h2>
+<svg viewBox="0 0 780 300" role="img" aria-label="Timelines of CPU launches and GPU kernels for unfused eager, fused, and CUDA graph replay">
+  <!-- A: unfused -->
+  <text x="0" y="14" class="sb">A. Eager, unfused: 4 kernels, 4 launches</text>
+  <text x="0" y="40" class="sl">CPU</text><text x="0" y="68" class="sl">GPU</text>
+  <g>
+    <rect x="44" y="28" width="40" height="18" rx="3" fill="var(--faint)"/>
+    <rect x="134" y="28" width="40" height="18" rx="3" fill="var(--faint)"/>
+    <rect x="224" y="28" width="40" height="18" rx="3" fill="var(--faint)"/>
+    <rect x="314" y="28" width="40" height="18" rx="3" fill="var(--faint)"/>
+    <rect x="44" y="56" width="720" height="18" rx="3" fill="var(--surface2)"/>
+    <rect x="90" y="56" width="38" height="18" rx="3" fill="var(--accent)"/>
+    <rect x="180" y="56" width="38" height="18" rx="3" fill="var(--accent)"/>
+    <rect x="270" y="56" width="38" height="18" rx="3" fill="var(--accent)"/>
+    <rect x="360" y="56" width="38" height="18" rx="3" fill="var(--accent)"/>
+    <text x="410" y="69" class="sl">slowest: gaps between launches, DRAM round trip per op</text>
+  </g>
+  <!-- B: fused -->
+  <text x="0" y="110" class="sb">B. Fused: 1 kernel does the work of 4, with 1 launch and fewer bytes</text>
+  <text x="0" y="136" class="sl">CPU</text><text x="0" y="164" class="sl">GPU</text>
+  <g>
+    <rect x="44" y="124" width="40" height="18" rx="3" fill="var(--faint)"/>
+    <rect x="44" y="152" width="720" height="18" rx="3" fill="var(--surface2)"/>
+    <rect x="90" y="152" width="60" height="18" rx="3" fill="var(--accent)"/>
+    <text x="162" y="165" class="sl">fastest: fewer bytes and one launch</text>
+  </g>
+  <!-- C: graph -->
+  <text x="0" y="206" class="sb">C. CUDA graph replay: the same 4 kernels, launched with 1 call</text>
+  <text x="0" y="232" class="sl">CPU</text><text x="0" y="260" class="sl">GPU</text>
+  <g>
+    <rect x="44" y="220" width="40" height="18" rx="3" fill="var(--faint)"/>
+    <text x="90" y="233" class="sl">cudaGraphLaunch</text>
+    <rect x="44" y="248" width="720" height="18" rx="3" fill="var(--surface2)"/>
+    <rect x="90" y="248" width="38" height="18" rx="3" fill="var(--accent)"/>
+    <rect x="130" y="248" width="38" height="18" rx="3" fill="var(--accent)"/>
+    <rect x="170" y="248" width="38" height="18" rx="3" fill="var(--accent)"/>
+    <rect x="210" y="248" width="38" height="18" rx="3" fill="var(--accent)"/>
+    <text x="260" y="261" class="sl">no gaps, but each kernel still round-trips DRAM</text>
+  </g>
+  <text x="0" y="292" class="sl">Schematic, not to scale. Green = a kernel doing work. Grey = CPU launch work, or the GPU sitting idle.</text>
+</svg>
+<p>Case A is what happens when the CPU can't run ahead of the GPU. Horace notes that PyTorch runs asynchronously: while one kernel runs, the CPU queues the next. If the kernels are big, launch cost is hidden. If they are small, "the GPU is going to spend most of its time as an expensive paperweight". Small kernels are exactly what batch-1 decode produces.</p>
+
+<h2>Fusion: count the trips to DRAM</h2>
+<p>Horace's example: <code>x1 = x.cos()</code> reads <code>x</code> and writes <code>x1</code>, then <code>x2 = x1.cos()</code> reads <code>x1</code> and writes <code>x2</code>. That's 4 global reads and writes. Fused, <code>x.cos().cos()</code> reads <code>x</code> once and writes <code>x2</code> once: 2, so the fused version is "2x" faster. The same reasoning holds for any chain of elementwise ops:</p>
+<div class="mathbox">
+<math display="block">
+  <munder class="t3"><msub><mi>t</mi><mtext>unfused</mtext></msub><mtext class="lab2">one kernel per op</mtext></munder>
+  <mo>&#8776;</mo>
+  <munderover><mo>&#8721;</mo><mrow><mi>i</mi><mo>=</mo><mn>1</mn></mrow><mi>k</mi></munderover>
+  <mfrac><mrow><msub><mi>in</mi><mi>i</mi></msub><mo>+</mo><msub><mi>out</mi><mi>i</mi></msub></mrow><mi>BW</mi></mfrac>
+  <mspace width="1.2em"/>
+  <munder class="t2"><msub><mi>t</mi><mtext>fused</mtext></msub><mtext class="lab2">one kernel</mtext></munder>
+  <mo>&#8776;</mo>
+  <mfrac><mrow><msub><mtext>bytes</mtext><mtext>in</mtext></msub><mo>+</mo><msub><mtext>bytes</mtext><mtext>out</mtext></msub></mrow><mi>BW</mi></mfrac>
+</math>
+<div class="legend">
+  <span class="sym">k</span><span>number of ops (kernels) in the chain</span><span class="v">cos().cos(): 2</span>
+  <span class="sym">in<sub>i</sub>, out<sub>i</sub></span><span>bytes kernel i reads and writes, intermediates included</span><span class="v">4 transfers of x's size</span>
+  <span class="sym">bytes in/out</span><span>only the chain's real inputs and final outputs</span><span class="v">2 transfers</span>
+  <span class="sym">BW</span><span>DRAM bandwidth</span><span class="v">H100 3.35 TB/s · T4 320 GB/s</span>
+</div>
+</div>
+<p class="cap">Both are memory-only times. They hold while the math per element is cheap compared with the bytes, as the next paragraph shows.</p>
+<p><b>How much math is "cheap"?</b> Horace's A100 numbers: 1.5 TB/s and 19.5 TFLOPS for non-matmul work. A unary FP32 op moves 8 bytes per element (4 in, 4 out).</p>
+<div class="formula">A100: 1.5e12 B/s ÷ 8 B = 187.5e9 elements/s
+      19.5e12 FLOP/s ÷ 187.5e9 = 104 ops per element  ("about a hundred")
+T4:   320e9 ÷ 8 = 40e9 elements/s
+      8.1e12 ÷ 40e9 = 202 FLOP per element (FMA counted as 2)
+      = ~101 plain multiplies per element   (our recomputation)</div>
+<p>Below that line, adding more ops to a fused kernel is free. Horace measured it with <code>x = x * 2</code> repeated inside one fused kernel on an A100: the runtime "doesn't increase noticeably at all until we're performing 64 multiplications", and throughput climbs from 0.2 TFLOPS to near 9.75 TFLOPS (the A100's non-FMA rate). That's why a fused GELU costs about the same as a fused ReLU. The notebook's part 2 repeats the sweep on the T4.</p>
+
+<h2>Worked example: the elementwise tail of one Llama-3.1-8B layer at prefill</h2>
+<p>This is our recomputation for the running example. Prefill of 1,000 tokens in BF16 (2 bytes) on an H100 at 3.35 TB/s. The non-matmul ops between the matmuls of one layer are a residual add plus an RMSNorm twice (once before attention, once before the MLP), plus SwiGLU's <code>silu(gate) · up</code>. An activation over D = 4,096 is 1,000 × 4,096 × 2 B = <b>8.19 MB</b>. One over F = 14,336 is <b>28.67 MB</b>. We count each RMSNorm as a single kernel and ignore RoPE and the norm weights (small).</p>
+<table>
+  <tr><th>Gap between matmuls</th><th>Unfused kernels and traffic</th><th class="num">Unfused</th><th>Fused kernel and traffic</th><th class="num">Fused</th></tr>
+  <tr><td>Residual add + RMSNorm (×2 per layer)</td><td>add: read 2, write 1 · norm: read 1, write 1 → 5 × 8.19 MB</td><td class="num">40.96 MB<br>12.2 µs</td><td>read attn out + residual, write new residual + normed → 4 × 8.19 MB</td><td class="num hi">32.77 MB<br>9.8 µs</td></tr>
+  <tr><td>SwiGLU <code>silu(g) · u</code></td><td>silu: read 1, write 1 · mul: read 2, write 1 → 5 × 28.67 MB</td><td class="num">143.36 MB<br>42.8 µs</td><td>read g and u, write the product → 3 × 28.67 MB</td><td class="num hi">86.02 MB<br>25.7 µs</td></tr>
+  <tr><td><b>Per layer</b></td><td>2 × 40.96 + 143.36</td><td class="num lo">225.28 MB<br>67.2 µs</td><td>2 × 32.77 + 86.02</td><td class="num hi">151.55 MB<br>45.2 µs</td></tr>
+</table>
+<div class="formula">Matmuls of one layer: 2 × 1,000 tokens × 218.11M params = 436.2 GFLOP
+                     ÷ 989e12 FLOP/s = 441 µs  (compute-bound; reading its
+                     436 MB of weights takes only 130 µs)
+Elementwise tail:    unfused 67.2 µs = 15.2% of the matmul time
+                     fused   45.2 µs = 10.3%   (1.49× fewer bytes)
+32 layers:           unfused 2.15 ms, fused 1.45 ms, saved 0.70 ms
+                     vs the 16.2 ms prefill floor: 13.3% → 8.9%</div>
+<p>So at prefill fusion is a solid but not dramatic win, because the matmuls dominate. It is a lower bound on the win: in eager Hugging Face code RMSNorm alone is several ops (upcast to FP32, square, mean, rsqrt, multiply, multiply by the weight), each with its own DRAM round trip. vLLM ships hand-fused <code>fused_add_rms_norm</code> and <code>silu_and_mul</code> kernels for exactly these two gaps.</p>
+
+<h2>Decode: when launches rival the memory floor</h2>
+<p>At batch 1 a decode step has to read all 16.06 GB of weights: <b>4.79 ms</b> at 3.35 TB/s (≈ 209 tokens/s). Each kernel now does little work, so a per-kernel gap matters. The per-kernel costs below are Hazy Research's H100 measurements. We assume <b>10 kernels per layer</b>, which is <b>illustrative</b>: an input norm, the QKV matmul, RoPE, attention, the O projection, add + norm, gate/up, silu·mul, down, and a residual add. That's 32 × 10 + 3 (embedding, final norm, LM head) = <b>323 kernels per step</b>. Hazy's own Llama-1B model uses 7 kernels × 16 layers.</p>
+<table>
+  <tr><th>Per-kernel gap × kernels</th><th class="num">8B: 323 kernels</th><th>Share of the 4.79 ms floor</th><th class="num">1B: 112 kernels</th><th>Share of the 0.74 ms floor</th></tr>
+  <tr><td>1.3 µs: graph launch</td><td class="num nw">0.42 ms</td><td><div class="sp"><em><i style="width:8.8%"></i></em>8.8%</div></td><td class="num nw">0.15 ms</td><td><div class="sp"><em><i style="width:19.7%"></i></em>19.7%</div></td></tr>
+  <tr><td>2.1 µs: stream launch</td><td class="num nw">0.68 ms</td><td><div class="sp"><em><i style="width:14.1%"></i></em>14.1%</div></td><td class="num nw">0.24 ms</td><td><div class="sp"><em><i style="width:31.8%"></i></em>31.8%</div></td></tr>
+  <tr><td>5 µs: Hazy's all-in stall<br><span style="font-size:12px;color:var(--muted)">launch, stragglers, memory latency</span></td><td class="num nw">1.62 ms</td><td><div class="sp"><em><i class="r" style="width:33.7%"></i></em>33.7% → 156 tok/s</div></td><td class="num lo nw">0.56 ms</td><td><div class="sp"><em><i class="r" style="width:75.6%"></i></em>75.6% → 769/s</div></td></tr>
+</table>
+<p class="cap">Bars = gap time ÷ memory floor. 1B floor: 3.35 TB/s ÷ 2.48 GB = 1,351 forward passes/s (Hazy: "~1350"). Adding 0.56 ms gives 769/s, which reproduces Hazy's "~770". The 8B column is our recomputation with the illustrative kernel count.</p>
+<p>The smaller the model, the more a fixed per-kernel cost dominates. That's why Hazy Research took the idea to its extreme: a <b>megakernel</b> that runs the whole Llama-1B forward pass as one kernel, so there are no launches between layers at all. Eager PyTorch is worse again: Horace measured PyTorch at about 280 thousand ops/s on tiny tensors, roughly 3.6 µs of CPU time per op, before the launch itself.</p>
+
+<h2>CUDA graphs: capture once, replay many times</h2>
+<p>NVIDIA's "Getting Started with CUDA Graphs" times one short kernel (<code>out = 1.23 × in</code>, 500,000 floats), run 20 times per step for 1,000 steps on a <b>Tesla V100</b>:</p>
+<table>
+  <tr><th>How the 20 kernels are launched (V100)</th><th class="num">Time per kernel</th><th class="num">Overhead over 2.9 µs</th></tr>
+  <tr class="ref"><td>Kernel execution alone (profiler)</td><td class="num">2.9 µs</td><td class="num">–</td></tr>
+  <tr><td>Launch, then <code>cudaStreamSynchronize</code> after every kernel</td><td class="num lo">9.6 µs</td><td class="num lo">6.7 µs</td></tr>
+  <tr><td>Sync once per step, so launches overlap execution</td><td class="num">3.8 µs</td><td class="num">0.9 µs</td></tr>
+  <tr><td>One CUDA graph of 20 kernels, launched per step</td><td class="num hi">3.4 µs</td><td class="num hi">0.5 µs</td></tr>
+</table>
+<div class="formula">cudaStreamBeginCapture(stream, ...);   // record, don't run
+  for 20 kernels: shortKernel&lt;&lt;&lt;blocks, threads, 0, stream&gt;&gt;&gt;(...);
+cudaStreamEndCapture(stream, &amp;graph);
+cudaGraphInstantiate(&amp;instance, graph, ...);   // ~400 µs, once
+every step: cudaGraphLaunch(instance, stream);   // one call, 20 kernels
+
+400 µs ÷ (1,000 × 20 kernels) = 0.02 µs per kernel amortized
+first graph launch ~33% slower than later ones</div>
+<p>Graph launches have also become cheaper. NVIDIA's "constant time launch" post reports that on Ampere a repeat launch of a straight-line graph went from <b>2 µs + 200 ns per node</b> to about <b>2.5 µs + ~1 ns per node</b>. For a 323-node decode step that's 66.6 µs → 2.8 µs of CPU launch time (our arithmetic on their formula). This is CPU-side launch cost. Hazy's 1.3 µs above is the GPU-side gap per kernel that remains even inside a graph.</p>
+
+<h3 style="font-size:15px;margin:18px 0 8px">Why engines capture: vLLM</h3>
+<p>vLLM's CUDA Graphs design doc: <code>cudagraph_mode</code>'s default is <code>FULL_AND_PIECEWISE</code>, meaning "full CUDA Graph for uniform decode, piecewise CUDA Graphs for others". Piecewise graphs cover everything between the attention ops and run attention eagerly. The doc calls it "generally the most performant setting, especially for low latency with small models or MoEs, but also requires the most memory and takes the longest to capture". A graph is fixed to the shapes it was captured with, so vLLM captures one per size in <code>cudagraph_capture_sizes</code> (the example sets <code>[1, 2, 4, 8]</code>). At run time the dispatcher looks up a key built from the <b>padded</b> token count. If no captured graph matches, it falls back to eager (<code>NONE</code>). What that means in practice, as we read the doc: a batch of 5 is run as a captured size, with padding, and batches past the captured sizes lose the graph.</p>
+
+<h2>The words, with prefill and decode side by side</h2>
+<table class="parts">
+  <tr><th>Term</th><th class="what">What it means</th><th>Prefill, 1,000 tokens (8B, H100)</th><th>Decode, batch 1 (8B, H100)</th></tr>
+  <tr><td>Kernel launch</td><td class="what">The CPU and driver hand one kernel to the GPU's queue</td><td class="ex"><b>Hidden</b><span>a 441 µs matmul layer dwarfs a 2 µs launch</span></td><td class="ex"><b class="lo">Exposed</b><span>~323 small kernels in a 4.8 ms step</span></td></tr>
+  <tr><td>Fusion</td><td class="what">Merge ops so intermediates stay on-chip</td><td class="ex"><b class="ok">0.70 ms saved</b><span>225 → 152 MB per layer, × 32</span></td><td class="ex"><b>Fewer kernels</b><span>and so fewer launch gaps; weight bytes don't change</span></td></tr>
+  <tr><td>Capture</td><td class="what">Record a sequence of launches into a graph, once</td><td class="ex"><b>Piecewise</b><span>vLLM: attention eager, the rest graphed</span></td><td class="ex"><b class="ok">Full</b><span>vLLM default for uniform decode</span></td></tr>
+  <tr><td>Replay</td><td class="what">Launch the whole recorded graph with one call</td><td class="ex"><b>Small gain</b><span>overhead was already hidden</span></td><td class="ex"><b class="ok">Removes most CPU launch cost</b><span>up to 0.68 ms at 2.1 µs × 323 (illustrative count)</span></td></tr>
+  <tr><td>Padding</td><td class="what">Round the batch up to a captured size</td><td class="ex"><b>Token count padded</b><span>per the doc's padded <code>num_tokens</code></span></td><td class="ex"><b>e.g. 5 → 8</b><span>with capture sizes [1, 2, 4, 8]</span></td></tr>
+</table>
+
+<h2>Same ideas, different GPUs</h2>
+<table>
+  <tr><th>GPU</th><th class="num">DRAM BW</th><th class="num">Non-matmul FP32</th><th class="num">Break-even ops/element</th><th>Launch numbers</th></tr>
+  <tr><td>V100 (NVIDIA graphs blog)</td><td class="num">not used</td><td class="num">not used</td><td class="num">–</td><td>9.6 / 3.8 / 3.4 µs per kernel (sync / overlap / graph)</td></tr>
+  <tr><td>A100 (Horace He)</td><td class="num">1.5 TB/s</td><td class="num">19.5 TF (9.75 non-FMA)</td><td class="num">~104 (measured knee 64)</td><td>not given in µs; PyTorch ~280k ops/s</td></tr>
+  <tr><td>H100 SXM (running example)</td><td class="num">3.35 TB/s</td><td class="num">not used here</td><td class="num">–</td><td class="hi">2.1 µs stream, 1.3 µs graph (Hazy)</td></tr>
+  <tr><td>T4 (Colab lab)</td><td class="num">320 GB/s</td><td class="num">8.1 TF</td><td class="num">~202 FLOP (~101 multiplies)</td><td>your notebook run</td></tr>
+</table>
+<p class="cap">Break-even = FLOP/s ÷ (bytes/s ÷ 8 B per FP32 element in and out). A100 and T4 rows are our recomputation. T4 bandwidth is 320 GB/s per the Turing whitepaper; the datasheet prints 300.</p>
+
+<h2>How the four fixes differ</h2>
+<div class="grid2">
+  <div class="cell"><h3><span class="x">&#10007;</span> Eager, unfused</h3><p>One kernel and one DRAM round trip per op, plus Python and dispatcher time per op. Flexible and easy to debug, but at decode it pays every launch, and every intermediate goes through DRAM.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Hand-fused kernel</h3><p>The best bytes (e.g. <code>fused_add_rms_norm</code>: 5 → 4 transfers), but someone writes and maintains CUDA for each pattern and each GPU. Worth it only for hot spots; see <a href="reduction-unrolling.html">reduction II</a> for the effort involved.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> CUDA graphs alone</h3><p>Removes per-launch CPU cost and gaps (3.8 → 3.4 µs per kernel on the V100), but every kernel still reads and writes DRAM. Shapes are frozen at capture, so batch sizes must match or be padded.</p></div>
+  <div class="cell win"><h3><span class="ok">&#10003;</span> Compiler fusion, then graph replay</h3><p><code>torch.compile</code> generates fused <a href="triton-programming-model.html">Triton</a> kernels (fewer bytes and fewer kernels), and its <code>reduce-overhead</code> mode, like vLLM, replays them as CUDA graphs. Engines combine this with hand-fused kernels for the hottest ops.</p></div>
+</div>
+
+<h2>Does a CUDA graph make my kernels faster?</h2>
+<div class="note">
+  <p><b>No.</b> The kernels in a graph are the same kernels and run at the same speed: a bandwidth-bound RMSNorm moves the same bytes whether it's graphed or not. A graph removes CPU launch overhead and shrinks the gaps between kernels (from ~2.1 to ~1.3 µs per kernel on an H100, per Hazy Research). That only matters when the gaps are a real share of the step.</p>
+  <ul>
+    <li><b>When graphs don't help:</b> big kernels, where the CPU already runs ahead. Prefill of 1,000 tokens has 441 µs matmul layers, so launch cost is already hidden. Also dynamic control flow or shapes that change every call: a graph replays exactly what was captured.</li>
+    <li><b>What they cost:</b> capture time (~400 µs for 20 kernels on a V100; vLLM's full-and-piecewise mode "takes the longest to capture"), GPU memory for each captured size, and padding batches up to a captured size.</li>
+    <li><b>When fusion doesn't help:</b> compute-bound matmuls. There the fix is tensor cores (<a href="tensor-cores-low-precision.html">tensor cores and low precision</a>), not fewer bytes.</li>
+  </ul>
+  <p>To tell which case you're in, use Horace's test: double the batch. If the time barely moves, you're overhead-bound, and graphs (or a megakernel) are the lever.</p>
+</div>
+
+<div class="foot">
+<p><b>Read next:</b> Horace He, <a href="https://horace.io/brrr_intro.html">"Making Deep Learning Go Brrrr From First Principles"</a>: all of it, ~30 min (the "Bandwidth" section for fusion and the repeat sweep, "Overhead" for the tests and the summary table). Alan Gray, <a href="https://developer.nvidia.com/blog/cuda-graphs/">"Getting Started with CUDA Graphs"</a>, NVIDIA blog, 2019: all of it, ~15 min. vLLM design doc <a href="https://docs.vllm.ai/en/latest/design/cuda_graphs.html">"CUDA Graphs"</a>: all of it, ~15 min, especially "CudagraphModes" and "CudagraphDispatcher".</p>
+<p><b>Related:</b> <a href="first-kernel.html">your first kernel</a> · <a href="reduction-unrolling.html">reduction II: unrolling</a> · <a href="triton-programming-model.html">Triton programming model</a> · <a href="profiling.html">profiling and benchmarking hygiene</a> · <a href="tensor-cores-low-precision.html">tensor cores and low precision</a> · <a href="../perf-2-scaling-book-inference/step-time.html">step time (perf-2)</a> · <a href="../perf-1-foundations/roofline-intuition.html">roofline intuition</a> · <a href="../llm-latency/memory-bandwidth.html">memory-bandwidth-bound decoding</a></p>
+<p><b>Sources:</b> Three regimes, the summary table, "double your batch size … 10%", <code>x.cos().cos()</code> 4 vs 2, A100 1.5 TB/s and 19.5 / 9.75 TFLOPS, "about a hundred operations", flat to 64 multiplies, 0.2 TFLOPS, ~280k PyTorch ops/s: Horace He (link above). V100 2.9 / 9.6 / 3.8 / 3.4 µs, ~400 µs creation, first launch ~33% slower: Alan Gray, NVIDIA (link above). H100 launch ~2.1 µs (stream) and ~1.3 µs (graph), 5 µs stall model, Llama-1B 2.48 GB, 7 kernels × 16 layers, ~1350 → ~770 forward passes/s: Hazy Research, <a href="https://hazyresearch.stanford.edu/blog/2025-05-27-no-bubbles">"Look Ma, No Bubbles! Designing a Low-Latency Megakernel for Llama-1B"</a>, 2025. 2 µs + 200 ns/node → 2.5 µs + ~1 ns/node (Ampere, straight-line graphs): NVIDIA, <a href="https://developer.nvidia.com/blog/constant-time-launch-for-straight-line-cuda-graphs-and-other-performance-enhancements/">"Constant Time Launch for Straight-Line CUDA Graphs"</a>. <code>FULL_AND_PIECEWISE</code> default, padded <code>num_tokens</code>, fallback to <code>NONE</code>: vLLM CUDA Graphs doc (link above, read from its source on 2026-09-22). <code>cudagraph_capture_sizes</code> and the <code>[1, 2, 4, 8]</code> example: vLLM <a href="https://docs.vllm.ai/en/latest/design/torch_compile.html">torch.compile integration doc</a>. Llama-3.1-8B shapes, 989 TF, 3.35 TB/s, 4.8 ms and 16.2 ms floors: course facts. The fused-kernel names <code>fused_add_rms_norm</code> and <code>silu_and_mul</code> are vLLM custom ops (from general knowledge of the vLLM codebase, not from the docs above). Everything labelled "our recomputation" was computed with a short Python script from these inputs.</p>
+</div>
+</article>
+<!-- series-nav:bottom -->
+<div class="snx"><a class="nx" href="index.html#triton-programming-model" target="_top">
+<span class="mini" aria-hidden="true"><span class="m1">Triton: programming blocks, not threads</span><span class="m2">Also called OpenAI Triton, @triton.jit kernels, or the Triton language. (Not NVIDIA's Triton Inference Server, which is an unrelated model-serving product.) This card walks the Triton programming…</span><span class="m3">In one breath</span><span class="m4">In CUDA you write the code for one thread and launch a grid of blocks of threads. In Triton you write the code for one block of data (a "program"), work on whole vectors and tiles at once, and let the compiler decide how the threads split that block up. You still choose the tiling. The compiler handles the thread-level details…</span></span>
+<span class="tx"><span class="lab">Next up · 15 / 17</span><span class="tt">Triton: programming blocks, not threads</span><span class="ds">Tutorials 01 and 02: vector add and fused softmax</span><span class="nd">Builds directly on this card.</span><span class="go">Continue →</span></span></a><div class="aux"><span><a href="index.html#tensor-cores-low-precision" target="_top">← Tensor cores and low precision</a></span><a href="index.html" target="_top">All cards in 3 · GPU kernels</a></div></div>
+<!-- /series-nav:bottom -->
+</body>
+</html>

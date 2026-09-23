@@ -1,0 +1,1404 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Matmul III: 1D and 2D blocktiling</title>
+<style>
+:root{
+  --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
+  --text:#1c1f23; --muted:#6b7068; --faint:#b9b9b3;
+  --accent:#4a9d77; --accent-bg:#dcefdf; --accent-border:#8cc79c;
+  --red:#c0492b; --red-bg:#fbeceb;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#15171a; --surface:#1d2024; --surface2:#24282d; --border:#32373d;
+    --text:#e6e8ea; --muted:#9aa1a9; --faint:#4a5057;
+    --accent:#5fb37f; --accent-bg:#1c2b22; --accent-border:#3f7a55;
+    --red:#e57368; --red-bg:#2e1f1e;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text)}
+.card{max-width:820px;margin:0 auto;padding:28px 32px;font-family:-apple-system,"Inter",system-ui,sans-serif;line-height:1.45}
+h1{font-size:26px;font-weight:600;margin:0 0 6px;letter-spacing:-0.01em}
+.sub{font-size:15px;color:var(--muted);margin:0 0 20px}
+h2{font-size:17px;font-weight:600;margin:26px 0 10px}
+p{font-size:15px;margin:0 0 10px}
+ul,ol{font-size:15px;margin:0 0 10px;padding-left:20px}
+li{margin-bottom:3px}
+.cap{font-size:13px;color:var(--muted);margin:8px 0 0;text-align:center}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+blockquote{margin:10px 0;padding:8px 14px;border-left:3px solid var(--border);color:var(--muted);font-size:14px}
+
+/* Tables and formulas */
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border)}
+th{font-size:12px;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:none}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+.hi{color:var(--accent);font-weight:600} .lo{color:var(--red)} .mu{color:var(--muted)}
+tr.mu td{color:var(--muted)}
+.formula{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin:10px 0;white-space:pre;overflow-x:auto;line-height:1.55}
+.tw{overflow-x:auto}
+.tw table{min-width:640px}
+
+/* Bars */
+.bars{display:grid;grid-template-columns:200px 1fr 84px;column-gap:14px;row-gap:9px;align-items:center;font-size:14px}
+.bars .hd{font-size:13px;color:var(--muted)}
+.bars .hd.r,.bars .tot{text-align:right;font-variant-numeric:tabular-nums}
+.bars .tok small{display:block;color:var(--muted);font-size:12px}
+.bars .track{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted);font-variant-numeric:tabular-nums}
+.bars .bar{height:18px;border-radius:3px;background:var(--accent);flex:none}
+.bars .bar.worst{background:var(--red)}
+.bars .bar.mid{background:var(--faint)}
+.bars .lo{color:var(--red)}
+.bars .strong{font-weight:600}
+
+/* MathML */
+.mathbox{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px 16px 12px;margin:10px 0;overflow-x:auto}
+.mathbox math{font-size:21px;color:var(--text);font-family:"STIX Two Math","Latin Modern Math","Cambria Math",math}
+.mathbox .t1{color:var(--text)} .mathbox .t2{color:var(--accent)} .mathbox .t3{color:var(--muted)} .mathbox .t4{color:var(--red)}
+.mathbox .lab{font-size:12px;font-family:-apple-system,"Inter",system-ui,sans-serif;padding-top:3px;border-top:1.5px solid currentColor;margin-top:2px}
+.mathbox math + math{margin-top:16px}
+.legend{display:grid;grid-template-columns:auto 1fr auto;column-gap:14px;row-gap:5px;font-size:13px;margin-top:14px;align-items:baseline}
+.legend .sym{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;text-align:right}
+.legend .v{color:var(--muted);text-align:right;font-variant-numeric:tabular-nums}
+@media (max-width:560px){.legend{grid-template-columns:auto 1fr}.legend .v{display:none}}
+
+/* Two examples per term */
+.parts td{vertical-align:top} .parts td:first-child{font-weight:600;white-space:nowrap}
+.parts .ex{font-size:13px} .parts .ex span{display:block;color:var(--muted)}
+@media (max-width:560px){.parts .what{display:none}}
+
+/* 2x2 grid */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.cell{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.cell.win{background:var(--accent-bg);border-color:var(--accent-border)}
+.cell h3{font-size:16px;font-weight:600;margin:0 0 5px;display:flex;gap:8px;align-items:baseline}
+.cell p{font-size:14px;margin:0;color:var(--text)}
+.cell.win h3,.cell.win p{color:var(--accent)}
+.x{color:var(--red)} .ok{color:var(--accent)}
+
+/* Clarification box */
+.note{border:1px solid var(--border);border-radius:10px;padding:14px 18px;font-size:14px}
+.note p,.note li{font-size:14px} .note p:last-child{margin-bottom:0}
+
+.foot{margin-top:22px;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+.foot p{font-size:13px}
+.lab-link{display:inline-block;font-size:13px;border:1px solid var(--accent-border);background:var(--accent-bg);color:var(--accent);border-radius:6px;padding:4px 10px;margin:2px 4px 10px 0;text-decoration:none}
+svg{display:block;max-width:100%;height:auto}
+.sl{font-size:12px;fill:var(--muted)} .st{font-size:13px;fill:var(--text)}
+.tr{fill:var(--red);font-size:13px;font-weight:600} .tg{fill:var(--accent);font-size:13px;font-weight:600}
+.cz{fill:var(--surface);stroke:var(--border);stroke-width:1}
+.cr{fill:var(--red-bg);stroke:var(--red);stroke-width:1.2}
+.cg{fill:var(--accent-bg);stroke:var(--accent);stroke-width:1.2}
+.cc{fill:var(--surface2);stroke:var(--muted);stroke-width:1.2}
+.arw{stroke:var(--muted);stroke-width:1.3}
+@media (max-width:560px){.grid2{grid-template-columns:1fr}.card{padding:20px 16px}.bars{grid-template-columns:110px 1fr 64px;column-gap:8px}}
+a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+/* series-nav */
+.sn{max-width:820px;margin:0 auto;padding:16px 32px 0;font-family:-apple-system,"Inter",system-ui,sans-serif;font-size:13px;line-height:1.5;color:var(--muted)}
+.sn a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+.sn .crumbs{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 7px}
+.sn .crumbs b{color:var(--text);font-weight:600}
+.sn .sep{color:var(--faint)}
+.sn .step{margin-left:auto;white-space:nowrap}
+.sn .dep{margin-top:5px;padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface)}
+.sn .dep .ok{color:var(--accent);font-weight:600}
+.snx{max-width:820px;margin:0 auto;padding:6px 32px 44px;font-family:-apple-system,"Inter",system-ui,sans-serif}
+.snx .nx{display:grid;grid-template-columns:280px 1fr;text-decoration:none;color:var(--text);background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.snx .nx:hover,.snx .nx:focus-visible{border-color:var(--accent-border);outline:none}
+.snx .mini{position:relative;height:210px;overflow:hidden;background:var(--bg);border-right:1px solid var(--border);padding:14px 16px}
+.snx .mini span{display:block}
+.snx .mini .m1{font-size:12.5px;font-weight:600;margin:0 0 4px;line-height:1.3}
+.snx .mini .m2{font-size:9px;color:var(--muted);margin:0 0 8px;line-height:1.4}
+.snx .mini .m3{font-size:8.5px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;margin:0 0 3px}
+.snx .mini .m4{font-size:9.5px;margin:0;line-height:1.45}
+.snx .tx{padding:16px 20px}
+.snx .lab{font-size:12px;font-weight:600;color:var(--accent);letter-spacing:.04em;text-transform:uppercase}
+.snx .tt{display:block;font-size:20px;font-weight:600;margin:5px 0 4px;line-height:1.25}
+.snx .ds{display:block;font-size:14px;color:var(--muted)}
+.snx .nd{display:block;font-size:13px;color:var(--muted);margin-top:10px}
+.snx .go{display:block;margin-top:12px;font-size:14px;font-weight:600;color:var(--accent)}
+.snx .aux{display:flex;justify-content:space-between;gap:12px;margin-top:10px;font-size:13px;color:var(--muted)}
+.snx .aux a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+@media (max-width:560px){.sn,.snx{padding-left:16px;padding-right:16px}.snx .nx{grid-template-columns:1fr}.snx .mini{display:none}.sn .step{margin-left:0}}
+/* /series-nav */
+</style>
+</head>
+<body>
+<!-- series-nav:top -->
+<nav class="sn" aria-label="Series navigation"><div class="crumbs"><a href="../perf-0-map/index.html" target="_top">AI perf engineering</a><span class="sep">›</span><a href="index.html" target="_top">3 · GPU kernels</a><span class="sep">›</span><b>11 / 17</b><span class="step"><a href="index.html#matmul-coalescing-smem" target="_top">← prev</a> · <a href="index.html#matmul-warptiling" target="_top">next →</a></span></div>
+<div class="dep"><b>Before this:</b> <a href="index.html#matmul-coalescing-smem" target="_top">Matmul II: coalescing and shared-memory caching</a> · <a href="index.html#occupancy" target="_top">Occupancy and latency hiding</a></div></nav>
+<!-- /series-nav:top -->
+<article class="card">
+<h1>Matmul III: 1D and 2D blocktiling</h1>
+<p class="sub">Also called siboehm's kernels 4 and 5, register tiling, thread coarsening, or the outer-product formulation. This card walks the worklog's sections "Kernel 4: 1D Blocktiling for Calculating Multiple Results per Thread", "Sidenote on Compiler Optimizations", "Areas of Improvement: Arithmetic Intensity" and "Kernel 5: Increasing Arithmetic Intensity via 2D Blocktiling", in order. The article's numbers are from an RTX A6000, multiplying 4092 × 4092 fp32 matrices.</p>
+
+<h2>In one breath</h2>
+<p>Kernel 3 stalled because every multiply-add needed two shared-memory loads. The fix is to give each thread several results, so that one value it loads into a register feeds several multiply-adds. Kernel 4 gives each thread a column of 8 results: 1.125 shared-memory loads per multiply-add and 2.84× faster. Kernel 5 gives each thread an 8 × 8 square: 0.25 loads per multiply-add, another 1.88×, and 68.7% of cuBLAS. A square beats a column because a TM × TN tile needs only TM + TN inputs for TM·TN results.</p>
+
+<table style="margin-top:6px">
+<tr><th>RTX A6000, 4092²</th><th class="num">results / thread</th><th class="num">GFLOP/s</th><th class="num">% of cuBLAS</th><th class="num">vs previous</th></tr>
+<tr><td>Kernel 3: SMEM caching</td><td class="num">1</td><td class="num lo">2,980.3</td><td class="num lo">12.8%</td><td class="num mu">–</td></tr>
+<tr><td>Kernel 4: 1D blocktiling</td><td class="num">8 (8 × 1)</td><td class="num">8,474.7</td><td class="num">36.5%</td><td class="num">2.84×</td></tr>
+<tr><td>Kernel 5: 2D blocktiling</td><td class="num">64 (8 × 8)</td><td class="num hi">15,971.7</td><td class="num hi">68.7%</td><td class="num hi">1.88×</td></tr>
+</table>
+<p class="cap">GFLOP/s and % from the article's results table. The ratios are ours: 8,474.7 ÷ 2,980.3 = 2.84×, 15,971.7 ÷ 8,474.7 = 1.88×. The text rounds differently: kernel 4 "~8600 GFLOPs, 2.2x faster" (2.2× matches neither 8,474.7 ÷ 2,980.3 nor 8,600 ÷ the text's "~2200" for kernel 3, which is 3.9×), and kernel 5 "16TFLOPs, another 2x". This card uses the table. Kernel 5 is 51.7× kernel 1.</p>
+
+<h2>Kernel 4: a column of 8 results per thread</h2>
+<p>Kernel 4 keeps kernel 3's structure: a block copies a slice of A and a slice of B into shared memory (SMEM), syncs, computes, syncs, and moves along K. What changes is the shape. Each block now owns a <b>64 × 64</b> tile of C (<code>BM = BN = 64</code>) and walks K in chunks of <code>BK = 8</code>. The SMEM cache is <code>BM·BK + BN·BK = 64·8 + 64·8 = 1,024</code> floats, 4 KB per block. Each thread computes <code>TM = 8</code> results stacked in one column, so the block needs 64 × 64 ÷ 8 = <b>512 threads</b>. Loading stays as before: 1,024 floats ÷ 512 threads = 2 GMEM loads per thread per chunk.</p>
+<svg viewBox="0 0 700 360" role="img" aria-label="Kernel 4: one thread computes a column of 8 results. Per dotIdx it reads one value of Bs into a register and 8 values of As.">
+<rect class="cz" x="20" y="110" width="7" height="7"/>
+<rect class="cz" x="27" y="110" width="7" height="7"/>
+<rect class="cz" x="34" y="110" width="7" height="7"/>
+<rect class="cz" x="41" y="110" width="7" height="7"/>
+<rect class="cz" x="48" y="110" width="7" height="7"/>
+<rect class="cz" x="55" y="110" width="7" height="7"/>
+<rect class="cz" x="62" y="110" width="7" height="7"/>
+<rect class="cz" x="69" y="110" width="7" height="7"/>
+<rect class="cz" x="20" y="117" width="7" height="7"/>
+<rect class="cz" x="27" y="117" width="7" height="7"/>
+<rect class="cz" x="34" y="117" width="7" height="7"/>
+<rect class="cz" x="41" y="117" width="7" height="7"/>
+<rect class="cz" x="48" y="117" width="7" height="7"/>
+<rect class="cz" x="55" y="117" width="7" height="7"/>
+<rect class="cz" x="62" y="117" width="7" height="7"/>
+<rect class="cz" x="69" y="117" width="7" height="7"/>
+<rect class="cz" x="20" y="124" width="7" height="7"/>
+<rect class="cz" x="27" y="124" width="7" height="7"/>
+<rect class="cz" x="34" y="124" width="7" height="7"/>
+<rect class="cz" x="41" y="124" width="7" height="7"/>
+<rect class="cz" x="48" y="124" width="7" height="7"/>
+<rect class="cz" x="55" y="124" width="7" height="7"/>
+<rect class="cz" x="62" y="124" width="7" height="7"/>
+<rect class="cz" x="69" y="124" width="7" height="7"/>
+<rect class="cz" x="20" y="131" width="7" height="7"/>
+<rect class="cz" x="27" y="131" width="7" height="7"/>
+<rect class="cz" x="34" y="131" width="7" height="7"/>
+<rect class="cz" x="41" y="131" width="7" height="7"/>
+<rect class="cz" x="48" y="131" width="7" height="7"/>
+<rect class="cz" x="55" y="131" width="7" height="7"/>
+<rect class="cz" x="62" y="131" width="7" height="7"/>
+<rect class="cz" x="69" y="131" width="7" height="7"/>
+<rect class="cz" x="20" y="138" width="7" height="7"/>
+<rect class="cz" x="27" y="138" width="7" height="7"/>
+<rect class="cz" x="34" y="138" width="7" height="7"/>
+<rect class="cz" x="41" y="138" width="7" height="7"/>
+<rect class="cz" x="48" y="138" width="7" height="7"/>
+<rect class="cz" x="55" y="138" width="7" height="7"/>
+<rect class="cz" x="62" y="138" width="7" height="7"/>
+<rect class="cz" x="69" y="138" width="7" height="7"/>
+<rect class="cz" x="20" y="145" width="7" height="7"/>
+<rect class="cz" x="27" y="145" width="7" height="7"/>
+<rect class="cz" x="34" y="145" width="7" height="7"/>
+<rect class="cz" x="41" y="145" width="7" height="7"/>
+<rect class="cz" x="48" y="145" width="7" height="7"/>
+<rect class="cz" x="55" y="145" width="7" height="7"/>
+<rect class="cz" x="62" y="145" width="7" height="7"/>
+<rect class="cz" x="69" y="145" width="7" height="7"/>
+<rect class="cz" x="20" y="152" width="7" height="7"/>
+<rect class="cz" x="27" y="152" width="7" height="7"/>
+<rect class="cz" x="34" y="152" width="7" height="7"/>
+<rect class="cz" x="41" y="152" width="7" height="7"/>
+<rect class="cz" x="48" y="152" width="7" height="7"/>
+<rect class="cz" x="55" y="152" width="7" height="7"/>
+<rect class="cz" x="62" y="152" width="7" height="7"/>
+<rect class="cz" x="69" y="152" width="7" height="7"/>
+<rect class="cz" x="20" y="159" width="7" height="7"/>
+<rect class="cz" x="27" y="159" width="7" height="7"/>
+<rect class="cz" x="34" y="159" width="7" height="7"/>
+<rect class="cz" x="41" y="159" width="7" height="7"/>
+<rect class="cz" x="48" y="159" width="7" height="7"/>
+<rect class="cz" x="55" y="159" width="7" height="7"/>
+<rect class="cz" x="62" y="159" width="7" height="7"/>
+<rect class="cz" x="69" y="159" width="7" height="7"/>
+<rect class="cz" x="20" y="166" width="7" height="7"/>
+<rect class="cz" x="27" y="166" width="7" height="7"/>
+<rect class="cz" x="34" y="166" width="7" height="7"/>
+<rect class="cg" x="41" y="166" width="7" height="7"/>
+<rect class="cz" x="48" y="166" width="7" height="7"/>
+<rect class="cz" x="55" y="166" width="7" height="7"/>
+<rect class="cz" x="62" y="166" width="7" height="7"/>
+<rect class="cz" x="69" y="166" width="7" height="7"/>
+<rect class="cz" x="20" y="173" width="7" height="7"/>
+<rect class="cz" x="27" y="173" width="7" height="7"/>
+<rect class="cz" x="34" y="173" width="7" height="7"/>
+<rect class="cg" x="41" y="173" width="7" height="7"/>
+<rect class="cz" x="48" y="173" width="7" height="7"/>
+<rect class="cz" x="55" y="173" width="7" height="7"/>
+<rect class="cz" x="62" y="173" width="7" height="7"/>
+<rect class="cz" x="69" y="173" width="7" height="7"/>
+<rect class="cz" x="20" y="180" width="7" height="7"/>
+<rect class="cz" x="27" y="180" width="7" height="7"/>
+<rect class="cz" x="34" y="180" width="7" height="7"/>
+<rect class="cg" x="41" y="180" width="7" height="7"/>
+<rect class="cz" x="48" y="180" width="7" height="7"/>
+<rect class="cz" x="55" y="180" width="7" height="7"/>
+<rect class="cz" x="62" y="180" width="7" height="7"/>
+<rect class="cz" x="69" y="180" width="7" height="7"/>
+<rect class="cz" x="20" y="187" width="7" height="7"/>
+<rect class="cz" x="27" y="187" width="7" height="7"/>
+<rect class="cz" x="34" y="187" width="7" height="7"/>
+<rect class="cg" x="41" y="187" width="7" height="7"/>
+<rect class="cz" x="48" y="187" width="7" height="7"/>
+<rect class="cz" x="55" y="187" width="7" height="7"/>
+<rect class="cz" x="62" y="187" width="7" height="7"/>
+<rect class="cz" x="69" y="187" width="7" height="7"/>
+<rect class="cz" x="20" y="194" width="7" height="7"/>
+<rect class="cz" x="27" y="194" width="7" height="7"/>
+<rect class="cz" x="34" y="194" width="7" height="7"/>
+<rect class="cg" x="41" y="194" width="7" height="7"/>
+<rect class="cz" x="48" y="194" width="7" height="7"/>
+<rect class="cz" x="55" y="194" width="7" height="7"/>
+<rect class="cz" x="62" y="194" width="7" height="7"/>
+<rect class="cz" x="69" y="194" width="7" height="7"/>
+<rect class="cz" x="20" y="201" width="7" height="7"/>
+<rect class="cz" x="27" y="201" width="7" height="7"/>
+<rect class="cz" x="34" y="201" width="7" height="7"/>
+<rect class="cg" x="41" y="201" width="7" height="7"/>
+<rect class="cz" x="48" y="201" width="7" height="7"/>
+<rect class="cz" x="55" y="201" width="7" height="7"/>
+<rect class="cz" x="62" y="201" width="7" height="7"/>
+<rect class="cz" x="69" y="201" width="7" height="7"/>
+<rect class="cz" x="20" y="208" width="7" height="7"/>
+<rect class="cz" x="27" y="208" width="7" height="7"/>
+<rect class="cz" x="34" y="208" width="7" height="7"/>
+<rect class="cg" x="41" y="208" width="7" height="7"/>
+<rect class="cz" x="48" y="208" width="7" height="7"/>
+<rect class="cz" x="55" y="208" width="7" height="7"/>
+<rect class="cz" x="62" y="208" width="7" height="7"/>
+<rect class="cz" x="69" y="208" width="7" height="7"/>
+<rect class="cz" x="20" y="215" width="7" height="7"/>
+<rect class="cz" x="27" y="215" width="7" height="7"/>
+<rect class="cz" x="34" y="215" width="7" height="7"/>
+<rect class="cg" x="41" y="215" width="7" height="7"/>
+<rect class="cz" x="48" y="215" width="7" height="7"/>
+<rect class="cz" x="55" y="215" width="7" height="7"/>
+<rect class="cz" x="62" y="215" width="7" height="7"/>
+<rect class="cz" x="69" y="215" width="7" height="7"/>
+<rect class="cz" x="20" y="222" width="7" height="7"/>
+<rect class="cz" x="27" y="222" width="7" height="7"/>
+<rect class="cz" x="34" y="222" width="7" height="7"/>
+<rect class="cz" x="41" y="222" width="7" height="7"/>
+<rect class="cz" x="48" y="222" width="7" height="7"/>
+<rect class="cz" x="55" y="222" width="7" height="7"/>
+<rect class="cz" x="62" y="222" width="7" height="7"/>
+<rect class="cz" x="69" y="222" width="7" height="7"/>
+<rect class="cz" x="20" y="229" width="7" height="7"/>
+<rect class="cz" x="27" y="229" width="7" height="7"/>
+<rect class="cz" x="34" y="229" width="7" height="7"/>
+<rect class="cz" x="41" y="229" width="7" height="7"/>
+<rect class="cz" x="48" y="229" width="7" height="7"/>
+<rect class="cz" x="55" y="229" width="7" height="7"/>
+<rect class="cz" x="62" y="229" width="7" height="7"/>
+<rect class="cz" x="69" y="229" width="7" height="7"/>
+<rect class="cz" x="20" y="236" width="7" height="7"/>
+<rect class="cz" x="27" y="236" width="7" height="7"/>
+<rect class="cz" x="34" y="236" width="7" height="7"/>
+<rect class="cz" x="41" y="236" width="7" height="7"/>
+<rect class="cz" x="48" y="236" width="7" height="7"/>
+<rect class="cz" x="55" y="236" width="7" height="7"/>
+<rect class="cz" x="62" y="236" width="7" height="7"/>
+<rect class="cz" x="69" y="236" width="7" height="7"/>
+<rect class="cz" x="20" y="243" width="7" height="7"/>
+<rect class="cz" x="27" y="243" width="7" height="7"/>
+<rect class="cz" x="34" y="243" width="7" height="7"/>
+<rect class="cz" x="41" y="243" width="7" height="7"/>
+<rect class="cz" x="48" y="243" width="7" height="7"/>
+<rect class="cz" x="55" y="243" width="7" height="7"/>
+<rect class="cz" x="62" y="243" width="7" height="7"/>
+<rect class="cz" x="69" y="243" width="7" height="7"/>
+<rect class="cz" x="20" y="250" width="7" height="7"/>
+<rect class="cz" x="27" y="250" width="7" height="7"/>
+<rect class="cz" x="34" y="250" width="7" height="7"/>
+<rect class="cz" x="41" y="250" width="7" height="7"/>
+<rect class="cz" x="48" y="250" width="7" height="7"/>
+<rect class="cz" x="55" y="250" width="7" height="7"/>
+<rect class="cz" x="62" y="250" width="7" height="7"/>
+<rect class="cz" x="69" y="250" width="7" height="7"/>
+<rect class="cz" x="20" y="257" width="7" height="7"/>
+<rect class="cz" x="27" y="257" width="7" height="7"/>
+<rect class="cz" x="34" y="257" width="7" height="7"/>
+<rect class="cz" x="41" y="257" width="7" height="7"/>
+<rect class="cz" x="48" y="257" width="7" height="7"/>
+<rect class="cz" x="55" y="257" width="7" height="7"/>
+<rect class="cz" x="62" y="257" width="7" height="7"/>
+<rect class="cz" x="69" y="257" width="7" height="7"/>
+<rect class="cz" x="20" y="264" width="7" height="7"/>
+<rect class="cz" x="27" y="264" width="7" height="7"/>
+<rect class="cz" x="34" y="264" width="7" height="7"/>
+<rect class="cz" x="41" y="264" width="7" height="7"/>
+<rect class="cz" x="48" y="264" width="7" height="7"/>
+<rect class="cz" x="55" y="264" width="7" height="7"/>
+<rect class="cz" x="62" y="264" width="7" height="7"/>
+<rect class="cz" x="69" y="264" width="7" height="7"/>
+<rect class="cz" x="20" y="271" width="7" height="7"/>
+<rect class="cz" x="27" y="271" width="7" height="7"/>
+<rect class="cz" x="34" y="271" width="7" height="7"/>
+<rect class="cz" x="41" y="271" width="7" height="7"/>
+<rect class="cz" x="48" y="271" width="7" height="7"/>
+<rect class="cz" x="55" y="271" width="7" height="7"/>
+<rect class="cz" x="62" y="271" width="7" height="7"/>
+<rect class="cz" x="69" y="271" width="7" height="7"/>
+<rect class="cz" x="20" y="278" width="7" height="7"/>
+<rect class="cz" x="27" y="278" width="7" height="7"/>
+<rect class="cz" x="34" y="278" width="7" height="7"/>
+<rect class="cz" x="41" y="278" width="7" height="7"/>
+<rect class="cz" x="48" y="278" width="7" height="7"/>
+<rect class="cz" x="55" y="278" width="7" height="7"/>
+<rect class="cz" x="62" y="278" width="7" height="7"/>
+<rect class="cz" x="69" y="278" width="7" height="7"/>
+<rect class="cz" x="20" y="285" width="7" height="7"/>
+<rect class="cz" x="27" y="285" width="7" height="7"/>
+<rect class="cz" x="34" y="285" width="7" height="7"/>
+<rect class="cz" x="41" y="285" width="7" height="7"/>
+<rect class="cz" x="48" y="285" width="7" height="7"/>
+<rect class="cz" x="55" y="285" width="7" height="7"/>
+<rect class="cz" x="62" y="285" width="7" height="7"/>
+<rect class="cz" x="69" y="285" width="7" height="7"/>
+<rect class="cz" x="20" y="292" width="7" height="7"/>
+<rect class="cz" x="27" y="292" width="7" height="7"/>
+<rect class="cz" x="34" y="292" width="7" height="7"/>
+<rect class="cz" x="41" y="292" width="7" height="7"/>
+<rect class="cz" x="48" y="292" width="7" height="7"/>
+<rect class="cz" x="55" y="292" width="7" height="7"/>
+<rect class="cz" x="62" y="292" width="7" height="7"/>
+<rect class="cz" x="69" y="292" width="7" height="7"/>
+<rect class="cz" x="20" y="299" width="7" height="7"/>
+<rect class="cz" x="27" y="299" width="7" height="7"/>
+<rect class="cz" x="34" y="299" width="7" height="7"/>
+<rect class="cz" x="41" y="299" width="7" height="7"/>
+<rect class="cz" x="48" y="299" width="7" height="7"/>
+<rect class="cz" x="55" y="299" width="7" height="7"/>
+<rect class="cz" x="62" y="299" width="7" height="7"/>
+<rect class="cz" x="69" y="299" width="7" height="7"/>
+<rect class="cz" x="20" y="306" width="7" height="7"/>
+<rect class="cz" x="27" y="306" width="7" height="7"/>
+<rect class="cz" x="34" y="306" width="7" height="7"/>
+<rect class="cz" x="41" y="306" width="7" height="7"/>
+<rect class="cz" x="48" y="306" width="7" height="7"/>
+<rect class="cz" x="55" y="306" width="7" height="7"/>
+<rect class="cz" x="62" y="306" width="7" height="7"/>
+<rect class="cz" x="69" y="306" width="7" height="7"/>
+<rect class="cz" x="20" y="313" width="7" height="7"/>
+<rect class="cz" x="27" y="313" width="7" height="7"/>
+<rect class="cz" x="34" y="313" width="7" height="7"/>
+<rect class="cz" x="41" y="313" width="7" height="7"/>
+<rect class="cz" x="48" y="313" width="7" height="7"/>
+<rect class="cz" x="55" y="313" width="7" height="7"/>
+<rect class="cz" x="62" y="313" width="7" height="7"/>
+<rect class="cz" x="69" y="313" width="7" height="7"/>
+<rect class="cz" x="20" y="320" width="7" height="7"/>
+<rect class="cz" x="27" y="320" width="7" height="7"/>
+<rect class="cz" x="34" y="320" width="7" height="7"/>
+<rect class="cz" x="41" y="320" width="7" height="7"/>
+<rect class="cz" x="48" y="320" width="7" height="7"/>
+<rect class="cz" x="55" y="320" width="7" height="7"/>
+<rect class="cz" x="62" y="320" width="7" height="7"/>
+<rect class="cz" x="69" y="320" width="7" height="7"/>
+<rect class="cz" x="20" y="327" width="7" height="7"/>
+<rect class="cz" x="27" y="327" width="7" height="7"/>
+<rect class="cz" x="34" y="327" width="7" height="7"/>
+<rect class="cz" x="41" y="327" width="7" height="7"/>
+<rect class="cz" x="48" y="327" width="7" height="7"/>
+<rect class="cz" x="55" y="327" width="7" height="7"/>
+<rect class="cz" x="62" y="327" width="7" height="7"/>
+<rect class="cz" x="69" y="327" width="7" height="7"/>
+<rect class="cz" x="90" y="20" width="7" height="7"/>
+<rect class="cz" x="97" y="20" width="7" height="7"/>
+<rect class="cz" x="104" y="20" width="7" height="7"/>
+<rect class="cz" x="111" y="20" width="7" height="7"/>
+<rect class="cz" x="118" y="20" width="7" height="7"/>
+<rect class="cz" x="125" y="20" width="7" height="7"/>
+<rect class="cz" x="132" y="20" width="7" height="7"/>
+<rect class="cz" x="139" y="20" width="7" height="7"/>
+<rect class="cz" x="146" y="20" width="7" height="7"/>
+<rect class="cz" x="153" y="20" width="7" height="7"/>
+<rect class="cz" x="160" y="20" width="7" height="7"/>
+<rect class="cz" x="167" y="20" width="7" height="7"/>
+<rect class="cz" x="174" y="20" width="7" height="7"/>
+<rect class="cz" x="181" y="20" width="7" height="7"/>
+<rect class="cz" x="188" y="20" width="7" height="7"/>
+<rect class="cz" x="195" y="20" width="7" height="7"/>
+<rect class="cz" x="90" y="27" width="7" height="7"/>
+<rect class="cz" x="97" y="27" width="7" height="7"/>
+<rect class="cz" x="104" y="27" width="7" height="7"/>
+<rect class="cz" x="111" y="27" width="7" height="7"/>
+<rect class="cz" x="118" y="27" width="7" height="7"/>
+<rect class="cz" x="125" y="27" width="7" height="7"/>
+<rect class="cz" x="132" y="27" width="7" height="7"/>
+<rect class="cz" x="139" y="27" width="7" height="7"/>
+<rect class="cz" x="146" y="27" width="7" height="7"/>
+<rect class="cz" x="153" y="27" width="7" height="7"/>
+<rect class="cz" x="160" y="27" width="7" height="7"/>
+<rect class="cz" x="167" y="27" width="7" height="7"/>
+<rect class="cz" x="174" y="27" width="7" height="7"/>
+<rect class="cz" x="181" y="27" width="7" height="7"/>
+<rect class="cz" x="188" y="27" width="7" height="7"/>
+<rect class="cz" x="195" y="27" width="7" height="7"/>
+<rect class="cz" x="90" y="34" width="7" height="7"/>
+<rect class="cz" x="97" y="34" width="7" height="7"/>
+<rect class="cz" x="104" y="34" width="7" height="7"/>
+<rect class="cz" x="111" y="34" width="7" height="7"/>
+<rect class="cz" x="118" y="34" width="7" height="7"/>
+<rect class="cz" x="125" y="34" width="7" height="7"/>
+<rect class="cz" x="132" y="34" width="7" height="7"/>
+<rect class="cz" x="139" y="34" width="7" height="7"/>
+<rect class="cz" x="146" y="34" width="7" height="7"/>
+<rect class="cz" x="153" y="34" width="7" height="7"/>
+<rect class="cz" x="160" y="34" width="7" height="7"/>
+<rect class="cz" x="167" y="34" width="7" height="7"/>
+<rect class="cz" x="174" y="34" width="7" height="7"/>
+<rect class="cz" x="181" y="34" width="7" height="7"/>
+<rect class="cz" x="188" y="34" width="7" height="7"/>
+<rect class="cz" x="195" y="34" width="7" height="7"/>
+<rect class="cz" x="90" y="41" width="7" height="7"/>
+<rect class="cz" x="97" y="41" width="7" height="7"/>
+<rect class="cz" x="104" y="41" width="7" height="7"/>
+<rect class="cz" x="111" y="41" width="7" height="7"/>
+<rect class="cz" x="118" y="41" width="7" height="7"/>
+<rect class="cg" x="125" y="41" width="7" height="7"/>
+<rect class="cz" x="132" y="41" width="7" height="7"/>
+<rect class="cz" x="139" y="41" width="7" height="7"/>
+<rect class="cz" x="146" y="41" width="7" height="7"/>
+<rect class="cz" x="153" y="41" width="7" height="7"/>
+<rect class="cz" x="160" y="41" width="7" height="7"/>
+<rect class="cz" x="167" y="41" width="7" height="7"/>
+<rect class="cz" x="174" y="41" width="7" height="7"/>
+<rect class="cz" x="181" y="41" width="7" height="7"/>
+<rect class="cz" x="188" y="41" width="7" height="7"/>
+<rect class="cz" x="195" y="41" width="7" height="7"/>
+<rect class="cz" x="90" y="48" width="7" height="7"/>
+<rect class="cz" x="97" y="48" width="7" height="7"/>
+<rect class="cz" x="104" y="48" width="7" height="7"/>
+<rect class="cz" x="111" y="48" width="7" height="7"/>
+<rect class="cz" x="118" y="48" width="7" height="7"/>
+<rect class="cz" x="125" y="48" width="7" height="7"/>
+<rect class="cz" x="132" y="48" width="7" height="7"/>
+<rect class="cz" x="139" y="48" width="7" height="7"/>
+<rect class="cz" x="146" y="48" width="7" height="7"/>
+<rect class="cz" x="153" y="48" width="7" height="7"/>
+<rect class="cz" x="160" y="48" width="7" height="7"/>
+<rect class="cz" x="167" y="48" width="7" height="7"/>
+<rect class="cz" x="174" y="48" width="7" height="7"/>
+<rect class="cz" x="181" y="48" width="7" height="7"/>
+<rect class="cz" x="188" y="48" width="7" height="7"/>
+<rect class="cz" x="195" y="48" width="7" height="7"/>
+<rect class="cz" x="90" y="55" width="7" height="7"/>
+<rect class="cz" x="97" y="55" width="7" height="7"/>
+<rect class="cz" x="104" y="55" width="7" height="7"/>
+<rect class="cz" x="111" y="55" width="7" height="7"/>
+<rect class="cz" x="118" y="55" width="7" height="7"/>
+<rect class="cz" x="125" y="55" width="7" height="7"/>
+<rect class="cz" x="132" y="55" width="7" height="7"/>
+<rect class="cz" x="139" y="55" width="7" height="7"/>
+<rect class="cz" x="146" y="55" width="7" height="7"/>
+<rect class="cz" x="153" y="55" width="7" height="7"/>
+<rect class="cz" x="160" y="55" width="7" height="7"/>
+<rect class="cz" x="167" y="55" width="7" height="7"/>
+<rect class="cz" x="174" y="55" width="7" height="7"/>
+<rect class="cz" x="181" y="55" width="7" height="7"/>
+<rect class="cz" x="188" y="55" width="7" height="7"/>
+<rect class="cz" x="195" y="55" width="7" height="7"/>
+<rect class="cz" x="90" y="62" width="7" height="7"/>
+<rect class="cz" x="97" y="62" width="7" height="7"/>
+<rect class="cz" x="104" y="62" width="7" height="7"/>
+<rect class="cz" x="111" y="62" width="7" height="7"/>
+<rect class="cz" x="118" y="62" width="7" height="7"/>
+<rect class="cz" x="125" y="62" width="7" height="7"/>
+<rect class="cz" x="132" y="62" width="7" height="7"/>
+<rect class="cz" x="139" y="62" width="7" height="7"/>
+<rect class="cz" x="146" y="62" width="7" height="7"/>
+<rect class="cz" x="153" y="62" width="7" height="7"/>
+<rect class="cz" x="160" y="62" width="7" height="7"/>
+<rect class="cz" x="167" y="62" width="7" height="7"/>
+<rect class="cz" x="174" y="62" width="7" height="7"/>
+<rect class="cz" x="181" y="62" width="7" height="7"/>
+<rect class="cz" x="188" y="62" width="7" height="7"/>
+<rect class="cz" x="195" y="62" width="7" height="7"/>
+<rect class="cz" x="90" y="69" width="7" height="7"/>
+<rect class="cz" x="97" y="69" width="7" height="7"/>
+<rect class="cz" x="104" y="69" width="7" height="7"/>
+<rect class="cz" x="111" y="69" width="7" height="7"/>
+<rect class="cz" x="118" y="69" width="7" height="7"/>
+<rect class="cz" x="125" y="69" width="7" height="7"/>
+<rect class="cz" x="132" y="69" width="7" height="7"/>
+<rect class="cz" x="139" y="69" width="7" height="7"/>
+<rect class="cz" x="146" y="69" width="7" height="7"/>
+<rect class="cz" x="153" y="69" width="7" height="7"/>
+<rect class="cz" x="160" y="69" width="7" height="7"/>
+<rect class="cz" x="167" y="69" width="7" height="7"/>
+<rect class="cz" x="174" y="69" width="7" height="7"/>
+<rect class="cz" x="181" y="69" width="7" height="7"/>
+<rect class="cz" x="188" y="69" width="7" height="7"/>
+<rect class="cz" x="195" y="69" width="7" height="7"/>
+<rect class="cz" x="90" y="110" width="7" height="7"/>
+<rect class="cz" x="97" y="110" width="7" height="7"/>
+<rect class="cz" x="104" y="110" width="7" height="7"/>
+<rect class="cz" x="111" y="110" width="7" height="7"/>
+<rect class="cz" x="118" y="110" width="7" height="7"/>
+<rect class="cz" x="125" y="110" width="7" height="7"/>
+<rect class="cz" x="132" y="110" width="7" height="7"/>
+<rect class="cz" x="139" y="110" width="7" height="7"/>
+<rect class="cz" x="146" y="110" width="7" height="7"/>
+<rect class="cz" x="153" y="110" width="7" height="7"/>
+<rect class="cz" x="160" y="110" width="7" height="7"/>
+<rect class="cz" x="167" y="110" width="7" height="7"/>
+<rect class="cz" x="174" y="110" width="7" height="7"/>
+<rect class="cz" x="181" y="110" width="7" height="7"/>
+<rect class="cz" x="188" y="110" width="7" height="7"/>
+<rect class="cz" x="195" y="110" width="7" height="7"/>
+<rect class="cz" x="90" y="117" width="7" height="7"/>
+<rect class="cz" x="97" y="117" width="7" height="7"/>
+<rect class="cz" x="104" y="117" width="7" height="7"/>
+<rect class="cz" x="111" y="117" width="7" height="7"/>
+<rect class="cz" x="118" y="117" width="7" height="7"/>
+<rect class="cz" x="125" y="117" width="7" height="7"/>
+<rect class="cz" x="132" y="117" width="7" height="7"/>
+<rect class="cz" x="139" y="117" width="7" height="7"/>
+<rect class="cz" x="146" y="117" width="7" height="7"/>
+<rect class="cz" x="153" y="117" width="7" height="7"/>
+<rect class="cz" x="160" y="117" width="7" height="7"/>
+<rect class="cz" x="167" y="117" width="7" height="7"/>
+<rect class="cz" x="174" y="117" width="7" height="7"/>
+<rect class="cz" x="181" y="117" width="7" height="7"/>
+<rect class="cz" x="188" y="117" width="7" height="7"/>
+<rect class="cz" x="195" y="117" width="7" height="7"/>
+<rect class="cz" x="90" y="124" width="7" height="7"/>
+<rect class="cz" x="97" y="124" width="7" height="7"/>
+<rect class="cz" x="104" y="124" width="7" height="7"/>
+<rect class="cz" x="111" y="124" width="7" height="7"/>
+<rect class="cz" x="118" y="124" width="7" height="7"/>
+<rect class="cz" x="125" y="124" width="7" height="7"/>
+<rect class="cz" x="132" y="124" width="7" height="7"/>
+<rect class="cz" x="139" y="124" width="7" height="7"/>
+<rect class="cz" x="146" y="124" width="7" height="7"/>
+<rect class="cz" x="153" y="124" width="7" height="7"/>
+<rect class="cz" x="160" y="124" width="7" height="7"/>
+<rect class="cz" x="167" y="124" width="7" height="7"/>
+<rect class="cz" x="174" y="124" width="7" height="7"/>
+<rect class="cz" x="181" y="124" width="7" height="7"/>
+<rect class="cz" x="188" y="124" width="7" height="7"/>
+<rect class="cz" x="195" y="124" width="7" height="7"/>
+<rect class="cz" x="90" y="131" width="7" height="7"/>
+<rect class="cz" x="97" y="131" width="7" height="7"/>
+<rect class="cz" x="104" y="131" width="7" height="7"/>
+<rect class="cz" x="111" y="131" width="7" height="7"/>
+<rect class="cz" x="118" y="131" width="7" height="7"/>
+<rect class="cz" x="125" y="131" width="7" height="7"/>
+<rect class="cz" x="132" y="131" width="7" height="7"/>
+<rect class="cz" x="139" y="131" width="7" height="7"/>
+<rect class="cz" x="146" y="131" width="7" height="7"/>
+<rect class="cz" x="153" y="131" width="7" height="7"/>
+<rect class="cz" x="160" y="131" width="7" height="7"/>
+<rect class="cz" x="167" y="131" width="7" height="7"/>
+<rect class="cz" x="174" y="131" width="7" height="7"/>
+<rect class="cz" x="181" y="131" width="7" height="7"/>
+<rect class="cz" x="188" y="131" width="7" height="7"/>
+<rect class="cz" x="195" y="131" width="7" height="7"/>
+<rect class="cz" x="90" y="138" width="7" height="7"/>
+<rect class="cz" x="97" y="138" width="7" height="7"/>
+<rect class="cz" x="104" y="138" width="7" height="7"/>
+<rect class="cz" x="111" y="138" width="7" height="7"/>
+<rect class="cz" x="118" y="138" width="7" height="7"/>
+<rect class="cz" x="125" y="138" width="7" height="7"/>
+<rect class="cz" x="132" y="138" width="7" height="7"/>
+<rect class="cz" x="139" y="138" width="7" height="7"/>
+<rect class="cz" x="146" y="138" width="7" height="7"/>
+<rect class="cz" x="153" y="138" width="7" height="7"/>
+<rect class="cz" x="160" y="138" width="7" height="7"/>
+<rect class="cz" x="167" y="138" width="7" height="7"/>
+<rect class="cz" x="174" y="138" width="7" height="7"/>
+<rect class="cz" x="181" y="138" width="7" height="7"/>
+<rect class="cz" x="188" y="138" width="7" height="7"/>
+<rect class="cz" x="195" y="138" width="7" height="7"/>
+<rect class="cz" x="90" y="145" width="7" height="7"/>
+<rect class="cz" x="97" y="145" width="7" height="7"/>
+<rect class="cz" x="104" y="145" width="7" height="7"/>
+<rect class="cz" x="111" y="145" width="7" height="7"/>
+<rect class="cz" x="118" y="145" width="7" height="7"/>
+<rect class="cz" x="125" y="145" width="7" height="7"/>
+<rect class="cz" x="132" y="145" width="7" height="7"/>
+<rect class="cz" x="139" y="145" width="7" height="7"/>
+<rect class="cz" x="146" y="145" width="7" height="7"/>
+<rect class="cz" x="153" y="145" width="7" height="7"/>
+<rect class="cz" x="160" y="145" width="7" height="7"/>
+<rect class="cz" x="167" y="145" width="7" height="7"/>
+<rect class="cz" x="174" y="145" width="7" height="7"/>
+<rect class="cz" x="181" y="145" width="7" height="7"/>
+<rect class="cz" x="188" y="145" width="7" height="7"/>
+<rect class="cz" x="195" y="145" width="7" height="7"/>
+<rect class="cz" x="90" y="152" width="7" height="7"/>
+<rect class="cz" x="97" y="152" width="7" height="7"/>
+<rect class="cz" x="104" y="152" width="7" height="7"/>
+<rect class="cz" x="111" y="152" width="7" height="7"/>
+<rect class="cz" x="118" y="152" width="7" height="7"/>
+<rect class="cz" x="125" y="152" width="7" height="7"/>
+<rect class="cz" x="132" y="152" width="7" height="7"/>
+<rect class="cz" x="139" y="152" width="7" height="7"/>
+<rect class="cz" x="146" y="152" width="7" height="7"/>
+<rect class="cz" x="153" y="152" width="7" height="7"/>
+<rect class="cz" x="160" y="152" width="7" height="7"/>
+<rect class="cz" x="167" y="152" width="7" height="7"/>
+<rect class="cz" x="174" y="152" width="7" height="7"/>
+<rect class="cz" x="181" y="152" width="7" height="7"/>
+<rect class="cz" x="188" y="152" width="7" height="7"/>
+<rect class="cz" x="195" y="152" width="7" height="7"/>
+<rect class="cz" x="90" y="159" width="7" height="7"/>
+<rect class="cz" x="97" y="159" width="7" height="7"/>
+<rect class="cz" x="104" y="159" width="7" height="7"/>
+<rect class="cz" x="111" y="159" width="7" height="7"/>
+<rect class="cz" x="118" y="159" width="7" height="7"/>
+<rect class="cz" x="125" y="159" width="7" height="7"/>
+<rect class="cz" x="132" y="159" width="7" height="7"/>
+<rect class="cz" x="139" y="159" width="7" height="7"/>
+<rect class="cz" x="146" y="159" width="7" height="7"/>
+<rect class="cz" x="153" y="159" width="7" height="7"/>
+<rect class="cz" x="160" y="159" width="7" height="7"/>
+<rect class="cz" x="167" y="159" width="7" height="7"/>
+<rect class="cz" x="174" y="159" width="7" height="7"/>
+<rect class="cz" x="181" y="159" width="7" height="7"/>
+<rect class="cz" x="188" y="159" width="7" height="7"/>
+<rect class="cz" x="195" y="159" width="7" height="7"/>
+<rect class="cz" x="90" y="166" width="7" height="7"/>
+<rect class="cz" x="97" y="166" width="7" height="7"/>
+<rect class="cz" x="104" y="166" width="7" height="7"/>
+<rect class="cz" x="111" y="166" width="7" height="7"/>
+<rect class="cz" x="118" y="166" width="7" height="7"/>
+<rect class="cc" x="125" y="166" width="7" height="7"/>
+<rect class="cz" x="132" y="166" width="7" height="7"/>
+<rect class="cz" x="139" y="166" width="7" height="7"/>
+<rect class="cz" x="146" y="166" width="7" height="7"/>
+<rect class="cz" x="153" y="166" width="7" height="7"/>
+<rect class="cz" x="160" y="166" width="7" height="7"/>
+<rect class="cz" x="167" y="166" width="7" height="7"/>
+<rect class="cz" x="174" y="166" width="7" height="7"/>
+<rect class="cz" x="181" y="166" width="7" height="7"/>
+<rect class="cz" x="188" y="166" width="7" height="7"/>
+<rect class="cz" x="195" y="166" width="7" height="7"/>
+<rect class="cz" x="90" y="173" width="7" height="7"/>
+<rect class="cz" x="97" y="173" width="7" height="7"/>
+<rect class="cz" x="104" y="173" width="7" height="7"/>
+<rect class="cz" x="111" y="173" width="7" height="7"/>
+<rect class="cz" x="118" y="173" width="7" height="7"/>
+<rect class="cc" x="125" y="173" width="7" height="7"/>
+<rect class="cz" x="132" y="173" width="7" height="7"/>
+<rect class="cz" x="139" y="173" width="7" height="7"/>
+<rect class="cz" x="146" y="173" width="7" height="7"/>
+<rect class="cz" x="153" y="173" width="7" height="7"/>
+<rect class="cz" x="160" y="173" width="7" height="7"/>
+<rect class="cz" x="167" y="173" width="7" height="7"/>
+<rect class="cz" x="174" y="173" width="7" height="7"/>
+<rect class="cz" x="181" y="173" width="7" height="7"/>
+<rect class="cz" x="188" y="173" width="7" height="7"/>
+<rect class="cz" x="195" y="173" width="7" height="7"/>
+<rect class="cz" x="90" y="180" width="7" height="7"/>
+<rect class="cz" x="97" y="180" width="7" height="7"/>
+<rect class="cz" x="104" y="180" width="7" height="7"/>
+<rect class="cz" x="111" y="180" width="7" height="7"/>
+<rect class="cz" x="118" y="180" width="7" height="7"/>
+<rect class="cc" x="125" y="180" width="7" height="7"/>
+<rect class="cz" x="132" y="180" width="7" height="7"/>
+<rect class="cz" x="139" y="180" width="7" height="7"/>
+<rect class="cz" x="146" y="180" width="7" height="7"/>
+<rect class="cz" x="153" y="180" width="7" height="7"/>
+<rect class="cz" x="160" y="180" width="7" height="7"/>
+<rect class="cz" x="167" y="180" width="7" height="7"/>
+<rect class="cz" x="174" y="180" width="7" height="7"/>
+<rect class="cz" x="181" y="180" width="7" height="7"/>
+<rect class="cz" x="188" y="180" width="7" height="7"/>
+<rect class="cz" x="195" y="180" width="7" height="7"/>
+<rect class="cz" x="90" y="187" width="7" height="7"/>
+<rect class="cz" x="97" y="187" width="7" height="7"/>
+<rect class="cz" x="104" y="187" width="7" height="7"/>
+<rect class="cz" x="111" y="187" width="7" height="7"/>
+<rect class="cz" x="118" y="187" width="7" height="7"/>
+<rect class="cc" x="125" y="187" width="7" height="7"/>
+<rect class="cz" x="132" y="187" width="7" height="7"/>
+<rect class="cz" x="139" y="187" width="7" height="7"/>
+<rect class="cz" x="146" y="187" width="7" height="7"/>
+<rect class="cz" x="153" y="187" width="7" height="7"/>
+<rect class="cz" x="160" y="187" width="7" height="7"/>
+<rect class="cz" x="167" y="187" width="7" height="7"/>
+<rect class="cz" x="174" y="187" width="7" height="7"/>
+<rect class="cz" x="181" y="187" width="7" height="7"/>
+<rect class="cz" x="188" y="187" width="7" height="7"/>
+<rect class="cz" x="195" y="187" width="7" height="7"/>
+<rect class="cz" x="90" y="194" width="7" height="7"/>
+<rect class="cz" x="97" y="194" width="7" height="7"/>
+<rect class="cz" x="104" y="194" width="7" height="7"/>
+<rect class="cz" x="111" y="194" width="7" height="7"/>
+<rect class="cz" x="118" y="194" width="7" height="7"/>
+<rect class="cc" x="125" y="194" width="7" height="7"/>
+<rect class="cz" x="132" y="194" width="7" height="7"/>
+<rect class="cz" x="139" y="194" width="7" height="7"/>
+<rect class="cz" x="146" y="194" width="7" height="7"/>
+<rect class="cz" x="153" y="194" width="7" height="7"/>
+<rect class="cz" x="160" y="194" width="7" height="7"/>
+<rect class="cz" x="167" y="194" width="7" height="7"/>
+<rect class="cz" x="174" y="194" width="7" height="7"/>
+<rect class="cz" x="181" y="194" width="7" height="7"/>
+<rect class="cz" x="188" y="194" width="7" height="7"/>
+<rect class="cz" x="195" y="194" width="7" height="7"/>
+<rect class="cz" x="90" y="201" width="7" height="7"/>
+<rect class="cz" x="97" y="201" width="7" height="7"/>
+<rect class="cz" x="104" y="201" width="7" height="7"/>
+<rect class="cz" x="111" y="201" width="7" height="7"/>
+<rect class="cz" x="118" y="201" width="7" height="7"/>
+<rect class="cc" x="125" y="201" width="7" height="7"/>
+<rect class="cz" x="132" y="201" width="7" height="7"/>
+<rect class="cz" x="139" y="201" width="7" height="7"/>
+<rect class="cz" x="146" y="201" width="7" height="7"/>
+<rect class="cz" x="153" y="201" width="7" height="7"/>
+<rect class="cz" x="160" y="201" width="7" height="7"/>
+<rect class="cz" x="167" y="201" width="7" height="7"/>
+<rect class="cz" x="174" y="201" width="7" height="7"/>
+<rect class="cz" x="181" y="201" width="7" height="7"/>
+<rect class="cz" x="188" y="201" width="7" height="7"/>
+<rect class="cz" x="195" y="201" width="7" height="7"/>
+<rect class="cz" x="90" y="208" width="7" height="7"/>
+<rect class="cz" x="97" y="208" width="7" height="7"/>
+<rect class="cz" x="104" y="208" width="7" height="7"/>
+<rect class="cz" x="111" y="208" width="7" height="7"/>
+<rect class="cz" x="118" y="208" width="7" height="7"/>
+<rect class="cc" x="125" y="208" width="7" height="7"/>
+<rect class="cz" x="132" y="208" width="7" height="7"/>
+<rect class="cz" x="139" y="208" width="7" height="7"/>
+<rect class="cz" x="146" y="208" width="7" height="7"/>
+<rect class="cz" x="153" y="208" width="7" height="7"/>
+<rect class="cz" x="160" y="208" width="7" height="7"/>
+<rect class="cz" x="167" y="208" width="7" height="7"/>
+<rect class="cz" x="174" y="208" width="7" height="7"/>
+<rect class="cz" x="181" y="208" width="7" height="7"/>
+<rect class="cz" x="188" y="208" width="7" height="7"/>
+<rect class="cz" x="195" y="208" width="7" height="7"/>
+<rect class="cz" x="90" y="215" width="7" height="7"/>
+<rect class="cz" x="97" y="215" width="7" height="7"/>
+<rect class="cz" x="104" y="215" width="7" height="7"/>
+<rect class="cz" x="111" y="215" width="7" height="7"/>
+<rect class="cz" x="118" y="215" width="7" height="7"/>
+<rect class="cc" x="125" y="215" width="7" height="7"/>
+<rect class="cz" x="132" y="215" width="7" height="7"/>
+<rect class="cz" x="139" y="215" width="7" height="7"/>
+<rect class="cz" x="146" y="215" width="7" height="7"/>
+<rect class="cz" x="153" y="215" width="7" height="7"/>
+<rect class="cz" x="160" y="215" width="7" height="7"/>
+<rect class="cz" x="167" y="215" width="7" height="7"/>
+<rect class="cz" x="174" y="215" width="7" height="7"/>
+<rect class="cz" x="181" y="215" width="7" height="7"/>
+<rect class="cz" x="188" y="215" width="7" height="7"/>
+<rect class="cz" x="195" y="215" width="7" height="7"/>
+<rect class="cz" x="90" y="222" width="7" height="7"/>
+<rect class="cz" x="97" y="222" width="7" height="7"/>
+<rect class="cz" x="104" y="222" width="7" height="7"/>
+<rect class="cz" x="111" y="222" width="7" height="7"/>
+<rect class="cz" x="118" y="222" width="7" height="7"/>
+<rect class="cz" x="125" y="222" width="7" height="7"/>
+<rect class="cz" x="132" y="222" width="7" height="7"/>
+<rect class="cz" x="139" y="222" width="7" height="7"/>
+<rect class="cz" x="146" y="222" width="7" height="7"/>
+<rect class="cz" x="153" y="222" width="7" height="7"/>
+<rect class="cz" x="160" y="222" width="7" height="7"/>
+<rect class="cz" x="167" y="222" width="7" height="7"/>
+<rect class="cz" x="174" y="222" width="7" height="7"/>
+<rect class="cz" x="181" y="222" width="7" height="7"/>
+<rect class="cz" x="188" y="222" width="7" height="7"/>
+<rect class="cz" x="195" y="222" width="7" height="7"/>
+<rect class="cz" x="90" y="229" width="7" height="7"/>
+<rect class="cz" x="97" y="229" width="7" height="7"/>
+<rect class="cz" x="104" y="229" width="7" height="7"/>
+<rect class="cz" x="111" y="229" width="7" height="7"/>
+<rect class="cz" x="118" y="229" width="7" height="7"/>
+<rect class="cz" x="125" y="229" width="7" height="7"/>
+<rect class="cz" x="132" y="229" width="7" height="7"/>
+<rect class="cz" x="139" y="229" width="7" height="7"/>
+<rect class="cz" x="146" y="229" width="7" height="7"/>
+<rect class="cz" x="153" y="229" width="7" height="7"/>
+<rect class="cz" x="160" y="229" width="7" height="7"/>
+<rect class="cz" x="167" y="229" width="7" height="7"/>
+<rect class="cz" x="174" y="229" width="7" height="7"/>
+<rect class="cz" x="181" y="229" width="7" height="7"/>
+<rect class="cz" x="188" y="229" width="7" height="7"/>
+<rect class="cz" x="195" y="229" width="7" height="7"/>
+<rect class="cz" x="90" y="236" width="7" height="7"/>
+<rect class="cz" x="97" y="236" width="7" height="7"/>
+<rect class="cz" x="104" y="236" width="7" height="7"/>
+<rect class="cz" x="111" y="236" width="7" height="7"/>
+<rect class="cz" x="118" y="236" width="7" height="7"/>
+<rect class="cz" x="125" y="236" width="7" height="7"/>
+<rect class="cz" x="132" y="236" width="7" height="7"/>
+<rect class="cz" x="139" y="236" width="7" height="7"/>
+<rect class="cz" x="146" y="236" width="7" height="7"/>
+<rect class="cz" x="153" y="236" width="7" height="7"/>
+<rect class="cz" x="160" y="236" width="7" height="7"/>
+<rect class="cz" x="167" y="236" width="7" height="7"/>
+<rect class="cz" x="174" y="236" width="7" height="7"/>
+<rect class="cz" x="181" y="236" width="7" height="7"/>
+<rect class="cz" x="188" y="236" width="7" height="7"/>
+<rect class="cz" x="195" y="236" width="7" height="7"/>
+<rect class="cz" x="90" y="243" width="7" height="7"/>
+<rect class="cz" x="97" y="243" width="7" height="7"/>
+<rect class="cz" x="104" y="243" width="7" height="7"/>
+<rect class="cz" x="111" y="243" width="7" height="7"/>
+<rect class="cz" x="118" y="243" width="7" height="7"/>
+<rect class="cz" x="125" y="243" width="7" height="7"/>
+<rect class="cz" x="132" y="243" width="7" height="7"/>
+<rect class="cz" x="139" y="243" width="7" height="7"/>
+<rect class="cz" x="146" y="243" width="7" height="7"/>
+<rect class="cz" x="153" y="243" width="7" height="7"/>
+<rect class="cz" x="160" y="243" width="7" height="7"/>
+<rect class="cz" x="167" y="243" width="7" height="7"/>
+<rect class="cz" x="174" y="243" width="7" height="7"/>
+<rect class="cz" x="181" y="243" width="7" height="7"/>
+<rect class="cz" x="188" y="243" width="7" height="7"/>
+<rect class="cz" x="195" y="243" width="7" height="7"/>
+<rect class="cz" x="90" y="250" width="7" height="7"/>
+<rect class="cz" x="97" y="250" width="7" height="7"/>
+<rect class="cz" x="104" y="250" width="7" height="7"/>
+<rect class="cz" x="111" y="250" width="7" height="7"/>
+<rect class="cz" x="118" y="250" width="7" height="7"/>
+<rect class="cz" x="125" y="250" width="7" height="7"/>
+<rect class="cz" x="132" y="250" width="7" height="7"/>
+<rect class="cz" x="139" y="250" width="7" height="7"/>
+<rect class="cz" x="146" y="250" width="7" height="7"/>
+<rect class="cz" x="153" y="250" width="7" height="7"/>
+<rect class="cz" x="160" y="250" width="7" height="7"/>
+<rect class="cz" x="167" y="250" width="7" height="7"/>
+<rect class="cz" x="174" y="250" width="7" height="7"/>
+<rect class="cz" x="181" y="250" width="7" height="7"/>
+<rect class="cz" x="188" y="250" width="7" height="7"/>
+<rect class="cz" x="195" y="250" width="7" height="7"/>
+<rect class="cz" x="90" y="257" width="7" height="7"/>
+<rect class="cz" x="97" y="257" width="7" height="7"/>
+<rect class="cz" x="104" y="257" width="7" height="7"/>
+<rect class="cz" x="111" y="257" width="7" height="7"/>
+<rect class="cz" x="118" y="257" width="7" height="7"/>
+<rect class="cz" x="125" y="257" width="7" height="7"/>
+<rect class="cz" x="132" y="257" width="7" height="7"/>
+<rect class="cz" x="139" y="257" width="7" height="7"/>
+<rect class="cz" x="146" y="257" width="7" height="7"/>
+<rect class="cz" x="153" y="257" width="7" height="7"/>
+<rect class="cz" x="160" y="257" width="7" height="7"/>
+<rect class="cz" x="167" y="257" width="7" height="7"/>
+<rect class="cz" x="174" y="257" width="7" height="7"/>
+<rect class="cz" x="181" y="257" width="7" height="7"/>
+<rect class="cz" x="188" y="257" width="7" height="7"/>
+<rect class="cz" x="195" y="257" width="7" height="7"/>
+<rect class="cz" x="90" y="264" width="7" height="7"/>
+<rect class="cz" x="97" y="264" width="7" height="7"/>
+<rect class="cz" x="104" y="264" width="7" height="7"/>
+<rect class="cz" x="111" y="264" width="7" height="7"/>
+<rect class="cz" x="118" y="264" width="7" height="7"/>
+<rect class="cz" x="125" y="264" width="7" height="7"/>
+<rect class="cz" x="132" y="264" width="7" height="7"/>
+<rect class="cz" x="139" y="264" width="7" height="7"/>
+<rect class="cz" x="146" y="264" width="7" height="7"/>
+<rect class="cz" x="153" y="264" width="7" height="7"/>
+<rect class="cz" x="160" y="264" width="7" height="7"/>
+<rect class="cz" x="167" y="264" width="7" height="7"/>
+<rect class="cz" x="174" y="264" width="7" height="7"/>
+<rect class="cz" x="181" y="264" width="7" height="7"/>
+<rect class="cz" x="188" y="264" width="7" height="7"/>
+<rect class="cz" x="195" y="264" width="7" height="7"/>
+<rect class="cz" x="90" y="271" width="7" height="7"/>
+<rect class="cz" x="97" y="271" width="7" height="7"/>
+<rect class="cz" x="104" y="271" width="7" height="7"/>
+<rect class="cz" x="111" y="271" width="7" height="7"/>
+<rect class="cz" x="118" y="271" width="7" height="7"/>
+<rect class="cz" x="125" y="271" width="7" height="7"/>
+<rect class="cz" x="132" y="271" width="7" height="7"/>
+<rect class="cz" x="139" y="271" width="7" height="7"/>
+<rect class="cz" x="146" y="271" width="7" height="7"/>
+<rect class="cz" x="153" y="271" width="7" height="7"/>
+<rect class="cz" x="160" y="271" width="7" height="7"/>
+<rect class="cz" x="167" y="271" width="7" height="7"/>
+<rect class="cz" x="174" y="271" width="7" height="7"/>
+<rect class="cz" x="181" y="271" width="7" height="7"/>
+<rect class="cz" x="188" y="271" width="7" height="7"/>
+<rect class="cz" x="195" y="271" width="7" height="7"/>
+<rect class="cz" x="90" y="278" width="7" height="7"/>
+<rect class="cz" x="97" y="278" width="7" height="7"/>
+<rect class="cz" x="104" y="278" width="7" height="7"/>
+<rect class="cz" x="111" y="278" width="7" height="7"/>
+<rect class="cz" x="118" y="278" width="7" height="7"/>
+<rect class="cz" x="125" y="278" width="7" height="7"/>
+<rect class="cz" x="132" y="278" width="7" height="7"/>
+<rect class="cz" x="139" y="278" width="7" height="7"/>
+<rect class="cz" x="146" y="278" width="7" height="7"/>
+<rect class="cz" x="153" y="278" width="7" height="7"/>
+<rect class="cz" x="160" y="278" width="7" height="7"/>
+<rect class="cz" x="167" y="278" width="7" height="7"/>
+<rect class="cz" x="174" y="278" width="7" height="7"/>
+<rect class="cz" x="181" y="278" width="7" height="7"/>
+<rect class="cz" x="188" y="278" width="7" height="7"/>
+<rect class="cz" x="195" y="278" width="7" height="7"/>
+<rect class="cz" x="90" y="285" width="7" height="7"/>
+<rect class="cz" x="97" y="285" width="7" height="7"/>
+<rect class="cz" x="104" y="285" width="7" height="7"/>
+<rect class="cz" x="111" y="285" width="7" height="7"/>
+<rect class="cz" x="118" y="285" width="7" height="7"/>
+<rect class="cz" x="125" y="285" width="7" height="7"/>
+<rect class="cz" x="132" y="285" width="7" height="7"/>
+<rect class="cz" x="139" y="285" width="7" height="7"/>
+<rect class="cz" x="146" y="285" width="7" height="7"/>
+<rect class="cz" x="153" y="285" width="7" height="7"/>
+<rect class="cz" x="160" y="285" width="7" height="7"/>
+<rect class="cz" x="167" y="285" width="7" height="7"/>
+<rect class="cz" x="174" y="285" width="7" height="7"/>
+<rect class="cz" x="181" y="285" width="7" height="7"/>
+<rect class="cz" x="188" y="285" width="7" height="7"/>
+<rect class="cz" x="195" y="285" width="7" height="7"/>
+<rect class="cz" x="90" y="292" width="7" height="7"/>
+<rect class="cz" x="97" y="292" width="7" height="7"/>
+<rect class="cz" x="104" y="292" width="7" height="7"/>
+<rect class="cz" x="111" y="292" width="7" height="7"/>
+<rect class="cz" x="118" y="292" width="7" height="7"/>
+<rect class="cz" x="125" y="292" width="7" height="7"/>
+<rect class="cz" x="132" y="292" width="7" height="7"/>
+<rect class="cz" x="139" y="292" width="7" height="7"/>
+<rect class="cz" x="146" y="292" width="7" height="7"/>
+<rect class="cz" x="153" y="292" width="7" height="7"/>
+<rect class="cz" x="160" y="292" width="7" height="7"/>
+<rect class="cz" x="167" y="292" width="7" height="7"/>
+<rect class="cz" x="174" y="292" width="7" height="7"/>
+<rect class="cz" x="181" y="292" width="7" height="7"/>
+<rect class="cz" x="188" y="292" width="7" height="7"/>
+<rect class="cz" x="195" y="292" width="7" height="7"/>
+<rect class="cz" x="90" y="299" width="7" height="7"/>
+<rect class="cz" x="97" y="299" width="7" height="7"/>
+<rect class="cz" x="104" y="299" width="7" height="7"/>
+<rect class="cz" x="111" y="299" width="7" height="7"/>
+<rect class="cz" x="118" y="299" width="7" height="7"/>
+<rect class="cz" x="125" y="299" width="7" height="7"/>
+<rect class="cz" x="132" y="299" width="7" height="7"/>
+<rect class="cz" x="139" y="299" width="7" height="7"/>
+<rect class="cz" x="146" y="299" width="7" height="7"/>
+<rect class="cz" x="153" y="299" width="7" height="7"/>
+<rect class="cz" x="160" y="299" width="7" height="7"/>
+<rect class="cz" x="167" y="299" width="7" height="7"/>
+<rect class="cz" x="174" y="299" width="7" height="7"/>
+<rect class="cz" x="181" y="299" width="7" height="7"/>
+<rect class="cz" x="188" y="299" width="7" height="7"/>
+<rect class="cz" x="195" y="299" width="7" height="7"/>
+<rect class="cz" x="90" y="306" width="7" height="7"/>
+<rect class="cz" x="97" y="306" width="7" height="7"/>
+<rect class="cz" x="104" y="306" width="7" height="7"/>
+<rect class="cz" x="111" y="306" width="7" height="7"/>
+<rect class="cz" x="118" y="306" width="7" height="7"/>
+<rect class="cz" x="125" y="306" width="7" height="7"/>
+<rect class="cz" x="132" y="306" width="7" height="7"/>
+<rect class="cz" x="139" y="306" width="7" height="7"/>
+<rect class="cz" x="146" y="306" width="7" height="7"/>
+<rect class="cz" x="153" y="306" width="7" height="7"/>
+<rect class="cz" x="160" y="306" width="7" height="7"/>
+<rect class="cz" x="167" y="306" width="7" height="7"/>
+<rect class="cz" x="174" y="306" width="7" height="7"/>
+<rect class="cz" x="181" y="306" width="7" height="7"/>
+<rect class="cz" x="188" y="306" width="7" height="7"/>
+<rect class="cz" x="195" y="306" width="7" height="7"/>
+<rect class="cz" x="90" y="313" width="7" height="7"/>
+<rect class="cz" x="97" y="313" width="7" height="7"/>
+<rect class="cz" x="104" y="313" width="7" height="7"/>
+<rect class="cz" x="111" y="313" width="7" height="7"/>
+<rect class="cz" x="118" y="313" width="7" height="7"/>
+<rect class="cz" x="125" y="313" width="7" height="7"/>
+<rect class="cz" x="132" y="313" width="7" height="7"/>
+<rect class="cz" x="139" y="313" width="7" height="7"/>
+<rect class="cz" x="146" y="313" width="7" height="7"/>
+<rect class="cz" x="153" y="313" width="7" height="7"/>
+<rect class="cz" x="160" y="313" width="7" height="7"/>
+<rect class="cz" x="167" y="313" width="7" height="7"/>
+<rect class="cz" x="174" y="313" width="7" height="7"/>
+<rect class="cz" x="181" y="313" width="7" height="7"/>
+<rect class="cz" x="188" y="313" width="7" height="7"/>
+<rect class="cz" x="195" y="313" width="7" height="7"/>
+<rect class="cz" x="90" y="320" width="7" height="7"/>
+<rect class="cz" x="97" y="320" width="7" height="7"/>
+<rect class="cz" x="104" y="320" width="7" height="7"/>
+<rect class="cz" x="111" y="320" width="7" height="7"/>
+<rect class="cz" x="118" y="320" width="7" height="7"/>
+<rect class="cz" x="125" y="320" width="7" height="7"/>
+<rect class="cz" x="132" y="320" width="7" height="7"/>
+<rect class="cz" x="139" y="320" width="7" height="7"/>
+<rect class="cz" x="146" y="320" width="7" height="7"/>
+<rect class="cz" x="153" y="320" width="7" height="7"/>
+<rect class="cz" x="160" y="320" width="7" height="7"/>
+<rect class="cz" x="167" y="320" width="7" height="7"/>
+<rect class="cz" x="174" y="320" width="7" height="7"/>
+<rect class="cz" x="181" y="320" width="7" height="7"/>
+<rect class="cz" x="188" y="320" width="7" height="7"/>
+<rect class="cz" x="195" y="320" width="7" height="7"/>
+<rect class="cz" x="90" y="327" width="7" height="7"/>
+<rect class="cz" x="97" y="327" width="7" height="7"/>
+<rect class="cz" x="104" y="327" width="7" height="7"/>
+<rect class="cz" x="111" y="327" width="7" height="7"/>
+<rect class="cz" x="118" y="327" width="7" height="7"/>
+<rect class="cz" x="125" y="327" width="7" height="7"/>
+<rect class="cz" x="132" y="327" width="7" height="7"/>
+<rect class="cz" x="139" y="327" width="7" height="7"/>
+<rect class="cz" x="146" y="327" width="7" height="7"/>
+<rect class="cz" x="153" y="327" width="7" height="7"/>
+<rect class="cz" x="160" y="327" width="7" height="7"/>
+<rect class="cz" x="167" y="327" width="7" height="7"/>
+<rect class="cz" x="174" y="327" width="7" height="7"/>
+<rect class="cz" x="181" y="327" width="7" height="7"/>
+<rect class="cz" x="188" y="327" width="7" height="7"/>
+<rect class="cz" x="195" y="327" width="7" height="7"/>
+<text class="sl" x="20" y="102">As (BM × BK)</text>
+<text class="sl" x="210" y="32">Bs (BK × BN)</text>
+<text class="sl" x="210" y="122">C block tile (BM × BN)</text>
+<text class="sl" x="40" y="348">dotIdx</text>
+<line class="arw" x1="132" y1="194" x2="242" y2="194"/>
+<text class="st" x="248" y="198">one thread: TM = 8 results in a column</text>
+<line class="arw" x1="132" y1="44.5" x2="242" y2="84.5"/>
+<text class="st" x="248" y="88.5">Btmp: 1 SMEM load, kept in a register</text>
+<text class="st" x="248" y="250">per dotIdx:  1 Bs load + 8 As loads → 8 FMAs</text>
+<text class="st" x="248" y="270">per BK = 8 chunk:  8 × (1 + 8) = 72 SMEM loads, 64 FMAs</text>
+<text class="tg" x="248" y="290">= 1.125 SMEM loads per FMA   (kernel 3: 2)</text>
+</svg>
+<p class="cap">Dimensions reduced for drawing (the article does the same): the real tile is 64 × 64 with 8 rows of threads, here 32 × 16. Grey: the thread's 8 results, held in registers. Green: what it reads from SMEM at one <code>dotIdx</code>. The Bs value is read once and reused 8 times.</p>
+<p>The trick is in the loop order. <code>dotIdx</code> is the outer loop, so the thread reads one value of <code>Bs</code> into a register variable <code>Btmp</code> and reuses it for all 8 of its rows:</p>
+<div class="formula">float threadResults[TM] = {0.0};                       // 8 accumulators in registers
+for (uint bkIdx = 0; bkIdx &lt; K; bkIdx += BK) {          // abridged from the article
+  As[innerRowA * BK + innerColA] = A[innerRowA * K + innerColA];
+  Bs[innerRowB * BN + innerColB] = B[innerRowB * N + innerColB];
+  __syncthreads();
+  A += BK;  B += BK * N;
+  for (uint dotIdx = 0; dotIdx &lt; BK; ++dotIdx) {
+    float Btmp = Bs[dotIdx * BN + threadCol];           // 1 SMEM load, reused 8 times
+    for (uint resIdx = 0; resIdx &lt; TM; ++resIdx)
+      threadResults[resIdx] +=
+        As[(threadRow * TM + resIdx) * BK + dotIdx] * Btmp;
+  }
+  __syncthreads();
+}</div>
+<p><b>The article's count, per thread.</b> Kernel 3 (one result): K/32 outer iterations × 2 GMEM loads, and K/32 × 32 × 2 SMEM loads, so <b>K/16 GMEM and 2K SMEM</b> per result. Kernel 4 (eight results): K/8 iterations × 2 GMEM loads, and K/8 × BK(8) × (1 + TM(8)) SMEM loads, divided by 8 results, so <b>K/32 GMEM and 9K/8 SMEM</b> per result. The profiler agrees: "we now spend much fewer cycles per instruction stalling due to memory pressure" (the article warns that the chart's axis changed from kernel 3's).</p>
+
+<h2>Sidenote: the compiler already did the reordering</h2>
+<p>siboehm tried the obvious loop order too, with <code>resIdx</code> outside and no <code>Btmp</code>. On paper that is BK × TM × 2 = 8 × 8 × 2 = <b>128</b> SMEM accesses per chunk instead of 8 × (1 + 8) = <b>72</b>. It made no difference to speed. The PTX shows why: the loop counts are compile-time constants, so the compiler unrolls both loops and removes the repeated loads, ending up with the same number of SMEM accesses as the hand-optimized version.</p>
+<div class="formula">LDS     R26, [R35.X4+0x800]   // article's label: a 32b load from As
+LDS.128 R8,  [R2]             // article's label: a 128b load from Bs
+LDS.128 R12, [R2+0x20]
+LDS     R24, [R35.X4+0x900]</div>
+<p>In the SASS (the machine code under PTX) some SMEM loads become <code>LDS.128</code>, one instruction for four floats. The article labels the 128-bit loads as <code>Bs</code> and the 32-bit ones as <code>As</code>, and hints at kernel 6: transpose <code>As</code> so its loads vectorize too. <em>Our reading of the offsets, not the article's:</em> the 32-bit loads step by 0x100 = 64 floats (the row length of Bs) starting at 0x800 = 512 floats (the size of As), and the 128-bit loads step by 0x20 = 8 floats (the row length of As). That suggests the two labels are swapped in this kernel. It doesn't change the lesson: whichever operand a thread reads contiguously gets vectorized.</p>
+
+<h2>Why more results per thread: arithmetic intensity</h2>
+<p>Kernel 4 still stalls for memory, only less. The article's next step is to "just apply the same optimization again": more results per thread, to raise <b>arithmetic intensity</b>, which it defines as FLOPs per byte moved (loads and stores) between GMEM and SMEM. Every kernel does the same FLOPs. Only the loads shrink. And it's "more efficient to calculate a square of results per thread than a column of results because we can share more of the inputs". Redrawn with 16 results each:</p>
+<svg viewBox="0 0 720 360" role="img" aria-label="Sixteen results as a 16 by 1 column need 17 inputs per k-step; as a 4 by 4 square they need 8.">
+<text class="st" x="40" y="18" font-weight="600">Column: 16 × 1</text>
+<rect class="cr" x="40" y="64" width="16" height="16"/>
+<rect class="cr" x="40" y="80" width="16" height="16"/>
+<rect class="cr" x="40" y="96" width="16" height="16"/>
+<rect class="cr" x="40" y="112" width="16" height="16"/>
+<rect class="cr" x="40" y="128" width="16" height="16"/>
+<rect class="cr" x="40" y="144" width="16" height="16"/>
+<rect class="cr" x="40" y="160" width="16" height="16"/>
+<rect class="cr" x="40" y="176" width="16" height="16"/>
+<rect class="cr" x="40" y="192" width="16" height="16"/>
+<rect class="cr" x="40" y="208" width="16" height="16"/>
+<rect class="cr" x="40" y="224" width="16" height="16"/>
+<rect class="cr" x="40" y="240" width="16" height="16"/>
+<rect class="cr" x="40" y="256" width="16" height="16"/>
+<rect class="cr" x="40" y="272" width="16" height="16"/>
+<rect class="cr" x="40" y="288" width="16" height="16"/>
+<rect class="cr" x="40" y="304" width="16" height="16"/>
+<rect class="cr" x="64" y="40" width="16" height="16"/>
+<rect class="cc" x="64" y="64" width="16" height="16"/>
+<rect class="cc" x="64" y="80" width="16" height="16"/>
+<rect class="cc" x="64" y="96" width="16" height="16"/>
+<rect class="cc" x="64" y="112" width="16" height="16"/>
+<rect class="cc" x="64" y="128" width="16" height="16"/>
+<rect class="cc" x="64" y="144" width="16" height="16"/>
+<rect class="cc" x="64" y="160" width="16" height="16"/>
+<rect class="cc" x="64" y="176" width="16" height="16"/>
+<rect class="cc" x="64" y="192" width="16" height="16"/>
+<rect class="cc" x="64" y="208" width="16" height="16"/>
+<rect class="cc" x="64" y="224" width="16" height="16"/>
+<rect class="cc" x="64" y="240" width="16" height="16"/>
+<rect class="cc" x="64" y="256" width="16" height="16"/>
+<rect class="cc" x="64" y="272" width="16" height="16"/>
+<rect class="cc" x="64" y="288" width="16" height="16"/>
+<rect class="cc" x="64" y="304" width="16" height="16"/>
+<text class="sl" x="38" y="336">A: 16</text>
+<text class="sl" x="86" y="52">B: 1</text>
+<text class="sl" x="86" y="192">16 results</text>
+<text class="tr" x="140" y="240">17 inputs per k-step</text>
+<text class="sl" x="140" y="260">1.06 loads per result</text>
+<text class="st" x="400" y="18" font-weight="600">Square: 4 × 4</text>
+<rect class="cg" x="400" y="64" width="16" height="16"/>
+<rect class="cg" x="400" y="80" width="16" height="16"/>
+<rect class="cg" x="400" y="96" width="16" height="16"/>
+<rect class="cg" x="400" y="112" width="16" height="16"/>
+<rect class="cg" x="424" y="40" width="16" height="16"/>
+<rect class="cg" x="440" y="40" width="16" height="16"/>
+<rect class="cg" x="456" y="40" width="16" height="16"/>
+<rect class="cg" x="472" y="40" width="16" height="16"/>
+<rect class="cc" x="424" y="64" width="16" height="16"/>
+<rect class="cc" x="440" y="64" width="16" height="16"/>
+<rect class="cc" x="456" y="64" width="16" height="16"/>
+<rect class="cc" x="472" y="64" width="16" height="16"/>
+<rect class="cc" x="424" y="80" width="16" height="16"/>
+<rect class="cc" x="440" y="80" width="16" height="16"/>
+<rect class="cc" x="456" y="80" width="16" height="16"/>
+<rect class="cc" x="472" y="80" width="16" height="16"/>
+<rect class="cc" x="424" y="96" width="16" height="16"/>
+<rect class="cc" x="440" y="96" width="16" height="16"/>
+<rect class="cc" x="456" y="96" width="16" height="16"/>
+<rect class="cc" x="472" y="96" width="16" height="16"/>
+<rect class="cc" x="424" y="112" width="16" height="16"/>
+<rect class="cc" x="440" y="112" width="16" height="16"/>
+<rect class="cc" x="456" y="112" width="16" height="16"/>
+<rect class="cc" x="472" y="112" width="16" height="16"/>
+<text class="sl" x="398" y="144">A: 4</text>
+<text class="sl" x="496" y="52">B: 4</text>
+<text class="sl" x="496" y="100">16 results</text>
+<text class="tg" x="400" y="176">8 inputs per k-step</text>
+<text class="sl" x="400" y="194">0.5 loads per result</text>
+<text class="sl" x="400" y="228">Each A value feeds a whole row (4 results),</text>
+<text class="sl" x="400" y="244">each B value a whole column (4 results).</text>
+<text class="sl" x="400" y="260">In the column, each A value feeds only 1.</text>
+</svg>
+<p class="cap">One step along K. A column of 16 needs 16 values of A plus 1 of B. A 4 × 4 square needs 4 of A plus 4 of B. Red: inputs used by only one result each. Green: inputs shared by a whole row or column of results. The same argument applies at both levels: to a block's tile (GMEM → SMEM) and to a thread's tile (SMEM → registers).</p>
+
+<h2>Kernel 5: an 8 × 8 square of results per thread</h2>
+<p>Kernel 5 sets <code>BM = BN = 128</code> and <code>BK = TM = TN = 8</code>. Each thread computes <code>TM·TN = 64</code> results, so a 128 × 128 block tile takes 128·128 ÷ 64 = <b>256 threads</b>. SMEM holds 128·8 + 8·128 = 2,048 floats = 8 KB (our arithmetic).</p>
+<p><b>Step 1: everyone loads.</b> 256 threads now fill 1,024 floats of As and 1,024 of Bs, so each thread loads 1,024 ÷ 256 = 4 of each per chunk. The loop strides by <code>strideA</code> rows so that the threads together cover the tile. Our arithmetic: 256 threads over BK = 8 columns cover 32 rows of As per pass, so 4 passes cover 128 rows.</p>
+<div class="formula">for (uint loadOffset = 0; loadOffset &lt; BM; loadOffset += strideA)
+  As[(innerRowA + loadOffset) * BK + innerColA] =
+    A[(innerRowA + loadOffset) * K + innerColA];
+for (uint loadOffset = 0; loadOffset &lt; BK; loadOffset += strideB)
+  Bs[(innerRowB + loadOffset) * BN + innerColB] =
+    B[(innerRowB + loadOffset) * N + innerColB];
+__syncthreads();</div>
+<p><b>Step 2: an outer product in registers.</b> For each <code>dotIdx</code>, the thread copies 8 values of a column of As into <code>regM</code> and 8 values of a row of Bs into <code>regN</code>. It then multiplies every <code>regM[m]</code> by every <code>regN[n]</code>: 64 multiply-adds from 16 loads.</p>
+<svg viewBox="0 20 700 230" role="img" aria-label="Kernel 5 per dotIdx: 8 values of As go to regM, 8 values of Bs go to regN, and their outer product updates all 64 threadResults.">
+<text class="sl" x="2" y="62">regM[8]</text>
+<rect class="cg" x="40" y="68" width="18" height="18"/>
+<rect class="cg" x="40" y="86" width="18" height="18"/>
+<rect class="cg" x="40" y="104" width="18" height="18"/>
+<rect class="cg" x="40" y="122" width="18" height="18"/>
+<rect class="cg" x="40" y="140" width="18" height="18"/>
+<rect class="cg" x="40" y="158" width="18" height="18"/>
+<rect class="cg" x="40" y="176" width="18" height="18"/>
+<rect class="cg" x="40" y="194" width="18" height="18"/>
+<text class="sl" x="74" y="36">regN[8]</text>
+<rect class="cg" x="74" y="42" width="18" height="18"/>
+<rect class="cg" x="92" y="42" width="18" height="18"/>
+<rect class="cg" x="110" y="42" width="18" height="18"/>
+<rect class="cg" x="128" y="42" width="18" height="18"/>
+<rect class="cg" x="146" y="42" width="18" height="18"/>
+<rect class="cg" x="164" y="42" width="18" height="18"/>
+<rect class="cg" x="182" y="42" width="18" height="18"/>
+<rect class="cg" x="200" y="42" width="18" height="18"/>
+<rect class="cc" x="74" y="68" width="18" height="18"/>
+<rect class="cc" x="92" y="68" width="18" height="18"/>
+<rect class="cc" x="110" y="68" width="18" height="18"/>
+<rect class="cc" x="128" y="68" width="18" height="18"/>
+<rect class="cc" x="146" y="68" width="18" height="18"/>
+<rect class="cc" x="164" y="68" width="18" height="18"/>
+<rect class="cc" x="182" y="68" width="18" height="18"/>
+<rect class="cc" x="200" y="68" width="18" height="18"/>
+<rect class="cc" x="74" y="86" width="18" height="18"/>
+<rect class="cc" x="92" y="86" width="18" height="18"/>
+<rect class="cc" x="110" y="86" width="18" height="18"/>
+<rect class="cc" x="128" y="86" width="18" height="18"/>
+<rect class="cc" x="146" y="86" width="18" height="18"/>
+<rect class="cc" x="164" y="86" width="18" height="18"/>
+<rect class="cc" x="182" y="86" width="18" height="18"/>
+<rect class="cc" x="200" y="86" width="18" height="18"/>
+<rect class="cc" x="74" y="104" width="18" height="18"/>
+<rect class="cc" x="92" y="104" width="18" height="18"/>
+<rect class="cc" x="110" y="104" width="18" height="18"/>
+<rect class="cc" x="128" y="104" width="18" height="18"/>
+<rect class="cc" x="146" y="104" width="18" height="18"/>
+<rect class="cc" x="164" y="104" width="18" height="18"/>
+<rect class="cc" x="182" y="104" width="18" height="18"/>
+<rect class="cc" x="200" y="104" width="18" height="18"/>
+<rect class="cc" x="74" y="122" width="18" height="18"/>
+<rect class="cc" x="92" y="122" width="18" height="18"/>
+<rect class="cc" x="110" y="122" width="18" height="18"/>
+<rect class="cc" x="128" y="122" width="18" height="18"/>
+<rect class="cc" x="146" y="122" width="18" height="18"/>
+<rect class="cc" x="164" y="122" width="18" height="18"/>
+<rect class="cc" x="182" y="122" width="18" height="18"/>
+<rect class="cc" x="200" y="122" width="18" height="18"/>
+<rect class="cc" x="74" y="140" width="18" height="18"/>
+<rect class="cc" x="92" y="140" width="18" height="18"/>
+<rect class="cc" x="110" y="140" width="18" height="18"/>
+<rect class="cc" x="128" y="140" width="18" height="18"/>
+<rect class="cc" x="146" y="140" width="18" height="18"/>
+<rect class="cc" x="164" y="140" width="18" height="18"/>
+<rect class="cc" x="182" y="140" width="18" height="18"/>
+<rect class="cc" x="200" y="140" width="18" height="18"/>
+<rect class="cc" x="74" y="158" width="18" height="18"/>
+<rect class="cc" x="92" y="158" width="18" height="18"/>
+<rect class="cc" x="110" y="158" width="18" height="18"/>
+<rect class="cc" x="128" y="158" width="18" height="18"/>
+<rect class="cc" x="146" y="158" width="18" height="18"/>
+<rect class="cc" x="164" y="158" width="18" height="18"/>
+<rect class="cc" x="182" y="158" width="18" height="18"/>
+<rect class="cc" x="200" y="158" width="18" height="18"/>
+<rect class="cc" x="74" y="176" width="18" height="18"/>
+<rect class="cc" x="92" y="176" width="18" height="18"/>
+<rect class="cc" x="110" y="176" width="18" height="18"/>
+<rect class="cc" x="128" y="176" width="18" height="18"/>
+<rect class="cc" x="146" y="176" width="18" height="18"/>
+<rect class="cc" x="164" y="176" width="18" height="18"/>
+<rect class="cc" x="182" y="176" width="18" height="18"/>
+<rect class="cc" x="200" y="176" width="18" height="18"/>
+<rect class="cc" x="74" y="194" width="18" height="18"/>
+<rect class="cc" x="92" y="194" width="18" height="18"/>
+<rect class="cc" x="110" y="194" width="18" height="18"/>
+<rect class="cc" x="128" y="194" width="18" height="18"/>
+<rect class="cc" x="146" y="194" width="18" height="18"/>
+<rect class="cc" x="164" y="194" width="18" height="18"/>
+<rect class="cc" x="182" y="194" width="18" height="18"/>
+<rect class="cc" x="200" y="194" width="18" height="18"/>
+<text class="sl" x="74" y="228">threadResults[8 × 8]</text>
+<text class="st" x="258" y="70" xml:space="preserve">for each dotIdx (8 per BK chunk):</text>
+<text class="st" x="258" y="92" xml:space="preserve">  8 LDS As → regM,  8 LDS Bs → regN</text>
+<text class="st" x="258" y="114" xml:space="preserve">  64 FMAs: threadResults[m][n] += regM[m] · regN[n]</text>
+<text class="tg" x="258" y="136" xml:space="preserve">  16 SMEM loads → 64 FMAs = 0.25 loads per FMA</text>
+<text class="sl" x="258" y="158" xml:space="preserve">kernel 4: 9 loads → 8 FMAs = 1.125 per FMA</text>
+<text class="sl" x="258" y="180" xml:space="preserve">kernel 3: 2 loads → 1 FMA = 2 per FMA</text>
+</svg>
+<div class="formula">for (uint dotIdx = 0; dotIdx &lt; BK; ++dotIdx) {         // abridged from the article
+  for (uint i = 0; i &lt; TM; ++i)
+    regM[i] = As[(threadRow * TM + i) * BK + dotIdx];
+  for (uint i = 0; i &lt; TN; ++i)
+    regN[i] = Bs[dotIdx * BN + threadCol * TN + i];
+  for (uint resIdxM = 0; resIdxM &lt; TM; ++resIdxM)
+    for (uint resIdxN = 0; resIdxN &lt; TN; ++resIdxN)
+      threadResults[resIdxM * TN + resIdxN] +=
+        regM[resIdxM] * regN[resIdxN];
+}</div>
+<p><b>The article's count.</b> GMEM: K/8 iterations × 2 (A and B) × 1,024/256 loads. SMEM: K/8 × 8 (dotIdx) × 2 × 8 loads. Per result (÷ 64): <b>K/64 GMEM and K/4 SMEM</b>. The result is 15,971.7 GFLOP/s. But the profiler still shows it isn't done: "warp stalls due to memory pipeline congestion are still too frequent". Kernel 6 attacks that with vectorized loads (<a href="matmul-warptiling.html">Matmul IV</a>).</p>
+
+<h2>Loads per result: the thread through the matmul cards</h2>
+<p>Both levels of tiling follow one formula. A block tile of BM × BN results loads BM + BN values per step of K from GMEM. A thread tile of TM × TN results reads TM + TN values per step from SMEM. BK cancels out.</p>
+<div class="mathbox">
+<math display="block">
+  <mfrac><mtext>GMEM loads</mtext><mtext>result</mtext></mfrac><mo>=</mo>
+  <munder class="t1"><mfrac><mrow><mi>K</mi><mo>&#183;</mo><mo>(</mo><mi>BM</mi><mo>+</mo><mi>BN</mi><mo>)</mo></mrow><mrow><mi>BM</mi><mo>&#183;</mo><mi>BN</mi></mrow></mfrac><mtext class="lab">block tile: inputs ÷ results</mtext></munder>
+  <mspace width="1.6em"/>
+  <mfrac><mtext>SMEM loads</mtext><mtext>result</mtext></mfrac><mo>=</mo>
+  <munder class="t2"><mfrac><mrow><mi>K</mi><mo>&#183;</mo><mo>(</mo><mi>TM</mi><mo>+</mo><mi>TN</mi><mo>)</mo></mrow><mrow><mi>TM</mi><mo>&#183;</mo><mi>TN</mi></mrow></mfrac><mtext class="lab">thread tile: inputs ÷ results</mtext></munder>
+</math>
+<math display="block">
+  <mtext>kernel 4:</mtext><mspace width="0.5em"/>
+  <mfrac><mrow><mi>K</mi><mo>&#183;</mo><mn>128</mn></mrow><mn>4096</mn></mfrac><mo>=</mo><mfrac><mi>K</mi><mn>32</mn></mfrac>
+  <mspace width="1.2em"/>
+  <mfrac><mrow><mi>K</mi><mo>&#183;</mo><mn>9</mn></mrow><mn>8</mn></mfrac>
+  <mspace width="2.4em"/>
+  <mtext>kernel 5:</mtext><mspace width="0.5em"/>
+  <mfrac><mrow><mi>K</mi><mo>&#183;</mo><mn>256</mn></mrow><mn>16384</mn></mfrac><mo>=</mo><mfrac><mi>K</mi><mn>64</mn></mfrac>
+  <mspace width="1.2em"/>
+  <mfrac><mrow><mi>K</mi><mo>&#183;</mo><mn>16</mn></mrow><mn>64</mn></mfrac><mo>=</mo><mfrac><mi>K</mi><mn>4</mn></mfrac>
+</math>
+<div class="legend">
+  <span class="sym">K</span><span>length of each dot product</span><span class="v">4092</span>
+  <span class="sym">BM, BN</span><span>block tile of C: rows, columns (GMEM → SMEM reuse)</span><span class="v">k3 32 · k4 64 · k5 128</span>
+  <span class="sym">TM, TN</span><span>thread tile of C: rows, columns (SMEM → register reuse)</span><span class="v">k3 1×1 · k4 8×1 · k5 8×8</span>
+  <span class="sym">BK</span><span>K-chunk per step; cancels out of both counts</span><span class="v">k3 32 · k4, k5 8</span>
+</div>
+</div>
+<p class="cap">The formulas are the model in labs/matmul-loads.py, which checks them against the article's loop-by-loop counts. With K = 4092: kernel 4 is 127.9 GMEM and 4,603.5 SMEM loads per result, kernel 5 is 63.9 and 1,023.</p>
+
+<div class="tw">
+<table>
+<tr><th>Kernel</th><th class="num">threads / block</th><th class="num">GMEM loads / result</th><th class="num">SMEM loads / result</th><th class="num">FLOP/B at GMEM</th><th class="num">GMEM loads, total</th><th class="num">× 268 MB min</th></tr>
+<tr class="mu"><td>1, 2 (no tiling)</td><td class="num">1,024</td><td class="num">2K</td><td class="num">–</td><td class="num">0.25</td><td class="num">548.15 GB</td><td class="num">2,046×</td></tr>
+<tr><td>3 SMEM, 32 × 32</td><td class="num">1,024</td><td class="num">K/16</td><td class="num lo">2K</td><td class="num">8</td><td class="num">17.13 GB</td><td class="num">64×</td></tr>
+<tr><td>4 1D blocktile, 64 × 64, 8 × 1</td><td class="num">512</td><td class="num">K/32</td><td class="num">9K/8</td><td class="num">16</td><td class="num">8.56 GB</td><td class="num">32×</td></tr>
+<tr><td>5 2D blocktile, 128 × 128, 8 × 8</td><td class="num">256</td><td class="num hi">K/64</td><td class="num hi">K/4</td><td class="num hi">32</td><td class="num hi">4.28 GB</td><td class="num hi">16×</td></tr>
+</table>
+</div>
+<p class="cap">Output of <code>python3 labs/matmul-loads.py</code> (our recomputation; the K/… values are the article's). FLOP/B = 2K FLOPs ÷ (GMEM loads × 4 B), counting A and B only (with C's read and write: 15.75 and 31.03). Totals assume no cache hits at all, so real DRAM traffic is lower.</p>
+
+<p>The SMEM column is the one that mattered for the stalls. Per multiply-add:</p>
+<div class="bars">
+  <div class="hd">Kernel</div><div class="hd">SMEM loads per FMA</div><div class="hd r">FLOP/B</div>
+  <div class="tok lo strong">3 <small>1 result, 2 loads per FMA</small></div><div class="track"><div class="bar worst" style="width:80%"></div>2</div><div class="tot lo">0.25</div>
+  <div class="tok">4 <small>8 × 1: 9 loads, 8 FMAs</small></div><div class="track"><div class="bar mid" style="width:45%"></div>1.125</div><div class="tot">0.44</div>
+  <div class="tok strong">5 <small>8 × 8: 16 loads, 64 FMAs</small></div><div class="track"><div class="bar" style="width:10%"></div>0.25</div><div class="tot hi">2.0</div>
+</div>
+<p class="cap">Linear scale. SMEM loads per FMA = (TM + TN) ÷ (TM·TN). FLOP per SMEM byte = 2 ÷ (loads per FMA × 4 B). Our arithmetic from the article's counts.</p>
+
+<h2>The words, with kernel 4 and kernel 5 side by side</h2>
+<p>An analogy: a cook who fetches one onion per dish walks to the pantry for every plate. Fetch a tray of onions and a tray of peppers, and every onion–pepper pair on the counter becomes a dish.</p>
+<div class="tw">
+<table class="parts">
+<tr><th>Term</th><th class="what">What actually happens</th><th>Kernel 4</th><th>Kernel 5</th></tr>
+<tr><td>Block tile</td><td class="what">The BM × BN part of C one block owns; sets GMEM reuse</td>
+  <td class="ex"><b>64 × 64, BK = 8</b><span>4 KB of SMEM, 512 threads</span></td>
+  <td class="ex"><b class="ok">128 × 128, BK = 8</b><span>8 KB of SMEM, 256 threads</span></td></tr>
+<tr><td>Thread tile</td><td class="what">The TM × TN results one thread accumulates in registers</td>
+  <td class="ex"><b>8 × 1 (a column)</b><span>float threadResults[8]</span></td>
+  <td class="ex"><b class="ok">8 × 8 (a square)</b><span>float threadResults[64]</span></td></tr>
+<tr><td>Register cache</td><td class="what">SMEM values copied into registers once and reused</td>
+  <td class="ex"><b>Btmp</b><span>1 float, reused 8 times</span></td>
+  <td class="ex"><b class="ok">regM[8], regN[8]</b><span>16 floats, each reused 8 times</span></td></tr>
+<tr><td>Outer product</td><td class="what">Column × row = a full grid of products, all independent</td>
+  <td class="ex"><b>8 × 1 × 1</b><span>a degenerate one: a column times a scalar</span></td>
+  <td class="ex"><b class="ok">8 × 8</b><span>64 independent FMAs per dotIdx</span></td></tr>
+<tr><td>Arithmetic intensity</td><td class="what">FLOPs per byte moved GMEM → SMEM (article's definition)</td>
+  <td class="ex"><b>16 FLOP/B</b><span>K/32 loads per result</span></td>
+  <td class="ex"><b class="ok">32 FLOP/B</b><span>K/64 loads per result</span></td></tr>
+</table>
+</div>
+
+<h2>Volkov saw the same thing in 2010</h2>
+<p>This is Volkov's "Better Performance at Lower Occupancy" in practice (<a href="occupancy.html">occupancy and latency hiding</a>). His SDK matmul on a GTX480 went from 1 output per thread at <b>242 Gflop/s</b> (21 registers, 67% occupancy) to 8 outputs at <b>485 Gflop/s</b> (63 registers, 33% occupancy): 2.0× faster with 3× the registers and half the occupancy. His explanation fits kernels 4 and 5: independent multiply-adds within one thread (instruction-level parallelism) hide latency just as extra warps do, and "only registers are fast enough to get the peak". Kernel 5's 64 accumulators are 64 independent chains per thread.</p>
+<p><b>Kernel 5's register count:</b> the article doesn't give it (it printed <code>ptxas</code> output only for kernel 3: 37 registers). The source code alone needs at least 64 + 8 + 8 = 80 floats in registers per thread before indices and pointers. That's our lower bound, not a measurement.</p>
+
+<h2>Where this leads: tensor cores do the same outer product, bigger</h2>
+<p><em>Our framing, not siboehm's.</em> A tensor-core MMA instruction is this kernel-5 inner loop moved into hardware at a larger grain. One WMMA <code>mma_sync</code> on a 16 × 16 × 16 tile has a whole warp compute D = A·B + C: 16 × 16 × 16 = 4,096 multiply-adds from 2 × 16 × 16 = 512 input values, 8 per input. Kernel 5's thread gets 64 from 16, 4 per input. The whole ladder, from block tiles to thread tiles to MMA tiles, is the same trick: pick tile shapes that make each loaded value feed as many multiply-adds as possible. On an H100 running the Llama-3.1-8B example, the BF16 matmuls run as MMAs, not the fp32 FMAs used here. See <a href="tensor-cores-low-precision.html">tensor cores and low precision</a>.</p>
+
+<h2>On your GPUs: the ceiling set by GMEM intensity</h2>
+<div class="tw">
+<table>
+<tr><th>GPU</th><th class="num">Peak used</th><th class="num">Bandwidth</th><th class="num">Ridge (FLOP/B)</th><th class="num">Kernel 3 (8)</th><th class="num">Kernel 4 (16)</th><th class="num">Kernel 5 (32)</th></tr>
+<tr><td>RTX A6000 (article)</td><td class="num">30 TF fp32</td><td class="num">768 GB/s</td><td class="num">39.1</td><td class="num lo">6.14 TF</td><td class="num">12.29 TF</td><td class="num">24.58 TF</td></tr>
+<tr><td>T4 (Colab lab)</td><td class="num">8.1 TF fp32</td><td class="num">320 GB/s</td><td class="num">25.3</td><td class="num lo">2.56 TF</td><td class="num">5.12 TF</td><td class="num hi">8.10 TF (compute)</td></tr>
+<tr><td>H100 SXM (running example)</td><td class="num">989 TF bf16 tensor</td><td class="num">3.35 TB/s</td><td class="num">295.2</td><td class="num lo">26.80 TF</td><td class="num">53.60 TF</td><td class="num">107.20 TF</td></tr>
+</table>
+</div>
+<p class="cap">Ceiling = min(peak, FLOP/B × bandwidth), with no cache hits: a pessimistic bound from labs/matmul-loads.py. On the A6000, kernels 4 and 5 measured 8.47 and 15.97 TF, 69% and 65% of these ceilings. On the T4, kernel 5's 32 FLOP/B already clears the ridge of 25.3, so it can in principle be compute-bound. On the H100 the ridge is 295, so fp32-style thread tiles of this size are nowhere near enough.</p>
+
+<p style="margin-top:14px"><b>Run it on a real GPU.</b> The course's matmul-ladder notebook has only kernels 1–3. For kernels 4 and 5, this notebook clones and builds siboehm's repo for the T4 and runs every kernel: <a href="https://colab.research.google.com/github/seyonv/explainers/blob/main/perf-3-kernels/labs/matmul-siboehm-repo.ipynb">Open in Colab: labs/matmul-siboehm-repo.ipynb</a> (<a href="https://github.com/seyonv/explainers/blob/main/perf-3-kernels/labs/matmul-siboehm-repo.ipynb">view on GitHub</a>). Not yet run by the author. Numbers on this card are from siboehm's worklog on an RTX A6000; your T4 run is the exercise. Colab's T4 availability and clocks vary.</p>
+
+<h2>Why it beats the alternatives</h2>
+<div class="grid2">
+  <div class="cell"><h3><span class="x">&#10007;</span> Kernel 3: 1 result per thread</h3><p>Every FMA needs one As and one Bs load: 2K SMEM loads per result. Warps pile up in "MIO Throttle" and the FMA units idle. 2,980.3 GFLOP/s, 12.8% of cuBLAS.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Kernel 4: a column of 8</h3><p>Btmp is reused 8 times, but each As value still feeds a single FMA: 9 loads for 8 FMAs (9K/8 per result). 2.84× better, yet still stalls for memory. 8,474.7 GFLOP/s, 36.5%.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> "More is better": 16 × 16 per thread</h3><p>K/8 SMEM loads per result on paper, but 256 accumulators per thread. <em>Our note:</em> CUDA caps a thread at 255 registers, so they'd spill to slow local memory, and fewer threads fit per SM. Volkov: Fermi allowed only ≈64 registers per thread. siboehm's autotuner later picked TM = TN = 4 on an A100, so bigger isn't always better.</p></div>
+  <div class="cell win"><h3><span class="ok">&#10003;</span> Kernel 5: an 8 × 8 square</h3><p>16 loads feed 64 independent FMAs (0.25 per FMA), and GMEM loads fall to K/64. 15,971.7 GFLOP/s, 68.7% of cuBLAS. Kernels 6–10 keep this thread tile and tune around it.</p></div>
+</div>
+
+<h2>Why does a square tile beat a column of the same size?</h2>
+<div class="note">
+  <p>Because a TM × TN tile needs TM + TN inputs per step of K for TM·TN results. For a fixed number of results, the sum TM + TN is smallest when the tile is square. For 64 results: a 64 × 1 column needs 65 inputs per step, an 8 × 8 square needs 16. That's 4× fewer loads for identical work. In the square, each A value feeds a whole row of results and each B value a whole column. In the column, each A value feeds one.</p>
+  <ul>
+    <li><b>The same rule, twice.</b> It sets GMEM traffic through the block tile (BM, BN) and SMEM traffic through the thread tile (TM, TN). Kernel 5 squares both.</li>
+    <li><b>When bigger or squarer is <em>not</em> better.</b> Registers are finite. A bigger thread tile means more registers per thread and fewer resident warps, and past the limit it spills. A big block tile also wastes work at the matrix edges when the size isn't a multiple of the tile (the tile-quantization sidenote on <a href="matmul-naive.html">Matmul I</a>). And for small matrices a 128 × 128 block tile leaves most SMs idle: 4092² has 32 × 32 = 1,024 tiles of that size (our arithmetic), but a 256² matmul would have only 4. That's why cuBLAS ships many kernels and why siboehm autotunes (<a href="matmul-warptiling.html">Matmul IV</a>).</li>
+    <li><b>Intensity isn't the last bottleneck.</b> Kernel 5 is still at 65% of its no-cache GMEM ceiling on the A6000, and the profiler says it stalls on the memory pipeline. The next wins come from how the loads are issued (128-bit loads, bank conflicts), not from how many there are.</li>
+  </ul>
+</div>
+
+<div class="foot">
+<p><a class="lab-link" href="https://github.com/seyonv/explainers/blob/main/perf-3-kernels/labs/matmul-loads.py">Run it: labs/matmul-loads.py</a> The calculator from <a href="matmul-coalescing-smem.html">Matmul II</a>, reused here. It prints GMEM and SMEM loads per result for kernels 1–5, reproducing the article's K/32, 9K/8, K/64 and K/4, plus the FLOP/B, totals and ceilings on this card. Try this: set kernel 5 to TM = TN = 16 and watch SMEM loads fall to K/8, then count the accumulators.</p>
+<p><b>Read next:</b> <a href="https://siboehm.com/articles/22/CUDA-MMM">siboehm, "How to Optimize a CUDA Matmul Kernel for cuBLAS-like Performance: a Worklog"</a>, sections "Kernel 4: 1D Blocktiling for Calculating Multiple Results per Thread" (with "Sidenote on Compiler Optimizations" and "Areas of Improvement: Arithmetic Intensity") and "Kernel 5: Increasing Arithmetic Intensity via 2D Blocktiling". Read all of both, and study his drawings of the dotIdx loop, which this card only redraws in part (~40 min). Code: <a href="https://github.com/siboehm/SGEMM_CUDA">github.com/siboehm/SGEMM_CUDA</a>, kernels 4 and 5.</p>
+<p><b>Related:</b> <a href="matmul-coalescing-smem.html">Matmul II: coalescing and shared-memory caching</a> · <a href="matmul-warptiling.html">Matmul IV: vectorize, autotune, warptile</a> · <a href="occupancy.html">occupancy and latency hiding</a> · <a href="tensor-cores-low-precision.html">tensor cores and low precision</a> · <a href="matmul-naive.html">Matmul I: the naive kernel and the lower bound</a> · <a href="triton-matmul.html">Triton matmul</a> · <a href="../perf-2-scaling-book-inference/roofline.html">perf-2: the roofline, properly</a></p>
+<p><b>Sources:</b> All A6000 numbers and code (8,474.7 / 15,971.7 GFLOP/s and % of cuBLAS; "~8600 GFLOPs, 2.2x"; "16TFLOPs, another 2x"; BM, BN, BK, TM, TN; 4 KB SMEM; the loads-per-result counts; 128 vs 72 accesses; the PTX and SASS; the profiler remarks; the arithmetic-intensity definition; 30 TF and 768 GB/s): <a href="https://siboehm.com/articles/22/CUDA-MMM">siboehm.com/articles/22/CUDA-MMM</a> (Dec 2022). Volkov's 242 → 485 Gflop/s, 21 → 63 registers, 67% → 33%, ≈64 registers per thread on Fermi: <a href="https://www.nvidia.com/content/GTC-2010/pdfs/2238_GTC2010.pdf">Volkov, GTC 2010</a>. WMMA 16 × 16 × 16 <code>mma_sync</code>: <a href="https://docs.nvidia.com/cuda/cuda-programming-guide/05-appendices/cpp-language-extensions.html">CUDA Programming Guide, Warp Matrix Functions</a>. The 255-register per-thread limit: <a href="https://docs.nvidia.com/cuda/cuda-programming-guide/05-appendices/compute-capabilities.html">CUDA compute capabilities table</a>. T4 and H100 specs and the Llama-3.1-8B example: course facts. Our recomputations: labs/matmul-loads.py (loads, FLOP/B, totals, ceilings) and a scratch calculation for the ratios, loads per FMA, the 80-register bound and the WMMA counts.</p>
+</div>
+</article>
+<!-- series-nav:bottom -->
+<div class="snx"><a class="nx" href="index.html#matmul-warptiling" target="_top">
+<span class="mini" aria-hidden="true"><span class="m1">Matmul IV: vectorize, autotune, warptile</span><span class="m2">Also called siboehm kernels 6–11, float4 loads, warp tiling, or "the last 20%". Card 4 of 4 on Simon Boehm's CUDA matmul worklog: FP32 SGEMM on an RTX A6000 at 4092–4096², going from 78.4% to 93.7% of…</span><span class="m3">In one breath</span><span class="m4">Once each thread computes 64 results from registers (kernel 5), what's left is getting data in wider chunks (128-bit loads), picking the tile sizes by search rather than by hand, and adding a warp-sized tile between the block and the thread so the code matches how the hardware schedules work. Each step gives about 1.1×. Together…</span></span>
+<span class="tx"><span class="lab">Next up · 12 / 17</span><span class="tt">Matmul IV: vectorize, autotune, warptile</span><span class="ds">Kernels 6 to 11: the last 20% and the power law of effort</span><span class="nd">Builds directly on this card.</span><span class="go">Continue →</span></span></a><div class="aux"><span><a href="index.html#matmul-coalescing-smem" target="_top">← Matmul II: coalescing and shared-memory caching</a></span><a href="index.html" target="_top">All cards in 3 · GPU kernels</a></div></div>
+<!-- /series-nav:bottom -->
+</body>
+</html>

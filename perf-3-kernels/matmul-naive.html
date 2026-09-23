@@ -1,0 +1,345 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Matmul I: the naive kernel and the lower bound</title>
+<style>
+:root{
+  --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
+  --text:#1c1f23; --muted:#6b7068; --faint:#b9b9b3;
+  --accent:#4a9d77; --accent-bg:#dcefdf; --accent-border:#8cc79c;
+  --red:#c0492b; --red-bg:#fbeceb;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#15171a; --surface:#1d2024; --surface2:#24282d; --border:#32373d;
+    --text:#e6e8ea; --muted:#9aa1a9; --faint:#4a5057;
+    --accent:#5fb37f; --accent-bg:#1c2b22; --accent-border:#3f7a55;
+    --red:#e57368; --red-bg:#2e1f1e;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text)}
+.card{max-width:820px;margin:0 auto;padding:28px 32px;font-family:-apple-system,"Inter",system-ui,sans-serif;line-height:1.45}
+h1{font-size:26px;font-weight:600;margin:0 0 6px;letter-spacing:-0.01em}
+.sub{font-size:15px;color:var(--muted);margin:0 0 20px}
+h2{font-size:17px;font-weight:600;margin:26px 0 10px}
+p{font-size:15px;margin:0 0 10px}
+ul{font-size:15px;margin:0 0 10px;padding-left:20px}
+.cap{font-size:13px;color:var(--muted);margin:8px 0 0;text-align:center}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+
+/* Horizontal bar chart */
+.bars{display:grid;grid-template-columns:200px 1fr 64px;column-gap:14px;row-gap:9px;align-items:center;font-size:14px}
+.bars .hd{font-size:13px;color:var(--muted)}
+.bars .hd.r,.bars .tot{text-align:right;font-variant-numeric:tabular-nums}
+.bars .tok small{display:block;color:var(--muted);font-size:12px}
+.bars .track{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted);font-variant-numeric:tabular-nums}
+.bars .bar{height:18px;border-radius:3px;background:var(--accent);flex:none}
+.bars .bar.rd{background:var(--accent-bg);border:1px dashed var(--accent-border)}
+.bars .bar.worst{background:var(--red)}
+.bars .lo,.bars .lo small{color:var(--red)}
+.bars .strong{font-weight:600}
+
+/* Tables and formulas */
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border)}
+th{font-size:12px;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:none}
+.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.hi{color:var(--accent);font-weight:600} .lo{color:var(--red)} .mu{color:var(--muted)}
+.formula,.code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin:10px 0;white-space:pre;overflow-x:auto;line-height:1.55}
+.code{background:var(--surface)}
+.code .c{color:var(--muted)}
+.tw{overflow-x:auto}
+.tw table{min-width:640px}
+
+/* MathML */
+.mathbox{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px 16px 12px;margin:10px 0;overflow-x:auto}
+.mathbox math{font-size:21px;color:var(--text);font-family:"STIX Two Math","Latin Modern Math","Cambria Math",math}
+.mathbox .t1{color:var(--text)} .mathbox .t2{color:var(--accent)} .mathbox .t3{color:var(--muted)} .mathbox .t4{color:var(--red)}
+.mathbox .lab{font-size:12px;font-family:-apple-system,"Inter",system-ui,sans-serif;padding-top:3px;border-top:1.5px solid currentColor;margin-top:2px}
+.mathbox math + math{margin-top:16px}
+.legend{display:grid;grid-template-columns:auto 1fr auto;column-gap:14px;row-gap:5px;font-size:13px;margin-top:14px;align-items:baseline}
+.legend .sym{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;text-align:right}
+.legend .v{color:var(--muted);text-align:right;font-variant-numeric:tabular-nums}
+@media (max-width:560px){.legend{grid-template-columns:auto 1fr}.legend .v{display:none}}
+
+/* Two examples per term */
+.parts td{vertical-align:top} .parts td:first-child{font-weight:600;white-space:nowrap}
+.parts .ex{font-size:13px} .parts .ex span{display:block;color:var(--muted)}
+@media (max-width:560px){.parts .what{display:none}}
+
+/* 2x2 grid */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.cell{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.cell.win{background:var(--accent-bg);border-color:var(--accent-border)}
+.cell h3{font-size:16px;font-weight:600;margin:0 0 5px;display:flex;gap:8px;align-items:baseline}
+.cell p{font-size:14px;margin:0;color:var(--text)}
+.cell.win h3,.cell.win p{color:var(--accent)}
+.x{color:var(--red)} .ok{color:var(--accent)}
+
+/* Clarification box */
+.note{border:1px solid var(--border);border-radius:10px;padding:14px 18px;font-size:14px}
+.note p,.note li{font-size:14px} .note p:last-child{margin-bottom:0}
+
+.labbox{border:1px solid var(--border);background:var(--surface);border-radius:10px;padding:12px 16px;margin:10px 0;font-size:14px}
+.labbox p{font-size:14px} .labbox p:last-child{margin-bottom:0}
+.foot{margin-top:22px;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+.foot p{font-size:13px}
+.lab-link{display:inline-block;font-size:13px;border:1px solid var(--accent-border);background:var(--accent-bg);color:var(--accent);border-radius:6px;padding:4px 10px;margin:2px 4px 6px 0;text-decoration:none}
+svg{display:block;max-width:100%;height:auto}
+.sl{font-size:12px;fill:var(--muted)} .st{font-size:13px;fill:var(--text)} .sg{font-size:13px;fill:var(--accent)}
+.mat{fill:var(--surface);stroke:var(--faint);stroke-width:1}
+.t0{fill:var(--accent)}
+.t1{fill:var(--surface2);stroke:var(--muted);stroke-width:1.2;stroke-dasharray:3 2}
+@media (max-width:560px){.grid2{grid-template-columns:1fr}.card{padding:20px 16px}.bars{grid-template-columns:120px 1fr 52px;column-gap:8px}}
+a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+/* series-nav */
+.sn{max-width:820px;margin:0 auto;padding:16px 32px 0;font-family:-apple-system,"Inter",system-ui,sans-serif;font-size:13px;line-height:1.5;color:var(--muted)}
+.sn a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+.sn .crumbs{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 7px}
+.sn .crumbs b{color:var(--text);font-weight:600}
+.sn .sep{color:var(--faint)}
+.sn .step{margin-left:auto;white-space:nowrap}
+.sn .dep{margin-top:5px;padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface)}
+.sn .dep .ok{color:var(--accent);font-weight:600}
+.snx{max-width:820px;margin:0 auto;padding:6px 32px 44px;font-family:-apple-system,"Inter",system-ui,sans-serif}
+.snx .nx{display:grid;grid-template-columns:280px 1fr;text-decoration:none;color:var(--text);background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.snx .nx:hover,.snx .nx:focus-visible{border-color:var(--accent-border);outline:none}
+.snx .mini{position:relative;height:210px;overflow:hidden;background:var(--bg);border-right:1px solid var(--border);padding:14px 16px}
+.snx .mini span{display:block}
+.snx .mini .m1{font-size:12.5px;font-weight:600;margin:0 0 4px;line-height:1.3}
+.snx .mini .m2{font-size:9px;color:var(--muted);margin:0 0 8px;line-height:1.4}
+.snx .mini .m3{font-size:8.5px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;margin:0 0 3px}
+.snx .mini .m4{font-size:9.5px;margin:0;line-height:1.45}
+.snx .tx{padding:16px 20px}
+.snx .lab{font-size:12px;font-weight:600;color:var(--accent);letter-spacing:.04em;text-transform:uppercase}
+.snx .tt{display:block;font-size:20px;font-weight:600;margin:5px 0 4px;line-height:1.25}
+.snx .ds{display:block;font-size:14px;color:var(--muted)}
+.snx .nd{display:block;font-size:13px;color:var(--muted);margin-top:10px}
+.snx .go{display:block;margin-top:12px;font-size:14px;font-weight:600;color:var(--accent)}
+.snx .aux{display:flex;justify-content:space-between;gap:12px;margin-top:10px;font-size:13px;color:var(--muted)}
+.snx .aux a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+@media (max-width:560px){.sn,.snx{padding-left:16px;padding-right:16px}.snx .nx{grid-template-columns:1fr}.snx .mini{display:none}.sn .step{margin-left:0}}
+/* /series-nav */
+</style>
+</head>
+<body>
+<!-- series-nav:top -->
+<nav class="sn" aria-label="Series navigation"><div class="crumbs"><a href="../perf-0-map/index.html" target="_top">AI perf engineering</a><span class="sep">›</span><a href="index.html" target="_top">3 · GPU kernels</a><span class="sep">›</span><b>09 / 17</b><span class="step"><a href="index.html#reduction-unrolling" target="_top">← prev</a> · <a href="index.html#matmul-coalescing-smem" target="_top">next →</a></span></div>
+<div class="dep"><b>Before this:</b> <a href="index.html#coalescing" target="_top">Memory coalescing</a> · <a href="../perf-1-foundations/index.html#roofline-intuition" target="_top">Compute-bound or memory-bound?</a> (perf-1)</div></nav>
+<!-- /series-nav:top -->
+<article class="card">
+<h1>Matmul I: the naive kernel and the lower bound</h1>
+<p class="sub">Also called SGEMM (single-precision general matrix multiply), siboehm's worklog, or "kernel 1". This is Simon Boehm's <i>How to Optimize a CUDA Matmul Kernel for cuBLAS-like Performance</i> (Dec 2022): the intro and results table, "Kernel 1: Naive Implementation", "Lower Bounding the Fastest Possible Runtime" and "Memory Access Pattern of the Naive Kernel". His numbers are on an RTX A6000. The T4, H100 and Llama figures are our recomputation.</p>
+
+<h2>In one breath</h2>
+<p>Before you tune a kernel, work out the fastest it could possibly run: the FLOPs divided by peak compute, and the minimum bytes divided by peak bandwidth. A 4092² fp32 matmul needs 137 GFLOP but only 268 MB of traffic, so a good kernel is compute-bound. The naive kernel, one thread per output, re-reads the inputs until it moves about 2,000× that minimum and reaches 1.3% of cuBLAS.</p>
+
+<h2>The setup</h2>
+<p>SGEMM computes <code>C = αAB + βC</code> in fp32. siboehm's benchmark uses three 4092 × 4092 fp32 matrices on an RTX A6000 (Ampere, 84 SMs), which is advertised at <b>30 TFLOP/s fp32</b> and <b>768 GB/s</b>. The yardstick is cuBLAS at fp32. He notes that TF32 or BF16 would let cuBLAS use tensor cores, which would give 2.5× or 3.5× more FLOPs, but that's a different problem.</p>
+
+<h2>The whole ladder, in % of cuBLAS</h2>
+<p>This card covers the red bar. The next three cards climb the rest. The scale is linear, with the full bar at cuBLAS's 23,249.6 GFLOP/s.</p>
+<div class="bars">
+  <div class="hd">Kernel (A6000, 4092²)</div><div class="hd">GFLOP/s</div><div class="hd r">% cuBLAS</div>
+  <div class="tok lo strong">1 Naive</div><div class="track"><div class="bar worst" style="width:1.04%"></div>309.0</div><div class="tot lo strong">1.3%</div>
+  <div class="tok">2 GMEM coalescing</div><div class="track"><div class="bar" style="width:6.80%"></div>1,986.5</div><div class="tot">8.5%</div>
+  <div class="tok">3 SMEM caching</div><div class="track"><div class="bar" style="width:10.24%"></div>2,980.3</div><div class="tot">12.8%</div>
+  <div class="tok">4 1D blocktiling</div><div class="track"><div class="bar" style="width:29.20%"></div>8,474.7</div><div class="tot">36.5%</div>
+  <div class="tok">5 2D blocktiling</div><div class="track"><div class="bar" style="width:54.96%"></div>15,971.7</div><div class="tot">68.7%</div>
+  <div class="tok">6 Vectorized access</div><div class="track"><div class="bar" style="width:62.72%"></div>18,237.3</div><div class="tot">78.4%</div>
+  <div class="tok">7 Bank conflicts, linearize <small>README</small></div><div class="track"><div class="bar rd" style="width:55.76%"></div>16,213.4</div><div class="tot">69.7%</div>
+  <div class="tok">8 Bank conflicts, offset <small>README</small></div><div class="track"><div class="bar rd" style="width:56.64%"></div>16,459.2</div><div class="tot">70.8%</div>
+  <div class="tok">9 Autotuning</div><div class="track"><div class="bar" style="width:67.84%"></div>19,721.0</div><div class="tot">84.8%</div>
+  <div class="tok">10 Warptiling</div><div class="track"><div class="bar" style="width:74.96%"></div>21,779.3</div><div class="tot">93.7%</div>
+  <div class="tok">11 Double buffering <small>README</small></div><div class="track"><div class="bar rd" style="width:59.44%"></div>17,278.3</div><div class="tot">74.3%</div>
+  <div class="tok strong">cuBLAS</div><div class="track"><div class="bar" style="width:80.00%"></div>23,249.6</div><div class="tot strong">100%</div>
+</div>
+<p class="cap">Solid bars are the 9 rows of the article's table. Dashed bars (kernels 7, 8 and 11) appear only in the repo README, and the article skips them. Even cuBLAS reaches only 77.5% of the advertised 30 TFLOP/s. Kernel 10 is 70.5× kernel 1. The percentages are the article's own, and labs/matmul-bounds.py reproduces them.</p>
+
+<h2>Kernel 1: one thread per entry of C</h2>
+<p>Each thread computes one dot product: row x of A with column y of B. No two threads write the same entry, so no synchronization is needed. The launch covers C with 32 × 32 blocks (1,024 threads, the per-block maximum):</p>
+<div class="code"><span class="c">// launch: as many 32×32 blocks as it takes to cover C</span>
+dim3 gridDim(CEIL_DIV(M, 32), CEIL_DIV(N, 32), 1);
+dim3 blockDim(32, 32, 1);
+sgemm_naive&lt;&lt;&lt;gridDim, blockDim&gt;&gt;&gt;(M, N, K, alpha, A, B, beta, C);
+
+__global__ void sgemm_naive(int M, int N, int K, float alpha, const float *A,
+                            const float *B, float beta, float *C) {
+  const uint x = blockIdx.x * blockDim.x + threadIdx.x;   <span class="c">// row of C</span>
+  const uint y = blockIdx.y * blockDim.y + threadIdx.y;   <span class="c">// column of C</span>
+  if (x &lt; M &amp;&amp; y &lt; N) {                                 <span class="c">// tile quantization guard</span>
+    float tmp = 0.0;
+    for (int i = 0; i &lt; K; ++i)
+      tmp += A[x * K + i] * B[i * N + y];                  <span class="c">// K loads of A, K loads of B</span>
+    C[x * N + y] = alpha * tmp + beta * C[x * N + y];      <span class="c">// 1 load + 1 store of C</span>
+  }
+}</div>
+<p class="cap">From siboehm's article and repo (<a href="https://github.com/siboehm/SGEMM_CUDA">SGEMM_CUDA</a>, MIT License). Matrices are row-major. The code is written from one thread's point of view.</p>
+
+<svg viewBox="0 0 800 330" role="img" aria-label="Naive kernel memory access: one thread reads a full row of A and a full column of B to produce one entry of C; the next thread in the warp reads the next row of A and the same column of B">
+  <text class="sl" x="215" y="22" text-anchor="middle">B  (K × N)</text>
+  <rect class="mat" x="240" y="30" width="150" height="150"/>
+  <rect class="t0" x="330" y="30" width="9" height="150"/>
+  <text class="sl" x="344" y="108">col y</text>
+  <text class="sl" x="30" y="195">A  (M × K)</text>
+  <rect class="mat" x="60" y="200" width="150" height="110"/>
+  <rect class="t0" x="60" y="236" width="150" height="9"/>
+  <rect class="t1" x="60" y="251" width="150" height="9"/>
+  <text class="sl" x="56" y="244" text-anchor="end">x</text>
+  <text class="sl" x="56" y="260" text-anchor="end">x+1</text>
+  <text class="sl" x="315" y="195" text-anchor="middle">C  (M × N)</text>
+  <rect class="mat" x="240" y="200" width="150" height="110"/>
+  <rect class="t0" x="330" y="236" width="9" height="9"/>
+  <rect class="t1" x="330" y="251" width="9" height="9"/>
+  <text class="st" x="430" y="46">Thread (x, y), green, reads:</text>
+  <text class="sl" x="430" y="66">row x of A: 4,092 floats</text>
+  <text class="sl" x="430" y="84">column y of B: 4,092 floats, each 16 KB apart</text>
+  <text class="sl" x="430" y="102">C[x][y]: 1 float (β·C), then writes it</text>
+  <text class="st" x="430" y="128">= 2·4,092 + 1 = 8,185 floats, and 4,092² threads</text>
+  <text class="st" x="430" y="170">Next thread in the same warp (dashed):</text>
+  <text class="sl" x="430" y="190">threadIdx.x + 1 → row x+1 of C</text>
+  <text class="sl" x="430" y="208">a different row of A, 4,092 × 4 B = 16 KB further on</text>
+  <text class="sl" x="430" y="226">the same column of B, the same addresses at each step i</text>
+  <text class="st" x="430" y="262">No thread reuses what its neighbour loaded:</text>
+  <text class="sl" x="430" y="280">every row of A is fetched 4,092 times (once per column)</text>
+  <text class="sl" x="430" y="298">and every column of B 4,092 times (once per row)</text>
+</svg>
+<p class="cap">The article's diagram uses two threads, one red and one green. Here green is one thread and dashed is its warp neighbour. A warp is 32 threads with consecutive <code>threadIdx.x</code>, so at each step <code>i</code> the warp reads 32 floats of A spaced 16 KB apart. That scattered pattern is what kernel 2 fixes (see <a href="coalescing.html">memory coalescing</a>).</p>
+
+<p style="margin-top:14px"><b>Sidenote: tile quantization.</b> When the matrix size isn't a multiple of the block size, extra blocks are launched to cover the edge, and the <code>if</code> idles the threads that fall outside. The article's picture shows 9 blocks with only 4 fully used. At 4092: CEIL_DIV(4092, 32) = 128, so 128² blocks × 1,024 = 16,777,216 threads for 16,744,464 entries, which leaves <b>32,752 idle (0.20%)</b>. At 4096 none are idle. The effect is small here and large for small or awkward shapes.</p>
+
+<h2>Lower-bounding the fastest possible runtime</h2>
+<p>This part doesn't depend on any implementation. Count the work, count the unavoidable bytes, and divide each by the hardware's peak.</p>
+<div class="mathbox">
+<math display="block">
+  <munder class="t2"><mtext>FLOPs</mtext><mtext class="lab">useful work</mtext></munder><mo>=</mo>
+  <munder><mrow><mn>2</mn><msup><mi>n</mi><mn>3</mn></msup></mrow><mtext class="lab">multiply + add per step</mtext></munder>
+  <mo>+</mo>
+  <munder><msup><mi>n</mi><mn>2</mn></msup><mtext class="lab">+ βC</mtext></munder>
+  <mspace width="1.2em"/>
+  <munder class="t3"><msub><mtext>Bytes</mtext><mtext>min</mtext></msub><mtext class="lab">unavoidable traffic</mtext></munder><mo>=</mo>
+  <mo>(</mo><munder><mrow><mn>3</mn><msup><mi>n</mi><mn>2</mn></msup></mrow><mtext class="lab">read A, B, C</mtext></munder><mo>+</mo><munder><msup><mi>n</mi><mn>2</mn></msup><mtext class="lab">write C</mtext></munder><mo>)</mo><mo>&#183;</mo><mn>4</mn><mtext>&#8201;B</mtext>
+</math>
+<math display="block">
+  <msub><mi>T</mi><mtext>min</mtext></msub><mo>=</mo><mo>max</mo><mo>(</mo>
+  <munder class="t2"><mfrac><mtext>FLOPs</mtext><msub><mi>P</mi><mtext>peak</mtext></msub></mfrac><mtext class="lab">4.57 ms</mtext></munder>
+  <mo>,</mo><mspace width="0.4em"/>
+  <munder class="t3"><mfrac><msub><mtext>Bytes</mtext><mtext>min</mtext></msub><msub><mi>W</mi><mtext>mem</mtext></msub></mfrac><mtext class="lab">0.35 ms</mtext></munder>
+  <mo>)</mo>
+</math>
+<div class="legend">
+  <span class="sym">n</span><span>matrix side; all three are n × n</span><span class="v">4092 (siboehm) · 4096 (README, notebook)</span>
+  <span class="sym">P_peak</span><span>advertised fp32 FLOP/s</span><span class="v">A6000 30e12 · T4 8.1e12</span>
+  <span class="sym">W_mem</span><span>global-memory (DRAM) bandwidth</span><span class="v">A6000 768e9 · T4 320e9 B/s</span>
+  <span class="sym">Bytes_min</span><span>each matrix touched once, assuming a big enough cache</span><span class="v">268 MB fp32</span>
+</div>
+</div>
+<div class="formula">FLOPs     = 2·4092³ + 4092²       = 137,053,437,840   ≈ 137 GFLOP
+reads     = 3·4092²·4 B            = 200.9 MB           (article: 201 MB)
+store     =   4092²·4 B            =  67.0 MB           (article: 67 MB)
+Bytes_min = 200.9 + 67.0           = 267.9 MB           (article: 268 MB; later "278 MB")
+
+compute   = 137.1e9 / 30e12        = 4.57 ms            (article: 4.5 ms)
+memory    = 267.9e6 / 768e9        = 0.349 ms           (article: 0.34 ms)
+ratio     = 4.57 / 0.349           = 13.1×              (article: "~10x")
+→ compute-bound as long as a kernel moves less than ~10× (13× exactly) the minimum
+
+cuBLAS moves 500 MB (1.87× the minimum)   → comfortably compute-bound
+tensor cores, 309 TFLOP/s: 137.1e9 / 309e12 = 0.44 ms  ≈ the 0.35 ms memory floor</div>
+<p class="cap">Three quirks in the source, reproduced as written. (1) The minimum is 268 MB, but a later sentence says 278 MB, which looks like a typo. (2) "~10×" is a rounded 13.1×. (3) The article says cuBLAS reaches "~245 FLOPs/Byte", but 137.1 GFLOP ÷ 500 MB gives 274. The article doesn't show how it got 245, so we can't reconcile the two. With tensor cores the article concludes an optimized kernel "would almost surely still be memory bound": 0.44 ms of math is barely above the 0.35 ms floor, and any real kernel moves more than the minimum.</p>
+
+<table class="parts" style="margin-top:14px">
+  <tr><th>Term</th><th class="what">What it means</th><th>Example A</th><th>Example B</th></tr>
+  <tr><td>Compute floor</td><td class="what">FLOPs ÷ peak FLOP/s. No kernel can beat it.</td>
+      <td class="ex"><b>4.57 ms</b><span>4092² on the A6000 (30 TF)</span></td>
+      <td class="ex"><b>16.92 ms</b><span>4092² on a T4 (8.1 TF), our recomputation</span></td></tr>
+  <tr><td>Minimum traffic</td><td class="what">Bytes that must cross DRAM if every input is read once and the output written once</td>
+      <td class="ex"><b class="ok">268 MB</b><span>4092² fp32 SGEMM</span></td>
+      <td class="ex"><b class="lo">548 GB</b><span>what the naive kernel would move with zero caching</span></td></tr>
+  <tr><td>Arithmetic intensity</td><td class="what">FLOPs per byte of DRAM traffic. Compare it with the chip's ridge.</td>
+      <td class="ex"><b class="ok">512 FLOP/B</b><span>137.1 GFLOP ÷ 267.9 MB, the best case</span></td>
+      <td class="ex"><b class="lo">0.25 FLOP/B</b><span>137.1 GFLOP ÷ 548.2 GB, naive with no cache</span></td></tr>
+  <tr><td>Ridge (ops:byte)</td><td class="what">Peak FLOP/s ÷ bandwidth. Above it a kernel is compute-bound, below it memory-bound.</td>
+      <td class="ex"><b>39 FLOP/B</b><span>A6000 fp32: 30e12 ÷ 768e9</span></td>
+      <td class="ex"><b>295 FLOP/B</b><span>H100 bf16 tensor: 989e12 ÷ 3.35e12</span></td></tr>
+  <tr><td>Tile quantization</td><td class="what">Idle threads in edge blocks when n isn't a multiple of the block size</td>
+      <td class="ex"><b>32,752 idle</b><span>n = 4092, 0.20% of launched threads</span></td>
+      <td class="ex"><b class="ok">0 idle</b><span>n = 4096, an exact 128 × 128 grid</span></td></tr>
+</table>
+
+<h2>Memory access pattern of the naive kernel</h2>
+<p>Assume the worst case, zero caching: each thread loads its own row of A, its own column of B and one entry of C straight from global memory.</p>
+<div class="formula">floats per thread = 2·4092 + 1                 = 8,185
+threads           = 4092²                        = 16,744,464
+traffic           = 8,185 × 16,744,464 × 4 B     = 548.2 GB     (article: 548 GB)
+vs the minimum    = 548.2 GB / 267.9 MB          = 2,046×       (the bound allows ~13×)
+at 768 GB/s that alone takes 548.2e9 / 768e9     = 0.71 s</div>
+<p>What siboehm measured: <b>~300 GFLOP/s</b> (the table says 309.0), so 137.1 GFLOP ÷ 309 GFLOP/s ≈ <b>0.44 s</b> per matmul (the article says "about 0.5s"). That's 1.0% of the advertised 30 TFLOP/s. The profiler showed <b>only 15 GB/s</b> of global-memory throughput, 2% of the 768 GB/s peak. He blames this on non-coalesced access: a warp's 32 loads of A land on 32 different rows, so the hardware issues many 32-byte transactions to deliver 128 useful bytes. The article explains this in the next section, and <a href="matmul-coalescing-smem.html">Matmul II</a> fixes it (15 → 110 GB/s).</p>
+<p class="cap">Our inference, not in the article: 548 GB in 0.44 s would need 1,236 GB/s, more than the card's 768 GB/s. And 15 GB/s over 0.44 s is only about 6.7 GB of DRAM traffic. So L1/L2 caches absorb almost all of the 548 GB, and the kernel is limited by issuing and servicing billions of scattered loads, not by DRAM bandwidth itself.</p>
+
+<h2>Our recomputation: the same bound on the reader's GPUs</h2>
+<p>Same 4092² problem. The ridge is peak ÷ bandwidth, and the ratio is compute floor ÷ memory floor: how many times the minimum traffic an optimized kernel can move and still be compute-bound.</p>
+<div class="tw">
+<table>
+  <tr><th>GPU, precision</th><th class="num">Peak</th><th class="num">Bandwidth</th><th class="num">Ridge</th><th class="num">Min bytes</th><th class="num">Compute floor</th><th class="num">Memory floor</th><th class="num">Ratio</th><th class="num">Naive, no cache</th></tr>
+  <tr><td>A6000 fp32 <span class="mu">(siboehm)</span></td><td class="num">30 TF</td><td class="num">768 GB/s</td><td class="num">39</td><td class="num">268 MB</td><td class="num">4.57 ms</td><td class="num">0.349 ms</td><td class="num">13.1×</td><td class="num lo">0.71 s</td></tr>
+  <tr><td>T4 fp32 <span class="mu">(Colab)</span></td><td class="num">8.1 TF</td><td class="num">320 GB/s</td><td class="num">25</td><td class="num">268 MB</td><td class="num">16.92 ms</td><td class="num">0.837 ms</td><td class="num">20.2×</td><td class="num lo">1.71 s</td></tr>
+  <tr><td>H100 SXM fp32, non-tensor</td><td class="num">67 TF</td><td class="num">3.35 TB/s</td><td class="num">20</td><td class="num">268 MB</td><td class="num">2.05 ms</td><td class="num">0.080 ms</td><td class="num">25.6×</td><td class="num lo">0.16 s</td></tr>
+  <tr><td>H100 SXM bf16, tensor</td><td class="num">989 TF</td><td class="num">3.35 TB/s</td><td class="num">295</td><td class="num">134 MB</td><td class="num hi">0.14 ms</td><td class="num">0.040 ms</td><td class="num">3.5×</td><td class="num lo">0.08 s</td></tr>
+</table>
+</div>
+<p class="cap">From labs/matmul-bounds.py. H100 fp32 is 67 TF on NVIDIA's H100 page. The bf16 row halves the bytes (2 B per element), and a tensor-core kernel has only 3.5× headroom over the minimum traffic before it turns memory-bound, the same point siboehm makes about the A6000's tensor cores. The "Naive, no cache" column is 548 GB (274 GB in bf16) streamed at full bandwidth, a lower bound for that access pattern if nothing were cached. Colab T4 clocks and availability vary.</p>
+
+<h2>The running example: which side of the roofline is a Llama matmul?</h2>
+<p>One Llama-3.1-8B MLP up-projection, <code>bf16[B, 4096] × bf16[4096, 14336]</code>, on an H100 (ridge 295). The same count as above: FLOPs = 2·B·4096·14336, bytes = 2·(B·4096 + 4096·14336 + B·14336).</p>
+<div class="tw"><table>
+  <tr><th>Phase</th><th class="num">B</th><th class="num">FLOPs</th><th class="num">Min bytes</th><th class="num">Intensity</th><th class="num">Math</th><th class="num">Memory</th><th>Bound</th></tr>
+  <tr><td>Decode, batch 1</td><td class="num">1</td><td class="num">0.117 GFLOP</td><td class="num">117.5 MB</td><td class="num lo">1.0</td><td class="num">0.12 µs</td><td class="num">35.07 µs</td><td class="lo">memory, 0.3% of peak</td></tr>
+  <tr><td>Prefill, 4,096 tokens</td><td class="num">4,096</td><td class="num">481 GFLOP</td><td class="num">268.4 MB</td><td class="num hi">1,792</td><td class="num">486.4 µs</td><td class="num">80.1 µs</td><td class="hi">compute</td></tr>
+</table></div>
+<p class="cap">Prefill at B = 4,096 is almost exactly siboehm's problem: a 4096 × 4096 input against a 4096 × 14336 weight, compute-bound by a wide margin. Batch-1 decode is a matrix-vector product with intensity 1, far below 295, and no kernel trick changes that. Only batching more tokens does (see <a href="../perf-2-scaling-book-inference/critical-batch-size.html">the critical batch size</a>). Our recomputation.</p>
+
+<h2>Where the naive kernel sits</h2>
+<div class="grid2">
+  <div class="cell"><h3><span class="x">&#10007;</span> Naive kernel</h3><p>309 GFLOP/s, 1.3% of cuBLAS. It is correct and simple, but with no data reuse between threads the traffic is ~2,000× the minimum and the loads are scattered.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Optimized CPU BLAS</h3><p>siboehm notes that ~300 GFLOP/s is also about what an optimized BLAS got on his 2015 Haswell CPU. A 30 TF GPU running a naive kernel only ties a laptop-class CPU library.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Tensor cores</h3><p>A 0.44 ms floor at 309 TF, 10× faster than the fp32 floor, but only if you accept TF32 or BF16 precision. It's a different contract from SGEMM, and it would almost surely be memory-bound.</p></div>
+  <div class="cell win"><h3><span class="ok">&#10003;</span> cuBLAS fp32</h3><p>23,249.6 GFLOP/s, 77.5% of peak. It moves 500 MB, under 2× the minimum, so it sits on the compute side of the bound. That's the target the next three cards climb toward.</p></div>
+</div>
+
+<h2>If the matmul is compute-bound, why does the naive kernel crawl?</h2>
+<div class="note">
+  <p><b>"Compute-bound" describes the problem, not the kernel.</b> The bound says a kernel <i>can</i> be compute-bound if it moves less than ~10× the 268 MB minimum. The naive kernel moves 548 GB (zero-cache count), <b>2,046×</b> the minimum, so in practice it is limited by memory accesses, not math. Its intensity is 0.25 FLOP/B against the A6000's ridge of 39.</p>
+  <p><b>The fix is reuse.</b> Kernel 2 makes each warp's loads coalesced. Kernel 3 stages 32 × 32 tiles in shared memory so each value fetched from DRAM feeds 32 FMAs. Kernels 4–5 give each thread 8 or 64 outputs to raise reuse from registers. Every step lowers bytes per FLOP. That is tiling.</p>
+  <p><b>When the lower bound misleads:</b></p>
+  <ul>
+    <li><b>Small or skinny matrices</b> (the Llama decode row): the minimum traffic already dominates, so the problem itself is memory-bound, and tiling can't help. Batch more tokens instead.</li>
+    <li><b>Peak FLOP/s is optimistic.</b> siboehm: it's "a reductionist metric" that assumes FMA-heavy code, and peak bandwidth needs a friendly access pattern. Even cuBLAS reaches 77.5%.</li>
+    <li><b>The 548 GB is a worst case.</b> Caches catch most of it, as the measured 15 GB/s shows. Use the count to see how much reuse is available, not to predict time.</li>
+  </ul>
+</div>
+
+<h2>Labs</h2>
+<div class="labbox">
+  <p><a class="lab-link" href="https://github.com/seyonv/explainers/blob/main/perf-3-kernels/labs/matmul-bounds.py">Run it: labs/matmul-bounds.py</a> <b>[L]</b> runs on your Mac in under a second. It prints the 137 GFLOP / 268 MB bound, the 4.57 ms vs 0.349 ms split, the 548 GB naive traffic, every table row as % of cuBLAS and % of peak, tile quantization, the T4/H100 table and the Llama rows.</p>
+  <p><a class="lab-link" href="https://colab.research.google.com/github/seyonv/explainers/blob/main/perf-3-kernels/labs/matmul-ladder.ipynb">Open in Colab: labs/matmul-ladder.ipynb</a> <a class="lab-link" href="https://github.com/seyonv/explainers/blob/main/perf-3-kernels/labs/matmul-ladder.ipynb">view on GitHub</a> <b>[C]</b> runs on a T4. It includes siboehm's kernels 1, 2 and 3 (MIT License, credited in the notebook), <code>cublasSgemm</code>, and <code>torch.matmul</code> with TF32 disabled, at 4096² and 1024². Each is timed with cudaEvent after warm-up and checked against cuBLAS, with GFLOP/s, % of cuBLAS and % of 8.1 TF printed.</p>
+  <p><b>Not yet run by the author.</b> Numbers on this card are from siboehm's article (RTX A6000); your T4 run is the exercise. Expect lower absolute numbers (8.1 vs 30 TF), and compare the ratios between kernels instead.</p>
+</div>
+
+<div class="foot">
+<p><b>Read next:</b> <a href="https://siboehm.com/articles/22/CUDA-MMM">siboehm, "How to Optimize a CUDA Matmul Kernel for cuBLAS-like Performance: a Worklog"</a>. Read the intro, the results table and "Kernel 1: Naive Implementation" with both subsections ("Lower Bounding the Fastest Possible Runtime", "Memory Access Pattern of the Naive Kernel"). That's all of it up to Kernel 2, ~30 min, and the sidenotes count. The whole article takes ~3 h. Then reproduce it: clone <a href="https://github.com/siboehm/SGEMM_CUDA">siboehm/SGEMM_CUDA</a> or start with the Colab notebook above.</p>
+<p><b>Related:</b> <a href="matmul-coalescing-smem.html">Matmul II: coalescing and shared memory</a> · <a href="matmul-blocktiling.html">Matmul III: blocktiling</a> · <a href="matmul-warptiling.html">Matmul IV: warptiling</a> · <a href="coalescing.html">memory coalescing</a> · <a href="execution-model.html">the CUDA execution model</a> · <a href="tensor-cores-low-precision.html">tensor cores and low precision</a> · <a href="../perf-1-foundations/roofline-intuition.html">perf-1: the roofline intuition</a> · <a href="../perf-2-scaling-book-inference/roofline.html">perf-2: the roofline, properly</a> · <a href="../perf-2-scaling-book-inference/critical-batch-size.html">perf-2: the critical batch size</a></p>
+<p><b>Sources:</b> A6000 30 TFLOP/s fp32, 768 GB/s, 309 TFLOP/s tensor; 137 GFLOP, 201 + 67 = 268 MB (and "278 MB"), 4.5 ms / 0.34 ms, ~10×, cuBLAS 500 MB and ~245 FLOP/B, 0.44 ms; 2·4092+1 floats, 548 GB; ~300 GFLOP/s; 15 GB/s; the 2015 Haswell comparison; TF32/BF16 2.5×/3.5×; the 9-row results table: <a href="https://siboehm.com/articles/22/CUDA-MMM">siboehm.com/articles/22/CUDA-MMM</a> (Dec 2022). Kernels 7, 8, 11 and the kernel code (MIT License, © 2023 Simon Boehm): <a href="https://github.com/siboehm/SGEMM_CUDA">github.com/siboehm/SGEMM_CUDA</a> README. H100 SXM fp32 67 TF, bf16 989 TF dense, 3.35 TB/s: <a href="https://www.nvidia.com/en-us/data-center/h100/">NVIDIA H100 page</a> (the dense figure is half the listed sparse 1,979). T4 8.1 TF fp32, 320 GB/s: <a href="https://www.nvidia.com/content/dam/en-zz/Solutions/Data-Center/tesla-t4/t4-tensor-core-datasheet-951643.pdf">NVIDIA T4 datasheet</a> and the Turing whitepaper (the datasheet prints 300 GB/s; the course uses 320). Llama-3.1-8B shapes and ops:byte 295: course facts. Every T4, H100, Llama number, tile-quantization count, and the 274 FLOP/B and 6.7 GB figures: our recomputation, labs/matmul-bounds.py.</p>
+</div>
+</article>
+<!-- series-nav:bottom -->
+<div class="snx"><a class="nx" href="index.html#matmul-coalescing-smem" target="_top">
+<span class="mini" aria-hidden="true"><span class="m1">Matmul II: coalescing and shared-memory caching</span><span class="m2">Also called siboehm's kernels 2 and 3, GMEM coalescing and SMEM cache-blocking. This card walks the worklog's sections "Kernel 2: Global Memory Coalescing" and "Kernel 3: Shared Memory Cache-Blocking"…</span><span class="m3">In one breath</span><span class="m4">Kernel 2 changes only which thread computes which entry of C, so that the 32 threads of a warp read 32 neighbouring floats of B, which the hardware merges into one wide load. That gives 6.4× more speed from two edited lines. Kernel 3 then has each block copy 32 × 32 tiles of A and B into on-chip shared memory once and reuse them…</span></span>
+<span class="tx"><span class="lab">Next up · 10 / 17</span><span class="tt">Matmul II: coalescing and shared-memory caching</span><span class="ds">Kernels 2 and 3: 6.4× from one index change</span><span class="nd">Builds directly on this card.</span><span class="go">Continue →</span></span></a><div class="aux"><span><a href="index.html#reduction-unrolling" target="_top">← Parallel reduction II: unrolling and cascading</a></span><a href="index.html" target="_top">All cards in 3 · GPU kernels</a></div></div>
+<!-- /series-nav:bottom -->
+</body>
+</html>
