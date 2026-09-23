@@ -1,0 +1,476 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Long context: sliding windows, ring and sparse attention</title>
+<style>
+:root{
+  --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
+  --text:#1c1f23; --muted:#6b7068; --faint:#b9b9b3;
+  --accent:#4a9d77; --accent-bg:#dcefdf; --accent-border:#8cc79c;
+  --red:#c0492b; --red-bg:#fbeceb;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#15171a; --surface:#1d2024; --surface2:#24282d; --border:#32373d;
+    --text:#e6e8ea; --muted:#9aa1a9; --faint:#4a5057;
+    --accent:#5fb37f; --accent-bg:#1c2b22; --accent-border:#3f7a55;
+    --red:#e57368; --red-bg:#2e1f1e;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text)}
+.card{max-width:820px;margin:0 auto;padding:28px 32px;font-family:-apple-system,"Inter",system-ui,sans-serif;line-height:1.45}
+h1{font-size:26px;font-weight:600;margin:0 0 6px;letter-spacing:-0.01em}
+.sub{font-size:15px;color:var(--muted);margin:0 0 20px}
+h2{font-size:17px;font-weight:600;margin:26px 0 10px}
+h2 small{font-size:13px;font-weight:400;color:var(--muted)}
+p{font-size:15px;margin:0 0 10px}
+ul{font-size:15px;margin:0 0 10px;padding-left:20px}
+.cap{font-size:13px;color:var(--muted);margin:8px 0 0;text-align:center}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+
+/* Horizontal bars */
+.bars{display:grid;grid-template-columns:110px 1fr 90px;column-gap:14px;row-gap:10px;align-items:center;font-size:14px}
+.bars .hd{font-size:13px;color:var(--muted)}
+.bars .hd.r,.bars .tot{text-align:right;font-variant-numeric:tabular-nums}
+.bars .tok{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:14px}
+.bars .track{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted)}
+.bars .bar{height:20px;border-radius:3px;background:var(--accent)}
+.bars .bar.g{background:var(--faint)} .bars .bar.r{background:var(--red)}
+.bars .tot{font-size:14px}
+
+/* Tables and formulas */
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border)}
+th{font-size:12px;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:none}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+.hi{color:var(--accent);font-weight:600} .lo{color:var(--red)} .mu{color:var(--muted)}
+tr.real td{background:var(--accent-bg)}
+.formula{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin:10px 0;white-space:pre;overflow-x:auto;line-height:1.55}
+.tw{overflow-x:auto}
+.tw table{min-width:640px}
+.gt td,.gt th{padding:7px 6px;font-size:13px} .gt td.num{white-space:nowrap}
+.bars.w{grid-template-columns:110px 1fr 120px}
+
+/* MathML */
+.mathbox{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px 16px 12px;margin:10px 0;overflow-x:auto}
+.mathbox math{font-size:21px;color:var(--text);font-family:"STIX Two Math","Latin Modern Math","Cambria Math",math}
+.mathbox .t1{color:var(--text)} .mathbox .t2{color:var(--accent)} .mathbox .t3{color:var(--muted)}
+.mathbox .lab{font-size:12px;font-family:-apple-system,"Inter",system-ui,sans-serif;padding-top:3px;border-top:1.5px solid currentColor;margin-top:2px}
+.mathbox math + math{margin-top:14px}
+.legend{display:grid;grid-template-columns:auto 1fr auto;column-gap:14px;row-gap:5px;font-size:13px;margin-top:12px;align-items:baseline}
+.legend .sym{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;text-align:right}
+.legend .v{color:var(--muted);text-align:right;font-variant-numeric:tabular-nums}
+@media (max-width:560px){.legend{grid-template-columns:auto 1fr}.legend .v{display:none}}
+
+/* Log bars inside tables */
+.sp{display:flex;align-items:center;gap:8px;white-space:nowrap;font-variant-numeric:tabular-nums}
+.sp em{display:block;width:80px;flex:none;height:8px;border-radius:2px;background:var(--surface2)}
+.sp i{display:block;height:8px;border-radius:2px;background:var(--accent)}
+.sp i.r{background:var(--red)}
+
+/* Two examples per term */
+.parts td{vertical-align:top} .parts td:first-child{font-weight:600}
+.parts .ex{font-size:13px} .parts .ex span{display:block;color:var(--muted)}
+.parts .what{font-size:13px}
+@media (max-width:560px){.parts .what{display:none}}
+
+/* Section walk */
+.sec{border-left:3px solid var(--border);padding:2px 0 2px 14px;margin:14px 0}
+.sec .tag{font-size:12px;font-weight:600;color:var(--muted);letter-spacing:.03em;text-transform:uppercase;margin:0 0 3px}
+.sec p{margin-bottom:6px}
+
+/* 2x2 grid */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.cell{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.cell.win{background:var(--accent-bg);border-color:var(--accent-border)}
+.cell h3{font-size:16px;font-weight:600;margin:0 0 5px;display:flex;gap:8px;align-items:baseline}
+.cell p{font-size:14px;margin:0;color:var(--text)}
+.cell.win h3,.cell.win p{color:var(--accent)}
+.x{color:var(--red)} .ok{color:var(--accent)}
+
+/* Clarification box */
+.note{border:1px solid var(--border);border-radius:10px;padding:14px 18px;font-size:14px}
+.note p,.note li{font-size:14px} .note p:last-child{margin-bottom:0}
+
+.foot{margin-top:22px;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+.foot p{font-size:13px}
+.lab-link{display:inline-block;font-size:13px;border:1px solid var(--accent-border);background:var(--accent-bg);color:var(--accent);border-radius:6px;padding:4px 10px;margin:2px 0 10px;text-decoration:none}
+
+/* SVG */
+svg{display:block;max-width:100%;height:auto;margin-top:6px}
+.sl{font-size:12px;fill:var(--muted)} .st{font-size:13px;fill:var(--text)} .sh{font-size:14px;font-weight:600;fill:var(--text)}
+.tq{fill:var(--surface2);stroke:var(--muted);stroke-width:1.2}
+.tkv{fill:var(--accent-bg);stroke:var(--accent);stroke-width:1.5}
+.grp{fill:none;stroke:var(--faint);stroke-width:1;stroke-dasharray:4 3}
+.box{fill:var(--surface);stroke:var(--border);stroke-width:1}
+.ln{stroke:var(--muted);stroke-width:1}
+.arr{fill:var(--muted)}
+.tg{fill:var(--accent);font-size:12px} .tr{fill:var(--red);font-size:12px}
+.div{stroke:var(--border);stroke-width:1}
+@media (max-width:560px){.grid2{grid-template-columns:1fr}.card{padding:20px 16px}.bars{grid-template-columns:70px 1fr 64px}}
+a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+/* this card */
+.gry{fill:var(--surface2);stroke:var(--faint);stroke-width:1}
+.tkvl{fill:var(--accent-bg);stroke:var(--accent-border);stroke-width:1}
+.tkv0{fill:var(--accent)}
+.tkv.new{stroke-width:3}
+.lnk{stroke:var(--accent);stroke-width:1.5}
+.arrg{fill:var(--accent)}
+.note ul{margin:0 0 10px}
+/* series-nav */
+.sn{max-width:820px;margin:0 auto;padding:16px 32px 0;font-family:-apple-system,"Inter",system-ui,sans-serif;font-size:13px;line-height:1.5;color:var(--muted)}
+.sn a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+.sn .crumbs{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 7px}
+.sn .crumbs b{color:var(--text);font-weight:600}
+.sn .sep{color:var(--faint)}
+.sn .step{margin-left:auto;white-space:nowrap}
+.sn .dep{margin-top:5px;padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface)}
+.sn .dep .ok{color:var(--accent);font-weight:600}
+.snx{max-width:820px;margin:0 auto;padding:6px 32px 44px;font-family:-apple-system,"Inter",system-ui,sans-serif}
+.snx .nx{display:grid;grid-template-columns:280px 1fr;text-decoration:none;color:var(--text);background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.snx .nx:hover,.snx .nx:focus-visible{border-color:var(--accent-border);outline:none}
+.snx .mini{position:relative;height:210px;overflow:hidden;background:var(--bg);border-right:1px solid var(--border);padding:14px 16px}
+.snx .mini span{display:block}
+.snx .mini .m1{font-size:12.5px;font-weight:600;margin:0 0 4px;line-height:1.3}
+.snx .mini .m2{font-size:9px;color:var(--muted);margin:0 0 8px;line-height:1.4}
+.snx .mini .m3{font-size:8.5px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;margin:0 0 3px}
+.snx .mini .m4{font-size:9.5px;margin:0;line-height:1.45}
+.snx .tx{padding:16px 20px}
+.snx .lab{font-size:12px;font-weight:600;color:var(--accent);letter-spacing:.04em;text-transform:uppercase}
+.snx .tt{display:block;font-size:20px;font-weight:600;margin:5px 0 4px;line-height:1.25}
+.snx .ds{display:block;font-size:14px;color:var(--muted)}
+.snx .nd{display:block;font-size:13px;color:var(--muted);margin-top:10px}
+.snx .go{display:block;margin-top:12px;font-size:14px;font-weight:600;color:var(--accent)}
+.snx .aux{display:flex;justify-content:space-between;gap:12px;margin-top:10px;font-size:13px;color:var(--muted)}
+.snx .aux a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+@media (max-width:560px){.sn,.snx{padding-left:16px;padding-right:16px}.snx .nx{grid-template-columns:1fr}.snx .mini{display:none}.sn .step{margin-left:0}}
+/* /series-nav */
+</style>
+<body>
+<!-- series-nav:top -->
+<nav class="sn" aria-label="Series navigation"><div class="crumbs"><a href="../perf-0-map/index.html" target="_top">AI perf engineering</a><span class="sep">›</span><a href="index.html" target="_top">4 · Attention &amp; KV cache</a><span class="sep">›</span><b>19 / 19</b><span class="step"><a href="index.html#mooncake-scheduling" target="_top">← prev</a></span></div>
+<div class="dep"><b>Before this:</b> <a href="index.html#online-softmax" target="_top">Online softmax</a> · <a href="index.html#kv-quantization" target="_top">Quantizing the KV cache</a></div></nav>
+<!-- /series-nav:top -->
+<article class="card">
+<h1>Long context: sliding windows, ring and sparse attention</h1>
+<p class="sub">Also called sliding-window attention (SWA), the rolling buffer cache, Ring Attention (context parallelism) and Native Sparse Attention (NSA). This card skims three papers for their key ideas: Mistral 7B's 4,096-token window (arXiv 2310.06825 §2), Ring Attention's overlap condition (Liu, Zaharia, Abbeel, arXiv 2310.01889 §3–4), and DeepSeek's NSA (arXiv 2502.11089 §3, §5). The papers ran on A100s and TPUs; the comparison at the end puts all three on the running example, Llama-3.1-8B on one H100.</p>
+
+<h2>In one breath</h2>
+<p>Long context hurts in three ways: the KV cache grows linearly with tokens (memory and decode reads), and prefill attention grows with the square. A <b>sliding window</b> caps what each layer keeps at W tokens, so the cache stops growing. <b>Ring attention</b> keeps attention exact and splits the sequence across devices, passing KV blocks around a ring while each device computes. <b>Sparse attention</b> (NSA) keeps every token but, at each step, reads only a trained-in few thousand of them.</p>
+
+<h2>The three costs that grow with context <small>Llama-3.1-8B, one H100, our recomputation</small></h2>
+<div class="tw">
+<table>
+  <tr><th>Context T</th><th class="num">KV per sequence</th><th class="num">Sequences that fit (63.9 GB)</th><th class="num">KV read per decode step</th><th class="num">Prefill, param FLOPs</th><th class="num">Prefill, attention FLOPs</th><th class="num">Prefill at 100% MFU</th></tr>
+  <tr><td>8K</td><td class="num">1.07 GB</td><td class="num">59</td><td class="num">0.32 ms</td><td class="num">1.32e14</td><td class="num">3.52e13 (21%)</td><td class="num">0.2 s</td></tr>
+  <tr><td>32K</td><td class="num">4.29 GB</td><td class="num">14</td><td class="num">1.28 ms</td><td class="num">5.26e14</td><td class="num">5.63e14 (52%)</td><td class="num">1.1 s</td></tr>
+  <tr><td>128K</td><td class="num">17.18 GB</td><td class="num lo">3</td><td class="num">5.13 ms</td><td class="num">2.11e15</td><td class="num">9.01e15 (81%)</td><td class="num">11.2 s</td></tr>
+  <tr><td>1M (2<sup>20</sup>)</td><td class="num lo">137.4 GB &gt; 80 GB</td><td class="num lo">0</td><td class="num">41.0 ms</td><td class="num">1.68e16</td><td class="num lo">5.77e17 (97%)</td><td class="num lo">600 s</td></tr>
+</table>
+</div>
+<div class="formula">KV per seq  = T × 131,072 B
+128K:         131,072 × 131,072 B = 16 GiB = 17.18 GB → ⌊63.94 / 17.18⌋ = 3
+KV read     = KV per seq / 3.35 TB/s   (weights alone: 4.79 ms/step)
+prefill     = 2·P·T + 4·T²·H·N·L = 2·8.03e9·T + 4·T²·128·32·32
+1M:           (1.68e16 + 5.77e17) / 989e12 = 600 s
+              (308 s if causal masking halves attention)</div>
+<p class="cap">From labs/long-context.py. The attention term counts QK<sup>T</sup> and PV for every pair, with no causal saving. At 1M tokens one H100 can't even hold the cache, and 97% of prefill is attention. Those two facts are why the three ideas below exist.</p>
+
+<h2>1 · Sliding window and the rolling buffer (Mistral 7B)</h2>
+<p>Mistral 7B uses the same attention shape as Llama-3.1-8B (32 layers, 32 query heads, 8 KV heads, head dim 128) plus <code>window_size</code> = 4,096 and <code>context_len</code> = 8,192. Each token at layer k attends only to positions i−W … i of layer k−1. Information still travels further: "after k attention layers, information can move forward by up to k × W tokens."</p>
+<div class="mathbox">
+<math display="block">
+  <munder class="t2"><mrow><mtext>slot</mtext><mo>(</mo><mi>i</mi><mo>)</mo><mo>=</mo><mi>i</mi><mspace width="0.3em"/><mo lspace="0.2em" rspace="0.2em">mod</mo><mspace width="0.3em"/><mi>W</mi></mrow><mtext class="lab">where token i's K, V are written</mtext></munder>
+  <mspace width="1.6em"/>
+  <munder class="t1"><mrow><mtext>span</mtext><mo>&#8804;</mo><mi>W</mi><mo>&#183;</mo><mi>k</mi><mo>=</mo><mn>4096</mn><mo>&#183;</mo><mn>32</mn><mo>=</mo><mn>131,072</mn></mrow><mtext class="lab">theoretical reach at the last layer</mtext></munder>
+  <mspace width="1.6em"/>
+  <munder class="t3"><mrow><mfrac><mrow><mn>32</mn><mtext>K</mtext></mrow><mn>4096</mn></mfrac><mo>=</mo><mn>8</mn><mo>&#215;</mo></mrow><mtext class="lab">cache cut at 32K</mtext></munder>
+</math>
+<div class="legend">
+  <span class="sym">W</span><span>window: tokens each layer attends to, and the cache size per layer</span><span class="v">Mistral 4,096</span>
+  <span class="sym">k</span><span>number of stacked attention layers</span><span class="v">32</span>
+  <span class="sym">i</span><span>absolute token position</span><span class="v">0, 1, 2, …</span>
+</div>
+</div>
+<p>The paper: "using a window size of W=4096, we have a theoretical attention span of approximately 131K tokens", and for the cache, "On a sequence length of 32k tokens, this reduces the cache memory usage by 8x, without impacting the model quality." 32,768 / 4,096 = 8 is exactly that cut. The quality claim is theirs; the paper shows no 32K evaluation next to it.</p>
+
+<svg viewBox="0 0 800 250" role="img" aria-label="Rolling buffer with W = 4: ten tokens t0 to t9 written into four slots at i mod 4. Snapshots after i = 3, 6 and 9 show older tokens overwritten.">
+  <text class="sh" x="20" y="20">Tokens written so far (i = 0 … 9), and the slot each one lands in</text>
+  <g>
+    <rect class="gry" x="20" y="34" width="66" height="28" rx="4"/><text class="sl" x="53" y="53" text-anchor="middle">t0 → 0</text>
+    <rect class="gry" x="96" y="34" width="66" height="28" rx="4"/><text class="sl" x="129" y="53" text-anchor="middle">t1 → 1</text>
+    <rect class="gry" x="172" y="34" width="66" height="28" rx="4"/><text class="sl" x="205" y="53" text-anchor="middle">t2 → 2</text>
+    <rect class="gry" x="248" y="34" width="66" height="28" rx="4"/><text class="sl" x="281" y="53" text-anchor="middle">t3 → 3</text>
+    <rect class="gry" x="324" y="34" width="66" height="28" rx="4"/><text class="sl" x="357" y="53" text-anchor="middle">t4 → 0</text>
+    <rect class="gry" x="400" y="34" width="66" height="28" rx="4"/><text class="sl" x="433" y="53" text-anchor="middle">t5 → 1</text>
+    <rect class="tkv" x="476" y="34" width="66" height="28" rx="4"/><text class="st" x="509" y="53" text-anchor="middle">t6 → 2</text>
+    <rect class="tkv" x="552" y="34" width="66" height="28" rx="4"/><text class="st" x="585" y="53" text-anchor="middle">t7 → 3</text>
+    <rect class="tkv" x="628" y="34" width="66" height="28" rx="4"/><text class="st" x="661" y="53" text-anchor="middle">t8 → 0</text>
+    <rect class="tkv new" x="704" y="34" width="66" height="28" rx="4"/><text class="st" x="737" y="53" text-anchor="middle">t9 → 1</text>
+    <text class="sl" x="20" y="80">grey: overwritten by i = 9, gone from this layer's cache · green: still cached · bold: newest</text>
+  </g>
+  <line class="div" x1="20" y1="94" x2="780" y2="94"/>
+  <!-- snapshots -->
+  <g>
+    <text class="sh" x="20" y="120">after i = 3</text>
+    <rect class="tkv" x="20" y="132" width="54" height="32" rx="4"/><text class="st" x="47" y="153" text-anchor="middle">t0</text>
+    <rect class="tkv" x="80" y="132" width="54" height="32" rx="4"/><text class="st" x="107" y="153" text-anchor="middle">t1</text>
+    <rect class="tkv" x="140" y="132" width="54" height="32" rx="4"/><text class="st" x="167" y="153" text-anchor="middle">t2</text>
+    <rect class="tkv new" x="200" y="132" width="54" height="32" rx="4"/><text class="st" x="227" y="153" text-anchor="middle">t3</text>
+    <text class="sl" x="47" y="180" text-anchor="middle">slot 0</text><text class="sl" x="107" y="180" text-anchor="middle">1</text><text class="sl" x="167" y="180" text-anchor="middle">2</text><text class="sl" x="227" y="180" text-anchor="middle">3</text>
+    <text class="sl" x="20" y="204">full; nothing overwritten yet</text>
+  </g>
+  <g>
+    <text class="sh" x="280" y="120">after i = 6</text>
+    <rect class="tkv" x="280" y="132" width="54" height="32" rx="4"/><text class="st" x="307" y="153" text-anchor="middle">t4</text>
+    <rect class="tkv" x="340" y="132" width="54" height="32" rx="4"/><text class="st" x="367" y="153" text-anchor="middle">t5</text>
+    <rect class="tkv new" x="400" y="132" width="54" height="32" rx="4"/><text class="st" x="427" y="153" text-anchor="middle">t6</text>
+    <rect class="tkv" x="460" y="132" width="54" height="32" rx="4"/><text class="st" x="487" y="153" text-anchor="middle">t3</text>
+    <text class="sl" x="307" y="180" text-anchor="middle">slot 0</text><text class="sl" x="367" y="180" text-anchor="middle">1</text><text class="sl" x="427" y="180" text-anchor="middle">2</text><text class="sl" x="487" y="180" text-anchor="middle">3</text>
+    <text class="sl" x="280" y="204">t0, t1, t2 overwritten</text>
+  </g>
+  <g>
+    <text class="sh" x="540" y="120">after i = 9</text>
+    <rect class="tkv" x="540" y="132" width="54" height="32" rx="4"/><text class="st" x="567" y="153" text-anchor="middle">t8</text>
+    <rect class="tkv new" x="600" y="132" width="54" height="32" rx="4"/><text class="st" x="627" y="153" text-anchor="middle">t9</text>
+    <rect class="tkv" x="660" y="132" width="54" height="32" rx="4"/><text class="st" x="687" y="153" text-anchor="middle">t6</text>
+    <rect class="tkv" x="720" y="132" width="54" height="32" rx="4"/><text class="st" x="747" y="153" text-anchor="middle">t7</text>
+    <text class="sl" x="567" y="180" text-anchor="middle">slot 0</text><text class="sl" x="627" y="180" text-anchor="middle">1</text><text class="sl" x="687" y="180" text-anchor="middle">2</text><text class="sl" x="747" y="180" text-anchor="middle">3</text>
+    <text class="sl" x="540" y="204">t0 … t5 overwritten</text>
+  </g>
+  <text class="st" x="20" y="236">The cache never grows past W slots. Slots are not in time order; masks and positions handle that.</text>
+</svg>
+<p class="cap">Our redraw of the paper's Fig 2 with W = 4, as its caption says. The body text calls the same illustration "W=3", and Fig 1 uses W = 3. The paper also chunks long prompts during prefill, choosing "the window size as our chunk size". For Llama's own version of this idea, mixing local and global layers, see <a href="../perf-2-scaling-book-inference/kv-tricks.html">perf-2: tricks that shrink the KV cache</a>.</p>
+
+<h2>2 · Ring Attention: exact attention, split across devices</h2>
+<p>Split a sequence of s tokens into N<sub>h</sub> blocks, one per host. Each host keeps its query block and starts with its own KV block. In each of the N<sub>h</sub> steps, it computes blockwise attention against the KV block it holds, "concurrently sends key-value blocks to the next host-(i+1) while receiving key-value blocks from the preceding host-(i-1)." The order doesn't matter: attention against KV blocks "can be computed in any order, as long as the statistics of each block are combined correctly for rescaling" — the running max and sum of <a href="online-softmax.html">online softmax</a>. The result is exact, not an approximation.</p>
+
+<svg viewBox="0 0 800 250" role="img" aria-label="Four hosts in a ring each keep a query block; KV blocks move one host forward every step. After four steps each query block has seen all four KV blocks.">
+  <text class="sh" x="20" y="20">4 hosts in a ring</text>
+  <rect class="box" x="95" y="36" width="80" height="38" rx="6"/><text class="st" x="135" y="53" text-anchor="middle">host 1</text><text class="sl" x="135" y="68" text-anchor="middle">keeps Q1</text>
+  <rect class="box" x="190" y="110" width="80" height="38" rx="6"/><text class="st" x="230" y="127" text-anchor="middle">host 2</text><text class="sl" x="230" y="142" text-anchor="middle">keeps Q2</text>
+  <rect class="box" x="95" y="184" width="80" height="38" rx="6"/><text class="st" x="135" y="201" text-anchor="middle">host 3</text><text class="sl" x="135" y="216" text-anchor="middle">keeps Q3</text>
+  <rect class="box" x="0" y="110" width="80" height="38" rx="6"/><text class="st" x="40" y="127" text-anchor="middle">host 4</text><text class="sl" x="40" y="142" text-anchor="middle">keeps Q4</text>
+  <line class="lnk" x1="175" y1="60" x2="222" y2="104"/><polygon class="arrg" points="216,108 228,110 224,98"/>
+  <line class="lnk" x1="222" y1="152" x2="180" y2="194"/><polygon class="arrg" points="186,198 174,200 178,188"/>
+  <line class="lnk" x1="95" y1="200" x2="48" y2="154"/><polygon class="arrg" points="54,150 42,148 46,160"/>
+  <line class="lnk" x1="48" y1="106" x2="90" y2="62"/><polygon class="arrg" points="84,60 96,56 94,68"/>
+  <text class="tg" x="135" y="135" text-anchor="middle">KV moves</text><text class="tg" x="135" y="150" text-anchor="middle">one hop/step</text>
+  <line class="div" x1="300" y1="10" x2="300" y2="240"/>
+  <text class="sh" x="320" y="20">Which KV block each host holds</text>
+  <text class="sl" x="440" y="44" text-anchor="middle">step 1</text><text class="sl" x="530" y="44" text-anchor="middle">step 2</text><text class="sl" x="620" y="44" text-anchor="middle">step 3</text><text class="sl" x="710" y="44" text-anchor="middle">step 4</text>
+  <text class="st" x="320" y="75">host 1 · Q1</text>
+  <rect class="tkv" x="405" y="56" width="70" height="28" rx="4"/><text class="st" x="440" y="75" text-anchor="middle">KV1</text>
+  <rect class="box" x="495" y="56" width="70" height="28" rx="4"/><text class="st" x="530" y="75" text-anchor="middle">KV4</text>
+  <rect class="box" x="585" y="56" width="70" height="28" rx="4"/><text class="st" x="620" y="75" text-anchor="middle">KV3</text>
+  <rect class="box" x="675" y="56" width="70" height="28" rx="4"/><text class="st" x="710" y="75" text-anchor="middle">KV2</text>
+  <text class="st" x="320" y="115">host 2 · Q2</text>
+  <rect class="tkv" x="405" y="96" width="70" height="28" rx="4"/><text class="st" x="440" y="115" text-anchor="middle">KV2</text>
+  <rect class="box" x="495" y="96" width="70" height="28" rx="4"/><text class="st" x="530" y="115" text-anchor="middle">KV1</text>
+  <rect class="box" x="585" y="96" width="70" height="28" rx="4"/><text class="st" x="620" y="115" text-anchor="middle">KV4</text>
+  <rect class="box" x="675" y="96" width="70" height="28" rx="4"/><text class="st" x="710" y="115" text-anchor="middle">KV3</text>
+  <text class="st" x="320" y="155">host 3 · Q3</text>
+  <rect class="tkv" x="405" y="136" width="70" height="28" rx="4"/><text class="st" x="440" y="155" text-anchor="middle">KV3</text>
+  <rect class="box" x="495" y="136" width="70" height="28" rx="4"/><text class="st" x="530" y="155" text-anchor="middle">KV2</text>
+  <rect class="box" x="585" y="136" width="70" height="28" rx="4"/><text class="st" x="620" y="155" text-anchor="middle">KV1</text>
+  <rect class="box" x="675" y="136" width="70" height="28" rx="4"/><text class="st" x="710" y="155" text-anchor="middle">KV4</text>
+  <text class="st" x="320" y="195">host 4 · Q4</text>
+  <rect class="tkv" x="405" y="176" width="70" height="28" rx="4"/><text class="st" x="440" y="195" text-anchor="middle">KV4</text>
+  <rect class="box" x="495" y="176" width="70" height="28" rx="4"/><text class="st" x="530" y="195" text-anchor="middle">KV3</text>
+  <rect class="box" x="585" y="176" width="70" height="28" rx="4"/><text class="st" x="620" y="195" text-anchor="middle">KV2</text>
+  <rect class="box" x="675" y="176" width="70" height="28" rx="4"/><text class="st" x="710" y="195" text-anchor="middle">KV1</text>
+  <text class="sl" x="320" y="232">Each step: attend Q<tspan font-style="italic">i</tspan> to the block held, fold it into (m, ℓ, O), pass the block on.</text>
+</svg>
+<p class="cap">Our redraw of the idea in the paper's Fig 2(a) for N<sub>h</sub> = 4. Green is each host's own block at step 1; every cell is useful compute. After 4 steps each query block has met every KV block, and no host ever held more than one KV block plus the one arriving.</p>
+
+<p><b>When does the communication hide behind the compute?</b> The paper counts one step for a block of c tokens with hidden size d: attention is 4dc² FLOPs (2dc² for QK<sup>T</sup> and 2dc² for PV), and the K and V blocks are 2cd bytes each in bf16, 4cd together.</p>
+<div class="mathbox">
+<math display="block">
+  <munder class="t2"><mfrac><mrow><mn>4</mn><mi>d</mi><msup><mi>c</mi><mn>2</mn></msup></mrow><mi>F</mi></mfrac><mtext class="lab">compute time per step</mtext></munder>
+  <mo>&#8805;</mo>
+  <munder class="t3"><mfrac><mrow><mn>4</mn><mi>c</mi><mi>d</mi></mrow><mi>B</mi></mfrac><mtext class="lab">time to pass K and V on</mtext></munder>
+  <mspace width="1.2em"/><mo>&#8658;</mo><mspace width="1.2em"/>
+  <munder class="t1"><mrow><mi>c</mi><mo>&#8805;</mo><mfrac><mi>F</mi><mi>B</mi></mfrac></mrow><mtext class="lab">minimum block size</mtext></munder>
+  <mspace width="1.2em"/>
+  <munder class="t1"><mrow><mi>s</mi><mo>=</mo><mn>6</mn><mi>c</mi></mrow><mtext class="lab">minimum tokens per host</mtext></munder>
+</math>
+<div class="legend">
+  <span class="sym">F</span><span>FLOP/s per host</span><span class="v">A100 312 T · H100 989 T</span>
+  <span class="sym">B</span><span>one-way bandwidth between neighbouring hosts, bytes/s</span><span class="v">A100 NVLink 300 GB/s</span>
+  <span class="sym">c</span><span>tokens per block</span><span class="v">≥ 1.0K on A100 NVLink</span>
+  <span class="sym">d</span><span>hidden size (cancels out)</span><span class="v">Llama 4,096</span>
+</div>
+</div>
+<p>Why 6c: a host holds six blocks (its query, the current K and V, the incoming K and V, and the output), so activation memory is 6bch bytes per layer, independent of the total length. The paper's table, recomputed from its own F and B columns, with H100 added:</p>
+<div class="tw">
+<table>
+  <tr><th>Host</th><th class="num">F (TFLOPS)</th><th class="num">B (GB/s, one way)</th><th class="num">c = F/B</th><th class="num">s = 6c</th><th class="num">Paper prints</th></tr>
+  <tr><td>A100 NVLink</td><td class="num">312</td><td class="num">300</td><td class="num">1.04K</td><td class="num">6.2K</td><td class="num">1.0K / 6.2K</td></tr>
+  <tr><td>A100 InfiniBand</td><td class="num">312</td><td class="num lo">12.5</td><td class="num lo">24.96K</td><td class="num lo">149.8K</td><td class="num">24.5K / 149.5K</td></tr>
+  <tr><td>TPU v4</td><td class="num">275</td><td class="num">268</td><td class="num">1.03K</td><td class="num">6.2K</td><td class="num">1.0K / 6.2K</td></tr>
+  <tr class="real"><td class="hi">H100 NVLink, 900 GB/s as listed<br><small class="mu">ours</small></td><td class="num">989</td><td class="num">900</td><td class="num">1.10K</td><td class="num">6.6K</td><td class="num mu">—</td></tr>
+  <tr class="real"><td class="hi">H100 NVLink, 450 GB/s one way<br><small class="mu">ours</small></td><td class="num">989</td><td class="num">450</td><td class="num hi">2.20K</td><td class="num hi">13.2K</td><td class="num mu">—</td></tr>
+</table>
+</div>
+<p class="cap">The paper's table also lists TPU v3 (1.1K / 6.6K) and v5e (1.1K / 6.3K), which our arithmetic reproduces. Its A100 InfiniBand row doesn't quite: 312e12 / 12.5e9 = 24,960, not 24.5K. NVIDIA lists H100 SXM NVLink at "900GB/s". The paper's caption asks for one-way bandwidth, and we read 900 as both directions summed, so 450 one way. That halving is our inference. Llama's GQA makes each K or V block 4× narrower than d (1,024 vs 4,096), which would lower the H100 threshold to about 549 tokens: also our inference, not the paper's formula.</p>
+
+<p><b>What it bought, as the paper's max-context table prints it</b> (end-to-end training with FSDP, in thousands of tokens):</p>
+<div class="tw">
+<table>
+  <tr><th>Setup · model</th><th class="num">Vanilla</th><th class="num">Memory-efficient attn + FFN</th><th class="num">Ring Attention</th><th class="num">vs best prior</th></tr>
+  <tr><td>8× A100 NVLink · 3B</td><td class="num">4</td><td class="num">64</td><td class="num hi">512</td><td class="num">8×</td></tr>
+  <tr><td>32× A100 InfiniBand · 7B</td><td class="num">4</td><td class="num">128</td><td class="num hi">4,096</td><td class="num">32×</td></tr>
+  <tr><td>TPUv4-1024 · 3B</td><td class="num">8</td><td class="num">32</td><td class="num hi">16,384</td><td class="num">512×</td></tr>
+</table>
+</div>
+<p class="cap">The gain equals the device count in the first two rows (8 and 32 devices): "up to device count times longer". <b>Prose/table mismatch:</b> the results text says "over 1 million tokens" for 32 A100s and 7B, while the table shows 4,096K; it says "TPUv4-512 … over 30 million", while the table lists TPUv4-1024 with at most 16,384K. We quote the table.</p>
+
+<h2>3 · Native Sparse Attention: read a few thousand tokens, chosen by the model</h2>
+<p>NSA replaces each query's full key and value set with three smaller sets, each attended separately and mixed by learned gates, "derived from input features via an MLP and sigmoid activation":</p>
+<div class="mathbox">
+<math display="block">
+  <msubsup><mi mathvariant="bold">o</mi><mi>t</mi><mo>*</mo></msubsup><mo>=</mo>
+  <munder><mo>&#8721;</mo><mrow><mi>c</mi><mo>&#8712;</mo><mo>{</mo><mtext>cmp, slc, win</mtext><mo>}</mo></mrow></munder>
+  <msubsup><mi>g</mi><mi>t</mi><mi>c</mi></msubsup><mo>&#183;</mo><mtext>Attn</mtext><mo>(</mo><msub><mi mathvariant="bold">q</mi><mi>t</mi></msub><mo>,</mo><msubsup><mover><mi>K</mi><mo>~</mo></mover><mi>t</mi><mi>c</mi></msubsup><mo>,</mo><msubsup><mover><mi>V</mi><mo>~</mo></mover><mi>t</mi><mi>c</mi></msubsup><mo>)</mo>
+  <mspace width="1.4em"/>
+  <munder class="t2"><mrow><msub><mi>N</mi><mi>t</mi></msub><mo>&#8804;</mo><mrow><mo>&#8970;</mo><mfrac><mrow><mi>s</mi><mo>&#8722;</mo><mi>l</mi></mrow><mi>d</mi></mfrac><mo>&#8971;</mo></mrow><mo>+</mo><mi>n</mi><msup><mi>l</mi><mo>&#8242;</mo></msup><mo>+</mo><mi>w</mi></mrow><mtext class="lab">tokens loaded per decode step</mtext></munder>
+</math>
+<div class="legend">
+  <span class="sym">l, d</span><span>compression block length and stride; an MLP turns each block into one key (and one value)</span><span class="v">32 · 16</span>
+  <span class="sym">l′, n</span><span>selection block size and how many blocks are kept (incl. 1 initial + 2 local)</span><span class="v">64 · 16</span>
+  <span class="sym">w</span><span>sliding window of recent tokens</span><span class="v">512</span>
+  <span class="sym">g</span><span>gate per branch, in [0, 1]</span><span class="v">sigmoid</span>
+</div>
+</div>
+
+<svg viewBox="0 0 800 250" role="img" aria-label="NSA's three branches over an 8,192-token context: compressed keys covering everything, 16 selected 64-token blocks, and the last 512 tokens, each gated and summed.">
+  <text class="sh" x="20" y="20">One query at position 8,192: which keys each branch reads (to scale)</text>
+  <text class="sl" x="20" y="44">token 0</text><text class="sl" x="560" y="44" text-anchor="end">8,192</text>
+  <!-- compressed -->
+  <text class="st" x="20" y="66">compressed · 510 keys</text>
+  <rect class="tkvl" x="20" y="74" width="540" height="18" rx="2"/>
+  <text class="sl" x="20" y="106">every 32-token block (stride 16) → 1 key: coarse view of everything</text>
+  <!-- selected -->
+  <text class="st" x="20" y="130">selected · 16 × 64 = 1,024 tokens</text>
+  <rect class="gry" x="20" y="138" width="540" height="18" rx="2"/>
+  <rect class="tkv0" x="20.0" y="138" width="4.2" height="18"/><rect class="tkv0" x="58.0" y="138" width="4.2" height="18"/><rect class="tkv0" x="91.7" y="138" width="4.2" height="18"/><rect class="tkv0" x="95.9" y="138" width="4.2" height="18"/><rect class="tkv0" x="146.6" y="138" width="4.2" height="18"/><rect class="tkv0" x="205.6" y="138" width="4.2" height="18"/><rect class="tkv0" x="235.2" y="138" width="4.2" height="18"/><rect class="tkv0" x="239.4" y="138" width="4.2" height="18"/><rect class="tkv0" x="302.7" y="138" width="4.2" height="18"/><rect class="tkv0" x="357.5" y="138" width="4.2" height="18"/><rect class="tkv0" x="412.4" y="138" width="4.2" height="18"/><rect class="tkv0" x="446.2" y="138" width="4.2" height="18"/><rect class="tkv0" x="484.1" y="138" width="4.2" height="18"/><rect class="tkv0" x="517.9" y="138" width="4.2" height="18"/><rect class="tkv0" x="551.6" y="138" width="4.2" height="18"/><rect class="tkv0" x="555.8" y="138" width="4.2" height="18"/>
+  <text class="sl" x="20" y="170">top-16 blocks by compressed attention score, shared by the GQA group</text>
+  <!-- window -->
+  <text class="st" x="20" y="194">window · last 512 tokens</text>
+  <rect class="gry" x="20" y="202" width="540" height="18" rx="2"/>
+  <rect class="tkv0" x="526.2" y="202" width="33.8" height="18"/>
+  <text class="sl" x="20" y="234">local detail, kept separate so it can't "shortcut" the other two</text>
+  <!-- gates -->
+  <line class="ln" x1="566" y1="83" x2="610" y2="120"/><line class="ln" x1="566" y1="147" x2="610" y2="140"/><line class="ln" x1="566" y1="211" x2="610" y2="160"/>
+  <rect class="box" x="612" y="112" width="70" height="56" rx="6"/><text class="st" x="647" y="135" text-anchor="middle">gates g</text><text class="sl" x="647" y="152" text-anchor="middle">sigmoid</text>
+  <line class="ln" x1="682" y1="140" x2="712" y2="140"/><polygon class="arr" points="712,135 722,140 712,145"/>
+  <rect class="tkv" x="726" y="122" width="60" height="36" rx="6"/><text class="st" x="756" y="145" text-anchor="middle">o*</text>
+  <text class="sl" x="756" y="178" text-anchor="middle">510 + 1,024</text><text class="sl" x="756" y="192" text-anchor="middle">+ 512 = 2,046</text>
+</svg>
+<p class="cap">Green = keys this step reads; grey = still cached, not read. Which 13 middle blocks get picked is illustrative (it depends on the query); the first block and the last two are always on, per the paper. The formula gives 2,046 tokens at s = 8,192; the paper's table prints 2,048.</p>
+
+<p>Two hardware choices make it fast in practice. Blocks are contiguous 64-token runs, because "modern GPU architectures exhibit significantly higher throughput for continuous block accesses compared to random index-based reads". And all query heads in a <a href="gqa.html">GQA</a> group sum their scores and pick the <b>same</b> blocks, so the kernel loads one set of KV blocks for the whole group. Their decode table (8× A100, GQA g = 4, Triton kernels):</p>
+<div class="tw">
+<table>
+  <tr><th>Context s</th><th class="num">Full attention loads</th><th class="num">NSA loads (paper)</th><th class="num">⌊(s−32)/16⌋ + 1,024 + 512</th><th class="num">Expected speedup (paper)</th></tr>
+  <tr><td>8,192</td><td class="num">8,192</td><td class="num">2,048</td><td class="num">2,046</td><td class="num hi">4×</td></tr>
+  <tr><td>16,384</td><td class="num">16,384</td><td class="num">2,560</td><td class="num">2,558</td><td class="num hi">6.4×</td></tr>
+  <tr><td>32,768</td><td class="num">32,768</td><td class="num">3,584</td><td class="num">3,582</td><td class="num hi">9.1×</td></tr>
+  <tr><td>65,536</td><td class="num">65,536</td><td class="num">5,632</td><td class="num">5,630</td><td class="num hi">11.6×</td></tr>
+  <tr><td>131,072 <small class="mu">our extrapolation</small></td><td class="num">131,072</td><td class="num mu">—</td><td class="num">9,726</td><td class="num">13.5×</td></tr>
+</table>
+</div>
+<p class="cap">"Expected" is the paper's word: speedup = full ÷ NSA tokens, because decoding is memory-bound and "the expected speedup is approximately linear with the volume of memory access". The printed counts equal s/16 + 1,536 exactly. Separately, the paper measures its training kernel at "up to 9.0× forward and 6.0× backward speedup at 64k context-length" against Triton FlashAttention-2. Quality: a 27B model trained with NSA "maintains or exceeds" full attention on their benchmarks. The paper says 260B pretraining tokens in the introduction and 270B in the setup section.</p>
+
+<h2>The words, with two examples each</h2>
+<table class="parts">
+  <tr><th>Term</th><th class="what">What it means</th><th>Example A: the paper</th><th>Example B: our running example</th></tr>
+  <tr><td>Sliding window W</td><td class="what">Each layer attends to the last W tokens only.</td>
+      <td class="ex"><b>Mistral 7B: 4,096</b><span>every layer, context_len 8,192</span></td>
+      <td class="ex"><b>Llama-3.1-8B: none</b><span>full attention, 128 KiB per token for all tokens</span></td></tr>
+  <tr><td>Rolling buffer</td><td class="what">A W-slot cache; token i goes to slot i mod W, overwriting.</td>
+      <td class="ex"><b class="ok">32K tokens → 8× smaller</b><span>Mistral's claim</span></td>
+      <td class="ex"><b class="ok">0.54 GB at any length</b><span>hypothetical 4,096-window Llama; 119 sequences fit</span></td></tr>
+  <tr><td>Theoretical span</td><td class="what">How far information can travel through k stacked windows.</td>
+      <td class="ex"><b>4,096 × 32 ≈ 131K</b><span>an upper bound, not a guarantee of recall</span></td>
+      <td class="ex"><b>W = 1,024 → 32K</b><span>a smaller window shrinks the reach too</span></td></tr>
+  <tr><td>Ring / context parallelism</td><td class="what">Shard the sequence across devices; rotate KV blocks.</td>
+      <td class="ex"><b>32× A100: 4,096K tokens</b><span>7B, training, 32× the prior best</span></td>
+      <td class="ex"><b>1M-token Llama prefill on 8 H100s</b><span>17.2 GB of KV each; 75 s at 100% MFU (ours)</span></td></tr>
+  <tr><td>Overlap threshold F/B</td><td class="what">Minimum block so compute hides the KV transfer.</td>
+      <td class="ex"><b class="ok">A100 NVLink: 1.0K</b><span>easy to meet</span></td>
+      <td class="ex"><b class="lo">A100 InfiniBand: 24.5K</b><span>the paper's print; slow links need big blocks</span></td></tr>
+  <tr><td>Compressed / selected / window</td><td class="what">NSA's three branches: coarse, chosen, recent.</td>
+      <td class="ex"><b>510 + 1,024 + 512</b><span>tokens read at 8K</span></td>
+      <td class="ex"><b>8,190 + 1,024 + 512</b><span>at 128K; only the coarse branch grows</span></td></tr>
+  <tr><td>Gate g</td><td class="what">Per-branch weight from an MLP + sigmoid on the input.</td>
+      <td class="ex"><b>g<sup>cmp</sup>, g<sup>slc</sup>, g<sup>win</sup> ∈ [0,1]</b><span>not a softmax: they needn't sum to 1</span></td>
+      <td class="ex"><b>full attention</b><span>no gates: one branch, all tokens</span></td></tr>
+</table>
+
+<h2>All three on the running example <small>Llama-3.1-8B shape, one H100, our recomputation</small></h2>
+<p>Same model, same 128 KiB per token; only the attention pattern changes. The window row is a hypothetical Llama with a 4,096 window on every layer. The NSA row borrows NSA's loaded-token budget (s/16 + 1,536), also hypothetical for Llama, and keeps every token stored, because the selection branch may pick any old block.</p>
+<div class="tw">
+<table class="gt">
+  <tr><th>Context</th><th>Scheme</th><th class="num">KV stored / seq</th><th class="num">Seqs fit (63.9 GB)</th><th class="num">Tokens read / step</th><th class="num">KV read time / step</th></tr>
+  <tr><td rowspan="3">8K</td><td>full</td><td class="num">1.07 GB</td><td class="num">59</td><td class="num">8,192</td><td class="num">0.32 ms</td></tr>
+  <tr><td>4,096 window</td><td class="num">0.54 GB</td><td class="num">119</td><td class="num">4,096</td><td class="num">0.16 ms</td></tr>
+  <tr><td>NSA-like</td><td class="num">≥ 1.07 GB</td><td class="num">≤ 59</td><td class="num">2,048</td><td class="num">0.08 ms</td></tr>
+  <tr><td rowspan="3">32K</td><td>full</td><td class="num">4.29 GB</td><td class="num">14</td><td class="num">32,768</td><td class="num">1.28 ms</td></tr>
+  <tr><td>4,096 window</td><td class="num hi">0.54 GB</td><td class="num hi">119</td><td class="num">4,096</td><td class="num">0.16 ms</td></tr>
+  <tr><td>NSA-like</td><td class="num">≥ 4.29 GB</td><td class="num">≤ 14</td><td class="num">3,584</td><td class="num">0.14 ms</td></tr>
+  <tr><td rowspan="3">128K</td><td>full</td><td class="num lo">17.18 GB</td><td class="num lo">3</td><td class="num">131,072</td><td class="num lo">5.13 ms</td></tr>
+  <tr><td>4,096 window</td><td class="num hi">0.54 GB</td><td class="num hi">119</td><td class="num">4,096</td><td class="num hi">0.16 ms</td></tr>
+  <tr><td>NSA-like</td><td class="num">≥ 17.18 GB</td><td class="num">≤ 3</td><td class="num">9,728</td><td class="num">0.38 ms</td></tr>
+</table>
+</div>
+<div class="bars w" style="margin-top:18px">
+  <span class="hd">At 128K</span><span class="hd">Time to read one sequence's KV per decode step (linear)</span><span class="hd r">ms</span>
+  <span class="tok">full</span><div class="track"><div class="bar r" style="width:100%"></div></div><span class="tot lo">5.13</span>
+  <span class="tok">NSA-like</span><div class="track"><div class="bar" style="width:7.4%"></div></div><span class="tot">0.38</span>
+  <span class="tok">window</span><div class="track"><div class="bar" style="width:3.1%"></div></div><span class="tot hi">0.16</span>
+  <span class="tok">weights</span><div class="track"><div class="bar g" style="width:93.4%"></div></div><span class="tot">4.79</span>
+</div>
+<div class="formula">window:    4,096 × 131,072 B = 512 MiB = 0.537 GB
+           ⌊63.94 / 0.537⌋ = 119 sequences, at any context
+full 128K: ⌊63.94 / 17.18⌋ = 3;  read 17.18 GB / 3.35 TB/s = 5.13 ms
+NSA 128K:  131,072/16 + 1,536 = 9,728 tokens × 131,072 B
+           = 1.28 GB → 0.38 ms  (13.5× fewer bytes)</div>
+<p class="cap">From labs/long-context.py. The weights bar (16.06 GB / 3.35 TB/s, grey) is there for scale: at 128K, one full-attention sequence's KV costs more to read than the whole model. The split: the window cuts storage and reads; NSA cuts reads only; neither changes what one H100 can hold for full attention. And neither helps a full-attention model's 1M-token prefill: 137.4 GB of KV and about 600 s of compute (5.77e17 attention FLOPs) on one GPU. Splitting both 8 ways is exactly what ring attention does: 17.2 GB and roughly 75 s per H100 at 100% MFU (a floor, ours).</p>
+
+<h2>How the four options differ</h2>
+<div class="grid2">
+  <div class="cell"><h3>Full attention</h3><p><span class="ok">&#10003;</span> Exact, sees every token. <span class="x">&#10007;</span> KV grows linearly (17.18 GB per 128K sequence, 3 fit), and prefill attention grows as T², 97% of the FLOPs at 1M tokens.</p></div>
+  <div class="cell"><h3>Sliding window</h3><p><span class="ok">&#10003;</span> Fixed cache (0.54 GB at W = 4,096) and fixed read cost. <span class="x">&#10007;</span> A token further back than W is reachable only indirectly, through stacked layers, up to W × layers.</p></div>
+  <div class="cell"><h3>Ring attention</h3><p><span class="ok">&#10003;</span> Exact, and splits both KV and compute across devices, so context grows with the device count. <span class="x">&#10007;</span> Needs N devices and fast links (c ≥ F/B); it's for prefill and training, not a smaller cache.</p></div>
+  <div class="cell win"><h3>Sparse attention (NSA)</h3><p><span class="ok">&#10003;</span> Trained-in sparsity: reads 5,632 of 65,536 tokens (11.6× expected decode speedup), keeps any old block reachable. <span class="x">&#10007;</span> Must be trained in, and still stores the full cache.</p></div>
+</div>
+<p class="cap">No single winner: they attack different costs. NSA is shaded because it is the only one here that cuts decode reads without throwing tokens away, but it needs a model pretrained with it.</p>
+
+<h2>Is ring attention a way to shrink the KV cache?</h2>
+<div class="note">
+  <p><b>No. It distributes the cache, and the compute, across devices.</b> The total KV is the same as full attention, 137.4 GB for a 1M-token Llama-3.1-8B sequence; eight hosts each hold one-eighth. What it removes is the single-device limit, with no approximation, as long as each host's block is at least F/B tokens so the ring transfer hides behind the compute.</p>
+  <ul>
+    <li><b>When it's the wrong tool:</b> short contexts (below about 6c per host, roughly 6–13K tokens on NVLink-class links, the transfer no longer hides), slow links (A100 over InfiniBand needs 149.5K tokens per host per the paper), and plain decode, where the problem is bytes read per step, not FLOPs.</li>
+    <li><b>What people use instead:</b> to shrink the cache itself, <a href="gqa.html">GQA</a>, <a href="mla.html">MLA</a>, <a href="kv-quantization.html">FP8 or 2-bit KV</a>, or local-window layers (<a href="../perf-2-scaling-book-inference/kv-tricks.html">kv-tricks</a>). To split a long cache during decode, sequence sharding (<a href="../perf-2-scaling-book-inference/sharding-kv-cache.html">sharding the KV cache</a>). Context parallelism at cluster scale is covered in perf-6 (scaling out).</li>
+    <li><b>And the window isn't free either:</b> Mistral's "without impacting the model quality" is a claim about Mistral 7B trained with the window. Adding a window to a full-attention model like Llama after training is not what the paper tested.</li>
+  </ul>
+</div>
+
+<div class="foot">
+<p><a class="lab-link" href="https://github.com/seyonv/explainers/blob/main/perf-4-attention-kv/labs/long-context.py">Run it: labs/long-context.py</a> It prints the full / window / NSA-like table at 8K, 32K and 128K, the prefill FLOPs table up to 1M tokens, the ring threshold c ≥ F/B for the paper's hosts plus H100, and NSA's loaded-token counts from its formula. Try this: a 1,024 window cuts the 32K cache 32× and fits 476 sequences; NSA with 32 selected blocks drops the 64K speedup from 11.6× to 9.8×.</p>
+<p><b>Read next:</b> <a href="https://arxiv.org/abs/2310.06825">Jiang et al., "Mistral 7B"</a> §2 Architectural details: sliding window, rolling buffer, pre-fill and chunking (~15 min). <a href="https://arxiv.org/abs/2310.01889">Liu, Zaharia, Abbeel, "Ring Attention with Blockwise Transformers for Near-Infinite Context"</a> §3 (ring, arithmetic intensity between hosts, memory, Alg 1) and §4 max-context results (~30 min). <a href="https://arxiv.org/abs/2502.11089">Yuan et al., "Native Sparse Attention"</a> abstract and §3 methodology, plus the decode table in the efficiency analysis (~20 min).</p>
+<p><b>Related:</b> <a href="online-softmax.html">online softmax</a> · <a href="flashattention-tiling.html">FlashAttention I: tiling and recomputation</a> · <a href="kv-quantization.html">quantizing the KV cache</a> · <a href="mla.html">multi-head latent attention</a> · <a href="gqa.html">grouped-query attention</a> · <a href="../perf-2-scaling-book-inference/kv-tricks.html">perf-2: tricks that shrink the KV cache</a> · <a href="../perf-2-scaling-book-inference/sharding-kv-cache.html">perf-2: sharding the KV cache</a></p>
+<p><b>Sources:</b> W = 4,096, context_len 8,192, ~131K span, the 8× quote, the W = 3 vs W = 4 figure mismatch: <a href="https://arxiv.org/abs/2310.06825">arXiv 2310.06825</a>. Overlap condition, 6bch memory, minimal block/sequence table, max-context table and the prose quotes: <a href="https://arxiv.org/abs/2310.01889">arXiv 2310.01889</a>. NSA branches, l = 32, d = 16, l′ = 64, n = 16, w = 512, decode table, 9.0×/6.0×, 27B and 260B/270B: <a href="https://arxiv.org/abs/2502.11089">arXiv 2502.11089</a>. H100 SXM NVLink "900GB/s": <a href="https://www.nvidia.com/en-us/data-center/h100/">NVIDIA H100 page</a>. Llama-3.1-8B shape, 128 KiB/token, 989 TFLOPS, 3.35 TB/s, 63.9 GB free, 16.06 GB weights: the course's shared facts. Every "ours" number (running-example table, prefill FLOPs, H100 ring threshold, 450 GB/s one way, the GQA-narrowed 549, NSA at 128K) is our recomputation in labs/long-context.py. The choice of selected blocks in the NSA diagram is illustrative.</p>
+</div>
+</article>
+<!-- series-nav:bottom -->
+<div class="snx"><a class="nx" href="../perf-0-map/index.html" target="_top"><span class="mini" aria-hidden="true"><span class="m1">You've reached the end of the published courses</span></span>
+<span class="tx"><span class="lab">End of the series so far</span><span class="tt">Back to the map</span><span class="ds">Next to be built: 5 · Inference engines.</span><span class="go">Open the map →</span></span></a><div class="aux"><span><a href="index.html#mooncake-scheduling" target="_top">← Mooncake II: KV-centric scheduling</a></span><a href="index.html" target="_top">All cards in 4 · Attention &amp; KV cache</a></div></div>
+<!-- /series-nav:bottom -->
+</body>
+</html>

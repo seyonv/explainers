@@ -1,0 +1,313 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FlashAttention II: the IO-complexity argument</title>
+<style>
+:root{
+  --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
+  --text:#1c1f23; --muted:#6b7068; --faint:#b9b9b3;
+  --accent:#4a9d77; --accent-bg:#dcefdf; --accent-border:#8cc79c;
+  --red:#c0492b; --red-bg:#fbeceb;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#15171a; --surface:#1d2024; --surface2:#24282d; --border:#32373d;
+    --text:#e6e8ea; --muted:#9aa1a9; --faint:#4a5057;
+    --accent:#5fb37f; --accent-bg:#1c2b22; --accent-border:#3f7a55;
+    --red:#e57368; --red-bg:#2e1f1e;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text)}
+.card{max-width:820px;margin:0 auto;padding:28px 32px;font-family:-apple-system,"Inter",system-ui,sans-serif;line-height:1.45}
+h1{font-size:26px;font-weight:600;margin:0 0 6px;letter-spacing:-0.01em}
+.sub{font-size:15px;color:var(--muted);margin:0 0 20px}
+h2{font-size:17px;font-weight:600;margin:26px 0 10px}
+p{font-size:15px;margin:0 0 10px}
+ul{font-size:15px;margin:0 0 10px;padding-left:20px}
+.cap{font-size:13px;color:var(--muted);margin:8px 0 0;text-align:center}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+
+/* Tables and formulas */
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border)}
+th{font-size:12px;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:none}
+.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.hi{color:var(--accent);font-weight:600} .lo{color:var(--red)} .mu{color:var(--muted)}
+.formula,.code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin:10px 0;white-space:pre;overflow-x:auto;line-height:1.55}
+.tw{overflow-x:auto}
+.tw table{min-width:640px}
+
+/* MathML */
+.mathbox{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px 16px 12px;margin:10px 0;overflow-x:auto}
+.mathbox math{font-size:21px;color:var(--text);font-family:"STIX Two Math","Latin Modern Math","Cambria Math",math}
+.mathbox .t1{color:var(--text)} .mathbox .t2{color:var(--accent)} .mathbox .t3{color:var(--muted)} .mathbox .t4{color:var(--red)}
+.mathbox .lab{font-size:12px;font-family:-apple-system,"Inter",system-ui,sans-serif;padding-top:3px;border-top:1.5px solid currentColor;margin-top:2px}
+.mathbox math + math{margin-top:16px}
+.legend{display:grid;grid-template-columns:auto 1fr auto;column-gap:14px;row-gap:5px;font-size:13px;margin-top:14px;align-items:baseline}
+.legend .sym{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;text-align:right}
+.legend .v{color:var(--muted);text-align:right;font-variant-numeric:tabular-nums}
+@media (max-width:560px){.legend{grid-template-columns:auto 1fr}.legend .v{display:none}}
+
+/* Two examples per term */
+.parts td{vertical-align:top} .parts td:first-child{font-weight:600;white-space:nowrap}
+.parts .ex{font-size:13px} .parts .ex span{display:block;color:var(--muted)}
+@media (max-width:560px){.parts .what{display:none}}
+
+/* 2x2 grid */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.cell{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.cell.win{background:var(--accent-bg);border-color:var(--accent-border)}
+.cell h3{font-size:16px;font-weight:600;margin:0 0 5px;display:flex;gap:8px;align-items:baseline}
+.cell p{font-size:14px;margin:0;color:var(--text)}
+.cell.win h3,.cell.win p{color:var(--accent)}
+.x{color:var(--red)} .ok{color:var(--accent)}
+
+/* Clarification box */
+.note{border:1px solid var(--border);border-radius:10px;padding:14px 18px;font-size:14px}
+.note p,.note li{font-size:14px} .note p:last-child{margin-bottom:0}
+
+.labbox{border:1px solid var(--border);background:var(--surface);border-radius:10px;padding:12px 16px;margin:10px 0;font-size:14px}
+.labbox p{font-size:14px} .labbox p:last-child{margin-bottom:0}
+.foot{margin-top:22px;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+.foot p{font-size:13px}
+.lab-link{display:inline-block;font-size:13px;border:1px solid var(--accent-border);background:var(--accent-bg);color:var(--accent);border-radius:6px;padding:4px 10px;margin:2px 4px 6px 0;text-decoration:none}
+svg{display:block;max-width:100%;height:auto}
+.sl{font-size:12px;fill:var(--muted)} .st{font-size:13px;fill:var(--text)} .sg{font-size:13px;fill:var(--accent)} .sr{font-size:13px;fill:var(--red)}
+.hbm{fill:var(--surface);stroke:var(--muted);stroke-width:1}
+.nn{fill:var(--red-bg);stroke:var(--red);stroke-width:1.2}
+.sram{fill:none;stroke:var(--accent);stroke-width:1.4;stroke-dasharray:4 3}
+.kv{fill:var(--accent)}
+.pass{fill:var(--surface2);stroke:var(--faint);stroke-width:1}
+.ar{stroke:var(--muted);stroke-width:1.2;fill:none}
+.arr{stroke:var(--red);stroke-width:1.2;fill:none}
+@media (max-width:560px){.grid2{grid-template-columns:1fr}.card{padding:20px 16px}}
+a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+/* series-nav */
+.sn{max-width:820px;margin:0 auto;padding:16px 32px 0;font-family:-apple-system,"Inter",system-ui,sans-serif;font-size:13px;line-height:1.5;color:var(--muted)}
+.sn a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+.sn .crumbs{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 7px}
+.sn .crumbs b{color:var(--text);font-weight:600}
+.sn .sep{color:var(--faint)}
+.sn .step{margin-left:auto;white-space:nowrap}
+.sn .dep{margin-top:5px;padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface)}
+.sn .dep .ok{color:var(--accent);font-weight:600}
+.snx{max-width:820px;margin:0 auto;padding:6px 32px 44px;font-family:-apple-system,"Inter",system-ui,sans-serif}
+.snx .nx{display:grid;grid-template-columns:280px 1fr;text-decoration:none;color:var(--text);background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.snx .nx:hover,.snx .nx:focus-visible{border-color:var(--accent-border);outline:none}
+.snx .mini{position:relative;height:210px;overflow:hidden;background:var(--bg);border-right:1px solid var(--border);padding:14px 16px}
+.snx .mini span{display:block}
+.snx .mini .m1{font-size:12.5px;font-weight:600;margin:0 0 4px;line-height:1.3}
+.snx .mini .m2{font-size:9px;color:var(--muted);margin:0 0 8px;line-height:1.4}
+.snx .mini .m3{font-size:8.5px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;margin:0 0 3px}
+.snx .mini .m4{font-size:9.5px;margin:0;line-height:1.45}
+.snx .tx{padding:16px 20px}
+.snx .lab{font-size:12px;font-weight:600;color:var(--accent);letter-spacing:.04em;text-transform:uppercase}
+.snx .tt{display:block;font-size:20px;font-weight:600;margin:5px 0 4px;line-height:1.25}
+.snx .ds{display:block;font-size:14px;color:var(--muted)}
+.snx .nd{display:block;font-size:13px;color:var(--muted);margin-top:10px}
+.snx .go{display:block;margin-top:12px;font-size:14px;font-weight:600;color:var(--accent)}
+.snx .aux{display:flex;justify-content:space-between;gap:12px;margin-top:10px;font-size:13px;color:var(--muted)}
+.snx .aux a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+@media (max-width:560px){.sn,.snx{padding-left:16px;padding-right:16px}.snx .nx{grid-template-columns:1fr}.snx .mini{display:none}.sn .step{margin-left:0}}
+/* /series-nav */
+</style>
+</head>
+<body>
+<!-- series-nav:top -->
+<nav class="sn" aria-label="Series navigation"><div class="crumbs"><a href="../perf-0-map/index.html" target="_top">AI perf engineering</a><span class="sep">›</span><a href="index.html" target="_top">4 · Attention &amp; KV cache</a><span class="sep">›</span><b>04 / 19</b><span class="step"><a href="index.html#flashattention-tiling" target="_top">← prev</a> · <a href="index.html#flashattention-backward-results" target="_top">next →</a></span></div>
+<div class="dep"><b>Before this:</b> <a href="index.html#flashattention-tiling" target="_top">FlashAttention I: tiling and recomputation</a></div></nav>
+<!-- /series-nav:top -->
+<article class="card">
+<h1>FlashAttention II: the IO-complexity argument</h1>
+<p class="sub">Also called HBM accesses, the Θ(N²d²/M) bound, IO-awareness, and block-sparse FlashAttention. This card is FlashAttention (Dao et al., 2022) §3.2: Theorem 2, Proposition 3 and Fig 2. It also covers §3.3 (block-sparse attention, Proposition 4) and the Appendix C proofs. The paper's numbers are for GPT-2 medium on an A100. The byte counts, the H100 figures and the Llama-3.1-8B figures are our recomputation.</p>
+
+<h2>In one breath</h2>
+<p>Attention's speed is set by how many elements cross between HBM and on-chip SRAM, not by how many FLOPs it does. Standard attention writes and re-reads the N×N score matrix, so it makes Θ(Nd + N²) HBM accesses. FlashAttention keeps K and V blocks in SRAM and streams Q past them. That takes Θ(N²d²/M) accesses, where M is the SRAM size. Because d² (4,096 for d = 64) is many times smaller than M (about 100K), this is many times less traffic. On GPT-2 medium it measured 9.2× less HBM traffic and ran 5.7× faster, even though it did 13% more FLOPs.</p>
+
+<h2>Theorem 2: the two access counts</h2>
+<div class="mathbox">
+<math display="block">
+  <munder class="t4"><mrow><mi>Θ</mi><mo>(</mo><mi>N</mi><mi>d</mi><mo>+</mo><msup><mi>N</mi><mn>2</mn></msup><mo>)</mo></mrow><mtext class="lab">standard attention (Alg 0)</mtext></munder>
+  <mspace width="1.5em"/><mtext>vs</mtext><mspace width="1.5em"/>
+  <munder class="t2"><mrow><mi>Θ</mi><mo>(</mo><mfrac><mrow><msup><mi>N</mi><mn>2</mn></msup><msup><mi>d</mi><mn>2</mn></msup></mrow><mi>M</mi></mfrac><mo>)</mo></mrow><mtext class="lab">FlashAttention (Alg 1)</mtext></munder>
+  <mspace width="1.2em"/><mtext>for&#8201;</mtext><mi>d</mi><mo>≤</mo><mi>M</mi><mo>≤</mo><mi>N</mi><mi>d</mi>
+</math>
+<math display="block">
+  <mfrac><mtext>standard</mtext><mtext>flash</mtext></mfrac><mo>≈</mo>
+  <mfrac><mrow><mo>(</mo><mi>N</mi><mi>d</mi><mo>+</mo><msup><mi>N</mi><mn>2</mn></msup><mo>)</mo><mo>·</mo><mi>M</mi></mrow><mrow><msup><mi>N</mi><mn>2</mn></msup><msup><mi>d</mi><mn>2</mn></msup></mrow></mfrac>
+  <mo>=</mo><mfrac><mi>M</mi><msup><mi>d</mi><mn>2</mn></msup></mfrac><mo>(</mo><mn>1</mn><mo>+</mo><mfrac><mi>d</mi><mi>N</mi></mfrac><mo>)</mo>
+  <mover><mo>⟶</mo><mtext>large N</mtext></mover>
+  <munder class="t2"><mfrac><mi>M</mi><msup><mi>d</mi><mn>2</mn></msup></mfrac><mtext class="lab">SRAM ÷ head dim²</mtext></munder>
+</math>
+<div class="legend">
+  <span class="sym">N</span><span>sequence length</span><span class="v">GPT-2: 1,024 · Llama prefill: 8,192</span>
+  <span class="sym">d</span><span>head dimension</span><span class="v">paper: "64–128" · Llama: 128</span>
+  <span class="sym">M</span><span>SRAM size, counted in <b>elements</b>, the same unit as the access counts</span><span class="v">paper: "around 100KB"</span>
+  <span class="sym">Θ(·)</span><span>up to a constant factor; the constants are in the lab below</span><span class="v">ours: ≈ M/(3d²)</span>
+</div>
+</div>
+<p class="cap">The first line is the paper's Theorem 2. The ratio is our rearrangement: divide one count by the other, and the N² cancels. What's left is a property of the chip (M) and the model (d), not of the sequence length.</p>
+
+<h2>Where the counts come from, loop by loop</h2>
+<svg viewBox="0 0 800 250" role="img" aria-label="Standard attention writes the N by N matrices S and P to HBM and reads them back. FlashAttention loads each K,V block into SRAM once and streams all Q and O blocks past it, T_c times in total.">
+  <text class="st" x="10" y="20">Standard attention (Alg 0)</text>
+  <rect class="hbm" x="10" y="40" width="40" height="120"/><text class="sl" x="30" y="178" text-anchor="middle">Q, K</text>
+  <path class="ar" d="M54 100 H86"/><path class="ar" d="M80 95 L86 100 L80 105"/>
+  <rect class="nn" x="90" y="40" width="120" height="120"/><text class="sr" x="150" y="104" text-anchor="middle">S  (N×N)</text>
+  <path class="arr" d="M214 100 H246"/><path class="arr" d="M240 95 L246 100 L240 105"/>
+  <rect class="nn" x="250" y="40" width="120" height="120"/><text class="sr" x="310" y="104" text-anchor="middle">P  (N×N)</text>
+  <text class="sl" x="10" y="200">line 1: read Q, K (2Nd), write S (N²)</text>
+  <text class="sl" x="10" y="217">line 2: read S, write P (2N²)</text>
+  <text class="sl" x="10" y="234">line 3: read P, V, write O (N² + 2Nd)   = 4Nd + 4N²</text>
+
+  <text class="st" x="440" y="20">FlashAttention (Alg 1)</text>
+  <rect class="sram" x="440" y="40" width="120" height="120" rx="6"/>
+  <text class="sl" x="500" y="56" text-anchor="middle">SRAM, size M</text>
+  <rect class="kv" x="455" y="66" width="40" height="80"/><text class="st" x="475" y="176" text-anchor="middle">K_j</text>
+  <rect class="kv" x="505" y="66" width="40" height="80"/><text class="st" x="525" y="176" text-anchor="middle">V_j</text>
+  <rect class="pass" x="620" y="40" width="40" height="120"/><text class="sl" x="640" y="178" text-anchor="middle">Q</text>
+  <rect class="pass" x="680" y="40" width="40" height="120"/><text class="sl" x="700" y="178" text-anchor="middle">O, ℓ, m</text>
+  <line class="ar" x1="620" y1="60" x2="660" y2="60"/><line class="ar" x1="620" y1="80" x2="660" y2="80"/><line class="ar" x1="620" y1="100" x2="660" y2="100"/><line class="ar" x1="620" y1="120" x2="660" y2="120"/><line class="ar" x1="620" y1="140" x2="660" y2="140"/>
+  <path class="ar" d="M616 100 H566"/><path class="ar" d="M572 95 L566 100 L572 105"/>
+  <text class="sl" x="440" y="200">outer loop j: load K_j, V_j once (2Nd in total)</text>
+  <text class="sl" x="440" y="217">inner loop i: read Q_i, O_i, ℓ, m; write O_i, ℓ, m</text>
+  <text class="sl" x="440" y="234">T_c = N/B_c passes, each ≈ 3Nd     = Θ(Nd·T_c)</text>
+</svg>
+<p class="cap">Red is the N×N matrix that must not be materialised. Green is the K, V block held on chip. Grey is Q and O, which are streamed from HBM once per outer-loop pass. The paper's own words: "given the SRAM size of M, we can load blocks of K, V of size Θ(M) each … resulting in Θ(NdM⁻¹) passes over Q. Each pass loads Θ(Nd) elements."</p>
+
+<p><b>Appendix C: why T<sub>c</sub> = Θ(Nd/M).</b> Three things must fit in SRAM: the K<sub>j</sub>, V<sub>j</sub> blocks (B<sub>c</sub>·d = O(M)), the Q<sub>i</sub>, O<sub>i</sub> blocks (B<sub>r</sub>·d = O(M)), and the score tile S<sub>ij</sub> (B<sub>r</sub>·B<sub>c</sub> = O(M)). So B<sub>c</sub> = Θ(M/d) and B<sub>r</sub> = Θ(min(M/d, d)). Alg 1 uses B<sub>c</sub> = ⌈M/4d⌉ and B<sub>r</sub> = min(⌈M/4d⌉, d). Then T<sub>c</sub> = N/B<sub>c</sub> = Θ(Nd/M), and the total is Θ(Nd·T<sub>c</sub>) = Θ(N²d²/M). The backward pass has the same two counts (Appendix B, Theorem 5).</p>
+
+<h2>Fill it in, and watch the units</h2>
+<p>M has to be in <b>elements</b>. You can see this in Alg 1, which sets B<sub>c</sub> = ⌈M/4d⌉: four blocks of B<sub>c</sub> × d elements have to fit. With bf16 or fp16, 2 bytes per element, a 192 KB SRAM holds 98,304 elements. If you plug in the byte count by mistake, every ratio doubles. Byte counts (elements × 2) give the same ratio as element counts, because both sides scale by 2.</p>
+<div class="tw"><table>
+  <tr><th>GPU (SRAM per SM)</th><th class="num">d</th><th class="num">M, elements</th><th class="num">M/d² (Θ ratio)</th><th class="num lo">bytes as M ✗</th><th class="num">M/3d² (Alg 1 constants)</th><th class="num">Exact count, N = 64k</th></tr>
+  <tr><td>A100, 192 KB <span class="mu">(paper)</span></td><td class="num">64</td><td class="num">98,304</td><td class="num hi">24.0</td><td class="num lo">48.0</td><td class="num">8.0</td><td class="num">7.78×</td></tr>
+  <tr><td>A100, 192 KB</td><td class="num">128</td><td class="num">98,304</td><td class="num">6.0</td><td class="num lo">12.0</td><td class="num">2.0</td><td class="num">1.97×</td></tr>
+  <tr><td>H100, 228 KB</td><td class="num">64</td><td class="num">116,736</td><td class="num hi">28.5</td><td class="num lo">57.0</td><td class="num">9.5</td><td class="num">9.23×</td></tr>
+  <tr><td>H100, 228 KB <span class="mu">(Llama)</span></td><td class="num">128</td><td class="num">116,736</td><td class="num">7.1</td><td class="num lo">14.3</td><td class="num">2.4</td><td class="num">2.34×</td></tr>
+</table></div>
+<div class="formula">A100:  M = 192 × 1024 B / 2 B = 98,304 elements;  M/d² = 98,304 / 64²  = 24.0
+H100:  M = 228 × 1024 B / 2 B = 116,736 elements; M/d² = 116,736 / 128² = 7.1
+Alg 1 constants (ours):
+  flash ≈ 3Nd·T_c = 3Nd · N·4d/M = 12N²d²/M;  standard ≈ 4N²
+  ratio ≈ 4N² · M / (12N²d²) = M/(3d²)</div>
+<p class="cap">From labs/flash-io.py. Θ hides constants, and Alg 1 makes about three HBM touches per Q/O element per pass (read Q, read O, write O), which costs a factor of about 3 against the bare M/d². Doubling d from 64 to 128 cuts the ratio 4×, because of the d². The A100's 192 KB is the paper's figure. NVIDIA's Hopper tuning guide gives the A100's <i>shared-memory</i> capacity as 164 KB (the 192 KB also covers L1), so a real M is somewhat smaller. H100: 228 KB per SM, 227 KB per thread block.</p>
+
+<table class="parts" style="margin-top:14px">
+  <tr><th>Term</th><th class="what">What it means</th><th>Example A: GPT-2 medium, A100</th><th>Example B: Llama-3.1-8B prefill, H100</th></tr>
+  <tr><td>HBM access</td><td class="what">One element read from or written to off-chip DRAM. The paper counts these, not bytes.</td>
+      <td class="ex"><b>4.46M → 0.80M</b><span>per head, standard → flash, forward</span></td>
+      <td class="ex"><b>272.6M → 117.6M</b><span>per head, N = 8,192, d = 128</span></td></tr>
+  <tr><td>M (SRAM size)</td><td class="what">On-chip memory per SM that one kernel's tiles live in, in elements</td>
+      <td class="ex"><b>98,304</b><span>192 KB ÷ 2 B</span></td>
+      <td class="ex"><b>116,736</b><span>228 KB ÷ 2 B</span></td></tr>
+  <tr><td>B<sub>c</sub>, B<sub>r</sub></td><td class="what">Rows per K/V block and per Q block: ⌈M/4d⌉ and min(⌈M/4d⌉, d)</td>
+      <td class="ex"><b>384, 64</b><span>98,304 / 256 = 384; min(384, 64)</span></td>
+      <td class="ex"><b>228, 128</b><span>⌈116,736 / 512⌉ = 228; min(228, 128)</span></td></tr>
+  <tr><td>T<sub>c</sub> (passes)</td><td class="what">How many times Q and O stream through: N/B<sub>c</sub></td>
+      <td class="ex"><b class="ok">3</b><span>⌈1,024 / 384⌉</span></td>
+      <td class="ex"><b class="lo">36</b><span>⌈8,192 / 228⌉</span></td></tr>
+  <tr><td>d² vs M</td><td class="what">The paper's condition for "many times fewer" accesses</td>
+      <td class="ex"><b class="ok">4,096 ≪ 98,304</b><span>24× headroom</span></td>
+      <td class="ex"><b>16,384 vs 116,736</b><span>only 7× headroom</span></td></tr>
+</table>
+
+<h2>Proposition 3: a lower bound, and what it doesn't say</h2>
+<p><b>Claim:</b> no algorithm that computes <i>exact</i> attention can make o(N²d²/M) HBM accesses for <i>all</i> M in [d, Nd]. <b>Proof:</b> at the top of that range, M = Θ(Nd), the bound becomes Ω(N²d²/Nd) = Ω(Nd). Any algorithm has to read Q, K, V and write O, which already costs Ω(Nd) accesses. So beating N²d²/M everywhere would contradict this. The paper notes that "this type of lower bound over a subrange of M is common in the streaming algorithms literature."</p>
+<p><b>What it doesn't claim.</b> It does not prove that FlashAttention is optimal at the M you actually have, such as 100 KB. The argument uses only the M = Θ(Nd) endpoint, where the whole problem fits on chip. A lower bound parameterised by M is "left as exciting future work." It is also a statement up to constants, so it doesn't rule out an exact algorithm with a smaller constant. FlashAttention-2 later cuts non-matmul work, not the Θ.</p>
+
+<h2>Fig 2 left: HBM traffic predicts runtime, FLOPs don't</h2>
+<div class="tw"><table>
+  <tr><th>GPT-2 medium attention, A100, fwd+bwd</th><th class="num">Standard</th><th class="num">FlashAttention</th><th class="num">Ratio</th></tr>
+  <tr><td>GFLOPs <span class="mu">(paper)</span></td><td class="num">66.6</td><td class="num lo">75.2</td><td class="num">1.13× more</td></tr>
+  <tr><td>HBM R/W, GB <span class="mu">(paper)</span></td><td class="num lo">40.3</td><td class="num hi">4.4</td><td class="num hi">9.2× less</td></tr>
+  <tr><td>Runtime, ms <span class="mu">(paper)</span></td><td class="num lo">41.7</td><td class="num hi">7.3</td><td class="num hi">5.7× faster</td></tr>
+  <tr><td>HBM, GB, forward only, Alg 0 vs Alg 1 as written <span class="mu">(our count)</span></td><td class="num">9.13</td><td class="num">1.64</td><td class="num">5.57× less</td></tr>
+</table></div>
+<div class="formula">N = 1,024, d = 64, 16 heads × batch 64 = 1,024 attention problems
+standard, per head:  4Nd + 4N² = 262,144 + 4,194,304 = 4,456,448
+flash, per head:     (Nd + 2N) + 2Nd + T_c·(3Nd + 4N)
+                   = 67,584 + 131,072 + 3 × 200,704 = 800,768
+whole batch:  4,456,448 × 1,024 × 2 B = 9.13 GB
+              800,768 × 1,024 × 2 B   = 1.64 GB   (elements)</div>
+<p class="cap">The paper's FlashAttention does 13% more FLOPs because the backward pass recomputes S and P. It still runs 5.7× faster, because it moves 9.2× fewer bytes. Our count gives 5.57× less traffic, not 9.2×. It covers the forward pass only and counts only Alg 0's three lines, while the measurement covers forward + backward and PyTorch's separate mask, softmax and dropout kernels, each of which also reads and writes N² elements. One quirk we can't reconcile: from the stated shapes, the forward matmuls alone come to 4N²d × 1,024 = 274.9 GFLOP, more than the 66.6 in the figure. The paper doesn't say how it counted.</p>
+
+<h2>Fig 2 middle: bigger blocks, fewer passes, up to a point</h2>
+<p>The paper varies B<sub>c</sub> in the forward pass (same GPT-2 shape). As block size grows, "the number of HBM accesses decreases (as we make fewer passes over the input), and runtime decreases." Beyond 256, "the runtime is then bottlenecked by other factors (e.g., arithmetic operations)", and bigger blocks stop fitting in SRAM anyway. The figure gives no per-point values, so here is our count for the same shape with a simple roofline, labelled as ours.</p>
+<div class="tw"><table>
+  <tr><th class="num">B<sub>c</sub></th><th class="num">T<sub>c</sub> passes</th><th class="num">Flash traffic, GB</th><th class="num">vs standard</th><th class="num">FLOP/byte</th><th class="num">Memory time, 1.5 TB/s</th><th class="num">Matmul time, 312 TF</th></tr>
+  <tr><td class="num">32</td><td class="num">32</td><td class="num lo">13.56</td><td class="num lo">0.7×</td><td class="num">20</td><td class="num">9.04 ms</td><td class="num">0.88 ms</td></tr>
+  <tr><td class="num">64</td><td class="num">16</td><td class="num">6.98</td><td class="num">1.3×</td><td class="num">39</td><td class="num">4.66 ms</td><td class="num">0.88 ms</td></tr>
+  <tr><td class="num">128</td><td class="num">8</td><td class="num">3.70</td><td class="num">2.5×</td><td class="num">74</td><td class="num">2.46 ms</td><td class="num">0.88 ms</td></tr>
+  <tr><td class="num">256</td><td class="num">4</td><td class="num">2.05</td><td class="num">4.4×</td><td class="num">134</td><td class="num">1.37 ms</td><td class="num">0.88 ms</td></tr>
+  <tr><td class="num mu">512</td><td class="num mu">2</td><td class="num mu">1.23</td><td class="num mu">7.4×</td><td class="num mu">224</td><td class="num mu">0.82 ms</td><td class="num mu">0.88 ms</td></tr>
+</table></div>
+<p class="cap">Our recomputation: labs/flash-io.py, forward only, B<sub>r</sub> = 64, all 1,024 heads. The A100 figures (1.5 TB/s, 312 TFLOP/s bf16) are the ones the FlashAttention papers use. At B<sub>c</sub> = 32 the tiled kernel moves <i>more</i> than standard attention, because 32 passes over Q and O cost more than one N×N round trip. Our simple model crosses from memory- to matmul-bound near 512 (greyed, since K<sub>j</sub> + V<sub>j</sub> alone would take 128 KB there). The paper's measured runtime flattens earlier, at ~256. Our model counts only matmul FLOPs and ignores exp and other non-matmul work, which makes the real compute side longer.</p>
+
+<h2>The running example: Llama-3.1-8B prefill on an H100</h2>
+<p>N = 8,192 tokens, d = 128, 32 query heads per layer, 32 layers, bf16. M = 116,736 elements gives B<sub>c</sub> = 228, B<sub>r</sub> = 128, T<sub>c</sub> = 36.</p>
+<div class="formula">per head      standard 272,629,760   flash 117,587,968   (2.32×)
+all layers    standard 558 GB → 167 ms at 3.35 TB/s
+              flash    241 GB →  72 ms
+matmul FLOPs  4N²d × 32 heads × 32 layers = 35.2 TFLOP → 36 ms at 989 TF
+intensity     standard 63 · Alg 1 as written 146 FLOP/B
+              ideal (Q, K, V read once) 4,096 = N/2
+N×N scores, one head, bf16 = 8,192² × 2 B = 134 MB</div>
+<p><b>Our framing: tiling raises attention's arithmetic intensity.</b> The <a href="../perf-2-scaling-book-inference/attention-intensity.html">attention-intensity card</a> models a fused Flash kernel that reads Q, K, V once, which gives N/2 = 4,096 FLOP/B, far above the H100's 295. That is the M = Θ(Nd) end of Proposition 3. Alg 1 taken literally, with a 228 KB SRAM, no L2 cache and d = 128, needs 36 passes and gets only 146, which is still below the ridge. Real kernels land much closer to the ideal. FlashAttention-2 swaps the loops, so Q and O are touched once and K, V are re-read. The H100's 50 MB L2 absorbs most repeat reads. Under GQA the 4 query heads that share a KV head can share its loads. This is our inference: Theorem 2 counts HBM traffic under a two-level model (HBM and SRAM), with no L2.</p>
+
+<h2>§3.3 Block-sparse FlashAttention</h2>
+<p>Take a block mask <b>M̃</b> ∈ {0,1}<sup>N×N</sup> that is constant on each B<sub>r</sub> × B<sub>c</sub> tile, and compute P = softmax(S ⊙ 𝟙<sub>M̃</sub>), where masked entries become −∞. Alg 5 is Alg 1 with the zero blocks skipped. This is <i>approximate</i> attention: it drops some query-key pairs on purpose.</p>
+<div class="mathbox">
+<math display="block">
+  <munder class="t2"><mrow><mi>Θ</mi><mo>(</mo><mi>N</mi><mi>d</mi><mo>+</mo><mfrac><mrow><msup><mi>N</mi><mn>2</mn></msup><msup><mi>d</mi><mn>2</mn></msup></mrow><mi>M</mi></mfrac><mi>s</mi><mo>)</mo></mrow><mtext class="lab">Proposition 4: s = fraction of nonzero blocks</mtext></munder>
+</math>
+</div>
+<div class="tw"><table>
+  <tr><th>Fraction of blocks kept, s</th><th class="num">1</th><th class="num">1/2</th><th class="num">1/4</th><th class="num">1/8</th></tr>
+  <tr><td>Traffic vs dense FlashAttention <span class="mu">(N = 4,096, d = 64, A100 M; our count)</span></td><td class="num">1.000</td><td class="num">0.541</td><td class="num">0.312</td><td class="num hi">0.197</td></tr>
+</table></div>
+<p class="cap">From labs/flash-io.py, using an illustrative checkerboard-style mask (keep block (i, j) when (i + j) mod k = 0). Traffic falls roughly in proportion to s. It stays a little above s·dense because the N·d term (initialising and writing O) doesn't shrink. That's the "Nd +" in Proposition 4.</p>
+<ul>
+  <li><b>Scaling:</b> with s = N<sup>−1/2</sup> or N<sup>−1</sup>log N, as in earlier sparse-attention work, IO becomes Θ(N√N) or Θ(N log N).</li>
+  <li><b>Pattern:</b> the experiments use a fixed <b>butterfly</b> sparsity pattern, which has "been shown to be able to approximate arbitrary sparsity."</li>
+  <li><b>Fig 2 right:</b> at sequence length 4K, runtime falls in proportion to sparsity. The figure gives no per-point values.</li>
+  <li><b>LRA:</b> block-sparse FlashAttention runs 2.8× faster than standard attention (FlashAttention: 2.4×). Average accuracy is 59.6 vs 59.3 for the standard Transformer (Table 3).</li>
+</ul>
+
+<h2>Why it beats the alternatives</h2>
+<div class="grid2">
+  <div class="cell"><h3><span class="x">&#10007;</span> Standard attention</h3><p>Θ(Nd + N²) accesses. S and P each make a full N×N round trip through HBM. That's 134 MB per head at N = 8k, and it dominates as soon as N ≫ d. GPT-2 medium: 40.3 GB, 41.7 ms.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Bigger SRAM</h3><p>More M means bigger blocks and fewer passes: M/d² goes from 24 (A100) to 28.5 (H100) at d = 64. That's a 1.19× gain from 192 → 228 KB. It helps, but the hardware grows slowly, and d = 128 still loses 4× to d².</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Block-sparse</h3><p>Traffic is cut by s on top of FlashAttention (Θ(Nd + N²d²s/M)), and it's 2.8× on LRA. But it is approximate: it skips blocks, so the output isn't softmax(QKᵀ)V, and it needs a mask that suits the task.</p></div>
+  <div class="cell win"><h3><span class="ok">&#10003;</span> FlashAttention</h3><p>Exact output with Θ(N²d²/M) accesses. It moves 9.2× less and runs 5.7× faster on GPT-2 medium despite 13% more FLOPs. By Proposition 3, no exact method beats it for every SRAM size.</p></div>
+</div>
+
+<h2>Is FlashAttention memory-bound or compute-bound?</h2>
+<div class="note">
+  <p><b>It depends on the block size and the phase.</b> For training and prefill, the paper's Fig 2 (middle) shows the forward pass stops getting faster beyond a block size of ~256, where it is "bottlenecked by other factors (e.g., arithmetic operations)." So with large enough blocks it becomes compute-bound (arithmetic-bound). With small blocks it is still memory-bound: our count shows that B<sub>c</sub> = 32 moves more bytes than standard attention.</p>
+  <p><b>Decode is different. This part is our framing, not the paper's.</b> Generating one token means one query row (N = 1 for Q) against the whole KV cache. There is no N×N matrix to avoid, and FlashAttention can't help reading the entire cache: 1.07 GB per 8k-token Llama-3.1-8B sequence. Intensity stays around 1 FLOP/byte (≈ 4 with GQA), far below the ridge. See <a href="../perf-2-scaling-book-inference/attention-intensity.html">attention intensity</a>. Decode attention is memory-bound with or without FlashAttention. Engines instead shrink or share the cache (GQA, MLA, FP8 KV, paging, prefix caching), which later cards in this course cover.</p>
+  <p><b>When the Θ bound misleads.</b> At d = 128 the headroom M/d² is only ~7, and our Alg 1 constants leave about 2.3×. Short sequences (N = 256: 3.3×) gain less, because the Nd terms matter there. The two-level model also ignores L2 cache, which is why measured kernels beat the literal count.</p>
+</div>
+
+<h2>Labs</h2>
+<div class="labbox">
+  <p><a class="lab-link" href="https://github.com/seyonv/explainers/blob/main/perf-4-attention-kv/labs/flash-io.py">Run it: labs/flash-io.py</a> <b>[L]</b> runs on your Mac in under a second with only the standard library. It walks Alg 0 line by line and Alg 1 loop by loop, counting every HBM element read and written. It prints the GPT-2 medium comparison (5.57× vs the paper's measured 9.2×), the block-size sweep, the M/d² table with the bytes-as-M mistake, an N sweep (256 → 64k: 3.28× → 7.78×), the Llama-3.1-8B prefill case, and the block-sparse s sweep. Try changing <code>BYTES</code> to 4 (fp32) or d to 256 and watch the ratio collapse.</p>
+</div>
+
+<div class="foot">
+<p><b>Read next:</b> <a href="https://arxiv.org/abs/2205.14135">FlashAttention (Dao et al., arXiv 2205.14135)</a>: §3.2 "Analysis: IO Complexity of FlashAttention" and §3.3 "Extension: Block-Sparse FlashAttention", all of both including Fig 2 (~20 min). Then Appendix C, the proofs of Theorem 2 and Proposition 3 and the proof of Proposition 4 at the end of D.1 (~25 min). ~45 min total. Keep Algorithm 1 open next to the proof.</p>
+<p><b>Related:</b> <a href="flashattention-tiling.html">FlashAttention I: tiling and recomputation</a> · <a href="flashattention-backward-results.html">FlashAttention III: backward pass and results</a> · <a href="flashattention-2-parallelism.html">FlashAttention-2 II: parallelism and work partitioning</a> · <a href="online-softmax.html">online softmax</a> · <a href="../perf-1-foundations/roofline-intuition.html">perf-1: the roofline intuition</a> · <a href="../perf-2-scaling-book-inference/attention-intensity.html">perf-2: attention intensity</a> · <a href="../perf-3-kernels/matmul-coalescing-smem.html">perf-3: Matmul II, shared-memory caching</a> (loads per result is the same idea) · <a href="../llm-latency/memory-bandwidth.html">memory bandwidth</a></p>
+<p><b>Sources:</b> Theorem 2, Proposition 3, Proposition 4, Alg 0/1, block sizes, "d (64–128)", "M (around 100KB)", Fig 2 (66.6/75.2 GFLOPs, 40.3/4.4 GB, 41.7/7.3 ms; block size ~256; runtime ∝ sparsity at 4K), butterfly pattern, LRA 2.8× and 2.4× and Table 3 averages 59.3/59.8/59.6, A100 192 KB SRAM per SM and 1.5 TB/s: <a href="https://arxiv.org/abs/2205.14135">arXiv 2205.14135v2</a>. A100 312 TFLOP/s: FlashAttention-2, <a href="https://arxiv.org/abs/2307.08691">arXiv 2307.08691</a>. H100 228 KB shared memory per SM, 227 KB per block, A100 164 KB: <a href="https://docs.nvidia.com/cuda/hopper-tuning-guide/index.html">NVIDIA Hopper tuning guide</a>. H100 989 TF, 3.35 TB/s, ridge 295, Llama-3.1-8B shapes, 1.07 GB KV per 8k sequence: course facts. Every element and byte count, ratio, time and intensity on this card: our recomputation, labs/flash-io.py.</p>
+</div>
+</article>
+<!-- series-nav:bottom -->
+<div class="snx"><a class="nx" href="index.html#flashattention-backward-results" target="_top">
+<span class="mini" aria-hidden="true"><span class="m1">FlashAttention III: backward pass and results</span><span class="m2">Also called recomputation in the backward pass, selective gradient checkpointing, or (for §4) the FlashAttention benchmarks. This card covers the FlashAttention paper's Appendix B (the…</span><span class="m3">In one breath</span><span class="m4">Training needs the attention matrix P a second time, in the backward pass. Standard attention keeps all N×N entries of it in HBM. FlashAttention keeps only two numbers per query row from the forward pass, the running max m and the softmax sum ℓ, and rebuilds each tile of P on chip when the backward pass needs it. That costs…</span></span>
+<span class="tx"><span class="lab">Next up · 05 / 19</span><span class="tt">FlashAttention III: backward pass and results</span><span class="ds">Recompute P, and what the speed bought</span><span class="nd">Builds on: FlashAttention I: tiling and recomputation.</span><span class="go">Continue →</span></span></a><div class="aux"><span><a href="index.html#flashattention-tiling" target="_top">← FlashAttention I: tiling and recomputation</a></span><a href="index.html" target="_top">All cards in 4 · Attention &amp; KV cache</a></div></div>
+<!-- /series-nav:bottom -->
+</body>
+</html>

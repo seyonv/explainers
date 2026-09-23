@@ -1,0 +1,622 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PagedAttention I: KV memory as pages</title>
+<style>
+:root{
+  --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
+  --text:#1c1f23; --muted:#6b7068; --faint:#b9b9b3;
+  --accent:#4a9d77; --accent-bg:#dcefdf; --accent-border:#8cc79c;
+  --red:#c0492b; --red-bg:#fbeceb;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#15171a; --surface:#1d2024; --surface2:#24282d; --border:#32373d;
+    --text:#e6e8ea; --muted:#9aa1a9; --faint:#4a5057;
+    --accent:#5fb37f; --accent-bg:#1c2b22; --accent-border:#3f7a55;
+    --red:#e57368; --red-bg:#2e1f1e;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text)}
+.card{max-width:820px;margin:0 auto;padding:28px 32px;font-family:-apple-system,"Inter",system-ui,sans-serif;line-height:1.45}
+h1{font-size:26px;font-weight:600;margin:0 0 6px;letter-spacing:-0.01em}
+.sub{font-size:15px;color:var(--muted);margin:0 0 20px}
+h2{font-size:17px;font-weight:600;margin:26px 0 10px}
+p{font-size:15px;margin:0 0 10px}
+ul{font-size:15px;margin:0 0 10px;padding-left:20px} li{margin-bottom:4px}
+.cap{font-size:13px;color:var(--muted);margin:8px 0 14px;text-align:center}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+
+/* Tables and formulas */
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border)}
+th{font-size:12px;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:none}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+.hi{color:var(--accent);font-weight:600} .lo{color:var(--red)}
+.formula{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin:10px 0;white-space:pre;overflow-x:auto;line-height:1.55}
+.tw{overflow-x:auto}
+
+/* MathML */
+.mathbox{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px 16px 12px;margin:10px 0;overflow-x:auto}
+.mathbox math{font-size:21px;color:var(--text);font-family:"STIX Two Math","Latin Modern Math","Cambria Math",math}
+.mathbox .t1{color:var(--text)} .mathbox .t2{color:var(--accent)} .mathbox .t3{color:var(--muted)}
+.mathbox .lab{font-size:12px;font-family:-apple-system,"Inter",system-ui,sans-serif;padding-top:3px;border-top:1.5px solid currentColor;margin-top:2px}
+.legend{display:grid;grid-template-columns:auto 1fr auto;column-gap:14px;row-gap:5px;font-size:13px;margin-top:12px;align-items:baseline}
+.legend .sym{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;text-align:right}
+.legend .v{color:var(--muted);text-align:right;font-variant-numeric:tabular-nums}
+
+/* Two examples per term */
+.parts td{vertical-align:top} .parts td:first-child{font-weight:600}
+.parts .ex{font-size:13px} .parts .ex span{display:block;color:var(--muted)}
+
+/* Legend chips for the SVG colours */
+.key{display:flex;flex-wrap:wrap;gap:6px 16px;font-size:13px;color:var(--muted);margin:6px 0 8px}
+.key span{display:inline-flex;align-items:center;gap:6px}
+.key i{display:inline-block;width:14px;height:12px;border-radius:2px;border:1px solid var(--border)}
+.key .k-tok{background:var(--accent);border-color:var(--accent)}
+.key .k-res{background:var(--surface2)}
+.key .k-int{background:var(--faint);border-color:var(--faint)}
+.key .k-ext{background:var(--bg);border:1.5px dashed var(--faint)}
+
+/* 2x2 grid */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.cell{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.cell.win{background:var(--accent-bg);border-color:var(--accent-border)}
+.cell h3{font-size:16px;font-weight:600;margin:0 0 5px;display:flex;gap:8px;align-items:baseline}
+.cell p{font-size:14px;margin:0;color:var(--text)}
+.cell.win h3,.cell.win p{color:var(--accent)}
+.x{color:var(--red)} .ok{color:var(--accent)}
+
+/* Clarification box and lab */
+.note{border:1px solid var(--border);border-radius:10px;padding:14px 18px;font-size:14px}
+.note p{font-size:14px} .note p:last-child{margin-bottom:0}
+.labbox{border:1px solid var(--border);background:var(--surface);border-radius:10px;padding:12px 16px;margin:10px 0;font-size:14px}
+.labbox p{font-size:14px} .labbox p:last-child{margin-bottom:0}
+
+.foot{margin-top:22px;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+.foot p{font-size:13px;margin:0 0 6px}
+svg{display:block;max-width:100%;height:auto;margin:6px 0}
+.sl{font-size:12px;fill:var(--muted)} .st{font-size:13px;fill:var(--text)}
+a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+@media (max-width:560px){
+  .card{padding:22px 16px}
+  .grid2{grid-template-columns:1fr}
+  .legend{grid-template-columns:auto 1fr}.legend .v{display:none}
+  .parts .what{display:none}
+  th,td{padding:6px 6px}
+}
+/* series-nav */
+.sn{max-width:820px;margin:0 auto;padding:16px 32px 0;font-family:-apple-system,"Inter",system-ui,sans-serif;font-size:13px;line-height:1.5;color:var(--muted)}
+.sn a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+.sn .crumbs{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 7px}
+.sn .crumbs b{color:var(--text);font-weight:600}
+.sn .sep{color:var(--faint)}
+.sn .step{margin-left:auto;white-space:nowrap}
+.sn .dep{margin-top:5px;padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface)}
+.sn .dep .ok{color:var(--accent);font-weight:600}
+.snx{max-width:820px;margin:0 auto;padding:6px 32px 44px;font-family:-apple-system,"Inter",system-ui,sans-serif}
+.snx .nx{display:grid;grid-template-columns:280px 1fr;text-decoration:none;color:var(--text);background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.snx .nx:hover,.snx .nx:focus-visible{border-color:var(--accent-border);outline:none}
+.snx .mini{position:relative;height:210px;overflow:hidden;background:var(--bg);border-right:1px solid var(--border);padding:14px 16px}
+.snx .mini span{display:block}
+.snx .mini .m1{font-size:12.5px;font-weight:600;margin:0 0 4px;line-height:1.3}
+.snx .mini .m2{font-size:9px;color:var(--muted);margin:0 0 8px;line-height:1.4}
+.snx .mini .m3{font-size:8.5px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;margin:0 0 3px}
+.snx .mini .m4{font-size:9.5px;margin:0;line-height:1.45}
+.snx .tx{padding:16px 20px}
+.snx .lab{font-size:12px;font-weight:600;color:var(--accent);letter-spacing:.04em;text-transform:uppercase}
+.snx .tt{display:block;font-size:20px;font-weight:600;margin:5px 0 4px;line-height:1.25}
+.snx .ds{display:block;font-size:14px;color:var(--muted)}
+.snx .nd{display:block;font-size:13px;color:var(--muted);margin-top:10px}
+.snx .go{display:block;margin-top:12px;font-size:14px;font-weight:600;color:var(--accent)}
+.snx .aux{display:flex;justify-content:space-between;gap:12px;margin-top:10px;font-size:13px;color:var(--muted)}
+.snx .aux a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+@media (max-width:560px){.sn,.snx{padding-left:16px;padding-right:16px}.snx .nx{grid-template-columns:1fr}.snx .mini{display:none}.sn .step{margin-left:0}}
+/* /series-nav */
+</style>
+</head>
+<body>
+<!-- series-nav:top -->
+<nav class="sn" aria-label="Series navigation"><div class="crumbs"><a href="../perf-0-map/index.html" target="_top">AI perf engineering</a><span class="sep">›</span><a href="index.html" target="_top">4 · Attention &amp; KV cache</a><span class="sep">›</span><b>12 / 19</b><span class="step"><a href="index.html#kv-quantization" target="_top">← prev</a> · <a href="index.html#paged-sharing" target="_top">next →</a></span></div>
+<div class="dep"><b>Before this:</b> <a href="../perf-2-scaling-book-inference/index.html#params-vs-kv" target="_top">Memory: parameters vs the KV cache</a> (perf-2)</div></nav>
+<!-- /series-nav:top -->
+<article class="card">
+<h1>PagedAttention I: KV memory as pages</h1>
+<p class="sub">Also called vLLM's KV blocks, the block table, or virtual memory for the KV cache. This card walks the PagedAttention paper (Kwon et al., SOSP '23) from the abstract through §4.3: why existing servers use only 20.4%–38.2% of their KV memory for tokens, and how cutting the cache into fixed-size blocks fixes it. The paper's numbers are OPT-13B and a 13B model on a 40 GB A100; Llama-3.1-8B on an H100 is our recomputation.</p>
+
+<h2>In one breath</h2>
+<p>Older servers gave each request one contiguous slab of KV memory sized for the longest answer it might write, and most of that slab was never used. PagedAttention splits each request's KV cache into small fixed-size blocks, places them anywhere in GPU memory, and keeps a per-request table from "block 0, 1, 2 of this sequence" to "physical block 7, 1, 3". A request then wastes less than one block, so many more requests fit in the same memory.</p>
+
+<h2>The problem (abstract and §1)</h2>
+<p>Serving throughput comes from batching many requests. Batching needs memory for each request's KV cache, and that cache is large, grows by one token per step, and has a length nobody knows in advance. The paper's Fig 1 shows a 13B-parameter model on a 40 GB A100:</p>
+<svg viewBox="0 0 760 50" role="img" aria-label="Memory layout of a 13B model on a 40 GB A100">
+<rect x="0.0" y="4" width="494.0" height="28" fill="var(--muted)"/>
+<text x="247.0" y="23" text-anchor="middle" font-size="13" fill="var(--bg)">Parameters 26 GB (65%)</text>
+<rect x="494.0" y="4" width="228.0" height="28" stroke="var(--accent-border)" fill="var(--accent-bg)"/>
+<text x="608.0" y="23" text-anchor="middle" font-size="13" fill="var(--accent)">KV cache (>30%)</text>
+<rect x="722.0" y="4" width="38.0" height="28" fill="var(--faint)"/>
+<text x="760" y="46" text-anchor="end" class="sl">others (activations): the small rest</text>
+<text x="0" y="46" class="sl">NVIDIA A100, 40 GB, 13B-parameter model</text>
+</svg>
+<p class="cap">Fig 1 (left), redrawn from its labels. The text says "approximately 65%" for weights and "close to 30%" for the KV cache, and the figure labels it "&gt;30%". The weights never change, so how the KV slice is managed decides the batch size.</p>
+
+<p>Existing systems (FasterTransformer, and Orca, which the authors reimplemented because it wasn't public) store each request's KV cache as one contiguous tensor, because deep learning frameworks want tensors contiguous. The paper profiled how that memory is actually used during its §6.2 experiment (Fig 2):</p>
+<div class="key"><span><i class="k-tok"></i>token states (real KV)</span><span><i class="k-res"></i>reserved for future tokens</span><span><i class="k-int"></i>internal fragmentation</span><span><i class="k-ext"></i>external fragmentation and other</span></div>
+<svg viewBox="0 0 760 144" role="img" aria-label="Stacked bars of KV memory use">
+<defs><pattern id="hatchpaper" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="6" height="6" fill="var(--bg)"/><line x1="0" y1="0" x2="0" y2="6" stroke="var(--faint)" stroke-width="2.4"/></pattern></defs>
+<text x="0" y="23" class="st">Orca (Max)</text>
+<rect x="140.0" y="6" width="112.2" height="24" fill="var(--accent)"/>
+<text x="196.1" y="22.5" text-anchor="middle" font-size="12" fill="var(--bg)">20.4</text>
+<rect x="252.2" y="6" width="73.2" height="24" stroke="var(--faint)" fill="var(--surface2)"/>
+<text x="288.8" y="22.5" text-anchor="middle" font-size="12" fill="var(--text)">13.3</text>
+<rect x="325.4" y="6" width="315.1" height="24" fill="var(--faint)"/>
+<text x="482.9" y="22.5" text-anchor="middle" font-size="12" fill="var(--text)">57.3</text>
+<rect x="640.5" y="6" width="49.0" height="24" stroke="var(--faint)" fill="url(#hatchpaper)"/>
+<rect x="648.0" y="11" width="34" height="14" rx="3" fill="var(--bg)"/>
+<text x="665.0" y="22.5" text-anchor="middle" font-size="12" fill="var(--text)">8.9</text>
+<text x="698" y="23" class="sl">20.4%</text>
+<text x="0" y="57" class="st">Orca (Pow2)</text>
+<rect x="140.0" y="40" width="147.4" height="24" fill="var(--accent)"/>
+<text x="213.7" y="56.5" text-anchor="middle" font-size="12" fill="var(--bg)">26.8</text>
+<rect x="287.4" y="40" width="98.5" height="24" stroke="var(--faint)" fill="var(--surface2)"/>
+<text x="336.6" y="56.5" text-anchor="middle" font-size="12" fill="var(--text)">17.9</text>
+<rect x="385.8" y="40" width="74.8" height="24" fill="var(--faint)"/>
+<text x="423.2" y="56.5" text-anchor="middle" font-size="12" fill="var(--text)">13.6</text>
+<rect x="460.6" y="40" width="228.8" height="24" stroke="var(--faint)" fill="url(#hatchpaper)"/>
+<rect x="558.0" y="45" width="34" height="14" rx="3" fill="var(--bg)"/>
+<text x="575.0" y="56.5" text-anchor="middle" font-size="12" fill="var(--text)">41.6</text>
+<text x="698" y="57" class="sl">26.8%</text>
+<text x="0" y="91" class="st">Orca (Oracle)</text>
+<rect x="140.0" y="74" width="210.1" height="24" fill="var(--accent)"/>
+<text x="245.1" y="90.5" text-anchor="middle" font-size="12" fill="var(--bg)">38.2</text>
+<rect x="350.1" y="74" width="138.6" height="24" stroke="var(--faint)" fill="var(--surface2)"/>
+<text x="419.4" y="90.5" text-anchor="middle" font-size="12" fill="var(--text)">25.2</text>
+<rect x="488.7" y="74" width="201.3" height="24" stroke="var(--faint)" fill="url(#hatchpaper)"/>
+<rect x="572.4" y="79" width="34" height="14" rx="3" fill="var(--bg)"/>
+<text x="589.4" y="90.5" text-anchor="middle" font-size="12" fill="var(--text)">36.6</text>
+<text x="698" y="91" class="sl">38.2%</text>
+<text x="0" y="125" class="st">vLLM</text>
+<rect x="140.0" y="108" width="529.6" height="24" fill="var(--accent)"/>
+<text x="404.8" y="124.5" text-anchor="middle" font-size="12" fill="var(--bg)">96.3</text>
+<rect x="669.6" y="108" width="20.4" height="24" stroke="var(--faint)" fill="url(#hatchpaper)"/>
+<text x="698" y="125" class="sl">96.3%</text>
+</svg>
+<p class="cap">Fig 2, redrawn: % of KV memory. Values are the figure's printed labels. We read which segment each label belongs to from the figure's layout (Oracle shows no internal segment), and the figure doesn't break down vLLM's remaining 3.7%, so it's drawn as "other". Orca (Max) reserves 2,048 tokens, Orca (Pow2) up to 2× the true output length, and Orca (Oracle) knows the exact output length, which no real system does.</p>
+<p>The paper's fix is borrowed from operating systems: "one can think of blocks as pages, tokens as bytes, and requests as processes".</p>
+<div class="tw"><table>
+<tr><th>Operating system (virtual memory)</th><th>vLLM (PagedAttention)</th></tr>
+<tr><td>Page, a fixed-size chunk of memory</td><td>KV block, the keys and values of B tokens</td></tr>
+<tr><td>Byte</td><td>Token (its K and V vectors)</td></tr>
+<tr><td>Process</td><td>Request (sequence)</td></tr>
+<tr><td>Page table: virtual page → physical page</td><td>Block table: logical block → physical block, plus #filled</td></tr>
+<tr><td>Physical pages allocated as needed, not reserved in advance</td><td>A new block is allocated only when the last one is full</td></tr>
+</table></div>
+
+<h2>Background in brief (§2)</h2>
+<table class="parts">
+<tr><th>Term</th><th class="what">What happens</th><th>Example A: the paper's Fig 6 sentence</th><th>Example B: an average ShareGPT request (paper's dataset)</th></tr>
+<tr><td>Prompt phase</td><td class="what">All prompt tokens go through the model at once (matrix-matrix work, uses the GPU well) and write their K and V.</td><td class="ex"><b>7 tokens in one pass</b><span>"Four score and seven years ago our" → first output</span></td><td class="ex"><b>161.31 tokens in one pass</b><span>mean input length, Fig 11</span></td></tr>
+<tr><td>Generation phase</td><td class="what">One new token per step, reading every earlier K and V (matrix-vector work, memory-bound). Ends at &lt;eos&gt; or the max length.</td><td class="ex"><b>+1 token per step</b><span>"fathers", then "brought", …</span></td><td class="ex"><b>337.99 steps on average</b><span>mean output length, not known in advance</span></td></tr>
+<tr><td>Iteration-level scheduling</td><td class="what">Orca's batching: after every step, finished requests leave the batch and waiting ones join, without padding.</td><td class="ex"><b>joins after 1 step</b><span>a new request waits one iteration, not one batch</span></td><td class="ex"><b>batch size set by KV memory</b><span>"the serving system's throughput is memory-bound" (§3)</span></td></tr>
+</table>
+<p class="cap">Iteration-level (continuous) batching gets its own card in perf-5 (inference engines, not yet built). Here it matters for one reason: once compute waste from padding is gone, KV memory is what limits the batch.</p>
+
+<h2>Why KV memory is hard (§3)</h2>
+<ul>
+<li><b>It's large.</b> OPT-13B (hidden size 5,120, 40 layers, FP16) needs 800 KB per token, and a 2,048-token request up to 1.6 GB. Even all of a GPU's memory holds only a few tens of such requests. The paper adds that FLOPS grew more than 2× from A100 to H100, while memory stayed at 80 GB.</li>
+<li><b>Decoding can be complex.</b> Parallel sampling and beam search create several sequences that could share KV (the next card).</li>
+<li><b>Lengths are unknown.</b> Output grows each step, and the system must decide what to evict or swap when memory runs out.</li>
+</ul>
+<div class="formula">OPT-13B KV per token = 2 (K, V) × 5,120 (hidden) × 40 (layers) × 2 B (FP16)
+                     = 819,200 B = 800 KiB            (paper: "800 KB")
+one 2,048-token request = 2,048 × 819,200 B = 1.68 GB = 1.56 GiB   (paper: "1.6 GB")</div>
+<p class="cap">From labs/paged-allocator.py. The general formula, and why Llama-3.1-8B needs only 128 KiB per token (GQA), is on <a href="../perf-2-scaling-book-inference/params-vs-kv.html">parameters vs the KV cache</a>.</p>
+
+<h2>Three kinds of waste in existing systems (§3.1)</h2>
+<p>Because output length is unknown, the old systems reserve a chunk for the maximum possible length when the request arrives:</p>
+<svg viewBox="0 0 760 178" role="img" aria-label="Two contiguous KV chunks with reserved slots, internal and external fragmentation">
+<defs><pattern id="hx3" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="6" height="6" fill="var(--bg)"/><line x1="0" y1="0" x2="0" y2="6" stroke="var(--faint)" stroke-width="2.4"/></pattern></defs>
+<g font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="11" text-anchor="middle">
+<text x="0" y="16" text-anchor="start" font-family="-apple-system,system-ui,sans-serif" font-size="12" fill="var(--muted)">Request A: one contiguous chunk for its max length, 2,048 slots</text>
+<rect x="0" y="26" width="49" height="26" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/>
+<text x="24.5" y="43" fill="var(--accent)">Four</text>
+<rect x="52" y="26" width="49" height="26" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/>
+<text x="76.5" y="43" fill="var(--accent)">score</text>
+<rect x="104" y="26" width="49" height="26" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/>
+<text x="128.5" y="43" fill="var(--accent)">and</text>
+<rect x="156" y="26" width="49" height="26" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/>
+<text x="180.5" y="43" fill="var(--accent)">seven</text>
+<rect x="208" y="26" width="49" height="26" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/>
+<text x="232.5" y="43" fill="var(--accent)">years</text>
+<rect x="260" y="26" width="49" height="26" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/>
+<text x="284.5" y="43" fill="var(--accent)">ago</text>
+<rect x="312" y="26" width="49" height="26" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/>
+<text x="336.5" y="43" fill="var(--accent)">our</text>
+<rect x="364" y="26" width="49" height="26" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/>
+<text x="388.5" y="43" fill="var(--accent)">fathers</text>
+<rect x="416" y="26" width="41" height="26" rx="3" fill="var(--surface2)" stroke="var(--faint)" stroke-dasharray="3 2"/>
+<text x="436.5" y="43" fill="var(--muted)">resv</text>
+<rect x="460" y="26" width="41" height="26" rx="3" fill="var(--surface2)" stroke="var(--faint)" stroke-dasharray="3 2"/>
+<text x="480.5" y="43" fill="var(--muted)">resv</text>
+<rect x="504" y="26" width="256" height="26" rx="3" fill="var(--faint)"/>
+<text x="632.0" y="43" fill="var(--text)" font-family="-apple-system,system-ui,sans-serif" font-size="12">internal fragmentation: never used</text>
+<text x="208" y="68" font-family="-apple-system,system-ui,sans-serif" font-size="12" fill="var(--accent)">token states</text>
+<text x="460" y="68" font-family="-apple-system,system-ui,sans-serif" font-size="12" fill="var(--muted)">reserved for future tokens</text>
+<text x="0" y="108" text-anchor="start" font-family="-apple-system,system-ui,sans-serif" font-size="12" fill="var(--muted)">Request B: max length 512, placed by the allocator after a gap</text>
+<rect x="0" y="118" width="150" height="26" rx="3" fill="url(#hx3)" stroke="var(--border)"/>
+<rect x="156" y="118" width="49" height="26" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/>
+<text x="180.5" y="135" fill="var(--accent)">You</text>
+<rect x="208" y="118" width="49" height="26" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/>
+<text x="232.5" y="135" fill="var(--accent)">only</text>
+<rect x="260" y="118" width="49" height="26" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/>
+<text x="284.5" y="135" fill="var(--accent)">live</text>
+<rect x="312" y="118" width="49" height="26" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/>
+<text x="336.5" y="135" fill="var(--accent)">once</text>
+<rect x="364" y="118" width="41" height="26" rx="3" fill="var(--surface2)" stroke="var(--faint)" stroke-dasharray="3 2"/>
+<text x="384.5" y="135" fill="var(--muted)">resv</text>
+<rect x="408" y="118" width="232" height="26" rx="3" fill="var(--faint)"/>
+<text x="524.0" y="135" fill="var(--text)" font-family="-apple-system,system-ui,sans-serif" font-size="12">internal</text>
+<rect x="646" y="118" width="114" height="26" rx="3" fill="url(#hx3)" stroke="var(--border)"/>
+<text x="75" y="160" font-family="-apple-system,system-ui,sans-serif" font-size="12" fill="var(--muted)">external fragmentation</text>
+<text x="703" y="160" font-family="-apple-system,system-ui,sans-serif" font-size="12" fill="var(--muted)">external</text>
+</g></svg>
+<p class="cap">In the style of the paper's Fig 3: request A has a 2,048-token maximum, request B 512 (the paper's values). Not to scale, and the words and slot counts are illustrative. Green is KV that holds a token; every grey kind is memory no other request can use.</p>
+<table class="parts">
+<tr><th>Waste</th><th class="what">What it is</th><th>Example A: Orca (Max), paper's Fig 2</th><th>Example B: reserve 8,192, our Llama run</th></tr>
+<tr><td>Reserved</td><td class="what">Slots for tokens not generated yet. They'll be used eventually, but they're locked for the request's whole life.</td><td class="ex"><b>13.3%</b><span>of KV memory</span></td><td class="ex"><b>4.5%</b><span>simulated, synthetic lengths</span></td></tr>
+<tr><td>Internal fragmentation</td><td class="what">Slots past the request's actual end. Only known once it finishes, and never used.</td><td class="ex"><b>57.3%</b><span>2,048 reserved, far fewer used</span></td><td class="ex"><b class="lo">88.0%</b><span>8,192 reserved, 521 held on average</span></td></tr>
+<tr><td>External fragmentation</td><td class="what">Gaps between chunks left by the allocator (the paper assumes a buddy allocator), too small or badly placed for the next chunk.</td><td class="ex"><b>8.9%</b><span>"external frag. &amp; others"</span></td><td class="ex"><b>not modelled</b><span>all chunks equal size; 1.2% is free space too small for another</span></td></tr>
+</table>
+<p>Compaction (moving chunks together) could remove external fragmentation, but the paper calls it impractical in a latency-sensitive server because the KV cache is so large, and it still wouldn't let sequences share memory.</p>
+
+<h2>PagedAttention: attention over blocks (§4.1)</h2>
+<p>Cut the keys and values of a sequence into blocks of B tokens: key block <i>K<sub>j</sub></i> = (k<sub>(j−1)B+1</sub>, …, k<sub>jB</sub>), value block <i>V<sub>j</sub></i> likewise. Attention for query token <i>i</i> becomes a loop over blocks, each of which can live anywhere in memory:</p>
+<div class="mathbox">
+<math display="block">
+  <msub><mi>A</mi><mrow><mi>i</mi><mi>j</mi></mrow></msub><mo>=</mo>
+  <mfrac>
+    <mrow><mi>exp</mi><mo>(</mo><msubsup><mi>q</mi><mi>i</mi><mo>&#8868;</mo></msubsup><munder class="t2"><msub><mi>K</mi><mi>j</mi></msub><mtext class="lab">one block</mtext></munder><mo>/</mo><msqrt><mi>d</mi></msqrt><mo>)</mo></mrow>
+    <mrow><munderover><mo>&#8721;</mo><mrow><mi>t</mi><mo>=</mo><mn>1</mn></mrow><mrow><mo>&#8968;</mo><mi>i</mi><mo>/</mo><mi>B</mi><mo>&#8969;</mo></mrow></munderover><mi>exp</mi><mo>(</mo><msubsup><mi>q</mi><mi>i</mi><mo>&#8868;</mo></msubsup><msub><mi>K</mi><mi>t</mi></msub><mn mathvariant="bold">1</mn><mo>/</mo><msqrt><mi>d</mi></msqrt><mo>)</mo></mrow>
+  </mfrac>
+  <mo>,</mo><mspace width="1.2em"/>
+  <msub><mi>o</mi><mi>i</mi></msub><mo>=</mo>
+  <munderover><mo>&#8721;</mo><mrow><mi>j</mi><mo>=</mo><mn>1</mn></mrow><mrow><mo>&#8968;</mo><mi>i</mi><mo>/</mo><mi>B</mi><mo>&#8969;</mo></mrow></munderover>
+  <munder class="t2"><mrow><msub><mi>V</mi><mi>j</mi></msub><msubsup><mi>A</mi><mrow><mi>i</mi><mi>j</mi></mrow><mo>&#8868;</mo></msubsup></mrow><mtext class="lab">this block's share</mtext></munder>
+</math>
+<div class="legend">
+  <span class="sym">q<sub>i</sub></span><span>query vector of token i (the one being generated)</span><span class="v">Fig 5: "forth"</span>
+  <span class="sym">K<sub>j</sub>, V<sub>j</sub></span><span>the keys and values of the B tokens in block j, fetched from wherever it sits</span><span class="v">block 0 = "Four score and seven"</span>
+  <span class="sym">A<sub>ij</sub></span><span>row vector of B attention scores, token i against block j</span><span class="v">B numbers</span>
+  <span class="sym">1</span><span>all-ones vector: sums the B exponentials inside block t</span><span class="v">length B</span>
+  <span class="sym">&#8968;i/B&#8969;</span><span>number of blocks token i attends to</span><span class="v">1,000 tokens, B = 16: 63</span>
+  <span class="sym">B</span><span>KV block size in tokens</span><span class="v">Fig 6: 4 · vLLM default: 16</span>
+  <span class="sym">d</span><span>head dimension</span><span class="v">Llama-3.1-8B: 128</span>
+</div>
+</div>
+<div class="formula">plain text:  A_ij = exp(q_i·K_j/√d) / Σ_{t=1..⌈i/B⌉} exp(q_i·K_t·1/√d)
+             o_i  = Σ_{j=1..⌈i/B⌉} V_j · A_ijᵀ
+same result as ordinary attention (Eq 3), summed block by block</div>
+<p>The math is unchanged; only where the kernel reads K and V from changes. A footnote adds a layout choice: a token's K and V span every layer and head, and vLLM gives each layer and head its own blocks and block tables (the paper reports no performance difference between the two designs). For Llama-3.1-8B, one block of 16 tokens is 16 × 128 KiB = <b>2 MiB</b> summed over all 32 layers and 8 KV heads, or 16 × 128 × 2 B × 2 (K and V) = 8 KiB per layer per KV head (our arithmetic).</p>
+
+<h2>Logical blocks, physical blocks, block tables (§4.2)</h2>
+<table class="parts">
+<tr><th>Part</th><th class="what">What it is</th><th>Example A: Fig 6, B = 4</th><th>Example B: Llama-3.1-8B on H100, B = 16</th></tr>
+<tr><td>Logical block</td><td class="what">The request's view: block 0, 1, 2, … filled left to right. The unfilled end of the last one is reserved for the next tokens.</td><td class="ex"><b>3 logical blocks</b><span>after 9 tokens</span></td><td class="ex"><b>36 logical blocks</b><span>a 561-token request: ⌈561/16⌉</span></td></tr>
+<tr><td>Physical block</td><td class="what">A fixed-size slot in one big pre-allocated GPU buffer (the "block engine" also does this in CPU RAM, for swapping).</td><td class="ex"><b>blocks 7, 1, 3</b><span>not contiguous, not in order</span></td><td class="ex"><b>30,488 blocks of 2 MiB</b><span>63.94 GB ÷ 2,097,152 B</span></td></tr>
+<tr><td>Block table</td><td class="what">Per request: logical block → physical block, plus how many positions are filled.</td><td class="ex"><b>0→7 (4), 1→1 (4), 2→3 (1)</b><span>after "brought"</span></td><td class="ex"><b>36 rows</b><span>last row #filled 1 (561 = 35 × 16 + 1)</span></td></tr>
+<tr><td>Waste per request</td><td class="what">Only the empty tail of the last block, since a new block is allocated only when all previous ones are full.</td><td class="ex"><b>3 slots</b><span>of 12 held</span></td><td class="ex"><b class="hi">≤ 15 tokens = 1.875 MiB</b><span>vs up to 1.07 GB when reserving 8,192</span></td></tr>
+</table>
+
+<h2>Walk-through: decoding with block tables (§4.3, Fig 6)</h2>
+<div class="key"><span><i class="k-tok"></i>token written this step</span><span><i style="background:var(--accent-bg);border-color:var(--accent-border)"></i>stored token</span><span><i class="k-res" style="border-style:dashed"></i>reserved slot</span></div>
+<svg viewBox="0 0 760 416" role="img" aria-label="Fig 6 walk-through: block table translation with block size 4">
+<g font-family="-apple-system,system-ui,sans-serif" font-size="12" fill="var(--muted)"><text x="0" y="12">Logical KV blocks (what the request sees)</text><text x="312" y="12">Block table</text><text x="476" y="12">Physical KV blocks 0–8 in GPU memory</text></g>
+<line x1="0" y1="24" x2="760" y2="24" stroke="var(--border)"/>
+<text x="0" y="42" class="st">(1) Prefill: the 7-token prompt fills logical blocks 0 and 1; one slot stays reserved</text>
+<text x="0" y="71" class="sl">block 0</text>
+<rect x="50" y="54" width="58" height="24" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/>
+<text x="79" y="70" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="11" fill="var(--accent)">Four</text>
+<rect x="112" y="54" width="58" height="24" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/>
+<text x="141" y="70" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="11" fill="var(--accent)">score</text>
+<rect x="174" y="54" width="58" height="24" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/>
+<text x="203" y="70" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="11" fill="var(--accent)">and</text>
+<rect x="236" y="54" width="58" height="24" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/>
+<text x="265" y="70" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="11" fill="var(--accent)">seven</text>
+<g font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" fill="var(--text)"><text x="312" y="71">0 → 7</text><text x="376" y="71">#filled 4</text></g>
+<text x="0" y="99" class="sl">block 1</text>
+<rect x="50" y="82" width="58" height="24" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/>
+<text x="79" y="98" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="11" fill="var(--accent)">years</text>
+<rect x="112" y="82" width="58" height="24" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/>
+<text x="141" y="98" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="11" fill="var(--accent)">ago</text>
+<rect x="174" y="82" width="58" height="24" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/>
+<text x="203" y="98" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="11" fill="var(--accent)">our</text>
+<rect x="236" y="82" width="58" height="24" rx="3" fill="var(--surface2)" stroke="var(--faint)" stroke-dasharray="3 2"/>
+<text x="265" y="98" text-anchor="middle" font-size="11" fill="var(--muted)">empty</text>
+<g font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" fill="var(--text)"><text x="312" y="99">1 → 1</text><text x="376" y="99">#filled 3</text></g>
+<rect x="476" y="58" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<rect x="476" y="71" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<rect x="476" y="84" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<rect x="476" y="97" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<text x="489" y="126" text-anchor="middle" font-size="12" fill="var(--muted)">0</text>
+<rect x="507" y="58" width="26" height="11" rx="2" fill="var(--accent-bg)" stroke="var(--accent-border)"/>
+<rect x="507" y="71" width="26" height="11" rx="2" fill="var(--accent-bg)" stroke="var(--accent-border)"/>
+<rect x="507" y="84" width="26" height="11" rx="2" fill="var(--accent-bg)" stroke="var(--accent-border)"/>
+<rect x="507" y="97" width="26" height="11" rx="2" fill="var(--surface2)" stroke="var(--faint)"/>
+<text x="520" y="126" text-anchor="middle" font-size="12" fill="var(--accent)" font-weight="600">1</text>
+<rect x="538" y="58" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<rect x="538" y="71" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<rect x="538" y="84" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<rect x="538" y="97" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<text x="551" y="126" text-anchor="middle" font-size="12" fill="var(--muted)">2</text>
+<rect x="569" y="58" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<rect x="569" y="71" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<rect x="569" y="84" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<rect x="569" y="97" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<text x="582" y="126" text-anchor="middle" font-size="12" fill="var(--muted)">3</text>
+<rect x="600" y="58" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<rect x="600" y="71" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<rect x="600" y="84" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<rect x="600" y="97" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<text x="613" y="126" text-anchor="middle" font-size="12" fill="var(--muted)">4</text>
+<rect x="631" y="58" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<rect x="631" y="71" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<rect x="631" y="84" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<rect x="631" y="97" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<text x="644" y="126" text-anchor="middle" font-size="12" fill="var(--muted)">5</text>
+<rect x="662" y="58" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<rect x="662" y="71" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<rect x="662" y="84" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<rect x="662" y="97" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<text x="675" y="126" text-anchor="middle" font-size="12" fill="var(--muted)">6</text>
+<rect x="693" y="58" width="26" height="11" rx="2" fill="var(--accent-bg)" stroke="var(--accent-border)"/>
+<rect x="693" y="71" width="26" height="11" rx="2" fill="var(--accent-bg)" stroke="var(--accent-border)"/>
+<rect x="693" y="84" width="26" height="11" rx="2" fill="var(--accent-bg)" stroke="var(--accent-border)"/>
+<rect x="693" y="97" width="26" height="11" rx="2" fill="var(--accent-bg)" stroke="var(--accent-border)"/>
+<text x="706" y="126" text-anchor="middle" font-size="12" fill="var(--accent)" font-weight="600">7</text>
+<rect x="724" y="58" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<rect x="724" y="71" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<rect x="724" y="84" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<rect x="724" y="97" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<text x="737" y="126" text-anchor="middle" font-size="12" fill="var(--muted)">8</text>
+<line x1="0" y1="156" x2="760" y2="156" stroke="var(--border)"/>
+<text x="0" y="174" class="st">(2) Decode step 1: “fathers” goes into the reserved slot; #filled 3 → 4</text>
+<text x="0" y="203" class="sl">block 0</text>
+<rect x="50" y="186" width="58" height="24" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/>
+<text x="79" y="202" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="11" fill="var(--accent)">Four</text>
+<rect x="112" y="186" width="58" height="24" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/>
+<text x="141" y="202" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="11" fill="var(--accent)">score</text>
+<rect x="174" y="186" width="58" height="24" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/>
+<text x="203" y="202" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="11" fill="var(--accent)">and</text>
+<rect x="236" y="186" width="58" height="24" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/>
+<text x="265" y="202" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="11" fill="var(--accent)">seven</text>
+<g font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" fill="var(--text)"><text x="312" y="203">0 → 7</text><text x="376" y="203">#filled 4</text></g>
+<text x="0" y="231" class="sl">block 1</text>
+<rect x="50" y="214" width="58" height="24" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/>
+<text x="79" y="230" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="11" fill="var(--accent)">years</text>
+<rect x="112" y="214" width="58" height="24" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/>
+<text x="141" y="230" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="11" fill="var(--accent)">ago</text>
+<rect x="174" y="214" width="58" height="24" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/>
+<text x="203" y="230" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="11" fill="var(--accent)">our</text>
+<rect x="236" y="214" width="58" height="24" rx="3" fill="var(--accent)" stroke="var(--accent-border)"/>
+<text x="265" y="230" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="11" fill="var(--bg)">fathers</text>
+<g font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" fill="var(--text)"><text x="312" y="231">1 → 1</text><text x="376" y="231" font-weight="600" fill="var(--accent)">#filled 4</text></g>
+<rect x="476" y="190" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<rect x="476" y="203" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<rect x="476" y="216" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<rect x="476" y="229" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<text x="489" y="258" text-anchor="middle" font-size="12" fill="var(--muted)">0</text>
+<rect x="507" y="190" width="26" height="11" rx="2" fill="var(--accent-bg)" stroke="var(--accent-border)"/>
+<rect x="507" y="203" width="26" height="11" rx="2" fill="var(--accent-bg)" stroke="var(--accent-border)"/>
+<rect x="507" y="216" width="26" height="11" rx="2" fill="var(--accent-bg)" stroke="var(--accent-border)"/>
+<rect x="507" y="229" width="26" height="11" rx="2" fill="var(--accent)" stroke="var(--accent-border)"/>
+<text x="520" y="258" text-anchor="middle" font-size="12" fill="var(--accent)" font-weight="600">1</text>
+<rect x="538" y="190" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<rect x="538" y="203" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<rect x="538" y="216" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<rect x="538" y="229" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<text x="551" y="258" text-anchor="middle" font-size="12" fill="var(--muted)">2</text>
+<rect x="569" y="190" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<rect x="569" y="203" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<rect x="569" y="216" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<rect x="569" y="229" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<text x="582" y="258" text-anchor="middle" font-size="12" fill="var(--muted)">3</text>
+<rect x="600" y="190" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<rect x="600" y="203" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<rect x="600" y="216" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<rect x="600" y="229" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<text x="613" y="258" text-anchor="middle" font-size="12" fill="var(--muted)">4</text>
+<rect x="631" y="190" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<rect x="631" y="203" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<rect x="631" y="216" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<rect x="631" y="229" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<text x="644" y="258" text-anchor="middle" font-size="12" fill="var(--muted)">5</text>
+<rect x="662" y="190" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<rect x="662" y="203" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<rect x="662" y="216" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<rect x="662" y="229" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<text x="675" y="258" text-anchor="middle" font-size="12" fill="var(--muted)">6</text>
+<rect x="693" y="190" width="26" height="11" rx="2" fill="var(--accent-bg)" stroke="var(--accent-border)"/>
+<rect x="693" y="203" width="26" height="11" rx="2" fill="var(--accent-bg)" stroke="var(--accent-border)"/>
+<rect x="693" y="216" width="26" height="11" rx="2" fill="var(--accent-bg)" stroke="var(--accent-border)"/>
+<rect x="693" y="229" width="26" height="11" rx="2" fill="var(--accent-bg)" stroke="var(--accent-border)"/>
+<text x="706" y="258" text-anchor="middle" font-size="12" fill="var(--accent)" font-weight="600">7</text>
+<rect x="724" y="190" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<rect x="724" y="203" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<rect x="724" y="216" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<rect x="724" y="229" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<text x="737" y="258" text-anchor="middle" font-size="12" fill="var(--muted)">8</text>
+<line x1="0" y1="288" x2="760" y2="288" stroke="var(--border)"/>
+<text x="0" y="306" class="st">(3) Decode step 2: block 1 is full, so “brought” gets a new logical block 2 → physical block 3</text>
+<text x="0" y="335" class="sl">block 0</text>
+<rect x="50" y="318" width="58" height="24" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/>
+<text x="79" y="334" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="11" fill="var(--accent)">Four</text>
+<rect x="112" y="318" width="58" height="24" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/>
+<text x="141" y="334" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="11" fill="var(--accent)">score</text>
+<rect x="174" y="318" width="58" height="24" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/>
+<text x="203" y="334" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="11" fill="var(--accent)">and</text>
+<rect x="236" y="318" width="58" height="24" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/>
+<text x="265" y="334" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="11" fill="var(--accent)">seven</text>
+<g font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" fill="var(--text)"><text x="312" y="335">0 → 7</text><text x="376" y="335">#filled 4</text></g>
+<text x="0" y="363" class="sl">block 1</text>
+<rect x="50" y="346" width="58" height="24" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/>
+<text x="79" y="362" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="11" fill="var(--accent)">years</text>
+<rect x="112" y="346" width="58" height="24" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/>
+<text x="141" y="362" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="11" fill="var(--accent)">ago</text>
+<rect x="174" y="346" width="58" height="24" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/>
+<text x="203" y="362" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="11" fill="var(--accent)">our</text>
+<rect x="236" y="346" width="58" height="24" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/>
+<text x="265" y="362" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="11" fill="var(--accent)">fathers</text>
+<g font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" fill="var(--text)"><text x="312" y="363">1 → 1</text><text x="376" y="363">#filled 4</text></g>
+<text x="0" y="391" class="sl">block 2</text>
+<rect x="50" y="374" width="58" height="24" rx="3" fill="var(--accent)" stroke="var(--accent-border)"/>
+<text x="79" y="390" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="11" fill="var(--bg)">brought</text>
+<rect x="112" y="374" width="58" height="24" rx="3" fill="var(--surface2)" stroke="var(--faint)" stroke-dasharray="3 2"/>
+<text x="141" y="390" text-anchor="middle" font-size="11" fill="var(--muted)">empty</text>
+<rect x="174" y="374" width="58" height="24" rx="3" fill="var(--surface2)" stroke="var(--faint)" stroke-dasharray="3 2"/>
+<text x="203" y="390" text-anchor="middle" font-size="11" fill="var(--muted)">empty</text>
+<rect x="236" y="374" width="58" height="24" rx="3" fill="var(--surface2)" stroke="var(--faint)" stroke-dasharray="3 2"/>
+<text x="265" y="390" text-anchor="middle" font-size="11" fill="var(--muted)">empty</text>
+<g font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" fill="var(--text)"><text x="312" y="391">2 → 3</text><text x="376" y="391" font-weight="600" fill="var(--accent)">#filled 1</text></g>
+<rect x="476" y="322" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<rect x="476" y="335" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<rect x="476" y="348" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<rect x="476" y="361" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<text x="489" y="390" text-anchor="middle" font-size="12" fill="var(--muted)">0</text>
+<rect x="507" y="322" width="26" height="11" rx="2" fill="var(--accent-bg)" stroke="var(--accent-border)"/>
+<rect x="507" y="335" width="26" height="11" rx="2" fill="var(--accent-bg)" stroke="var(--accent-border)"/>
+<rect x="507" y="348" width="26" height="11" rx="2" fill="var(--accent-bg)" stroke="var(--accent-border)"/>
+<rect x="507" y="361" width="26" height="11" rx="2" fill="var(--accent-bg)" stroke="var(--accent-border)"/>
+<text x="520" y="390" text-anchor="middle" font-size="12" fill="var(--accent)" font-weight="600">1</text>
+<rect x="538" y="322" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<rect x="538" y="335" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<rect x="538" y="348" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<rect x="538" y="361" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<text x="551" y="390" text-anchor="middle" font-size="12" fill="var(--muted)">2</text>
+<rect x="569" y="322" width="26" height="11" rx="2" fill="var(--accent)" stroke="var(--accent-border)"/>
+<rect x="569" y="335" width="26" height="11" rx="2" fill="var(--surface2)" stroke="var(--faint)"/>
+<rect x="569" y="348" width="26" height="11" rx="2" fill="var(--surface2)" stroke="var(--faint)"/>
+<rect x="569" y="361" width="26" height="11" rx="2" fill="var(--surface2)" stroke="var(--faint)"/>
+<text x="582" y="390" text-anchor="middle" font-size="12" fill="var(--accent)" font-weight="600">3</text>
+<rect x="600" y="322" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<rect x="600" y="335" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<rect x="600" y="348" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<rect x="600" y="361" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<text x="613" y="390" text-anchor="middle" font-size="12" fill="var(--muted)">4</text>
+<rect x="631" y="322" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<rect x="631" y="335" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<rect x="631" y="348" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<rect x="631" y="361" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<text x="644" y="390" text-anchor="middle" font-size="12" fill="var(--muted)">5</text>
+<rect x="662" y="322" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<rect x="662" y="335" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<rect x="662" y="348" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<rect x="662" y="361" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<text x="675" y="390" text-anchor="middle" font-size="12" fill="var(--muted)">6</text>
+<rect x="693" y="322" width="26" height="11" rx="2" fill="var(--accent-bg)" stroke="var(--accent-border)"/>
+<rect x="693" y="335" width="26" height="11" rx="2" fill="var(--accent-bg)" stroke="var(--accent-border)"/>
+<rect x="693" y="348" width="26" height="11" rx="2" fill="var(--accent-bg)" stroke="var(--accent-border)"/>
+<rect x="693" y="361" width="26" height="11" rx="2" fill="var(--accent-bg)" stroke="var(--accent-border)"/>
+<text x="706" y="390" text-anchor="middle" font-size="12" fill="var(--accent)" font-weight="600">7</text>
+<rect x="724" y="322" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<rect x="724" y="335" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<rect x="724" y="348" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<rect x="724" y="361" width="26" height="11" rx="2" fill="var(--bg)" stroke="var(--border)"/>
+<text x="737" y="390" text-anchor="middle" font-size="12" fill="var(--muted)">8</text>
+</svg>
+<p class="cap">Fig 6 redrawn as three steps, B = 4. Physical block numbers are whatever the free list hands out; the paper's are 7, 1 and 3. In the prefill step the KV of the prompt (and the first output token) is computed with ordinary attention; decode steps use PagedAttention. labs/paged-allocator.py prints this exact trace.</p>
+<p>Across a batch, each iteration the scheduler picks which sequences run, allocates any blocks they newly need, and runs all their new tokens as one input. Bigger blocks let the kernel work on more positions in parallel but waste more per request (the block-size ablation is on <a href="paged-results.html">card III</a>). When a request finishes, its blocks go back to the free list for anyone.</p>
+
+<h2>Worked example: how many requests fit on an H100</h2>
+<p>Llama-3.1-8B in BF16 on one H100 SXM, with the KV budget from the course facts. We fill it with requests whose lengths are synthetic: lognormal draws with the paper's ShareGPT means (input 161.31, output 337.99 tokens; those means are the paper's dataset, not ours), a max length of 8,192, and a queue that never empties. Then we compare four allocators, averaging over 3,000 decode steps.</p>
+<div class="formula">free KV memory  80 − 16.06 GB (BF16 weights)             = 63.94 GB
+token slots     63.94e9 B ÷ 131,072 B (128 KiB/token)    = 487,823
+one block       16 tokens × 128 KiB                      = 2 MiB → 30,488 blocks
+(a) reserve max 8,192 × 128 KiB = 1.07 GB each → 487,823 ÷ 8,192 = 59 requests
+(d) paged       482,849 slots in use ÷ (560 tokens + 7.5 empty in last block)
+                                                         = 851 requests (14.5×)</div>
+<div class="key"><span><i class="k-tok"></i>token states</span><span><i class="k-res"></i>reserved for future tokens</span><span><i class="k-int"></i>internal (for paged: empty tail of each last block)</span><span><i class="k-ext"></i>free but unusable</span></div>
+<svg viewBox="0 0 760 144" role="img" aria-label="Stacked bars of KV memory use">
+<defs><pattern id="hatchours" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="6" height="6" fill="var(--bg)"/><line x1="0" y1="0" x2="0" y2="6" stroke="var(--faint)" stroke-width="2.4"/></pattern></defs>
+<text x="0" y="23" class="st">(a) reserve 8,192</text>
+<rect x="140.0" y="6" width="34.6" height="24" fill="var(--accent)"/>
+<rect x="174.7" y="6" width="24.8" height="24" stroke="var(--faint)" fill="var(--surface2)"/>
+<rect x="199.4" y="6" width="484.0" height="24" fill="var(--faint)"/>
+<text x="441.4" y="22.5" text-anchor="middle" font-size="12" fill="var(--text)">88.0</text>
+<rect x="683.4" y="6" width="6.6" height="24" stroke="var(--faint)" fill="url(#hatchours)"/>
+<text x="698" y="23" class="sl">59 req</text>
+<text x="0" y="57" class="st">(b) reserve pow2</text>
+<rect x="140.0" y="40" width="227.7" height="24" fill="var(--accent)"/>
+<text x="253.8" y="56.5" text-anchor="middle" font-size="12" fill="var(--bg)">41.4</text>
+<rect x="367.7" y="40" width="167.8" height="24" stroke="var(--faint)" fill="var(--surface2)"/>
+<text x="451.6" y="56.5" text-anchor="middle" font-size="12" fill="var(--text)">30.5</text>
+<rect x="535.5" y="40" width="152.9" height="24" fill="var(--faint)"/>
+<text x="611.9" y="56.5" text-anchor="middle" font-size="12" fill="var(--text)">27.8</text>
+<rect x="688.4" y="40" width="1.6" height="24" stroke="var(--faint)" fill="url(#hatchours)"/>
+<text x="698" y="57" class="sl">363 req</text>
+<text x="0" y="91" class="st">(c) reserve exact</text>
+<rect x="140.0" y="74" width="312.9" height="24" fill="var(--accent)"/>
+<text x="296.5" y="90.5" text-anchor="middle" font-size="12" fill="var(--bg)">56.9</text>
+<rect x="452.9" y="74" width="235.9" height="24" stroke="var(--faint)" fill="var(--surface2)"/>
+<text x="570.9" y="90.5" text-anchor="middle" font-size="12" fill="var(--text)">42.9</text>
+<rect x="688.9" y="74" width="1.6" height="24" stroke="var(--faint)" fill="url(#hatchours)"/>
+<text x="698" y="91" class="sl">501 req</text>
+<text x="0" y="125" class="st">(d) paged, B = 16</text>
+<rect x="140.0" y="108" width="537.4" height="24" fill="var(--accent)"/>
+<text x="408.7" y="124.5" text-anchor="middle" font-size="12" fill="var(--bg)">97.7</text>
+<rect x="677.4" y="108" width="7.2" height="24" fill="var(--faint)"/>
+<rect x="684.5" y="108" width="5.5" height="24" stroke="var(--faint)" fill="url(#hatchours)"/>
+<text x="698" y="125" class="sl">851 req</text>
+</svg>
+<div class="tw"><table>
+<tr><th>Allocator (labs/paged-allocator.py)</th><th class="num">Concurrent requests</th><th class="num">vs (a)</th><th class="num">Token states</th><th class="num">Reserved</th><th class="num">Internal</th></tr>
+<tr><td>(a) contiguous, reserve 8,192 (≈ Orca Max)</td><td class="num">58.8</td><td class="num">1.0×</td><td class="num lo">6.3%</td><td class="num">4.5%</td><td class="num">88.0%</td></tr>
+<tr><td>(b) reserve prompt + next power of 2 of output (≈ Pow2)</td><td class="num">362.9</td><td class="num">6.2×</td><td class="num">41.4%</td><td class="num">30.5%</td><td class="num">27.8%</td></tr>
+<tr><td>(c) reserve exactly prompt + output (≈ Oracle, impossible)</td><td class="num">501.1</td><td class="num">8.5×</td><td class="num">56.9%</td><td class="num">42.9%</td><td class="num">0.0%</td></tr>
+<tr><td>(d) paged, B = 16, allocate on demand</td><td class="num hi">851.1</td><td class="num hi">14.5×</td><td class="num hi">97.7%</td><td class="num">0.0%</td><td class="num">1.3%</td></tr>
+</table></div>
+<p class="cap">Our recomputation, seed 0. The contiguous schemes ignore allocator gaps, so they're shown at their best; the paper's Orca bars are lower partly for that reason (and its max length is 2,048). An in-flight request holds about 560 tokens on average, more than 161 + 338/2, because long requests stay in the batch longer. Paged admission keeps 1% of blocks free (our choice); even so the paged run preempts 644 times in 4,000 steps, which is why vLLM needs the preemption policy on <a href="paged-sharing.html">card II</a>.</p>
+
+<h2>Same idea, two setups</h2>
+<div class="tw"><table>
+<tr><th>Setup</th><th class="num">KV / token</th><th class="num">KV memory</th><th class="num">Max length</th><th class="num">Reserve-max fits</th><th class="num">Paged fits</th></tr>
+<tr><td>OPT-13B, A100 40 GB (paper)</td><td class="num">800 KiB</td><td class="num">12 GB = 15.7K slots (Table 1)</td><td class="num">2,048</td><td class="num">7 (15,729 ÷ 2,048)</td><td class="num">30.42 measured</td></tr>
+<tr><td>Llama-3.1-8B, H100 80 GB (ours)</td><td class="num">128 KiB</td><td class="num">63.94 GB = 487,823 slots</td><td class="num">8,192</td><td class="num">59</td><td class="num hi">851 simulated</td></tr>
+</table></div>
+<p class="cap">The paper's 15.7K matches 12 GiB ÷ 819,200 B = 15,729 (our arithmetic), and 15,729 ÷ 2,048 = 7.68 → 7, the 7.00 requests Fig 13 shows for Orca (Max). 30.42 is the vLLM bar in Fig 13 (OPT-13B, ShareGPT at 2 requests/s): a measured average at that load, not a capacity limit. We matched bars to systems using the text's "2.2× more than Orca (Oracle), 4.3× more than Orca (Max)".</p>
+
+<h2>Why it beats the alternatives</h2>
+<div class="grid2">
+  <div class="cell"><h3><span class="x">&#10007;</span> Reserve the max length</h3><p>Orca (Max): one contiguous chunk of 2,048 (or 8,192) slots per request. Only 20.4% of KV memory holds tokens in the paper; 6.3% in our Llama run, so just 59 requests fit.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Reserve pow2 or the exact length</h3><p>Pow2 or an oracle output length shrinks the internal waste, but the chunk is still locked from the first token to the last, and chunk sizes vary, so the allocator leaves gaps. Best case 38.2% (Oracle), which needs lengths nobody knows.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Contiguous plus compaction</h3><p>Move chunks together to close the gaps. The paper calls it impractical: copying gigabytes of KV cache stalls a latency-sensitive server, and fixed chunks still can't be shared between sequences.</p></div>
+  <div class="cell win"><h3><span class="ok">&#10003;</span> Paged KV blocks</h3><p>Equal-size blocks allocated on demand: no reservation, no external gaps, under one block of waste per request. 96.3% of KV memory holds tokens in the paper and 97.7% in our run, so 14.5× more requests fit than with reserve-max.</p></div>
+</div>
+
+<h2>Doesn't the indirection slow attention down?</h2>
+<div class="note">
+  <p>Yes. Looking up the block table, extra branches and variable lengths make vLLM's attention kernel 20–26% slower than FasterTransformer's highly optimised one (§7.1). The paper's argument is that only the attention operator pays this, not the linear layers, and fitting far more requests per step more than makes up for it: 2–4× higher throughput at the same latency end to end. Details and the block-size trade-off are on <a href="paged-results.html">PagedAttention III</a>.</p>
+  <p>It isn't always the right tool. §8 says paging pays off because LLM serving allocates memory dynamically and is limited by memory capacity. In DNN training, tensor shapes are static and allocation can be planned ahead; when serving non-LLM models that are compute-bound, better memory use buys nothing, and the indirection can make things slower. Even for LLMs, the gain over Orca (Oracle) and (Pow2) shrinks on OPT-175B with short Alpaca requests, where plenty of requests fit anyway and the run becomes compute-bound (§6.2). And a full KV pool has a cost of its own: in decode every step reads all of it, 63.94 GB ÷ 3.35 TB/s ≈ 19 ms on an H100 (our arithmetic), so engines also cap the batch for latency, not just memory. That trade-off is on <a href="../perf-2-scaling-book-inference/inference-engine-design.html">inference engine design</a>.</p>
+</div>
+
+<h2>Run it yourself</h2>
+<div class="labbox">
+  <p><a href="https://github.com/seyonv/explainers/blob/main/perf-4-attention-kv/labs/paged-allocator.py">Run it: labs/paged-allocator.py</a> <b>[L]</b> runs on your Mac in about 3 seconds with numpy. It prints the OPT-13B arithmetic and the Table 1 slot check, the Llama budget (487,823 slots, 30,488 blocks of 2 MiB), the four-allocator simulation with every percentage above, and the exact Fig 6 block-table trace. Lengths are synthetic, seeded, with the paper's ShareGPT means. Try B = 128, or SIGMA = 2.0 for a longer tail.</p>
+</div>
+
+<div class="foot">
+<p><b>Read next:</b> Kwon et al., "Efficient Memory Management for Large Language Model Serving with PagedAttention", SOSP '23: abstract and §1–4.3 in full, including Fig 2, 3 and 6, ~1 h. <a href="https://arxiv.org/abs/2309.06180">arxiv.org/abs/2309.06180</a></p>
+<p><b>Related:</b> <a href="paged-sharing.html">PagedAttention II: sharing, copy-on-write and preemption</a> · <a href="paged-results.html">PagedAttention III: implementation and results</a> · <a href="radixattention.html">RadixAttention I</a> · <a href="../perf-2-scaling-book-inference/params-vs-kv.html">parameters vs the KV cache</a> · <a href="../perf-2-scaling-book-inference/inference-engine-design.html">inference engine design</a></p>
+<p><b>Sources:</b> every paper number above (Fig 1, 2, 11, 13, Table 1, §3, §7.1, §8) is from arXiv 2309.06180v1; Fig 1, 2, 11 and 13 values are the figures' printed labels. The Llama-3.1-8B shapes, 16.06 GB of weights and 3.35 TB/s are the course facts. The simulation and all "our" numbers come from labs/paged-allocator.py.</p>
+</div>
+</article>
+<!-- series-nav:bottom -->
+<div class="snx"><a class="nx" href="index.html#paged-sharing" target="_top">
+<span class="mini" aria-hidden="true"><span class="m1">PagedAttention II: sharing, copy-on-write and preemption</span><span class="m2">Also called parallel sampling and beam search on shared blocks, shared prefix, reference counts, swap vs recompute, sequence groups. This card walks the PagedAttention paper (Kwon et al., SOSP '23)…</span><span class="m3">In one breath</span><span class="m4">A block table is just a list of pointers, so two sequences can point at the same physical KV block. vLLM gives every block a reference count, lets samples and beams share their common history, and copies a block only when a sequence has to write into one that someone else is still reading (copy-on-write). When memory runs out it…</span></span>
+<span class="tx"><span class="lab">Next up · 13 / 19</span><span class="tt">PagedAttention II: sharing, copy-on-write and preemption</span><span class="ds">Parallel samples, beams and shared prefixes</span><span class="nd">Builds directly on this card.</span><span class="go">Continue →</span></span></a><div class="aux"><span><a href="index.html#kv-quantization" target="_top">← Quantizing the KV cache</a></span><a href="index.html" target="_top">All cards in 4 · Attention &amp; KV cache</a></div></div>
+<!-- /series-nav:bottom -->
+</body>
+</html>

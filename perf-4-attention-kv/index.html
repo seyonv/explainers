@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>AI perf 3: GPU programming &amp; kernels</title>
+<title>AI perf 4: Attention &amp; the KV cache</title>
 <style>
 :root{
   --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
@@ -73,11 +73,11 @@ h2{font-size:13px;font-weight:600;color:var(--muted);letter-spacing:.03em;text-t
 <body>
 <main class="wrap">
 <!-- series-nav -->
-<nav class="series" aria-label="Courses in the series"><a href="../perf-0-map/index.html">0 · Map &amp; reading plan</a><a href="../perf-1-foundations/index.html">1 · Foundations</a><a href="../perf-2-scaling-book-inference/index.html">2 · Inference, by the Scaling Book</a><a href="../perf-3-kernels/index.html" class="cur" aria-current="page">3 · GPU kernels</a><a href="../perf-4-attention-kv/index.html">4 · Attention &amp; KV cache</a><span title="Coming later">5 · Inference engines</span><span title="Coming later">6 · Scaling out</span><span title="Coming later">7 · Training &amp; economics</span></nav>
+<nav class="series" aria-label="Courses in the series"><a href="../perf-0-map/index.html">0 · Map &amp; reading plan</a><a href="../perf-1-foundations/index.html">1 · Foundations</a><a href="../perf-2-scaling-book-inference/index.html">2 · Inference, by the Scaling Book</a><a href="../perf-3-kernels/index.html">3 · GPU kernels</a><a href="../perf-4-attention-kv/index.html" class="cur" aria-current="page">4 · Attention &amp; KV cache</a><span title="Coming later">5 · Inference engines</span><span title="Coming later">6 · Scaling out</span><span title="Coming later">7 · Training &amp; economics</span></nav>
 <!-- /series-nav -->
-<h1>AI perf 3: GPU programming &amp; kernels</h1>
-<p class="sub">17 cards on writing and tuning GPU kernels. They walk the core resources section by section: the CUDA programming model, Harris's transpose and reduction talks, siboehm's matmul worklog kernel by kernel, and the Triton tutorials. This is course 3 of the AI performance engineering series (it needs only <a href="../perf-1-foundations/index.html">Foundations</a>; see the <a href="../perf-0-map/index.html">map</a>). Labs in <a href="https://github.com/seyonv/explainers/tree/main/perf-3-kernels/labs">labs/</a>: <b>.py</b> simulators run on a Mac, <b>.ipynb</b> notebooks open in Colab on a free T4, and one script needs a rented H100. The notebooks have not been run by the author; the numbers on the cards come from the sources, named with their GPU. Click a card to read it; ← → to page.</p>
-<!-- series-nav --><p class="needs"><b>Prerequisites:</b> Needs only perf-1, so you can read it before or after perf-2. Each card says what it builds on, so you can see where it's safe to jump around.</p><!-- /series-nav -->
+<h1>AI perf 4: Attention &amp; the KV cache</h1>
+<p class="sub">19 cards on how attention is computed without an N×N matrix, and how the KV cache is shrunk, paged, shared, tiered and scheduled. The core papers are walked section by section: online softmax, FlashAttention 1 and 2, GQA, MLA, PagedAttention, SGLang's RadixAttention and Mooncake. This is course 4 of the AI performance engineering series (it needs <a href="../perf-2-scaling-book-inference/index.html">Inference, by the Scaling Book</a>; <a href="../perf-3-kernels/index.html">GPU kernels</a> helps; see the <a href="../perf-0-map/index.html">map</a>). Labs in <a href="https://github.com/seyonv/explainers/tree/main/perf-4-attention-kv/labs">labs/</a>: numpy reference implementations and simulators that run on a Mac, one Colab notebook and one rented-H100 vLLM script (neither run by the author). Click a card to read it; ← → to page.</p>
+<!-- series-nav --><p class="needs"><b>Prerequisites:</b> Needs perf-2. perf-3 helps with the FlashAttention kernel details. Each card says what it builds on, so you can see where it's safe to jump around.</p><!-- /series-nav -->
 <button class="start" data-go="0">Read all in order →</button>
 <div id="sections"></div>
 </main>
@@ -101,35 +101,35 @@ h2{font-size:13px;font-weight:600;color:var(--muted);letter-spacing:.03em;text-t
 // Overview cards go in the first group with bigTiles = true.
 const GROUPS = [
   ["Start here", true, [
-    ["_overview.html", "The kernel optimization loop", "Measure, place on the roofline, fix the bound, re-measure, and every step ranked"],
+    ["_overview.html", "KV memory is the currency of serving", "How many users fit, and what each technique buys"],
   ]],
-  ["The machine and your first kernel", false, [
-    ["execution-model.html", "The CUDA execution model", "Grid, block, warp, thread: SIMT, SMs and the memory spaces"],
-    ["first-kernel.html", "Your first kernel: vector add", "From 1 thread to 1,932× on a T4, with error checking"],
+  ["Computing attention without the N×N matrix", false, [
+    ["online-softmax.html", "Online softmax", "One pass with a running max, and the merge that makes tiling possible"],
+    ["flashattention-tiling.html", "FlashAttention I: tiling and recomputation", "Algorithm 1, block by block"],
+    ["flashattention-io.html", "FlashAttention II: the IO-complexity argument", "Θ(N²d²/M) HBM accesses, and why block size matters"],
+    ["flashattention-backward-results.html", "FlashAttention III: backward pass and results", "Recompute P, and what the speed bought"],
+    ["flashattention-2-algorithm.html", "FlashAttention-2 I: fewer non-matmul FLOPs", "Why a few extra exponentials cost 16×"],
+    ["flashattention-2-parallelism.html", "FlashAttention-2 II: parallelism and work partitioning", "Sequence-parallel blocks and split-Q warps"],
+    ["flashattention-3-4-flashinfer.html", "FlashAttention-3, -4 and FlashInfer", "What Hopper and Blackwell forced, and the serving library"],
   ]],
-  ["Memory: where the first 10× lives", false, [
-    ["coalescing.html", "Memory coalescing", "32-byte sectors: why a warp's access pattern sets your bandwidth"],
-    ["shared-memory-transpose.html", "Shared memory, tiling and bank conflicts", "Harris's transpose, from 18.8 to 99.5 GB/s"],
-    ["occupancy.html", "Occupancy and latency hiding", "Little's law, and Volkov's better performance at lower occupancy"],
+  ["Making each token's KV smaller", false, [
+    ["gqa.html", "Grouped-query attention", "Share K and V across query heads"],
+    ["mla.html", "Multi-head latent attention (DeepSeek)", "Cache one latent vector and absorb the rest"],
+    ["kv-quantization.html", "Quantizing the KV cache", "FP8 KV, and KIVI's per-channel keys"],
   ]],
-  ["Parallel reduction, slide by slide", false, [
-    ["reduction-divergence.html", "Parallel reduction I: divergence and bank conflicts", "Harris's kernels 1 to 3"],
-    ["reduction-unrolling.html", "Parallel reduction II: unrolling and cascading", "Kernels 4 to 7, Brent's theorem, and warp shuffles today"],
+  ["Managing KV memory: PagedAttention", false, [
+    ["paged-memory.html", "PagedAttention I: KV memory as pages", "From 20–38% used to 96%"],
+    ["paged-sharing.html", "PagedAttention II: sharing, copy-on-write and preemption", "Parallel samples, beams and shared prefixes"],
+    ["paged-results.html", "PagedAttention III: implementation and results", "Kernels, block size, swap vs recompute, 2–4×"],
   ]],
-  ["Tuning a matmul: siboehm, kernel by kernel", false, [
-    ["matmul-naive.html", "Matmul I: the naive kernel and the lower bound", "137 GFLOP, 268 MB, and a kernel that moves 548 GB"],
-    ["matmul-coalescing-smem.html", "Matmul II: coalescing and shared-memory caching", "Kernels 2 and 3: 6.4× from one index change"],
-    ["matmul-blocktiling.html", "Matmul III: 1D and 2D blocktiling", "Kernels 4 and 5: more results per thread"],
-    ["matmul-warptiling.html", "Matmul IV: vectorize, autotune, warptile", "Kernels 6 to 11: the last 20% and the power law of effort"],
+  ["Reusing KV across requests", false, [
+    ["radixattention.html", "RadixAttention I: the radix tree of KV caches", "SGLang's automatic prefix cache"],
+    ["cache-aware-scheduling.html", "RadixAttention II: cache-aware scheduling", "Longest-shared-prefix-first is optimal"],
+    ["mooncake-store.html", "Mooncake I: trading storage for computation", "When loading KV beats recomputing it"],
+    ["mooncake-scheduling.html", "Mooncake II: KV-centric scheduling", "Conductor, chunked pipelines and early rejection"],
   ]],
-  ["Beyond hand-written CUDA", false, [
-    ["tensor-cores-low-precision.html", "Tensor cores and low precision", "MMA, FP8, MX and NVFP4"],
-    ["fusion-cuda-graphs.html", "Kernel fusion, launch overhead and CUDA graphs", "The three regimes, and why engines capture decode"],
-    ["triton-programming-model.html", "Triton: programming blocks, not threads", "Tutorials 01 and 02: vector add and fused softmax"],
-    ["triton-matmul.html", "Triton matmul: grouped ordering and autotuning", "Tutorial 03: 90 vs 54 block loads"],
-  ]],
-  ["Measuring", false, [
-    ["profiling.html", "Profiling and benchmarking hygiene", "Nsight Systems, Nsight Compute, Sanitizer, and honest timing"],
+  ["Long context", false, [
+    ["long-context.html", "Long context: sliding windows, ring and sparse attention", "Mistral's window, Ring Attention and NSA"],
   ]],
 ];
 const CARDS = GROUPS.flatMap(g => g[2]);
@@ -194,7 +194,7 @@ frame.addEventListener("load", () => frame.blur());
 const start = CARDS.findIndex(c => "#" + c[0].replace(".html", "") === location.hash);
 if (start >= 0) show(start);
 // series-nav
-const SERIES = [{"slug":"perf-0-map","label":"0 · Map & reading plan","built":true},{"slug":"perf-1-foundations","label":"1 · Foundations","built":true},{"slug":"perf-2-scaling-book-inference","label":"2 · Inference, by the Scaling Book","built":true},{"slug":"perf-3-kernels","label":"3 · GPU kernels","built":true},{"slug":"perf-4-attention-kv","label":"4 · Attention & KV cache","built":true},{"slug":"perf-5-engines","label":"5 · Inference engines","built":false},{"slug":"perf-6-scaling-out","label":"6 · Scaling out","built":false},{"slug":"perf-7-training-economics","label":"7 · Training & economics","built":false}], HERE = "perf-3-kernels";
+const SERIES = [{"slug":"perf-0-map","label":"0 · Map & reading plan","built":true},{"slug":"perf-1-foundations","label":"1 · Foundations","built":true},{"slug":"perf-2-scaling-book-inference","label":"2 · Inference, by the Scaling Book","built":true},{"slug":"perf-3-kernels","label":"3 · GPU kernels","built":true},{"slug":"perf-4-attention-kv","label":"4 · Attention & KV cache","built":true},{"slug":"perf-5-engines","label":"5 · Inference engines","built":false},{"slug":"perf-6-scaling-out","label":"6 · Scaling out","built":false},{"slug":"perf-7-training-economics","label":"7 · Training & economics","built":false}], HERE = "perf-4-attention-kv";
 const side = document.getElementById("side");
 {
   let h = "", n = 0;

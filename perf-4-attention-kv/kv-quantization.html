@@ -1,0 +1,815 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Quantizing the KV cache</title>
+<style>
+:root{
+  --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
+  --text:#1c1f23; --muted:#6b7068; --faint:#b9b9b3;
+  --accent:#4a9d77; --accent-bg:#dcefdf; --accent-border:#8cc79c;
+  --red:#c0492b; --red-bg:#fbeceb;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#15171a; --surface:#1d2024; --surface2:#24282d; --border:#32373d;
+    --text:#e6e8ea; --muted:#9aa1a9; --faint:#4a5057;
+    --accent:#5fb37f; --accent-bg:#1c2b22; --accent-border:#3f7a55;
+    --red:#e57368; --red-bg:#2e1f1e;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text)}
+.card{max-width:820px;margin:0 auto;padding:28px 32px;font-family:-apple-system,"Inter",system-ui,sans-serif;line-height:1.45}
+h1{font-size:26px;font-weight:600;margin:0 0 6px;letter-spacing:-0.01em}
+.sub{font-size:15px;color:var(--muted);margin:0 0 20px}
+h2{font-size:17px;font-weight:600;margin:26px 0 10px}
+h2 small{font-size:13px;font-weight:400;color:var(--muted)}
+p{font-size:15px;margin:0 0 10px}
+ul{font-size:15px;margin:0 0 10px;padding-left:20px}
+.cap{font-size:13px;color:var(--muted);margin:8px 0 0;text-align:center}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+
+/* Horizontal bars */
+.bars{display:grid;grid-template-columns:110px 1fr 90px;column-gap:14px;row-gap:10px;align-items:center;font-size:14px}
+.bars .hd{font-size:13px;color:var(--muted)}
+.bars .hd.r,.bars .tot{text-align:right;font-variant-numeric:tabular-nums}
+.bars .tok{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:14px}
+.bars .track{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted)}
+.bars .bar{height:20px;border-radius:3px;background:var(--accent)}
+.bars .bar.g{background:var(--faint)} .bars .bar.r{background:var(--red)}
+.bars .tot{font-size:14px}
+
+/* Tables and formulas */
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border)}
+th{font-size:12px;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:none}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+.hi{color:var(--accent);font-weight:600} .lo{color:var(--red)} .mu{color:var(--muted)}
+tr.real td{background:var(--accent-bg)}
+.formula{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin:10px 0;white-space:pre;overflow-x:auto;line-height:1.55}
+.tw{overflow-x:auto}
+.tw table{min-width:640px}
+.gt td,.gt th{padding:7px 6px;font-size:13px} .gt td.num{white-space:nowrap}
+.bars.w{grid-template-columns:110px 1fr 120px}
+
+/* MathML */
+.mathbox{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px 16px 12px;margin:10px 0;overflow-x:auto}
+.mathbox math{font-size:21px;color:var(--text);font-family:"STIX Two Math","Latin Modern Math","Cambria Math",math}
+.mathbox .t1{color:var(--text)} .mathbox .t2{color:var(--accent)} .mathbox .t3{color:var(--muted)}
+.mathbox .lab{font-size:12px;font-family:-apple-system,"Inter",system-ui,sans-serif;padding-top:3px;border-top:1.5px solid currentColor;margin-top:2px}
+.mathbox math + math{margin-top:14px}
+.legend{display:grid;grid-template-columns:auto 1fr auto;column-gap:14px;row-gap:5px;font-size:13px;margin-top:12px;align-items:baseline}
+.legend .sym{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;text-align:right}
+.legend .v{color:var(--muted);text-align:right;font-variant-numeric:tabular-nums}
+@media (max-width:560px){.legend{grid-template-columns:auto 1fr}.legend .v{display:none}}
+
+/* Log bars inside tables */
+.sp{display:flex;align-items:center;gap:8px;white-space:nowrap;font-variant-numeric:tabular-nums}
+.sp em{display:block;width:80px;flex:none;height:8px;border-radius:2px;background:var(--surface2)}
+.sp i{display:block;height:8px;border-radius:2px;background:var(--accent)}
+.sp i.r{background:var(--red)}
+
+/* Two examples per term */
+.parts td{vertical-align:top} .parts td:first-child{font-weight:600}
+.parts .ex{font-size:13px} .parts .ex span{display:block;color:var(--muted)}
+.parts .what{font-size:13px}
+@media (max-width:560px){.parts .what{display:none}}
+
+/* Section walk */
+.sec{border-left:3px solid var(--border);padding:2px 0 2px 14px;margin:14px 0}
+.sec .tag{font-size:12px;font-weight:600;color:var(--muted);letter-spacing:.03em;text-transform:uppercase;margin:0 0 3px}
+.sec p{margin-bottom:6px}
+
+/* 2x2 grid */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.cell{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.cell.win{background:var(--accent-bg);border-color:var(--accent-border)}
+.cell h3{font-size:16px;font-weight:600;margin:0 0 5px;display:flex;gap:8px;align-items:baseline}
+.cell p{font-size:14px;margin:0;color:var(--text)}
+.cell.win h3,.cell.win p{color:var(--accent)}
+.x{color:var(--red)} .ok{color:var(--accent)}
+
+/* Clarification box */
+.note{border:1px solid var(--border);border-radius:10px;padding:14px 18px;font-size:14px}
+.note p,.note li{font-size:14px} .note p:last-child{margin-bottom:0}
+
+.foot{margin-top:22px;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+.foot p{font-size:13px}
+.lab-link{display:inline-block;font-size:13px;border:1px solid var(--accent-border);background:var(--accent-bg);color:var(--accent);border-radius:6px;padding:4px 10px;margin:2px 0 10px;text-decoration:none}
+
+/* SVG */
+svg{display:block;max-width:100%;height:auto;margin-top:6px}
+.sl{font-size:12px;fill:var(--muted)} .st{font-size:13px;fill:var(--text)} .sh{font-size:14px;font-weight:600;fill:var(--text)}
+.tq{fill:var(--surface2);stroke:var(--muted);stroke-width:1.2}
+.tkv{fill:var(--accent-bg);stroke:var(--accent);stroke-width:1.5}
+.box{fill:var(--surface);stroke:var(--border);stroke-width:1}
+.ln{stroke:var(--muted);stroke-width:1}
+.arr{fill:var(--muted)}
+.tg{fill:var(--accent);font-size:12px} .tr{fill:var(--red);font-size:12px}
+.div{stroke:var(--border);stroke-width:1}
+.tcell{fill:var(--surface);stroke:var(--border);stroke-width:1}
+.tout{fill:var(--red-bg);stroke:var(--border);stroke-width:1}
+.gok{fill:none;stroke:var(--accent);stroke-width:2.2}
+.gbad{fill:none;stroke:var(--red);stroke-width:2.2}
+.tres{fill:var(--surface);stroke:var(--muted);stroke-width:1.2;stroke-dasharray:4 3}
+@media (max-width:560px){.grid2{grid-template-columns:1fr}.card{padding:20px 16px}.bars{grid-template-columns:70px 1fr 64px}}
+a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+/* series-nav */
+.sn{max-width:820px;margin:0 auto;padding:16px 32px 0;font-family:-apple-system,"Inter",system-ui,sans-serif;font-size:13px;line-height:1.5;color:var(--muted)}
+.sn a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+.sn .crumbs{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 7px}
+.sn .crumbs b{color:var(--text);font-weight:600}
+.sn .sep{color:var(--faint)}
+.sn .step{margin-left:auto;white-space:nowrap}
+.sn .dep{margin-top:5px;padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface)}
+.sn .dep .ok{color:var(--accent);font-weight:600}
+.snx{max-width:820px;margin:0 auto;padding:6px 32px 44px;font-family:-apple-system,"Inter",system-ui,sans-serif}
+.snx .nx{display:grid;grid-template-columns:280px 1fr;text-decoration:none;color:var(--text);background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.snx .nx:hover,.snx .nx:focus-visible{border-color:var(--accent-border);outline:none}
+.snx .mini{position:relative;height:210px;overflow:hidden;background:var(--bg);border-right:1px solid var(--border);padding:14px 16px}
+.snx .mini span{display:block}
+.snx .mini .m1{font-size:12.5px;font-weight:600;margin:0 0 4px;line-height:1.3}
+.snx .mini .m2{font-size:9px;color:var(--muted);margin:0 0 8px;line-height:1.4}
+.snx .mini .m3{font-size:8.5px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;margin:0 0 3px}
+.snx .mini .m4{font-size:9.5px;margin:0;line-height:1.45}
+.snx .tx{padding:16px 20px}
+.snx .lab{font-size:12px;font-weight:600;color:var(--accent);letter-spacing:.04em;text-transform:uppercase}
+.snx .tt{display:block;font-size:20px;font-weight:600;margin:5px 0 4px;line-height:1.25}
+.snx .ds{display:block;font-size:14px;color:var(--muted)}
+.snx .nd{display:block;font-size:13px;color:var(--muted);margin-top:10px}
+.snx .go{display:block;margin-top:12px;font-size:14px;font-weight:600;color:var(--accent)}
+.snx .aux{display:flex;justify-content:space-between;gap:12px;margin-top:10px;font-size:13px;color:var(--muted)}
+.snx .aux a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+@media (max-width:560px){.sn,.snx{padding-left:16px;padding-right:16px}.snx .nx{grid-template-columns:1fr}.snx .mini{display:none}.sn .step{margin-left:0}}
+/* /series-nav */
+</style>
+</head>
+<body>
+<!-- series-nav:top -->
+<nav class="sn" aria-label="Series navigation"><div class="crumbs"><a href="../perf-0-map/index.html" target="_top">AI perf engineering</a><span class="sep">›</span><a href="index.html" target="_top">4 · Attention &amp; KV cache</a><span class="sep">›</span><b>11 / 19</b><span class="step"><a href="index.html#mla" target="_top">← prev</a> · <a href="index.html#paged-memory" target="_top">next →</a></span></div>
+<div class="dep"><b>Before this:</b> <a href="index.html#gqa" target="_top">Grouped-query attention</a> · <a href="../perf-3-kernels/index.html#tensor-cores-low-precision" target="_top">Tensor cores and low precision</a> (perf-3)</div></nav>
+<!-- /series-nav:top -->
+<article class="card">
+<h1>Quantizing the KV cache</h1>
+<p class="sub">Also called FP8 KV cache, KV-cache quantization, KIVI or 2-bit KV, and the per-channel vs per-token quantization question. This card covers the FP8 option serving engines ship today, then walks the KIVI paper (Liu et al., ICML 2024) through §3–4: its measurements are on Llama-2, Falcon and Mistral, with the speed test on Llama-2-7B and one A100 80GB. The capacity numbers are our recomputation for the running example, Llama-3.1-8B on one H100.</p>
+
+<h2>In one breath</h2>
+<p>Store each cached key and value in fewer bits: 8 instead of 16 (FP8), or 2 plus a small scale per group (KIVI). Every byte you drop per token means more sequences fit in HBM, and fewer bytes to read on every decode step. At 8 bits a single scale is enough. At 2 bits it only works if you respect the data's shape. Keys have a few huge, fixed channels, so you quantize them channel by channel. Values have no such channels but get mixed by attention, so you quantize them token by token. The newest 128 tokens stay in full precision.</p>
+
+<h2>1. Why bits per token are a direct lever</h2>
+<p>Decode is memory-bound (<a href="../perf-2-scaling-book-inference/attention-intensity.html">attention intensity ≈ 4 FLOPs/byte</a> with GQA-4, vs the H100's 295). So a step costs the bytes it reads, and a full H100 always reads about the same 80 GB. Shrinking the KV cache does two things: at the same batch, each step reads fewer bytes, and at a full HBM, more sequences share each step.</p>
+<div class="mathbox">
+<math display="block">
+  <munder class="t2"><mrow><msub><mtext>KV</mtext><mtext>token</mtext></msub><mo>=</mo><mn>2</mn><mo>&#183;</mo><mi>L</mi><mo>&#183;</mo><mi>K</mi><mo>&#183;</mo><mi>H</mi><mo>&#183;</mo><mfrac><mi>b</mi><mn>8</mn></mfrac></mrow><mtext class="lab">bytes per token, scales included in b</mtext></munder>
+  <mspace width="1.2em"/>
+  <munder class="t1"><mrow><msub><mi>B</mi><mtext>max</mtext></msub><mo>=</mo><mo>&#8970;</mo><mfrac><mrow><mtext>HBM</mtext><mo>&#8722;</mo><mi>W</mi></mrow><msub><mtext>KV</mtext><mtext>seq</mtext></msub></mfrac><mo>&#8971;</mo></mrow><mtext class="lab">sequences that fit</mtext></munder>
+  <mspace width="1.2em"/>
+  <munder class="t3"><mrow><msub><mi>t</mi><mtext>step</mtext></msub><mo>&#8776;</mo><mfrac><mrow><mi>B</mi><mo>&#183;</mo><msub><mtext>KV</mtext><mtext>seq</mtext></msub><mo>+</mo><mi>W</mi></mrow><msub><mi>W</mi><mtext>hbm</mtext></msub></mfrac></mrow><mtext class="lab">decode step (perf-2)</mtext></munder>
+</math>
+<div class="legend">
+  <span class="sym">b</span><span>bits per stored number, including the scale and zero-point shared by its group</span><span class="v">16 · 8 · 5 · 3</span>
+  <span class="sym">2·L·K·H</span><span>numbers cached per token: K and V, 32 layers, 8 KV heads, head dim 128</span><span class="v">65,536</span>
+  <span class="sym">W</span><span>BF16 weights, read once per step</span><span class="v">16.06 GB</span>
+  <span class="sym">HBM − W</span><span>free memory for KV on one H100</span><span class="v">63.94 GB</span>
+  <span class="sym">W_hbm</span><span>HBM bandwidth</span><span class="v">3.35 TB/s</span>
+</div>
+</div>
+
+<p>Four ways to store the same cache, 8,192-token sequences, from labs/kv-quant.py (throughput bar on a log scale, full bar = 10×):</p>
+<div class="tw">
+<table class="gt">
+  <tr><th>KV format</th><th class="num">Bits / number</th><th class="num">KV / token</th><th class="num">Per 8k seq</th><th class="num">Seqs fit</th><th class="num">Step at max batch</th><th>Throughput vs BF16</th><th class="num">Step at batch 59</th></tr>
+  <tr><td>BF16<br><span class="mu">the running example</span></td><td class="num">16</td><td class="num">128 KiB</td><td class="num">1.074 GB</td><td class="num">59</td><td class="num">23.7 ms</td><td><div class="sp"><em><i style="width:2%"></i></em>2,489 tok/s</div></td><td class="num">23.70 ms</td></tr>
+  <tr><td>FP8 E4M3<br><span class="mu">one scale per tensor</span></td><td class="num">8</td><td class="num">64 KiB</td><td class="num">0.537 GB</td><td class="num">119</td><td class="num">23.9 ms</td><td><div class="sp"><em><i style="width:30.1%"></i></em>4,986 · 2.00×</div></td><td class="num">14.25 ms</td></tr>
+  <tr><td>INT4, groups of 32<br><span class="mu">per token, FP16 scale + zero</span></td><td class="num">4 + 1</td><td class="num">40 KiB</td><td class="num">0.336 GB</td><td class="num">190</td><td class="num">23.8 ms</td><td><div class="sp"><em><i style="width:50.5%"></i></em>7,975 · 3.20×</div></td><td class="num">10.70 ms</td></tr>
+  <tr class="real"><td class="hi">KIVI-2, G = 32, R = 128<br><span class="mu">+ 128 BF16 tokens per sequence</span></td><td class="num">2 + 1</td><td class="num">24 KiB <span class="mu">(25.6 eff.)</span></td><td class="num">0.215 GB</td><td class="num">297</td><td class="num">23.9 ms</td><td><div class="sp"><em><i style="width:69.9%"></i></em>12,437 · 5.00×</div></td><td class="num hi">8.58 ms</td></tr>
+</table>
+</div>
+<div class="formula">FP8:    65,536 numbers × 1 B = 64 KiB/token
+        ⌊63.94 / 0.537⌋ = 119 seqs   (course facts: 59 → 119)
+KIVI-2: 2 bits + (16-bit scale + 16-bit zero) / 32 = 3 bits
+        65,536 × 3/8 = 24 KiB/token (16 KiB codes + 8 KiB scales)
+        residual, worst case: 128 tok × 128 KiB = 16 MiB per seq
+          (12 MiB at the paper's expected R/2 keys + R values)
+        per seq = 8,064 × 24 KiB + 16 MiB = 0.2150 GB
+        fit ⌊63.94 / 0.2150⌋ = 297 seqs
+        step = 297 × 0.2150 GB / 3.35 TB/s + max(4.82, 4.79)
+             = 19.06 + 4.82 = 23.88 ms → 12,437 tok/s
+same batch 59: (59 × 0.2150 + 16.06) GB / 3.35 TB/s
+             = 8.58 ms vs 23.70 ms → 2.76× faster steps</div>
+<p class="cap">Our recomputation (labs/kv-quant.py), not in any paper. FP16 scale and zero per group of 32 is our assumption. Upper bounds: the table ignores activations, allocator slack and the time to dequantize. At 297 sequences the matmuls (2·P·B / 989 TFLOPS = 4.82 ms) already take as long as reading the weights (4.79 ms), so on this model a KV cache smaller than KIVI-2's stops buying throughput. The ratios don't depend on the GPU while decode stays memory-bound. Only the absolute ms do.</p>
+
+<h2>2. FP8 KV in practice</h2>
+<p>FP8 is the default first step because it needs no new data layout. Every K and V number becomes one E4M3 byte (the format, its max of 448 and why scales matter are on <a href="../perf-3-kernels/tensor-cores-low-precision.html">tensor cores and low precision</a>). One scale per tensor maps the largest value onto 448: <span class="mono">s = amax / 448, stored = E4M3(x / s)</span>.</p>
+<table class="parts">
+  <tr><th>Where</th><th class="what">What it does</th><th>Example A</th><th>Example B</th></tr>
+  <tr><td>vLLM</td><td class="what"><code>kv_cache_dtype="fp8"</code> (also <code>fp8_e4m3</code>, <code>fp8_e5m2</code>). Scales are per tensor ("a single scale is applied for each Q, K, and V tensor") or per attention head (<code>k/v_scale = [num_kv_heads]</code>, Flash Attention backend, needs llm-compressor calibration).</td>
+      <td class="ex"><b>Scales = 1.0</b><span>the default with no calibration: values are cast, not rescaled</span></td>
+      <td class="ex"><b>Calibrated</b><span>"[Recommended]": scales from a calibration dataset via llm-compressor (the docs' example uses 512 samples)</span></td></tr>
+  <tr><td>vLLM caveat</td><td class="what">"Some attention layer types (e.g. sliding-window) are more sensitive to KV-cache quantization"; <code>--kv-cache-dtype-skip-layers</code> keeps them in the native dtype.</td>
+      <td class="ex"><b>sliding_window</b><span>skip every local layer</span></td>
+      <td class="ex"><b>0 1 23</b><span>skip layers by index</span></td></tr>
+  <tr><td>DeepSeek-V2</td><td class="what">On top of <a href="mla.html">MLA</a>'s small latent cache, the deployment compresses "each element in its KV cache into 6 bits on average".</td>
+      <td class="ex"><b>MLA latent</b><span>the architecture shrinks what is cached</span></td>
+      <td class="ex"><b>~6 bits</b><span>quantization then shrinks each number</span></td></tr>
+</table>
+<p class="cap">vLLM quotes and options from its "Quantized KV Cache" docs page (opened 2026-09-22), which promises only that FP8 "can significantly reduce its memory footprint" and gives no accuracy numbers. With the Flash Attention 3 backend, queries are quantized to FP8 too.</p>
+
+<h2>3. KIVI, section by section</h2>
+<p>FP8 is 2×. Going to 2 bits needs a way to keep the error under control, and KIVI's contribution is the study that finds one. Everyday analogy: rounding a spreadsheet to a coarse grid. Round each <em>column</em> on its own scale if one column holds millions and the rest hold units. Round each <em>row</em> on its own scale if you will later add up just a few rows.</p>
+<svg viewBox="0 0 760 290" role="img" aria-label="Per-token groups run along a row; per-channel groups run down a column. Outlier channels shaded red.">
+<text class="sh" x="40" y="24">Per-token groups (along a row)</text>
+<text class="sl" x="40" y="40">rows = tokens, columns = channels</text>
+<rect class="tcell" x="40" y="50" width="14" height="14"/>
+<rect class="tcell" x="54" y="50" width="14" height="14"/>
+<rect class="tcell" x="68" y="50" width="14" height="14"/>
+<rect class="tout" x="82" y="50" width="14" height="14"/>
+<rect class="tcell" x="96" y="50" width="14" height="14"/>
+<rect class="tcell" x="110" y="50" width="14" height="14"/>
+<rect class="tcell" x="124" y="50" width="14" height="14"/>
+<rect class="tcell" x="138" y="50" width="14" height="14"/>
+<rect class="tcell" x="152" y="50" width="14" height="14"/>
+<rect class="tcell" x="166" y="50" width="14" height="14"/>
+<rect class="tcell" x="180" y="50" width="14" height="14"/>
+<rect class="tout" x="194" y="50" width="14" height="14"/>
+<rect class="tcell" x="208" y="50" width="14" height="14"/>
+<rect class="tcell" x="222" y="50" width="14" height="14"/>
+<rect class="tcell" x="236" y="50" width="14" height="14"/>
+<rect class="tcell" x="250" y="50" width="14" height="14"/>
+<rect class="tcell" x="40" y="64" width="14" height="14"/>
+<rect class="tcell" x="54" y="64" width="14" height="14"/>
+<rect class="tcell" x="68" y="64" width="14" height="14"/>
+<rect class="tout" x="82" y="64" width="14" height="14"/>
+<rect class="tcell" x="96" y="64" width="14" height="14"/>
+<rect class="tcell" x="110" y="64" width="14" height="14"/>
+<rect class="tcell" x="124" y="64" width="14" height="14"/>
+<rect class="tcell" x="138" y="64" width="14" height="14"/>
+<rect class="tcell" x="152" y="64" width="14" height="14"/>
+<rect class="tcell" x="166" y="64" width="14" height="14"/>
+<rect class="tcell" x="180" y="64" width="14" height="14"/>
+<rect class="tout" x="194" y="64" width="14" height="14"/>
+<rect class="tcell" x="208" y="64" width="14" height="14"/>
+<rect class="tcell" x="222" y="64" width="14" height="14"/>
+<rect class="tcell" x="236" y="64" width="14" height="14"/>
+<rect class="tcell" x="250" y="64" width="14" height="14"/>
+<rect class="tcell" x="40" y="78" width="14" height="14"/>
+<rect class="tcell" x="54" y="78" width="14" height="14"/>
+<rect class="tcell" x="68" y="78" width="14" height="14"/>
+<rect class="tout" x="82" y="78" width="14" height="14"/>
+<rect class="tcell" x="96" y="78" width="14" height="14"/>
+<rect class="tcell" x="110" y="78" width="14" height="14"/>
+<rect class="tcell" x="124" y="78" width="14" height="14"/>
+<rect class="tcell" x="138" y="78" width="14" height="14"/>
+<rect class="tcell" x="152" y="78" width="14" height="14"/>
+<rect class="tcell" x="166" y="78" width="14" height="14"/>
+<rect class="tcell" x="180" y="78" width="14" height="14"/>
+<rect class="tout" x="194" y="78" width="14" height="14"/>
+<rect class="tcell" x="208" y="78" width="14" height="14"/>
+<rect class="tcell" x="222" y="78" width="14" height="14"/>
+<rect class="tcell" x="236" y="78" width="14" height="14"/>
+<rect class="tcell" x="250" y="78" width="14" height="14"/>
+<rect class="tcell" x="40" y="92" width="14" height="14"/>
+<rect class="tcell" x="54" y="92" width="14" height="14"/>
+<rect class="tcell" x="68" y="92" width="14" height="14"/>
+<rect class="tout" x="82" y="92" width="14" height="14"/>
+<rect class="tcell" x="96" y="92" width="14" height="14"/>
+<rect class="tcell" x="110" y="92" width="14" height="14"/>
+<rect class="tcell" x="124" y="92" width="14" height="14"/>
+<rect class="tcell" x="138" y="92" width="14" height="14"/>
+<rect class="tcell" x="152" y="92" width="14" height="14"/>
+<rect class="tcell" x="166" y="92" width="14" height="14"/>
+<rect class="tcell" x="180" y="92" width="14" height="14"/>
+<rect class="tout" x="194" y="92" width="14" height="14"/>
+<rect class="tcell" x="208" y="92" width="14" height="14"/>
+<rect class="tcell" x="222" y="92" width="14" height="14"/>
+<rect class="tcell" x="236" y="92" width="14" height="14"/>
+<rect class="tcell" x="250" y="92" width="14" height="14"/>
+<rect class="tcell" x="40" y="106" width="14" height="14"/>
+<rect class="tcell" x="54" y="106" width="14" height="14"/>
+<rect class="tcell" x="68" y="106" width="14" height="14"/>
+<rect class="tout" x="82" y="106" width="14" height="14"/>
+<rect class="tcell" x="96" y="106" width="14" height="14"/>
+<rect class="tcell" x="110" y="106" width="14" height="14"/>
+<rect class="tcell" x="124" y="106" width="14" height="14"/>
+<rect class="tcell" x="138" y="106" width="14" height="14"/>
+<rect class="tcell" x="152" y="106" width="14" height="14"/>
+<rect class="tcell" x="166" y="106" width="14" height="14"/>
+<rect class="tcell" x="180" y="106" width="14" height="14"/>
+<rect class="tout" x="194" y="106" width="14" height="14"/>
+<rect class="tcell" x="208" y="106" width="14" height="14"/>
+<rect class="tcell" x="222" y="106" width="14" height="14"/>
+<rect class="tcell" x="236" y="106" width="14" height="14"/>
+<rect class="tcell" x="250" y="106" width="14" height="14"/>
+<rect class="tcell" x="40" y="120" width="14" height="14"/>
+<rect class="tcell" x="54" y="120" width="14" height="14"/>
+<rect class="tcell" x="68" y="120" width="14" height="14"/>
+<rect class="tout" x="82" y="120" width="14" height="14"/>
+<rect class="tcell" x="96" y="120" width="14" height="14"/>
+<rect class="tcell" x="110" y="120" width="14" height="14"/>
+<rect class="tcell" x="124" y="120" width="14" height="14"/>
+<rect class="tcell" x="138" y="120" width="14" height="14"/>
+<rect class="tcell" x="152" y="120" width="14" height="14"/>
+<rect class="tcell" x="166" y="120" width="14" height="14"/>
+<rect class="tcell" x="180" y="120" width="14" height="14"/>
+<rect class="tout" x="194" y="120" width="14" height="14"/>
+<rect class="tcell" x="208" y="120" width="14" height="14"/>
+<rect class="tcell" x="222" y="120" width="14" height="14"/>
+<rect class="tcell" x="236" y="120" width="14" height="14"/>
+<rect class="tcell" x="250" y="120" width="14" height="14"/>
+<rect class="tcell" x="40" y="134" width="14" height="14"/>
+<rect class="tcell" x="54" y="134" width="14" height="14"/>
+<rect class="tcell" x="68" y="134" width="14" height="14"/>
+<rect class="tout" x="82" y="134" width="14" height="14"/>
+<rect class="tcell" x="96" y="134" width="14" height="14"/>
+<rect class="tcell" x="110" y="134" width="14" height="14"/>
+<rect class="tcell" x="124" y="134" width="14" height="14"/>
+<rect class="tcell" x="138" y="134" width="14" height="14"/>
+<rect class="tcell" x="152" y="134" width="14" height="14"/>
+<rect class="tcell" x="166" y="134" width="14" height="14"/>
+<rect class="tcell" x="180" y="134" width="14" height="14"/>
+<rect class="tout" x="194" y="134" width="14" height="14"/>
+<rect class="tcell" x="208" y="134" width="14" height="14"/>
+<rect class="tcell" x="222" y="134" width="14" height="14"/>
+<rect class="tcell" x="236" y="134" width="14" height="14"/>
+<rect class="tcell" x="250" y="134" width="14" height="14"/>
+<rect class="tcell" x="40" y="148" width="14" height="14"/>
+<rect class="tcell" x="54" y="148" width="14" height="14"/>
+<rect class="tcell" x="68" y="148" width="14" height="14"/>
+<rect class="tout" x="82" y="148" width="14" height="14"/>
+<rect class="tcell" x="96" y="148" width="14" height="14"/>
+<rect class="tcell" x="110" y="148" width="14" height="14"/>
+<rect class="tcell" x="124" y="148" width="14" height="14"/>
+<rect class="tcell" x="138" y="148" width="14" height="14"/>
+<rect class="tcell" x="152" y="148" width="14" height="14"/>
+<rect class="tcell" x="166" y="148" width="14" height="14"/>
+<rect class="tcell" x="180" y="148" width="14" height="14"/>
+<rect class="tout" x="194" y="148" width="14" height="14"/>
+<rect class="tcell" x="208" y="148" width="14" height="14"/>
+<rect class="tcell" x="222" y="148" width="14" height="14"/>
+<rect class="tcell" x="236" y="148" width="14" height="14"/>
+<rect class="tcell" x="250" y="148" width="14" height="14"/>
+<rect class="tcell" x="40" y="162" width="14" height="14"/>
+<rect class="tcell" x="54" y="162" width="14" height="14"/>
+<rect class="tcell" x="68" y="162" width="14" height="14"/>
+<rect class="tout" x="82" y="162" width="14" height="14"/>
+<rect class="tcell" x="96" y="162" width="14" height="14"/>
+<rect class="tcell" x="110" y="162" width="14" height="14"/>
+<rect class="tcell" x="124" y="162" width="14" height="14"/>
+<rect class="tcell" x="138" y="162" width="14" height="14"/>
+<rect class="tcell" x="152" y="162" width="14" height="14"/>
+<rect class="tcell" x="166" y="162" width="14" height="14"/>
+<rect class="tcell" x="180" y="162" width="14" height="14"/>
+<rect class="tout" x="194" y="162" width="14" height="14"/>
+<rect class="tcell" x="208" y="162" width="14" height="14"/>
+<rect class="tcell" x="222" y="162" width="14" height="14"/>
+<rect class="tcell" x="236" y="162" width="14" height="14"/>
+<rect class="tcell" x="250" y="162" width="14" height="14"/>
+<rect class="tcell" x="40" y="176" width="14" height="14"/>
+<rect class="tcell" x="54" y="176" width="14" height="14"/>
+<rect class="tcell" x="68" y="176" width="14" height="14"/>
+<rect class="tout" x="82" y="176" width="14" height="14"/>
+<rect class="tcell" x="96" y="176" width="14" height="14"/>
+<rect class="tcell" x="110" y="176" width="14" height="14"/>
+<rect class="tcell" x="124" y="176" width="14" height="14"/>
+<rect class="tcell" x="138" y="176" width="14" height="14"/>
+<rect class="tcell" x="152" y="176" width="14" height="14"/>
+<rect class="tcell" x="166" y="176" width="14" height="14"/>
+<rect class="tcell" x="180" y="176" width="14" height="14"/>
+<rect class="tout" x="194" y="176" width="14" height="14"/>
+<rect class="tcell" x="208" y="176" width="14" height="14"/>
+<rect class="tcell" x="222" y="176" width="14" height="14"/>
+<rect class="tcell" x="236" y="176" width="14" height="14"/>
+<rect class="tcell" x="250" y="176" width="14" height="14"/>
+<rect class="tcell" x="40" y="190" width="14" height="14"/>
+<rect class="tcell" x="54" y="190" width="14" height="14"/>
+<rect class="tcell" x="68" y="190" width="14" height="14"/>
+<rect class="tout" x="82" y="190" width="14" height="14"/>
+<rect class="tcell" x="96" y="190" width="14" height="14"/>
+<rect class="tcell" x="110" y="190" width="14" height="14"/>
+<rect class="tcell" x="124" y="190" width="14" height="14"/>
+<rect class="tcell" x="138" y="190" width="14" height="14"/>
+<rect class="tcell" x="152" y="190" width="14" height="14"/>
+<rect class="tcell" x="166" y="190" width="14" height="14"/>
+<rect class="tcell" x="180" y="190" width="14" height="14"/>
+<rect class="tout" x="194" y="190" width="14" height="14"/>
+<rect class="tcell" x="208" y="190" width="14" height="14"/>
+<rect class="tcell" x="222" y="190" width="14" height="14"/>
+<rect class="tcell" x="236" y="190" width="14" height="14"/>
+<rect class="tcell" x="250" y="190" width="14" height="14"/>
+<rect class="tcell" x="40" y="204" width="14" height="14"/>
+<rect class="tcell" x="54" y="204" width="14" height="14"/>
+<rect class="tcell" x="68" y="204" width="14" height="14"/>
+<rect class="tout" x="82" y="204" width="14" height="14"/>
+<rect class="tcell" x="96" y="204" width="14" height="14"/>
+<rect class="tcell" x="110" y="204" width="14" height="14"/>
+<rect class="tcell" x="124" y="204" width="14" height="14"/>
+<rect class="tcell" x="138" y="204" width="14" height="14"/>
+<rect class="tcell" x="152" y="204" width="14" height="14"/>
+<rect class="tcell" x="166" y="204" width="14" height="14"/>
+<rect class="tcell" x="180" y="204" width="14" height="14"/>
+<rect class="tout" x="194" y="204" width="14" height="14"/>
+<rect class="tcell" x="208" y="204" width="14" height="14"/>
+<rect class="tcell" x="222" y="204" width="14" height="14"/>
+<rect class="tcell" x="236" y="204" width="14" height="14"/>
+<rect class="tcell" x="250" y="204" width="14" height="14"/>
+<rect class="gok" x="40" y="78" width="56" height="14"/>
+<rect class="gbad" x="152" y="78" width="56" height="14"/>
+<rect class="gok" x="96" y="134" width="56" height="14"/>
+<text class="tr" x="40" y="236">a group mixing an outlier channel</text>
+<text class="tr" x="40" y="251">gets a huge step: its normal values collapse</text>
+<text class="sh" x="420" y="24">Per-channel groups (down a column)</text>
+<text class="sl" x="420" y="40">rows = tokens, columns = channels</text>
+<rect class="tcell" x="420" y="50" width="14" height="14"/>
+<rect class="tcell" x="434" y="50" width="14" height="14"/>
+<rect class="tcell" x="448" y="50" width="14" height="14"/>
+<rect class="tout" x="462" y="50" width="14" height="14"/>
+<rect class="tcell" x="476" y="50" width="14" height="14"/>
+<rect class="tcell" x="490" y="50" width="14" height="14"/>
+<rect class="tcell" x="504" y="50" width="14" height="14"/>
+<rect class="tcell" x="518" y="50" width="14" height="14"/>
+<rect class="tcell" x="532" y="50" width="14" height="14"/>
+<rect class="tcell" x="546" y="50" width="14" height="14"/>
+<rect class="tcell" x="560" y="50" width="14" height="14"/>
+<rect class="tout" x="574" y="50" width="14" height="14"/>
+<rect class="tcell" x="588" y="50" width="14" height="14"/>
+<rect class="tcell" x="602" y="50" width="14" height="14"/>
+<rect class="tcell" x="616" y="50" width="14" height="14"/>
+<rect class="tcell" x="630" y="50" width="14" height="14"/>
+<rect class="tcell" x="420" y="64" width="14" height="14"/>
+<rect class="tcell" x="434" y="64" width="14" height="14"/>
+<rect class="tcell" x="448" y="64" width="14" height="14"/>
+<rect class="tout" x="462" y="64" width="14" height="14"/>
+<rect class="tcell" x="476" y="64" width="14" height="14"/>
+<rect class="tcell" x="490" y="64" width="14" height="14"/>
+<rect class="tcell" x="504" y="64" width="14" height="14"/>
+<rect class="tcell" x="518" y="64" width="14" height="14"/>
+<rect class="tcell" x="532" y="64" width="14" height="14"/>
+<rect class="tcell" x="546" y="64" width="14" height="14"/>
+<rect class="tcell" x="560" y="64" width="14" height="14"/>
+<rect class="tout" x="574" y="64" width="14" height="14"/>
+<rect class="tcell" x="588" y="64" width="14" height="14"/>
+<rect class="tcell" x="602" y="64" width="14" height="14"/>
+<rect class="tcell" x="616" y="64" width="14" height="14"/>
+<rect class="tcell" x="630" y="64" width="14" height="14"/>
+<rect class="tcell" x="420" y="78" width="14" height="14"/>
+<rect class="tcell" x="434" y="78" width="14" height="14"/>
+<rect class="tcell" x="448" y="78" width="14" height="14"/>
+<rect class="tout" x="462" y="78" width="14" height="14"/>
+<rect class="tcell" x="476" y="78" width="14" height="14"/>
+<rect class="tcell" x="490" y="78" width="14" height="14"/>
+<rect class="tcell" x="504" y="78" width="14" height="14"/>
+<rect class="tcell" x="518" y="78" width="14" height="14"/>
+<rect class="tcell" x="532" y="78" width="14" height="14"/>
+<rect class="tcell" x="546" y="78" width="14" height="14"/>
+<rect class="tcell" x="560" y="78" width="14" height="14"/>
+<rect class="tout" x="574" y="78" width="14" height="14"/>
+<rect class="tcell" x="588" y="78" width="14" height="14"/>
+<rect class="tcell" x="602" y="78" width="14" height="14"/>
+<rect class="tcell" x="616" y="78" width="14" height="14"/>
+<rect class="tcell" x="630" y="78" width="14" height="14"/>
+<rect class="tcell" x="420" y="92" width="14" height="14"/>
+<rect class="tcell" x="434" y="92" width="14" height="14"/>
+<rect class="tcell" x="448" y="92" width="14" height="14"/>
+<rect class="tout" x="462" y="92" width="14" height="14"/>
+<rect class="tcell" x="476" y="92" width="14" height="14"/>
+<rect class="tcell" x="490" y="92" width="14" height="14"/>
+<rect class="tcell" x="504" y="92" width="14" height="14"/>
+<rect class="tcell" x="518" y="92" width="14" height="14"/>
+<rect class="tcell" x="532" y="92" width="14" height="14"/>
+<rect class="tcell" x="546" y="92" width="14" height="14"/>
+<rect class="tcell" x="560" y="92" width="14" height="14"/>
+<rect class="tout" x="574" y="92" width="14" height="14"/>
+<rect class="tcell" x="588" y="92" width="14" height="14"/>
+<rect class="tcell" x="602" y="92" width="14" height="14"/>
+<rect class="tcell" x="616" y="92" width="14" height="14"/>
+<rect class="tcell" x="630" y="92" width="14" height="14"/>
+<rect class="tcell" x="420" y="106" width="14" height="14"/>
+<rect class="tcell" x="434" y="106" width="14" height="14"/>
+<rect class="tcell" x="448" y="106" width="14" height="14"/>
+<rect class="tout" x="462" y="106" width="14" height="14"/>
+<rect class="tcell" x="476" y="106" width="14" height="14"/>
+<rect class="tcell" x="490" y="106" width="14" height="14"/>
+<rect class="tcell" x="504" y="106" width="14" height="14"/>
+<rect class="tcell" x="518" y="106" width="14" height="14"/>
+<rect class="tcell" x="532" y="106" width="14" height="14"/>
+<rect class="tcell" x="546" y="106" width="14" height="14"/>
+<rect class="tcell" x="560" y="106" width="14" height="14"/>
+<rect class="tout" x="574" y="106" width="14" height="14"/>
+<rect class="tcell" x="588" y="106" width="14" height="14"/>
+<rect class="tcell" x="602" y="106" width="14" height="14"/>
+<rect class="tcell" x="616" y="106" width="14" height="14"/>
+<rect class="tcell" x="630" y="106" width="14" height="14"/>
+<rect class="tcell" x="420" y="120" width="14" height="14"/>
+<rect class="tcell" x="434" y="120" width="14" height="14"/>
+<rect class="tcell" x="448" y="120" width="14" height="14"/>
+<rect class="tout" x="462" y="120" width="14" height="14"/>
+<rect class="tcell" x="476" y="120" width="14" height="14"/>
+<rect class="tcell" x="490" y="120" width="14" height="14"/>
+<rect class="tcell" x="504" y="120" width="14" height="14"/>
+<rect class="tcell" x="518" y="120" width="14" height="14"/>
+<rect class="tcell" x="532" y="120" width="14" height="14"/>
+<rect class="tcell" x="546" y="120" width="14" height="14"/>
+<rect class="tcell" x="560" y="120" width="14" height="14"/>
+<rect class="tout" x="574" y="120" width="14" height="14"/>
+<rect class="tcell" x="588" y="120" width="14" height="14"/>
+<rect class="tcell" x="602" y="120" width="14" height="14"/>
+<rect class="tcell" x="616" y="120" width="14" height="14"/>
+<rect class="tcell" x="630" y="120" width="14" height="14"/>
+<rect class="tcell" x="420" y="134" width="14" height="14"/>
+<rect class="tcell" x="434" y="134" width="14" height="14"/>
+<rect class="tcell" x="448" y="134" width="14" height="14"/>
+<rect class="tout" x="462" y="134" width="14" height="14"/>
+<rect class="tcell" x="476" y="134" width="14" height="14"/>
+<rect class="tcell" x="490" y="134" width="14" height="14"/>
+<rect class="tcell" x="504" y="134" width="14" height="14"/>
+<rect class="tcell" x="518" y="134" width="14" height="14"/>
+<rect class="tcell" x="532" y="134" width="14" height="14"/>
+<rect class="tcell" x="546" y="134" width="14" height="14"/>
+<rect class="tcell" x="560" y="134" width="14" height="14"/>
+<rect class="tout" x="574" y="134" width="14" height="14"/>
+<rect class="tcell" x="588" y="134" width="14" height="14"/>
+<rect class="tcell" x="602" y="134" width="14" height="14"/>
+<rect class="tcell" x="616" y="134" width="14" height="14"/>
+<rect class="tcell" x="630" y="134" width="14" height="14"/>
+<rect class="tcell" x="420" y="148" width="14" height="14"/>
+<rect class="tcell" x="434" y="148" width="14" height="14"/>
+<rect class="tcell" x="448" y="148" width="14" height="14"/>
+<rect class="tout" x="462" y="148" width="14" height="14"/>
+<rect class="tcell" x="476" y="148" width="14" height="14"/>
+<rect class="tcell" x="490" y="148" width="14" height="14"/>
+<rect class="tcell" x="504" y="148" width="14" height="14"/>
+<rect class="tcell" x="518" y="148" width="14" height="14"/>
+<rect class="tcell" x="532" y="148" width="14" height="14"/>
+<rect class="tcell" x="546" y="148" width="14" height="14"/>
+<rect class="tcell" x="560" y="148" width="14" height="14"/>
+<rect class="tout" x="574" y="148" width="14" height="14"/>
+<rect class="tcell" x="588" y="148" width="14" height="14"/>
+<rect class="tcell" x="602" y="148" width="14" height="14"/>
+<rect class="tcell" x="616" y="148" width="14" height="14"/>
+<rect class="tcell" x="630" y="148" width="14" height="14"/>
+<rect class="tcell" x="420" y="162" width="14" height="14"/>
+<rect class="tcell" x="434" y="162" width="14" height="14"/>
+<rect class="tcell" x="448" y="162" width="14" height="14"/>
+<rect class="tout" x="462" y="162" width="14" height="14"/>
+<rect class="tcell" x="476" y="162" width="14" height="14"/>
+<rect class="tcell" x="490" y="162" width="14" height="14"/>
+<rect class="tcell" x="504" y="162" width="14" height="14"/>
+<rect class="tcell" x="518" y="162" width="14" height="14"/>
+<rect class="tcell" x="532" y="162" width="14" height="14"/>
+<rect class="tcell" x="546" y="162" width="14" height="14"/>
+<rect class="tcell" x="560" y="162" width="14" height="14"/>
+<rect class="tout" x="574" y="162" width="14" height="14"/>
+<rect class="tcell" x="588" y="162" width="14" height="14"/>
+<rect class="tcell" x="602" y="162" width="14" height="14"/>
+<rect class="tcell" x="616" y="162" width="14" height="14"/>
+<rect class="tcell" x="630" y="162" width="14" height="14"/>
+<rect class="tcell" x="420" y="176" width="14" height="14"/>
+<rect class="tcell" x="434" y="176" width="14" height="14"/>
+<rect class="tcell" x="448" y="176" width="14" height="14"/>
+<rect class="tout" x="462" y="176" width="14" height="14"/>
+<rect class="tcell" x="476" y="176" width="14" height="14"/>
+<rect class="tcell" x="490" y="176" width="14" height="14"/>
+<rect class="tcell" x="504" y="176" width="14" height="14"/>
+<rect class="tcell" x="518" y="176" width="14" height="14"/>
+<rect class="tcell" x="532" y="176" width="14" height="14"/>
+<rect class="tcell" x="546" y="176" width="14" height="14"/>
+<rect class="tcell" x="560" y="176" width="14" height="14"/>
+<rect class="tout" x="574" y="176" width="14" height="14"/>
+<rect class="tcell" x="588" y="176" width="14" height="14"/>
+<rect class="tcell" x="602" y="176" width="14" height="14"/>
+<rect class="tcell" x="616" y="176" width="14" height="14"/>
+<rect class="tcell" x="630" y="176" width="14" height="14"/>
+<rect class="tcell" x="420" y="190" width="14" height="14"/>
+<rect class="tcell" x="434" y="190" width="14" height="14"/>
+<rect class="tcell" x="448" y="190" width="14" height="14"/>
+<rect class="tout" x="462" y="190" width="14" height="14"/>
+<rect class="tcell" x="476" y="190" width="14" height="14"/>
+<rect class="tcell" x="490" y="190" width="14" height="14"/>
+<rect class="tcell" x="504" y="190" width="14" height="14"/>
+<rect class="tcell" x="518" y="190" width="14" height="14"/>
+<rect class="tcell" x="532" y="190" width="14" height="14"/>
+<rect class="tcell" x="546" y="190" width="14" height="14"/>
+<rect class="tcell" x="560" y="190" width="14" height="14"/>
+<rect class="tout" x="574" y="190" width="14" height="14"/>
+<rect class="tcell" x="588" y="190" width="14" height="14"/>
+<rect class="tcell" x="602" y="190" width="14" height="14"/>
+<rect class="tcell" x="616" y="190" width="14" height="14"/>
+<rect class="tcell" x="630" y="190" width="14" height="14"/>
+<rect class="tcell" x="420" y="204" width="14" height="14"/>
+<rect class="tcell" x="434" y="204" width="14" height="14"/>
+<rect class="tcell" x="448" y="204" width="14" height="14"/>
+<rect class="tout" x="462" y="204" width="14" height="14"/>
+<rect class="tcell" x="476" y="204" width="14" height="14"/>
+<rect class="tcell" x="490" y="204" width="14" height="14"/>
+<rect class="tcell" x="504" y="204" width="14" height="14"/>
+<rect class="tcell" x="518" y="204" width="14" height="14"/>
+<rect class="tcell" x="532" y="204" width="14" height="14"/>
+<rect class="tcell" x="546" y="204" width="14" height="14"/>
+<rect class="tcell" x="560" y="204" width="14" height="14"/>
+<rect class="tout" x="574" y="204" width="14" height="14"/>
+<rect class="tcell" x="588" y="204" width="14" height="14"/>
+<rect class="tcell" x="602" y="204" width="14" height="14"/>
+<rect class="tcell" x="616" y="204" width="14" height="14"/>
+<rect class="tcell" x="630" y="204" width="14" height="14"/>
+<rect class="gok" x="490" y="50" width="14" height="56"/>
+<rect class="gok" x="574" y="106" width="14" height="56"/>
+<rect class="gok" x="434" y="162" width="14" height="56"/>
+<text class="tg" x="420" y="236">each group is one channel: the outlier</text>
+<text class="tg" x="420" y="251">channel gets its own scale, the rest stay fine</text>
+<rect class="tout" x="40" y="262" width="12" height="12"/><text class="sl" x="58" y="272">outlier channel (large magnitude in every token)</text>
+<rect class="tcell" x="360" y="262" width="12" height="12"/><text class="sl" x="378" y="272">normal channel</text>
+<text class="sl" x="500" y="272">outlined = one quantization group</text>
+</svg>
+<p class="cap">Illustrative: 12 tokens × 16 channels with groups of 4 (KIVI uses groups of 32). Every group gets its own zero-point z = min and step s = (max − min) / (2<sup>b</sup> − 1), so a 2-bit group has just 4 levels.</p>
+
+<div class="sec"><p class="tag">§3.1 Preliminary study: what breaks at 2 bits</p>
+<p>KV arrives one token at a time, so heavy methods like GPTQ are out and round-to-nearest is the tool. Prior work quantized both caches per token because a new token's row can simply be appended. The authors padded to test every combination with "fake" quantization (quantize, then dequantize), groups of 32, on Llama-2-13B:</p>
+<div class="tw"><table class="gt">
+  <tr><th>Llama-2-13B</th><th class="num">16 bit</th><th class="num">4 bit K-tok V-tok</th><th class="num">2 bit K-tok V-tok</th><th class="num">2 bit K-ch V-ch</th><th class="num">2 bit K-tok V-ch</th><th class="num">2 bit K-ch V-tok</th></tr>
+  <tr><td>CoQA</td><td class="num">66.37</td><td class="num">66.48</td><td class="num">52.93</td><td class="num lo">2.88</td><td class="num lo">2.80</td><td class="num hi">63.53</td></tr>
+  <tr><td>TruthfulQA</td><td class="num">29.53</td><td class="num">29.51</td><td class="num">24.98</td><td class="num lo">0.74</td><td class="num lo">0.26</td><td class="num hi">28.60</td></tr>
+</table></div>
+<p class="cap">The paper's Table 1. Its three observations: 4-bit per-token is fine, 2-bit per-token drops a lot; per-channel values fail whatever you do with keys; at 2 bits the winner is keys per-channel, values per-token.</p></div>
+
+<div class="sec"><p class="tag">§3.2 Why keys and values want different axes</p>
+<p><b>Keys:</b> "some fixed channels exhibit very large magnitudes" (Fig 2), the same outlier columns seen in activations before (LLM.int8, AWQ). A per-token group that contains one of those channels stretches its range, and the normal numbers in it all round to the same level. A per-channel group confines the outlier "to each individual channel without impacting the other normal channels".</p>
+<p><b>Values:</b> no outlier pattern. Measured on V itself, per-channel is even slightly better (error 3.73 vs 4.57). But the output is <span class="mono">[A·X<sub>V</sub>]<sub>i</sub> = Σ<sub>j</sub> A<sub>ij</sub> [X<sub>V</sub>]<sub>j</sub></span>, and attention is sparse, so "the output is just the combination of value caches of a few important tokens". Per-token quantization keeps each token's error inside that token, so rounding the unimportant tokens can't damage the few that matter.</p>
+<div class="tw"><table class="gt">
+  <tr><th>Llama-2-13B, avg over layers and heads</th><th class="num">Per-token</th><th class="num">Per-channel</th><th class="num">Gap</th></tr>
+  <tr><td>K reconstruction error</td><td class="num lo">13.67</td><td class="num">4.55</td><td class="num">3.0× worse per-token</td></tr>
+  <tr><td>Attention-score error, softmax(q·K′ᵀ)</td><td class="num lo">47.00</td><td class="num hi">9.60</td><td class="num">4.9× ("almost 5×")</td></tr>
+  <tr><td>V reconstruction error</td><td class="num">4.57</td><td class="num">3.73</td><td class="num">per-channel slightly better</td></tr>
+  <tr><td>Output error Δ of A·V′</td><td class="num hi">3.55</td><td class="num lo">49.89</td><td class="num">14× ("almost 15×")</td></tr>
+  <tr><td>Attention sparsity</td><td class="num" colspan="2">84.3%</td><td></td></tr>
+</table></div>
+<p class="cap">The paper's Table 2, as printed (its relative-error metric, not the lab's). Gap ratios are our arithmetic: 47.00 / 9.60 = 4.9, 49.89 / 3.55 = 14.1.</p></div>
+
+<div class="sec"><p class="tag">§3.3 The algorithm: grouped part plus a residual window</p>
+<p>Per-token quantization streams easily: quantize the new row and append it. Per-channel can't, because a channel group spans 32 tokens that haven't all arrived yet. KIVI splits each cache in two:</p>
+<svg viewBox="0 0 760 214" role="img" aria-label="KIVI cache layout: quantized groups plus a full-precision residual window for keys and values.">
+<text class="sh" x="0" y="46">Keys</text><text class="sl" x="0" y="62">per-channel</text>
+<rect class="tkv" x="90" y="30" width="66" height="36"/>
+<text class="tg" x="123" y="53" text-anchor="middle">32 tok</text>
+<rect class="tkv" x="160" y="30" width="66" height="36"/>
+<text class="tg" x="193" y="53" text-anchor="middle">32 tok</text>
+<rect class="tkv" x="230" y="30" width="66" height="36"/>
+<text class="tg" x="263" y="53" text-anchor="middle">32 tok</text>
+<rect class="tkv" x="300" y="30" width="66" height="36"/>
+<text class="tg" x="333" y="53" text-anchor="middle">32 tok</text>
+<rect class="tkv" x="370" y="30" width="66" height="36"/>
+<text class="tg" x="403" y="53" text-anchor="middle">32 tok</text>
+<rect class="tkv" x="440" y="30" width="66" height="36"/>
+<text class="tg" x="473" y="53" text-anchor="middle">32 tok</text>
+<rect class="tres" x="510" y="30" width="96" height="36"/><text class="st" x="558" y="53" text-anchor="middle">BF16</text>
+<line class="ln" x1="660" y1="48" x2="610" y2="48"/><path class="arr" d="M610,48 l8,-4 v8 z"/><text class="st" x="666" y="52">new k</text>
+<text class="sl" x="90" y="84">quantized groups of 32 tokens: each channel gets its own scale and zero</text>
+<text class="sl" x="510" y="84">residual: 0 to 127 tokens</text>
+<text class="sl" x="510" y="99">at 128: quantize, append, empty</text>
+<line class="div" x1="0" y1="112" x2="760" y2="112"/>
+<text class="sh" x="0" y="146">Values</text><text class="sl" x="0" y="162">per-token</text>
+<rect class="tkv" x="90.0" y="130" width="5" height="36"/>
+<rect class="tkv" x="96.2" y="130" width="5" height="36"/>
+<rect class="tkv" x="102.4" y="130" width="5" height="36"/>
+<rect class="tkv" x="108.6" y="130" width="5" height="36"/>
+<rect class="tkv" x="114.8" y="130" width="5" height="36"/>
+<rect class="tkv" x="121.0" y="130" width="5" height="36"/>
+<rect class="tkv" x="127.2" y="130" width="5" height="36"/>
+<rect class="tkv" x="133.4" y="130" width="5" height="36"/>
+<rect class="tkv" x="139.6" y="130" width="5" height="36"/>
+<rect class="tkv" x="145.8" y="130" width="5" height="36"/>
+<rect class="tkv" x="152.0" y="130" width="5" height="36"/>
+<rect class="tkv" x="158.2" y="130" width="5" height="36"/>
+<rect class="tkv" x="164.4" y="130" width="5" height="36"/>
+<rect class="tkv" x="170.6" y="130" width="5" height="36"/>
+<rect class="tkv" x="176.8" y="130" width="5" height="36"/>
+<rect class="tkv" x="183.0" y="130" width="5" height="36"/>
+<rect class="tkv" x="189.2" y="130" width="5" height="36"/>
+<rect class="tkv" x="195.4" y="130" width="5" height="36"/>
+<rect class="tkv" x="201.6" y="130" width="5" height="36"/>
+<rect class="tkv" x="207.8" y="130" width="5" height="36"/>
+<rect class="tkv" x="214.0" y="130" width="5" height="36"/>
+<rect class="tkv" x="220.2" y="130" width="5" height="36"/>
+<rect class="tkv" x="226.4" y="130" width="5" height="36"/>
+<rect class="tkv" x="232.6" y="130" width="5" height="36"/>
+<rect class="tkv" x="238.8" y="130" width="5" height="36"/>
+<rect class="tkv" x="245.0" y="130" width="5" height="36"/>
+<rect class="tkv" x="251.2" y="130" width="5" height="36"/>
+<rect class="tkv" x="257.4" y="130" width="5" height="36"/>
+<rect class="tkv" x="263.6" y="130" width="5" height="36"/>
+<rect class="tkv" x="269.8" y="130" width="5" height="36"/>
+<rect class="tkv" x="276.0" y="130" width="5" height="36"/>
+<rect class="tkv" x="282.2" y="130" width="5" height="36"/>
+<rect class="tkv" x="288.4" y="130" width="5" height="36"/>
+<rect class="tkv" x="294.6" y="130" width="5" height="36"/>
+<rect class="tkv" x="300.8" y="130" width="5" height="36"/>
+<rect class="tkv" x="307.0" y="130" width="5" height="36"/>
+<rect class="tkv" x="313.2" y="130" width="5" height="36"/>
+<rect class="tkv" x="319.4" y="130" width="5" height="36"/>
+<rect class="tkv" x="325.6" y="130" width="5" height="36"/>
+<rect class="tkv" x="331.8" y="130" width="5" height="36"/>
+<rect class="tkv" x="338.0" y="130" width="5" height="36"/>
+<rect class="tkv" x="344.2" y="130" width="5" height="36"/>
+<rect class="tkv" x="350.4" y="130" width="5" height="36"/>
+<rect class="tkv" x="356.6" y="130" width="5" height="36"/>
+<rect class="tkv" x="362.8" y="130" width="5" height="36"/>
+<rect class="tkv" x="369.0" y="130" width="5" height="36"/>
+<rect class="tkv" x="375.2" y="130" width="5" height="36"/>
+<rect class="tkv" x="381.4" y="130" width="5" height="36"/>
+<rect class="tkv" x="387.6" y="130" width="5" height="36"/>
+<rect class="tkv" x="393.8" y="130" width="5" height="36"/>
+<rect class="tkv" x="400.0" y="130" width="5" height="36"/>
+<rect class="tkv" x="406.2" y="130" width="5" height="36"/>
+<rect class="tkv" x="412.4" y="130" width="5" height="36"/>
+<rect class="tkv" x="418.6" y="130" width="5" height="36"/>
+<rect class="tkv" x="424.8" y="130" width="5" height="36"/>
+<rect class="tkv" x="431.0" y="130" width="5" height="36"/>
+<rect class="tkv" x="437.2" y="130" width="5" height="36"/>
+<rect class="tkv" x="443.4" y="130" width="5" height="36"/>
+<rect class="tres" x="454" y="130" width="186" height="36"/><text class="st" x="547" y="153" text-anchor="middle">last R = 128 tokens, BF16</text>
+<line class="ln" x1="702" y1="148" x2="644" y2="148"/><path class="arr" d="M644,148 l8,-4 v8 z"/><text class="st" x="708" y="152">new v</text>
+<text class="sl" x="90" y="184">each token quantized on its own (groups of 32 channels)</text>
+<text class="sl" x="454" y="184">a queue: the oldest token pops out</text>
+<text class="sl" x="454" y="199">and is quantized per token</text>
+</svg>
+<p class="cap">Our redraw of the idea in the paper's Fig 3 (Algorithm 1 in its appendix). Green = quantized, dashed = full precision.</p>
+<ul>
+  <li><b>Keys:</b> new keys collect in a full-precision residual. When it reaches R tokens it is quantized per channel in groups of G, appended, and emptied. <b>Values:</b> a queue of the last R tokens; the oldest pops out and is quantized per token. So the full-precision window averages R/2 tokens for keys and R for values.</li>
+  <li>Attention logits are computed in two tiles and concatenated: <span class="mono">A = [q·Q(K<sub>g</sub>)ᵀ, q·K<sub>r</sub>ᵀ]</span>. Dequantization is fused into the matmul ("Q_MatMul", CUDA), and the quantize kernel is written in Triton. During prefill the exact K and V feed the next layer, and only the stored copy is quantized.</li>
+  <li>Settings for every experiment: G = 32, R = 128 (R ≤ 128 and divisible by G). No fine-tuning and no calibration: "tuning-free", "plug-and-play".</li>
+</ul></div>
+
+<div class="sec"><p class="tag">§4 Results: quality, the window, and speed</p>
+<p>GSM8K (maths, "one of the hardest generation tasks") shows the window matters. Same Llama-2-13B:</p>
+<div class="tw"><table class="gt">
+  <tr><th>Llama-2-13B, GSM8K</th><th class="num">16 bit</th><th class="num">2 bit K-ch V-tok, all tokens (no window)</th><th class="num">KIVI-2, R = 32</th><th class="num">R = 64</th><th class="num">R = 96</th><th class="num">R = 128</th><th class="num">KIVI-4</th></tr>
+  <tr><td>accuracy</td><td class="num">22.67</td><td class="num lo">12.21</td><td class="num">20.62</td><td class="num">19.86</td><td class="num">20.55</td><td class="num hi">20.77</td><td class="num">23.65</td></tr>
+</table></div>
+<p class="cap">From the paper's accuracy table and its ablation table. It attributes the jump from 12.21 to 20.77 to the full-precision window, finds "no consistent pattern" between R = 32, 96 and 128, and says "a reasonably large residual length is important". Group size 128 (R = 128) drops to 17.29. Mistral-7B: 38.36 at 16 bit, 26.46 fake 2-bit, 36.01 KIVI-2.</p>
+<p><b>Speed</b> (Llama-2-7B, one A100 80GB, ShareGPT-like requests averaging 161 prompt + 338 output tokens, batch raised until out of memory, R = 32 and 128): "2.6× less peak memory (including model weight)", "up to 4× larger batch size", "2.35× ∼ 3.47× throughput". That is below our 5.00× for two reasons, both our reading. First, at 499 tokens the window is a quarter of each sequence: with R = 128 the cache shrinks only 2.53×, with R = 32 it shrinks 4.17× (labs/kv-quant.py). Second, the quantize step isn't fused yet: the paper says the speed-up "can be greatly increased" once it is.</p></div>
+
+<h2>Worked example: the same effects on synthetic data <small>· labs/kv-quant.py, seeded numpy, illustrative</small></h2>
+<p>A synthetic key matrix: 1,024 tokens × 128 channels, N(0, 1), except channels 3, 37, 70 and 101, which hold ±N(10, 3) in every token (fixed outlier channels). 64 random queries. Round-to-nearest with KIVI's formula, groups of 32. Error = ‖X − X′‖ / ‖X‖.</p>
+<div class="tw"><table class="gt">
+  <tr><th>Keys</th><th class="num">K error</th><th class="num">Logits q·Kᵀ error</th><th class="num">Softmax(q·Kᵀ) error</th></tr>
+  <tr><td>4 bit per-token</td><td class="num">0.111</td><td class="num">0.112</td><td class="num">0.230</td></tr>
+  <tr><td>4 bit per-channel</td><td class="num hi">0.042</td><td class="num hi">0.043</td><td class="num hi">0.084</td></tr>
+  <tr><td>2 bit per-token</td><td class="num lo">0.639</td><td class="num lo">0.641</td><td class="num lo">2.817</td></tr>
+  <tr><td>2 bit per-channel</td><td class="num hi">0.211</td><td class="num hi">0.214</td><td class="num hi">0.458</td></tr>
+</table></div>
+<div class="formula">token 0, channels 0–31: −2.33 … 13.05
+  2-bit step (13.05 + 2.33) / 3 = 5.12   (normal values ~1 collapse)
+channel 0, tokens 0–31: −1.90 … 2.18
+  2-bit step 4.08 / 3 = 1.36
+per-token ÷ per-channel at 2 bits:
+  keys 3.0×, logits 3.0×, softmax 6.1×
+  paper, real Llama-2-13B: keys 3.0×, softmax 4.9×</div>
+<p>Values: 1,024 × 128, and a sparse attention where each of 64 queries puts 90% of its weight on 8 random tokens (99.2% of entries fall below uniform 1/T). Output error of A·V′:</p>
+<div class="tw"><table class="gt">
+  <tr><th>Values (2 bit)</th><th class="num">V error, per-token</th><th class="num">V error, per-channel</th><th class="num">A·V error, per-token</th><th class="num">A·V error, per-channel</th><th class="num">Ratio</th></tr>
+  <tr><td>every token the same scale</td><td class="num">0.394</td><td class="num">0.394</td><td class="num">0.397</td><td class="num">0.401</td><td class="num">1.0×</td></tr>
+  <tr><td>token scales vary (log-normal, σ 1)</td><td class="num">0.400</td><td class="num">0.582</td><td class="num">0.408</td><td class="num">0.549</td><td class="num">1.3×</td></tr>
+  <tr><td>attended tokens 10× smaller than the rest</td><td class="num">0.392</td><td class="num">0.462</td><td class="num hi">0.392</td><td class="num lo">4.104</td><td class="num">10.5×</td></tr>
+</table></div>
+<p class="cap">The last two rows are our modelling choices, not measurements. What the lab shows: sparsity alone doesn't favour per-token (row 1 ties). It wins when tokens differ in scale, and by a lot when the few tokens attention picks are small next to their 31 group-mates, because per-channel sets their step from the others. Then V error barely changes (0.39 vs 0.46) while output error explodes, the same pattern as the paper's 3.73 vs 4.57 V error but 49.89 vs 3.55 output error. The lab doesn't show what structure real values have.</p>
+<div class="formula">Whole attention at 2 bits (keys above, log-normal values),
+34% of attention on the last 128 tokens. Output error:
+  per-token K and V     2.001
+  per-channel K and V   0.792
+  KIVI, no window       0.577
+  KIVI, R = 128         0.510</div>
+
+<h2>Why it beats the alternatives <small>· at 2–3 bits per number</small></h2>
+<div class="grid2">
+  <div class="cell"><h3><span class="x">&#10007;</span> BF16 KV</h3><p>Exact, but 128 KiB per token: 59 sequences of 8k on an H100, 2,489 tok/s, and each step spends 80% of its bytes on KV.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> FP8, one scale per tensor</h3><p>Simple, one flag in vLLM, no layout change: 2× capacity (119 sequences, 4,986 tok/s). But it stops at 2×. Quality is usually close, yet vLLM still recommends calibrated scales and skipping sensitive layers.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> 2 bit per-token, K and V</h3><p>Streams naturally, but the keys' outlier channels sit in every token group and wipe out the normal channels: CoQA 66.37 → 52.93 and GSM8K 22.67 → 4.55 on Llama-2-13B. Synthetic softmax error 2.817 vs 0.458.</p></div>
+  <div class="cell win"><h3><span class="ok">&#10003;</span> KIVI-2</h3><p>Keys per channel, values per token, the newest 128 tokens kept in BF16. About 3 bits per number with scales, 5× smaller KV on the running example (297 sequences, 12,437 tok/s upper bound), GSM8K 20.77 vs 22.67, no fine-tuning.</p></div>
+</div>
+
+<h2>Doesn't quantizing K and V hurt quality?</h2>
+<div class="note">
+  <p><b>Sometimes, and you only find out by measuring.</b> FP8 KV is usually a small change, but it depends on the model: vLLM's docs call sliding-window layers "more sensitive", and uncalibrated scales default to 1.0. At 2 bits the naive scheme fails outright, and even KIVI loses about 2 points of GSM8K on Llama-2-13B (22.67 → 20.77). In the paper, maths (GSM8K) suffers most. It also skips MMLU-style tasks on purpose, because they "only involve one decoding step", which is "not suitable for studying the impact of compressed KV cache".</p>
+  <ul>
+    <li><b>When it's not the right choice:</b> short contexts at small batch, where weights dominate the bytes and a smaller KV barely moves the step; models near the compute edge (on the running example, 297 sequences already put the matmuls level with the weight reads); and workloads so short that the full-precision window is most of each sequence (at 499 tokens with R = 128 KIVI shrinks the cache only 2.53×).</li>
+    <li><b>What people use instead or on top:</b> fewer KV heads at training time (<a href="gqa.html">GQA</a>, <a href="mla.html">MLA</a>), then <a href="paged-memory.html">paging</a> so that the smaller cache isn't wasted. DeepSeek-V2 stacks MLA with ~6-bit KV.</li>
+  </ul>
+  <p>Always evaluate on your own task: a long-context and a reasoning benchmark, not just perplexity. The course on training and economics (perf-7, not built yet) covers evaluation.</p>
+</div>
+
+<div class="foot">
+<p><a class="lab-link" href="https://github.com/seyonv/explainers/blob/main/perf-4-attention-kv/labs/kv-quant.py">Run it: labs/kv-quant.py</a> In under a second it prints the capacity table (bits per number with scales, KV per token and per sequence, sequences that fit, step and tok/s, the same-batch step), the ShareGPT-length shrink, the synthetic key and value tables, and the four-way 2-bit comparison. Try this: at 32k context KIVI-2 reaches 5.24× smaller and 78 sequences vs 14. Set the outlier mean to 0 and per-channel's advantage on keys shrinks.</p>
+<p><b>Read next:</b> <a href="https://arxiv.org/abs/2402.02750">Liu et al., "KIVI: A Tuning-Free Asymmetric 2bit Quantization for KV Cache"</a>: §3 (methodology) and §4 (experiments), ~30 min. Read Tables 1–2 against section 3 of this card, and the ablation table for the window. Then the <a href="https://docs.vllm.ai/en/latest/features/quantization/quantized_kvcache.html">vLLM Quantized KV Cache page</a> (~5 min).</p>
+<p><b>Related:</b> <a href="gqa.html">grouped-query attention</a> · <a href="mla.html">multi-head latent attention</a> · <a href="paged-memory.html">PagedAttention I: KV memory as pages</a> · <a href="../perf-2-scaling-book-inference/kv-tricks.html">perf-2: tricks that shrink the KV cache</a> · <a href="../perf-3-kernels/tensor-cores-low-precision.html">perf-3: tensor cores and low precision</a> · <a href="../perf-2-scaling-book-inference/attention-intensity.html">perf-2: attention intensity</a></p>
+<p><b>Sources:</b> every KIVI number, quote and setting (Tables 1–2, the GSM8K and ablation tables, 2.6× / 4× / 2.35–3.47×, G = 32, R = 128, the R/2 and R windows, 161/338 tokens, A100 80GB): <a href="https://arxiv.org/abs/2402.02750">arXiv 2402.02750</a> (LaTeX e-print dated 26 Jul 2024) and <a href="https://proceedings.mlr.press/v235/liu24bz.html">ICML 2024 (PMLR 235)</a>. vLLM <code>kv_cache_dtype</code> values, per-tensor and per-head scales, default scale 1.0, the sliding-window caveat and skip flag: <a href="https://docs.vllm.ai/en/latest/features/quantization/quantized_kvcache.html">vLLM docs</a>, read 2026-09-22. DeepSeek-V2 "6 bits on average": <a href="https://arxiv.org/abs/2405.04434">arXiv 2405.04434</a> §3.2.3. E4M3 max 448: <a href="../perf-3-kernels/tensor-cores-low-precision.html">perf-3 card</a> (OCP OFP8). Llama-3.1-8B shapes, H100 specs, 16.06 GB, 63.94 GB free, 128 KiB per token, 59 → 119 sequences, 2,489 tok/s: the course's shared facts. The capacity table, the 499-token shrink and all synthetic results are our recomputation (labs/kv-quant.py); FP16 scale/zero per group and the synthetic data are our assumptions.</p>
+</div>
+</article>
+<!-- series-nav:bottom -->
+<div class="snx"><a class="nx" href="index.html#paged-memory" target="_top">
+<span class="mini" aria-hidden="true"><span class="m1">PagedAttention I: KV memory as pages</span><span class="m2">Also called vLLM's KV blocks, the block table, or virtual memory for the KV cache. This card walks the PagedAttention paper (Kwon et al., SOSP '23) from the abstract through §4.3: why existing servers…</span><span class="m3">In one breath</span><span class="m4">Older servers gave each request one contiguous slab of KV memory sized for the longest answer it might write, and most of that slab was never used. PagedAttention splits each request's KV cache into small fixed-size blocks, places them anywhere in GPU memory, and keeps a per-request table from "block 0, 1, 2 of this sequence" to…</span></span>
+<span class="tx"><span class="lab">Next up · 12 / 19</span><span class="tt">PagedAttention I: KV memory as pages</span><span class="ds">From 20–38% used to 96%</span><span class="nd">Builds on: Memory: parameters vs the KV cache.</span><span class="go">Continue →</span></span></a><div class="aux"><span><a href="index.html#mla" target="_top">← Multi-head latent attention (DeepSeek)</a></span><a href="index.html" target="_top">All cards in 4 · Attention &amp; KV cache</a></div></div>
+<!-- /series-nav:bottom -->
+</body>
+</html>

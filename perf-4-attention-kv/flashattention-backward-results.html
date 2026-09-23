@@ -1,0 +1,431 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FlashAttention III: backward pass and results</title>
+<style>
+:root{
+  --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
+  --text:#1c1f23; --muted:#6b7068; --faint:#b9b9b3;
+  --accent:#4a9d77; --accent-bg:#dcefdf; --accent-border:#8cc79c;
+  --red:#c0492b; --red-bg:#fbeceb;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#15171a; --surface:#1d2024; --surface2:#24282d; --border:#32373d;
+    --text:#e6e8ea; --muted:#9aa1a9; --faint:#4a5057;
+    --accent:#5fb37f; --accent-bg:#1c2b22; --accent-border:#3f7a55;
+    --red:#e57368; --red-bg:#2e1f1e;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text)}
+.card{max-width:820px;margin:0 auto;padding:28px 32px;font-family:-apple-system,"Inter",system-ui,sans-serif;line-height:1.45}
+h1{font-size:26px;font-weight:600;margin:0 0 6px;letter-spacing:-0.01em}
+.sub{font-size:15px;color:var(--muted);margin:0 0 20px}
+h2{font-size:17px;font-weight:600;margin:26px 0 10px}
+p{font-size:15px;margin:0 0 10px}
+.cap{font-size:13px;color:var(--muted);margin:8px 0 0;text-align:center}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+
+/* Tables and formulas */
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border)}
+th{font-size:12px;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:none}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+.hi{color:var(--accent);font-weight:600} .lo{color:var(--red)}
+.formula{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin:10px 0;white-space:pre;overflow-x:auto;line-height:1.55}
+
+/* 2x2 grid */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.cell{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.cell.win{background:var(--accent-bg);border-color:var(--accent-border)}
+.cell h3{font-size:16px;font-weight:600;margin:0 0 5px;display:flex;gap:8px;align-items:baseline}
+.cell p{font-size:14px;margin:0;color:var(--text)}
+.cell.win h3,.cell.win p{color:var(--accent)}
+.x{color:var(--red)} .ok{color:var(--accent)}
+
+/* Clarification box */
+.note{border:1px solid var(--border);border-radius:10px;padding:14px 18px;font-size:14px}
+.note p{font-size:14px} .note p:last-child{margin-bottom:0}
+.note ul{margin:4px 0 10px;padding-left:20px}
+ul.tight{margin:4px 0 10px;padding-left:20px;font-size:15px}
+ul.tight li{margin-bottom:4px}
+
+.foot{margin-top:22px;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+.foot p{font-size:13px;margin:0 0 8px}
+svg{display:block;max-width:100%;height:auto}
+.sl{font-size:12px;fill:var(--muted)} .st{font-size:13px;fill:var(--text)}
+a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+
+/* Lab links */
+.lab{font-size:14px;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px 14px;margin:0 0 6px}
+.lab a{font-weight:600}
+.lab .m{color:var(--muted);font-size:13px}
+
+/* MathML */
+.mathbox{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px 16px 12px;margin:10px 0;overflow-x:auto}
+.mathbox math{font-size:21px;color:var(--text);font-family:"STIX Two Math","Latin Modern Math","Cambria Math",math}
+.mathbox .t1{color:var(--text)} .mathbox .t2{color:var(--accent)} .mathbox .t3{color:var(--muted)} .mathbox .t4{color:var(--red)}
+.mathbox mtd:first-child{text-align:right;padding-right:.3em} .mathbox mtd:last-child{text-align:left}
+.mathbox .lab2{font-size:12px;font-family:-apple-system,"Inter",system-ui,sans-serif;padding-top:3px;border-top:1.5px solid currentColor;margin-top:2px}
+.legend{display:grid;grid-template-columns:auto 1fr auto;column-gap:14px;row-gap:5px;font-size:13px;margin-top:12px;align-items:baseline}
+.legend .sym{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;text-align:right}
+.legend .v{color:var(--muted);text-align:right;font-variant-numeric:tabular-nums}
+
+/* Parts table (two examples) */
+.parts td{vertical-align:top} .parts td:first-child{font-weight:600}
+.parts .ex{font-size:13px;font-variant-numeric:tabular-nums} .parts .ex span{display:block;color:var(--muted)}
+
+/* Speedup bars (log scale) */
+.sp{display:flex;align-items:center;gap:8px;white-space:nowrap}
+.sp em{display:block;width:90px;flex:none;height:8px;border-radius:2px;background:var(--surface2)}
+.sp i{display:block;height:8px;border-radius:2px;background:var(--accent)}
+tr.ref td{color:var(--muted)}
+tr.grp td{padding-top:14px;font-size:12px;font-weight:600;color:var(--muted);letter-spacing:.02em}
+
+@media (max-width:560px){
+  .card{padding:22px 16px}.grid2{grid-template-columns:1fr}
+  .legend{grid-template-columns:auto 1fr}.legend .v{display:none}
+  .parts .what{display:none}.hide-s{display:none}.sp em{width:50px}
+}
+/* series-nav */
+.sn{max-width:820px;margin:0 auto;padding:16px 32px 0;font-family:-apple-system,"Inter",system-ui,sans-serif;font-size:13px;line-height:1.5;color:var(--muted)}
+.sn a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+.sn .crumbs{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 7px}
+.sn .crumbs b{color:var(--text);font-weight:600}
+.sn .sep{color:var(--faint)}
+.sn .step{margin-left:auto;white-space:nowrap}
+.sn .dep{margin-top:5px;padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface)}
+.sn .dep .ok{color:var(--accent);font-weight:600}
+.snx{max-width:820px;margin:0 auto;padding:6px 32px 44px;font-family:-apple-system,"Inter",system-ui,sans-serif}
+.snx .nx{display:grid;grid-template-columns:280px 1fr;text-decoration:none;color:var(--text);background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.snx .nx:hover,.snx .nx:focus-visible{border-color:var(--accent-border);outline:none}
+.snx .mini{position:relative;height:210px;overflow:hidden;background:var(--bg);border-right:1px solid var(--border);padding:14px 16px}
+.snx .mini span{display:block}
+.snx .mini .m1{font-size:12.5px;font-weight:600;margin:0 0 4px;line-height:1.3}
+.snx .mini .m2{font-size:9px;color:var(--muted);margin:0 0 8px;line-height:1.4}
+.snx .mini .m3{font-size:8.5px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;margin:0 0 3px}
+.snx .mini .m4{font-size:9.5px;margin:0;line-height:1.45}
+.snx .tx{padding:16px 20px}
+.snx .lab{font-size:12px;font-weight:600;color:var(--accent);letter-spacing:.04em;text-transform:uppercase}
+.snx .tt{display:block;font-size:20px;font-weight:600;margin:5px 0 4px;line-height:1.25}
+.snx .ds{display:block;font-size:14px;color:var(--muted)}
+.snx .nd{display:block;font-size:13px;color:var(--muted);margin-top:10px}
+.snx .go{display:block;margin-top:12px;font-size:14px;font-weight:600;color:var(--accent)}
+.snx .aux{display:flex;justify-content:space-between;gap:12px;margin-top:10px;font-size:13px;color:var(--muted)}
+.snx .aux a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+@media (max-width:560px){.sn,.snx{padding-left:16px;padding-right:16px}.snx .nx{grid-template-columns:1fr}.snx .mini{display:none}.sn .step{margin-left:0}}
+/* /series-nav */
+</style>
+</head>
+<body>
+<!-- series-nav:top -->
+<nav class="sn" aria-label="Series navigation"><div class="crumbs"><a href="../perf-0-map/index.html" target="_top">AI perf engineering</a><span class="sep">›</span><a href="index.html" target="_top">4 · Attention &amp; KV cache</a><span class="sep">›</span><b>05 / 19</b><span class="step"><a href="index.html#flashattention-io" target="_top">← prev</a> · <a href="index.html#flashattention-2-algorithm" target="_top">next →</a></span></div>
+<div class="dep"><b>Before this:</b> <a href="index.html#flashattention-tiling" target="_top">FlashAttention I: tiling and recomputation</a></div></nav>
+<!-- /series-nav:top -->
+<article class="card">
+<h1>FlashAttention III: backward pass and results</h1>
+<p class="sub">Also called recomputation in the backward pass, selective gradient checkpointing, or (for §4) the FlashAttention benchmarks. This card covers the FlashAttention paper's Appendix B (the memory-efficient backward pass, Algorithm 4, Theorem 5, the comparison with Rabe &amp; Staats), its experiments in §4 and Appendix E, and its limitations in §5. All numbers are the paper's, measured on A100s, unless marked "our recomputation".</p>
+
+<p class="lab"><a href="https://colab.research.google.com/github/seyonv/explainers/blob/main/perf-4-attention-kv/labs/attention-t4.ipynb">Open in Colab: labs/attention-t4.ipynb</a> <span class="m">(<a href="https://github.com/seyonv/explainers/blob/main/perf-4-attention-kv/labs/attention-t4.ipynb">view on GitHub</a>)</span><br>
+<span class="m">Runs naive <code>softmax(QKᵀ/√d)V</code> against PyTorch's <code>scaled_dot_product_attention</code> pinned to its MATH and EFFICIENT_ATTENTION backends (fp16, batch 2, 8 heads, d = 64, N = 512 to 16,384). It checks each one against an fp32 reference, then measures time with CUDA events and extra peak memory with <code>torch.cuda.max_memory_allocated</code>, forward only and forward + backward, and draws a log-log plot. The FLASH backend needs sm_80 or newer, and the T4 is sm_75, so the notebook detects that and prints it as unavailable. <b>Not yet run by the author. Every number on this card comes from the paper or from our arithmetic, none from a T4.</b></span></p>
+
+<h2>In one breath</h2>
+<p>Training needs the attention matrix P a second time, in the backward pass. Standard attention keeps all N×N entries of it in HBM. FlashAttention keeps only two numbers per query row from the forward pass, the running max m and the softmax sum ℓ, and rebuilds each tile of P on chip when the backward pass needs it. That costs about 13% more FLOPs but moves about 9× fewer bytes, so the backward pass gets faster as well as smaller. The paper then shows what this buys: 15% faster BERT, up to 3.5× faster GPT-2, memory that grows linearly in N, and the first Transformers to beat chance on Path-X (16K tokens) and Path-256 (64K).</p>
+
+<h2>The backward pass on one line each (App B.2)</h2>
+<p>Given the output gradient dO, the chain rule gives the three input gradients through two N×N intermediates, dP and dS. <span class="lo">Red</span> marks the N×N matrices that FlashAttention never writes to HBM. <span class="ok">Green</span> marks the per-row numbers it keeps instead.</p>
+<div class="mathbox">
+<math display="block">
+<mtable columnalign="right left" rowspacing="0.55em">
+  <mtr><mtd><mi mathvariant="bold">dV</mi></mtd><mtd><mo>=</mo><msup><mi class="t4" mathvariant="bold">P</mi><mo>&#8868;</mo></msup><mi mathvariant="bold">dO</mi></mtd></mtr>
+  <mtr><mtd><mi class="t4" mathvariant="bold">dP</mi></mtd><mtd><mo>=</mo><mi mathvariant="bold">dO</mi><msup><mi mathvariant="bold">V</mi><mo>&#8868;</mo></msup></mtd></mtr>
+  <mtr><mtd><msub><mi class="t2">D</mi><mi>i</mi></msub></mtd><mtd><mo>=</mo><munder class="t2"><mrow><mi>d</mi><msubsup><mi>o</mi><mi>i</mi><mo>&#8868;</mo></msubsup><msub><mi>o</mi><mi>i</mi></msub></mrow><mtext class="lab2">a dot product over d, not N</mtext></munder></mtd></mtr>
+  <mtr><mtd><mi class="t4">d</mi><msub><mi class="t4">S</mi><mrow><mi>i</mi><mi>j</mi></mrow></msub></mtd><mtd><mo>=</mo><msub><mi class="t4">P</mi><mrow><mi>i</mi><mi>j</mi></mrow></msub><mo>(</mo><mi class="t4">d</mi><msub><mi class="t4">P</mi><mrow><mi>i</mi><mi>j</mi></mrow></msub><mo>&#8722;</mo><msub><mi class="t2">D</mi><mi>i</mi></msub><mo>)</mo><mspace width="1.2em"/><mtext class="t3">i.e.&#8201;</mtext><mi class="t4" mathvariant="bold">dS</mi><mo>=</mo><mi class="t4" mathvariant="bold">P</mi><mo>&#8728;</mo><mo>(</mo><mi class="t4" mathvariant="bold">dP</mi><mo>&#8722;</mo><mi class="t2">D</mi><mo>)</mo></mtd></mtr>
+  <mtr><mtd><mi mathvariant="bold">dQ</mi><mo>,</mo><mspace width="0.2em"/><mi mathvariant="bold">dK</mi></mtd><mtd><mo>=</mo><mi class="t4" mathvariant="bold">dS</mi><mspace width="0.15em"/><mi mathvariant="bold">K</mi><mo>,</mo><mspace width="0.5em"/><msup><mi class="t4" mathvariant="bold">dS</mi><mo>&#8868;</mo></msup><mi mathvariant="bold">Q</mi></mtd></mtr>
+  <mtr><mtd><msub><mi class="t4">P</mi><mrow><mi>i</mi><mi>j</mi></mrow></msub></mtd><mtd><mo>=</mo><munder class="t2"><mfrac><msup><mi>e</mi><mrow><msub><mi>S</mi><mrow><mi>i</mi><mi>j</mi></mrow></msub><mo>&#8722;</mo><msub><mi>m</mi><mi>i</mi></msub></mrow></msup><msub><mi>&#8467;</mi><mi>i</mi></msub></mfrac><mtext class="lab2">rebuilt from the stored m and &#8467;</mtext></munder></mtd></mtr>
+</mtable>
+</math>
+<div class="legend">
+  <span class="sym">P, dP, dS</span><span>N×N per head: the probabilities and their two gradients</span><span class="v">never in HBM</span>
+  <span class="sym">dO</span><span>gradient of the loss with respect to the output O (N×d)</span><span class="v">input to backward</span>
+  <span class="sym">D_i</span><span>one number per query row. The paper's trick (Eq. 4): P<sub>i:</sub>ᵀdP<sub>i:</sub> = do<sub>i</sub>ᵀo<sub>i</sub></span><span class="v">d = 128 terms, not 8,192</span>
+  <span class="sym">m_i, ℓ_i</span><span>the row max and the softmax sum, saved from the forward pass</span><span class="v">2 numbers per row</span>
+</div>
+</div>
+<p class="cap">Why D<sub>i</sub> matters: the softmax Jacobian needs Σ<sub>j</sub> P<sub>ij</sub>dP<sub>ij</sub>, a sum over a whole row of N entries that doesn't fit in SRAM. Because o<sub>i</sub> = Σ<sub>j</sub> P<sub>ij</sub>v<sub>j</sub>, the same sum equals do<sub>i</sub>ᵀo<sub>i</sub>, a dot product of two length-d vectors that are already in memory. The paper also leaves out the softmax scale τ here; Algorithm 4 puts it back.</p>
+
+<h2>What the backward pass keeps from the forward pass</h2>
+<p>An everyday comparison: standard attention photocopies every page of the book so it can reread it. FlashAttention keeps a two-line summary per page and rewrites each page when it's needed. The worked numbers use the running example, Llama-3.1-8B (32 query heads, d = 128, 32 layers), training on one 8,192-token sequence in BF16 (our recomputation).</p>
+<table class="parts">
+  <tr><th>What backward needs</th><th class="what">What it is</th><th>Standard (Alg 3)</th><th>FlashAttention (Alg 4)</th></tr>
+  <tr><td>The probabilities</td><td class="what">softmax(S) for every head, used by dV and dS</td>
+      <td class="ex"><b class="lo">P stored: 4.29 GB per layer</b><span>32 × 8,192² × 2 B; 137 GB for 32 layers</span></td>
+      <td class="ex"><b class="ok">m, ℓ stored: 2 MiB per layer</b><span>2 × 32 × 8,192 × 4 B (fp32, our assumption); 2,048× smaller</span></td></tr>
+  <tr><td>The dropout mask</td><td class="what">which entries of P were zeroed in forward</td>
+      <td class="ex"><b class="lo">an N×N mask</b><span>same shape as P</span></td>
+      <td class="ex"><b class="ok">the RNG state R</b><span>set it again, regenerate Z<sub>ij</sub> per tile (lines 1, 14)</span></td></tr>
+  <tr><td>D<sub>i</sub></td><td class="what">the row sum in the softmax gradient</td>
+      <td class="ex"><b>Σ over N = 8,192 entries</b><span>of P∘dP, both read from HBM</span></td>
+      <td class="ex"><b class="ok">do<sub>i</sub>ᵀo<sub>i</sub>: 128 terms</b><span>line 19</span></td></tr>
+  <tr><td>Intermediates written</td><td class="what">what goes back to HBM on the way</td>
+      <td class="ex"><b class="lo">dP and dS, N×N each</b><span>plus dQ, dK, dV</span></td>
+      <td class="ex"><b class="ok">only dQ, dK, dV</b><span>dQ updated in HBM each step, dK and dV once per column</span></td></tr>
+  <tr><td>HBM accesses (Thm 5)</td><td class="what">bytes moved, in the paper's big-Θ</td>
+      <td class="ex"><b>Θ(Nd + N²)</b><span>same as its forward</span></td>
+      <td class="ex"><b class="ok">Θ(N²d²/M)</b><span>M = SRAM size, d ≤ M ≤ Nd</span></td></tr>
+</table>
+<div class="formula">P per layer   = heads × N² × 2 B = 32 × 8,192² × 2  = 4,294,967,296 B = 4.29 GB
+P, 32 layers  = 4.29 GB × 32                        = 137 GB  (H100 has 80 GB)
+m, ℓ / layer  = 2 × heads × N × 4 B = 2 × 32 × 8,192 × 4 = 2,097,152 B = 2 MiB
+ratio         = (N × 2 B) ÷ (2 × 4 B) = N ÷ 4       = 2,048×</div>
+<p>Real training frameworks also avoid the 137 GB in other ways (for example, whole-layer checkpointing, below), so read it as "what storing P would cost", not as what anyone actually does. FlashAttention-2 later cuts the two vectors to one, the logsumexp m + log ℓ (see <a href="flashattention-2-algorithm.html">FlashAttention-2 I</a>).</p>
+
+<h2>Algorithm 4: the backward loop</h2>
+<p>The forward pass (<a href="flashattention-tiling.html">card I</a>) walks K,V blocks in the outer loop and Q blocks in the inner loop. The backward pass does the same, and the choice decides which gradients stay on chip. dK<sub>j</sub> and dV<sub>j</sub> depend only on column j, so they build up in SRAM for the whole column and go to HBM once. dQ<sub>i</sub> collects contributions from every column, so it's read, updated and written back to HBM at every step.</p>
+<svg viewBox="0 0 780 300" role="img" aria-label="Algorithm 4: the outer loop holds one K,V column block in SRAM and accumulates dK and dV there; the inner loop walks down the column, recomputing each P tile from m and l; dQ is written back to HBM every step">
+<defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker></defs>
+<text x="0" y="14" class="st" font-weight="600">The N×N matrices, as tiles</text>
+<text x="54" y="36" class="sl" text-anchor="middle">j = 1</text>
+<text x="90" y="36" class="sl" text-anchor="middle">j = 2</text>
+<text x="126" y="36" class="sl" text-anchor="middle">j = 3</text>
+<text x="162" y="36" class="sl" text-anchor="middle">j = 4</text>
+<text x="30" y="66" class="sl" text-anchor="end">i = 1</text>
+<rect x="36" y="44" width="36" height="36" fill="var(--surface2)" stroke="var(--border)"/>
+<rect x="72" y="44" width="36" height="36" fill="var(--surface2)" stroke="var(--border)"/>
+<rect x="108" y="44" width="36" height="36" fill="var(--accent-bg)" stroke="var(--border)"/>
+<rect x="144" y="44" width="36" height="36" fill="var(--surface2)" stroke="var(--border)"/>
+<text x="30" y="102" class="sl" text-anchor="end">i = 2</text>
+<rect x="36" y="80" width="36" height="36" fill="var(--surface2)" stroke="var(--border)"/>
+<rect x="72" y="80" width="36" height="36" fill="var(--surface2)" stroke="var(--border)"/>
+<rect x="108" y="80" width="36" height="36" fill="var(--accent-bg)" stroke="var(--border)"/>
+<rect x="144" y="80" width="36" height="36" fill="var(--surface2)" stroke="var(--border)"/>
+<text x="30" y="138" class="sl" text-anchor="end">i = 3</text>
+<rect x="36" y="116" width="36" height="36" fill="var(--surface2)" stroke="var(--border)"/>
+<rect x="72" y="116" width="36" height="36" fill="var(--surface2)" stroke="var(--border)"/>
+<rect x="108" y="116" width="36" height="36" fill="var(--accent)" stroke="var(--border)"/>
+<rect x="144" y="116" width="36" height="36" fill="var(--surface2)" stroke="var(--border)"/>
+<text x="30" y="174" class="sl" text-anchor="end">i = 4</text>
+<rect x="36" y="152" width="36" height="36" fill="var(--surface2)" stroke="var(--border)"/>
+<rect x="72" y="152" width="36" height="36" fill="var(--surface2)" stroke="var(--border)"/>
+<rect x="108" y="152" width="36" height="36" fill="var(--surface)" stroke="var(--border)"/>
+<rect x="144" y="152" width="36" height="36" fill="var(--surface2)" stroke="var(--border)"/>
+<rect x="36" y="44" width="144" height="144" fill="none" stroke="var(--red)" stroke-width="1.5" stroke-dasharray="5 4"/>
+<text x="0" y="210" class="sl">outer loop: column j = 3 (Alg 4 line 6)</text>
+<text x="0" y="226" class="sl">inner loop: i = 1…4 down it (line 9)</text>
+<text x="0" y="242" class="sl">dark tile = step (i, j) = (3, 3)</text>
+<text x="0" y="264" class="st" style="fill:var(--red)">P, dP, dS never reach HBM</text>
+<rect x="214" y="24" width="300" height="266" rx="8" fill="none" stroke="var(--border)"/>
+<text x="226" y="44" class="st" font-weight="600">On-chip SRAM, one thread block</text>
+<rect x="224" y="56" width="280" height="32" rx="4" fill="var(--surface)" stroke="var(--border)"/>
+<text x="234" y="77" class="st">K<tspan baseline-shift="sub" font-size="10">j</tspan>, V<tspan baseline-shift="sub" font-size="10">j</tspan>: loaded once per column (line 7)</text>
+<rect x="224" y="96" width="280" height="32" rx="4" fill="var(--accent-bg)" stroke="var(--accent-border)"/>
+<text x="234" y="117" class="st" style="fill:var(--accent)">dK̃<tspan baseline-shift="sub" font-size="10">j</tspan>, dṼ<tspan baseline-shift="sub" font-size="10">j</tspan>: summed over all i on chip (8, 16, 22)</text>
+<rect x="224" y="136" width="280" height="32" rx="4" fill="var(--surface)" stroke="var(--border)"/>
+<text x="234" y="157" class="st">Q<tspan baseline-shift="sub" font-size="10">i</tspan>, O<tspan baseline-shift="sub" font-size="10">i</tspan>, dO<tspan baseline-shift="sub" font-size="10">i</tspan>, dQ<tspan baseline-shift="sub" font-size="10">i</tspan>, m<tspan baseline-shift="sub" font-size="10">i</tspan>, ℓ<tspan baseline-shift="sub" font-size="10">i</tspan>: every step (10)</text>
+<rect x="224" y="176" width="280" height="32" rx="4" fill="var(--accent-bg)" stroke="var(--accent-border)"/>
+<text x="234" y="197" class="st" style="fill:var(--accent)">P<tspan baseline-shift="sub" font-size="10">ij</tspan> = exp(S<tspan baseline-shift="sub" font-size="10">ij</tspan> − m<tspan baseline-shift="sub" font-size="10">i</tspan>) / ℓ<tspan baseline-shift="sub" font-size="10">i</tspan>, recomputed (11–13)</text>
+<rect x="224" y="216" width="280" height="32" rx="4" fill="var(--surface)" stroke="var(--border)"/>
+<text x="234" y="237" class="st">dP<tspan baseline-shift="sub" font-size="10">ij</tspan> = dO<tspan baseline-shift="sub" font-size="10">i</tspan> V<tspan baseline-shift="sub" font-size="10">j</tspan>ᵀ ; dS<tspan baseline-shift="sub" font-size="10">ij</tspan> = P<tspan baseline-shift="sub" font-size="10">ij</tspan>∘(dP<tspan baseline-shift="sub" font-size="10">ij</tspan> − D<tspan baseline-shift="sub" font-size="10">i</tspan>)</text>
+<text x="226" y="266" class="sl">D<tspan baseline-shift="sub" font-size="10">i</tspan> = rowsum(dO<tspan baseline-shift="sub" font-size="10">i</tspan>∘O<tspan baseline-shift="sub" font-size="10">i</tspan>): d terms, not N (line 19)</text>
+<text x="226" y="284" class="sl">dropout mask Z<tspan baseline-shift="sub" font-size="10">ij</tspan> regenerated from R (lines 1, 14)</text>
+<rect x="548" y="24" width="230" height="266" rx="8" fill="var(--surface)" stroke="var(--border)"/>
+<text x="560" y="44" class="st" font-weight="600">HBM</text>
+<text x="560" y="74" class="st">Q, K, V, O, dO (N × d each)</text>
+<text x="560" y="94" class="st">m, ℓ (N each, from forward)</text>
+<text x="560" y="114" class="st">RNG state R</text>
+<text x="560" y="162" class="st">dQ<tspan baseline-shift="sub" font-size="10">i</tspan> += τ dS<tspan baseline-shift="sub" font-size="10">ij</tspan> K<tspan baseline-shift="sub" font-size="10">j</tspan></text>
+<text x="560" y="180" class="sl">read + written every step (21)</text>
+<text x="560" y="222" class="st">dK<tspan baseline-shift="sub" font-size="10">j</tspan>, dV<tspan baseline-shift="sub" font-size="10">j</tspan></text>
+<text x="560" y="240" class="sl">written once per column (24)</text>
+<line x1="546" y1="72" x2="516" y2="72" stroke="var(--muted)" stroke-width="1.5" marker-end="url(#ah)"/>
+<line x1="546" y1="150" x2="516" y2="150" stroke="var(--muted)" stroke-width="1.5" marker-end="url(#ah)"/>
+<line x1="516" y1="160" x2="546" y2="160" stroke="var(--muted)" stroke-width="1.5" marker-end="url(#ah)"/>
+<line x1="516" y1="112" x2="546" y2="216" stroke="var(--muted)" stroke-width="1.5" marker-end="url(#ah)"/>
+</svg>
+<p class="cap">Algorithm 4, line numbers in brackets. Block sizes as in the forward pass: B<sub>c</sub> = ⌈M/4d⌉, B<sub>r</sub> = min(⌈M/4d⌉, d). Only one B<sub>r</sub>×B<sub>c</sub> tile of P, dP and dS exists at a time, and it lives in SRAM. The paper: "Conceptually it is just a block version of the derivation in Section B.2."</p>
+<p><b>Theorem 5</b> gives the IO cost: standard backward Θ(Nd + N²) HBM accesses, FlashAttention backward Θ(N²d²M<sup>−1</sup>), the same form as the forward pass's Theorem 2 (<a href="flashattention-io.html">card II</a>). Both still do O(N²) FLOPs and need only O(N) extra memory beyond the inputs, output and gradients. The paper's Fig 2 measures the whole trade on GPT-2 medium (N = 1,024, d = 64, 16 heads, batch 64, A100, forward + backward):</p>
+<div class="formula">                 GFLOPs   HBM R/W   runtime
+standard           66.6   40.3 GB   41.7 ms
+FlashAttention     75.2    4.4 GB    7.3 ms
+ratio             1.13×    9.2× less  5.7× faster   (our recomputation)</div>
+
+<h2>How it differs from Rabe &amp; Staats (App B.5)</h2>
+<p>Rabe and Staats ("Self-attention does not need O(n²) memory") had already shown that attention can run in linear memory. Both methods tile the matrix and recompute it in the backward pass. The paper lists three differences:</p>
+<table>
+  <tr><th></th><th>Rabe &amp; Staats</th><th>FlashAttention</th></tr>
+  <tr><td>Goal</td><td>peak memory footprint</td><td class="hi">memory accesses (which also caps footprint: A accesses means at most A memory)</td></tr>
+  <tr><td>Speed vs standard</td><td>"around the same speed or slightly slower"</td><td class="hi">2–4× faster</td></tr>
+  <tr><td>Passing on block results</td><td>keeps a temporary output per block, combines them at the end</td><td class="hi">updates one output in place after each block (Alg 1 line 12)</td></tr>
+  <tr><td>Backward</td><td>gradient checkpointing: recomputes P and every block's temporary output</td><td class="hi">derived analytically: recomputes only P</td></tr>
+</table>
+
+<h2>Results 1: faster training (§4.1)</h2>
+<table>
+  <tr><th>Workload (8×A100 unless noted)</th><th class="num">Baseline</th><th class="num">FlashAttention</th><th>Speedup (log scale)</th></tr>
+  <tr><td>BERT-large to 72.0% MLM accuracy<br><span class="cap" style="text-align:left;display:block;margin:0">vs Nvidia's MLPerf 1.1 record, mean of 10 runs</span></td><td class="num">20.0 ± 1.5 min</td><td class="num hi">17.4 ± 1.4 min</td><td><div class="sp"><em><i style="width:11.1%"></i></em>1.15× ("15%")</div></td></tr>
+  <tr><td>GPT-2 small vs HuggingFace</td><td class="num">9.5 days</td><td class="num hi">2.7 days</td><td><div class="sp"><em><i style="width:100%"></i></em><span class="hi">3.5×</span></div></td></tr>
+  <tr><td>GPT-2 small vs Megatron-LM</td><td class="num">4.7 days</td><td class="num hi">2.7 days</td><td><div class="sp"><em><i style="width:44.2%"></i></em>1.74×</div></td></tr>
+  <tr><td>GPT-2 medium vs HuggingFace</td><td class="num">21.0 days</td><td class="num hi">6.9 days</td><td><div class="sp"><em><i style="width:88.8%"></i></em>3.0×</div></td></tr>
+  <tr><td>GPT-2 medium vs Megatron-LM</td><td class="num">11.5 days</td><td class="num hi">6.9 days</td><td><div class="sp"><em><i style="width:40.8%"></i></em>1.67×</div></td></tr>
+  <tr><td>Long-range arena, 5 tasks, N = 1K–4K</td><td class="num">standard attention</td><td class="num hi">59.8 avg acc.</td><td><div class="sp"><em><i style="width:69.9%"></i></em>2.4× (block-sparse 2.8×)</div></td></tr>
+</table>
+<p class="cap">Bar width = log(speedup) ÷ log(3.5). Same perplexity in every GPT-2 row (18.2 small, 14.2–14.3 medium), because the model definition doesn't change. LRA: standard Transformer 59.3 average accuracy, FlashAttention 59.8, block-sparse 59.6.</p>
+<div class="formula">The 1.7× vs 1.8× discrepancy (the paper's own numbers):
+  Table 2 and its caption: "up to 1.7×" vs Megatron-LM
+    4.7 ÷ 2.7 = 1.74 (small), 11.5 ÷ 6.9 = 1.67 (medium)
+  §4 summary bullet: "1.8× over Megatron"
+    one guess (our inference): 3.5× ÷ 2.0× = 1.75, rounded up</div>
+
+<h2>Results 2: longer context (§4.2)</h2>
+<table>
+  <tr><th>GPT-2 small, 8×A100 (Table 4)</th><th class="num">Context</th><th class="num">OpenWebText ppl</th><th class="num">Training time</th><th class="num">vs Megatron 1K</th></tr>
+  <tr class="ref"><td>Megatron-LM</td><td class="num">1K</td><td class="num">18.2</td><td class="num">4.7 days</td><td class="num">1.0×</td></tr>
+  <tr><td>FlashAttention</td><td class="num">1K</td><td class="num">18.2</td><td class="num">2.7 days</td><td class="num">1.7×</td></tr>
+  <tr><td>FlashAttention</td><td class="num">2K</td><td class="num">17.6</td><td class="num">3.0 days</td><td class="num">1.6×</td></tr>
+  <tr><td>FlashAttention</td><td class="num">4K</td><td class="num hi">17.5</td><td class="num">3.6 days</td><td class="num hi">1.3×</td></tr>
+</table>
+<p class="cap">4× the context, 0.7 better perplexity, and still faster than the 1K baseline: 4.7 ÷ 3.6 = 1.31× (the text says "30% faster").</p>
+<table>
+  <tr><th>Long documents, RoBERTa, micro-F1</th><th class="num">at 512</th><th class="num">best</th><th class="num">lift</th></tr>
+  <tr><td>MIMIC-III (discharge summaries; avg 2,395 tokens)</td><td class="num">52.8</td><td class="num hi">57.1 at 16K</td><td class="num">+4.3</td></tr>
+  <tr><td>ECtHR (court cases; avg 2,197, longest 49,392)</td><td class="num">72.2</td><td class="num hi">80.7 at 8K</td><td class="num">+8.5</td></tr>
+  <tr><td>Path-X, 128×128 pixels one at a time (N = 16K)</td><td class="num lo">✗ every baseline</td><td class="num hi">61.4% FlashAttention</td><td class="num">first above chance</td></tr>
+  <tr><td>Path-256, 256×256 (N = 64K)</td><td class="num lo">✗ every baseline</td><td class="num hi">63.1% block-sparse</td><td class="num">first above chance</td></tr>
+</table>
+<p class="cap">"6.4 points of lift" in the paper's summary = (4.3 + 8.5) ÷ 2. ECtHR peaks at 8K and dips to 79.2 at 16K. Path-X and Path-256 ask whether two points are connected, a yes/no task, so chance is 50% (our note). Earlier Transformers ran out of memory or only reached chance. The Path-X model was pretrained on Path-64 and transferred.</p>
+
+<h2>Results 3: the attention benchmark (§4.3, Tables 11 and 21)</h2>
+<p>One A100 40 GB, batch 16, 8 heads, d = 64, dropout 0.1 and a padding mask, forward + backward, average of 100 runs. Both axes are log scale, so a line with slope 2 is quadratic.</p>
+<svg viewBox="0 0 720 330" role="img" aria-label="Log-log chart of forward plus backward attention time versus sequence length on an A100: PyTorch runs out of memory after 4K, FlashAttention is about 3 times faster and runs to 64K, block-sparse FlashAttention is fastest">
+<rect x="210.0" y="20" width="70.0" height="260" fill="var(--surface2)"/>
+<text x="245.0" y="126" class="sl" text-anchor="middle">crossover</text>
+<line x1="70" y1="251.1" x2="700" y2="251.1" stroke="var(--border)"/><text x="62" y="255.1" class="sl" text-anchor="end">1</text>
+<line x1="70" y1="193.3" x2="700" y2="193.3" stroke="var(--border)"/><text x="62" y="197.3" class="sl" text-anchor="end">10</text>
+<line x1="70" y1="135.6" x2="700" y2="135.6" stroke="var(--border)"/><text x="62" y="139.6" class="sl" text-anchor="end">100</text>
+<line x1="70" y1="77.8" x2="700" y2="77.8" stroke="var(--border)"/><text x="62" y="81.8" class="sl" text-anchor="end">1,000</text>
+<line x1="70" y1="20.0" x2="700" y2="20.0" stroke="var(--border)"/><text x="62" y="24.0" class="sl" text-anchor="end">10,000</text>
+<text x="70.0" y="298" class="sl" text-anchor="middle">128</text>
+<text x="140.0" y="298" class="sl" text-anchor="middle">256</text>
+<text x="210.0" y="298" class="sl" text-anchor="middle">512</text>
+<text x="280.0" y="298" class="sl" text-anchor="middle">1K</text>
+<text x="350.0" y="298" class="sl" text-anchor="middle">2K</text>
+<text x="420.0" y="298" class="sl" text-anchor="middle">4K</text>
+<text x="490.0" y="298" class="sl" text-anchor="middle">8K</text>
+<text x="560.0" y="298" class="sl" text-anchor="middle">16K</text>
+<text x="630.0" y="298" class="sl" text-anchor="middle">32K</text>
+<text x="700.0" y="298" class="sl" text-anchor="middle">64K</text>
+<text x="385.0" y="318" class="sl" text-anchor="middle">sequence length N (log scale) · y: fwd + bwd time in ms (log scale)</text>
+<path d="M70.0,239.8 L140.0,241.1 L210.0,240.1 L280.0,239.3 L350.0,215.2 L420.0,198.8 L490.0,182.0 L560.0,165.0 L630.0,147.8" fill="none" stroke="var(--faint)" stroke-width="2" stroke-dasharray="6 4"/>
+<path d="M70.0,255.5 L140.0,254.9 L210.0,229.7 L280.0,198.0 L350.0,164.3 L420.0,130.1" fill="none" stroke="var(--red)" stroke-width="2.5"/>
+<path d="M70.0,271.7 L140.0,271.7 L210.0,271.1 L280.0,254.0 L350.0,234.4 L420.0,215.6 L490.0,200.1 L560.0,180.6 L630.0,163.6 L700.0,146.7" fill="none" stroke="var(--accent)" stroke-width="2" stroke-dasharray="2 3"/>
+<path d="M70.0,272.3 L140.0,273.5 L210.0,252.4 L280.0,227.6 L350.0,194.5 L420.0,160.2 L490.0,125.8 L560.0,91.2 L630.0,56.5 L700.0,21.7" fill="none" stroke="var(--accent)" stroke-width="2.5"/>
+<circle cx="70.0" cy="255.5" r="3.5" fill="var(--red)"/>
+<circle cx="140.0" cy="254.9" r="3.5" fill="var(--red)"/>
+<circle cx="210.0" cy="229.7" r="3.5" fill="var(--red)"/>
+<circle cx="280.0" cy="198.0" r="3.5" fill="var(--red)"/>
+<circle cx="350.0" cy="164.3" r="3.5" fill="var(--red)"/>
+<circle cx="420.0" cy="130.1" r="3.5" fill="var(--red)"/>
+<circle cx="70.0" cy="272.3" r="3.5" fill="var(--accent)"/>
+<circle cx="140.0" cy="273.5" r="3.5" fill="var(--accent)"/>
+<circle cx="210.0" cy="252.4" r="3.5" fill="var(--accent)"/>
+<circle cx="280.0" cy="227.6" r="3.5" fill="var(--accent)"/>
+<circle cx="350.0" cy="194.5" r="3.5" fill="var(--accent)"/>
+<circle cx="420.0" cy="160.2" r="3.5" fill="var(--accent)"/>
+<circle cx="490.0" cy="125.8" r="3.5" fill="var(--accent)"/>
+<circle cx="560.0" cy="91.2" r="3.5" fill="var(--accent)"/>
+<circle cx="630.0" cy="56.5" r="3.5" fill="var(--accent)"/>
+<circle cx="700.0" cy="21.7" r="3.5" fill="var(--accent)"/>
+<text x="490.0" y="102" class="st" text-anchor="middle" style="fill:var(--red)">✗ OOM</text>
+<text x="412.0" y="120.1" class="sl" text-anchor="end">124.19</text>
+<text x="428.0" y="176.2" class="sl">37.49</text>
+<text x="692.0" y="25.7" class="sl" text-anchor="end">9,341</text>
+<line x1="90" y1="40" x2="116" y2="40" stroke="var(--red)" stroke-width="2.5"/>
+<text x="124" y="44" class="st">PyTorch attention (stores P)</text>
+<line x1="90" y1="58" x2="116" y2="58" stroke="var(--accent)" stroke-width="2.5"/>
+<text x="124" y="62" class="st">FlashAttention (exact)</text>
+<line x1="90" y1="76" x2="116" y2="76" stroke="var(--accent)" stroke-width="2.5" stroke-dasharray="2 3"/>
+<text x="124" y="80" class="st">block-sparse FlashAttention</text>
+<line x1="90" y1="94" x2="116" y2="94" stroke="var(--faint)" stroke-width="2.5" stroke-dasharray="6 4"/>
+<text x="124" y="98" class="st">Linformer (approximate)</text>
+</svg>
+<p class="cap">Table 11. PyTorch runs out of memory after 4K. From 1K up, FlashAttention is 3.25–3.32× faster, and its time rises about 4× per doubling of N (quadratic FLOPs). Linformer, an approximation, grows linearly and overtakes it between 512 (1.55 vs 0.95 ms) and 1K (1.60 vs 2.55 ms), the paper's "crossover". Block-sparse FlashAttention is fastest at every length: 64.11 ms at 64K.</p>
+<table>
+  <tr><th class="num">N</th><th class="num">PyTorch time</th><th class="num">FA time</th><th class="num">speedup</th><th class="num">PyTorch memory</th><th class="num">FA memory</th><th>memory saved (log scale)</th></tr>
+  <tr><td class="num">128</td><td class="num">0.84 ms</td><td class="num">0.43 ms</td><td class="num">1.95×</td><td class="num">36 MB</td><td class="num">22 MB</td><td><div class="sp"><em><i style="width:16.3%"></i></em>1.6×</div></td></tr>
+  <tr><td class="num">512</td><td class="num">2.35</td><td class="num">0.95</td><td class="num">2.47×</td><td class="num">336</td><td class="num">104</td><td><div class="sp"><em><i style="width:38.9%"></i></em>3.2×</div></td></tr>
+  <tr><td class="num">1,024</td><td class="num">8.29</td><td class="num">2.55</td><td class="num">3.25×</td><td class="num">1,184</td><td class="num">209</td><td><div class="sp"><em><i style="width:57.5%"></i></em>5.7×</div></td></tr>
+  <tr><td class="num">2,048</td><td class="num">31.75</td><td class="num">9.56</td><td class="num">3.32×</td><td class="num">4,416</td><td class="num">418</td><td><div class="sp"><em><i style="width:78.2%"></i></em>10.6×</div></td></tr>
+  <tr><td class="num">4,096</td><td class="num lo">124.19</td><td class="num">37.49</td><td class="num hi">3.31×</td><td class="num lo">17,024</td><td class="num">836</td><td><div class="sp"><em><i style="width:100%"></i></em><span class="hi">20.4×</span></div></td></tr>
+  <tr><td class="num">8,192</td><td class="num lo">OOM</td><td class="num">147.75</td><td class="num">–</td><td class="num lo">OOM</td><td class="num">1,672</td><td>–</td></tr>
+  <tr><td class="num">65,536</td><td class="num lo">OOM</td><td class="num">9,341.30</td><td class="num">–</td><td class="num lo">OOM</td><td class="num hi">13,376</td><td>–</td></tr>
+</table>
+<div class="formula">FA memory (MB):   209 → 418 → 836 → … → 13,376
+                  exactly ×2 per doubling of N = linear
+PyTorch (MB):   1,184 → 4,416 → 17,024
+                  ×3.7, ×3.9 per doubling ≈ quadratic
+"up to 20× less":  17,024 ÷ 836 = 20.4 at 4K
+                  (README: "10X … at 2K, and 20X at 4K")
+"up to 3× faster": 124.19 ÷ 37.49 = 3.31 at 4K
+Linformer at 64K:  26,252 ÷ 13,376 = 1.96 ("2× more efficient")</div>
+
+<h2>Where the speedup depends on the GPU (App E.4, E.5)</h2>
+<table>
+  <tr><th>GPU</th><th class="num">HBM bandwidth</th><th>What the paper measured (vs PyTorch attention)</th><th class="hide-s">Why, per the paper</th></tr>
+  <tr><td>A100, d = 64</td><td class="num">1.5 TB/s</td><td>2–4×, more with dropout and masking (batch 8, 12 heads)</td><td class="hide-s">fusion removes more passes</td></tr>
+  <tr><td>A100, d = 128</td><td class="num">1.5 TB/s</td><td>less overall, up to 3× with a causal mask</td><td class="hide-s">bigger d, smaller blocks fit in SRAM</td></tr>
+  <tr><td>RTX 3090</td><td class="num">≈ 900 GB/s</td><td class="hi">2.5–4.5×</td><td class="hide-s">slower memory, so saving bytes pays more</td></tr>
+  <tr><td>T4 (Colab)</td><td class="num">320 GB/s</td><td class="lo">less speedup (the text gives no number, only Fig 8)</td><td class="hide-s">smaller SRAM, so smaller blocks</td></tr>
+  <tr class="ref"><td>H100 SXM (running example)</td><td class="num">3.35 TB/s</td><td>not in this paper</td><td class="hide-s">see <a href="flashattention-2-algorithm.html">FlashAttention-2</a> and FA3</td></tr>
+</table>
+<div class="formula">vs Apex FMHA (A100, BERT-large shape, fwd+bwd ms, seq 128 / 256 / 512):
+  FMHA            0.27 / 0.81 / 2.95
+  FlashAttention  0.28 / 0.75 / 2.81   → 4% slower, 8% faster, 5% faster
+  FA backward is slower (2.00 vs 1.81 ms at 512): it recomputes P, FMHA stores it</div>
+<p>FMHA was the starting point for FlashAttention's code. It only supported head dimension 64, sequence length ≤ 512 and A100s. The paper's version added tiling and recomputation to reach 64K, head dims 16–128, and "all Turing and Ampere GPUs at the time of writing". That was true in 2022. Today the repo's README says FlashAttention-2 supports Ampere, Ada and Hopper GPUs, and points Turing (T4, RTX 2080) users to a separate <code>flash-attention-turing</code> repo that "supports a core subset of FlashAttention features". FlashAttention-3 needs an H100/H800, and FlashAttention-4 targets Hopper and Blackwell. The README doesn't say that FlashAttention 1.x is the route for Turing.</p>
+
+<h2>Training cares about backward, inference only runs forward</h2>
+<p>This framing is ours, not the paper's. Everything in §4.1–4.2 is training, and training memory is dominated by <b>activations kept for the backward pass</b>. Keeping P is the quadratic one, and it's the one this card removes. Inference never runs a backward pass:</p>
+<ul class="tight">
+  <li><b>Prefill</b> is one forward pass over the prompt, so it still has an N×N score matrix per head. For an 8,192-token prompt on Llama-3.1-8B that's the same 4.29 GB per layer computed above, just transient. FlashAttention's forward kernel keeps it on chip, so prefill gets the forward half of the win.</li>
+  <li><b>Decode</b> handles one new query row per step against the KV cache. There's no N×N matrix to avoid, and the step is bound by reading the cache (≈ 4 FLOPs/byte with GQA-4, see <a href="../perf-2-scaling-book-inference/attention-intensity.html">attention intensity</a>). The levers there are KV size and layout: GQA, MLA, paging and quantization, later in this course and in perf-5 (inference engines).</li>
+</ul>
+
+<h2>What the paper says it can't do (§5)</h2>
+<ul class="tight">
+  <li><b>One CUDA kernel per attention variant.</b> Each new variant needs a new hand-written kernel, in a much lower-level language than PyTorch, "and requires significant engineering effort". Kernels may also not carry over between GPU generations. The paper asks for a compiler from high-level code, like Halide for image processing. Triton and FlexAttention-style tools went that way later (our note).</li>
+  <li><b>Other layers.</b> Attention is the most memory-intensive layer, but every layer touches HBM, so the IO-aware approach could apply more widely (App D).</li>
+  <li><b>Multi-GPU.</b> The algorithm is "optimal within constants" on one GPU only. Across GPUs, the IO analysis has to count transfers between them too. Ring attention is one answer (<a href="long-context.html">long context</a>), and perf-6 (scaling out) covers the rest.</li>
+</ul>
+
+<h2>Why it beats the alternatives</h2>
+<div class="grid2">
+  <div class="cell"><h3><span class="x">&#10007;</span> Store P for backward</h3><p>Standard attention (Alg 0 + 3). P, dP and dS are N×N per head: 4.29 GB per layer for Llama-3.1-8B at 8K, 137 GB over 32 layers. It also moves Θ(Nd + N²) bytes. In Table 11, PyTorch runs out of 40 GB after 4K.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Checkpoint the whole layer</h3><p>Keep only the layer's input and rerun its whole forward pass during backward. Memory drops, but every FLOP runs twice and the N×N matrix is still built in HBM during the rerun. The paper: all such implementations "trade speed for memory". Rabe &amp; Staats end up at roughly standard speed.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Approximate attention</h3><p>Linformer, Performer, Reformer and others change the model to get linear cost. They're slower than exact FlashAttention below the 512–1K crossover, lose accuracy on LRA (Linformer 54.9 vs 59.8), and none solved Path-X.</p></div>
+  <div class="cell win"><h3><span class="ok">&#10003;</span> Recompute P from (m, ℓ)</h3><p>Keep 2 numbers per row (2 MiB per layer at 8K) and rebuild each tile of P in SRAM. It's exact, takes 13% more FLOPs but moves 9× fewer bytes, and ran 5.7× faster on GPT-2 medium. The backward pass gets faster, not slower.</p></div>
+</div>
+
+<h2>Why did FlashAttention enable longer context, not just speed?</h2>
+<div class="note">
+  <p>Because the limit on long context was <b>memory</b> before it was time. Standard attention's memory is quadratic: 17,024 MB at 4K in Table 21, and out of memory on a 40 GB A100 at 8K. FlashAttention's is linear: 836 MB at 4K, and 13,376 MB even at 64K. Once it fits, speed decides whether training is affordable. At 4K it's 3.3× faster than PyTorch, which is how GPT-2 at 4K context trained faster than Megatron's at 1K. Together they gave the first Transformers above chance on Path-X (16K) and Path-256 (64K). Earlier ones ran out of memory or guessed.</p>
+  <p>Linear memory doesn't mean linear time. FLOPs are still O(N²), and FlashAttention's time roughly quadruples per doubling of N: 9,341 ms at 64K. Only the block-sparse version (64 ms at 64K) changes that, and it's an approximation.</p>
+  <p><b>When it's not the right tool:</b> very short sequences (FlashAttention takes 0.43 ms at 128 and 0.41 ms at 256, so time isn't tracking N and fixed overhead probably dominates, our reading; Apex FMHA was 4% faster there); decode, where the KV cache read is the bottleneck, not an N×N matrix; attention variants nobody has written a kernel for yet (§5), where people fall back to PyTorch/SDPA or a Triton or FlexAttention-style kernel; and older GPUs like the T4, where the speedup is smaller and today's FlashAttention-2 doesn't officially run.</p>
+</div>
+
+<div class="foot">
+<p><b>Read next:</b> Dao et al., <a href="https://arxiv.org/abs/2205.14135">"FlashAttention: Fast and Memory-Efficient Exact Attention with IO-Awareness"</a>, §4 (Experiments, all of it) and Appendix B.2 + B.4 (backward derivation and Algorithm 4), ~45 min. B.5 (Rabe &amp; Staats) and E.4–E.5 are another 10 min if you want the comparisons. Then the <a href="https://github.com/Dao-AILab/flash-attention">FlashAttention repo README</a>, "Installation and features" → "NVIDIA CUDA Support" and "Performance", ~10 min, for what runs on which GPU today.</p>
+<p><b>Related:</b> <a href="flashattention-tiling.html">FlashAttention I: tiling and recomputation</a> · <a href="flashattention-io.html">FlashAttention II: the IO-complexity argument</a> · <a href="flashattention-2-algorithm.html">FlashAttention-2 I: fewer non-matmul FLOPs</a> · <a href="online-softmax.html">online softmax</a> · <a href="long-context.html">long context</a> · <a href="../perf-3-kernels/profiling.html">profiling</a> · <a href="../perf-3-kernels/first-kernel.html">your first kernel (T4 on Colab)</a> · <a href="../perf-2-scaling-book-inference/attention-intensity.html">attention intensity</a></p>
+<p><b>Sources:</b> all FlashAttention numbers are from arXiv 2205.14135v2 (link above): Tables 1–7, 11, 21, Fig 2, App B.2–B.5, E.4–E.5. Hardware as the paper states it: A100 40 GB and 1.5 TB/s, RTX 3090 ≈ 900 GB/s. GPU support and "10X memory savings at sequence length 2K, and 20X at 4K": the <a href="https://github.com/Dao-AILab/flash-attention">Dao-AILab/flash-attention README</a>, read 2026-09-22. T4 320 GB/s: <a href="https://www.nvidia.com/content/dam/en-zz/Solutions/Data-Center/tesla-t4/t4-tensor-core-datasheet-951643.pdf">NVIDIA T4 datasheet</a>. Llama-3.1-8B shapes, H100 80 GB and 3.35 TB/s: course facts. Our recomputations (P bytes, m/ℓ bytes, all ratios and bar widths) were done in Python from these numbers. The m/ℓ dtype (fp32) is our assumption, since the paper doesn't state it.</p>
+</div>
+</article>
+<!-- series-nav:bottom -->
+<div class="snx"><a class="nx" href="index.html#flashattention-2-algorithm" target="_top">
+<span class="mini" aria-hidden="true"><span class="m1">FlashAttention-2 I: fewer non-matmul FLOPs</span><span class="m2">Also called FA2, the un-scaled output trick, storing the logsumexp, or causal block skipping. This card walks Tri Dao's FlashAttention-2 (arXiv 2307.08691, July 2023): the abstract, §1, the §2…</span><span class="m3">In one breath</span><span class="m4">An A100 does matmul 16× faster than any other arithmetic, so the few non-matmul operations in attention (max, exp, rescaling) cost far more time than their FLOP count suggests. FlashAttention-2 keeps the exact FlashAttention result but trims that work. It stops dividing the output by the softmax sum at every step and divides…</span></span>
+<span class="tx"><span class="lab">Next up · 06 / 19</span><span class="tt">FlashAttention-2 I: fewer non-matmul FLOPs</span><span class="ds">Why a few extra exponentials cost 16×</span><span class="nd">Builds on: FlashAttention I: tiling and recomputation.</span><span class="go">Continue →</span></span></a><div class="aux"><span><a href="index.html#flashattention-io" target="_top">← FlashAttention II: the IO-complexity argument</a></span><a href="index.html" target="_top">All cards in 4 · Attention &amp; KV cache</a></div></div>
+<!-- /series-nav:bottom -->
+</body>
+</html>

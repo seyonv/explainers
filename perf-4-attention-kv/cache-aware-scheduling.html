@@ -1,0 +1,425 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RadixAttention II: cache-aware scheduling</title>
+<style>
+:root{
+  --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
+  --text:#1c1f23; --muted:#6b7068; --faint:#b9b9b3;
+  --accent:#4a9d77; --accent-bg:#dcefdf; --accent-border:#8cc79c;
+  --red:#c0492b; --red-bg:#fbeceb;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#15171a; --surface:#1d2024; --surface2:#24282d; --border:#32373d;
+    --text:#e6e8ea; --muted:#9aa1a9; --faint:#4a5057;
+    --accent:#5fb37f; --accent-bg:#1c2b22; --accent-border:#3f7a55;
+    --red:#e57368; --red-bg:#2e1f1e;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text)}
+.card{max-width:820px;margin:0 auto;padding:28px 32px;font-family:-apple-system,"Inter",system-ui,sans-serif;line-height:1.45}
+h1{font-size:26px;font-weight:600;margin:0 0 6px;letter-spacing:-0.01em}
+.sub{font-size:15px;color:var(--muted);margin:0 0 20px}
+h2{font-size:17px;font-weight:600;margin:26px 0 10px}
+h2 small{font-size:13px;font-weight:400;color:var(--muted)}
+p{font-size:15px;margin:0 0 10px}
+ul{font-size:15px;margin:0 0 10px;padding-left:20px}
+.cap{font-size:13px;color:var(--muted);margin:8px 0 0;text-align:center}
+.cap + p{margin-top:14px}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+
+/* Tables and formulas */
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border)}
+th{font-size:12px;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:none}
+.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.hi{color:var(--accent);font-weight:600} .lo{color:var(--red)} .mu{color:var(--muted)}
+.formula{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin:10px 0;white-space:pre;overflow-x:auto;line-height:1.55}
+.tw{overflow-x:auto}
+.tw table{min-width:600px}
+
+/* MathML */
+.mathbox{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px 16px 12px;margin:10px 0;overflow-x:auto}
+.mathbox math{font-size:21px;color:var(--text);font-family:"STIX Two Math","Latin Modern Math","Cambria Math",math}
+.mathbox .t1{color:var(--text)} .mathbox .t2{color:var(--accent)} .mathbox .t3{color:var(--muted)}
+.mathbox .lab{font-size:12px;font-family:-apple-system,"Inter",system-ui,sans-serif;padding-top:3px;border-top:1.5px solid currentColor;margin-top:2px}
+.mathbox math + math{margin-top:14px}
+.legend{display:grid;grid-template-columns:auto 1fr auto;column-gap:14px;row-gap:5px;font-size:13px;margin-top:12px;align-items:baseline}
+.legend .sym{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;text-align:right}
+.legend .v{color:var(--muted);text-align:right;font-variant-numeric:tabular-nums}
+@media (max-width:560px){.legend{grid-template-columns:auto 1fr}.legend .v{display:none}}
+
+/* Two examples per term */
+.parts td{vertical-align:top} .parts td:first-child{font-weight:600}
+.parts .ex{font-size:13px} .parts .ex span{display:block;color:var(--muted)}
+.parts .what{font-size:13px}
+@media (max-width:560px){.parts .what{display:none}}
+
+/* Token stream chips */
+.stream{display:grid;grid-template-columns:110px 1fr;column-gap:12px;row-gap:10px;align-items:center;margin:10px 0}
+.stream .lbl{font-size:13px;color:var(--muted)}
+.chips{display:flex;flex-wrap:wrap;gap:4px;align-items:center}
+.chips span{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;padding:3px 6px;border-radius:4px;border:1px solid var(--border);background:var(--surface)}
+.chips .a{background:var(--accent-bg);border-color:var(--accent-border);color:var(--accent)}
+.chips .r{background:var(--red-bg);border-color:var(--red);color:var(--red)}
+.chips .gap{border:none;background:none;color:var(--muted);font-family:inherit}
+.keyl{font-size:13px;color:var(--muted);display:flex;flex-wrap:wrap;gap:14px;margin-top:4px}
+.keyl i{display:inline-block;width:14px;height:12px;border-radius:3px;vertical-align:-1px;margin-right:6px;border:1px solid var(--border);background:var(--surface)}
+.keyl .ka{background:var(--accent-bg);border-color:var(--accent-border)} .keyl .kr{background:var(--red-bg);border-color:var(--red)}
+ol.alg{font-size:15px;padding-left:22px;margin:0 0 10px} ol.alg li{margin-bottom:4px}
+@media (max-width:560px){.stream{grid-template-columns:1fr}}
+
+/* 2x2 grid */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.cell{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.cell.win{background:var(--accent-bg);border-color:var(--accent-border)}
+.cell h3{font-size:16px;font-weight:600;margin:0 0 5px;display:flex;gap:8px;align-items:baseline}
+.cell p{font-size:14px;margin:0;color:var(--text)}
+.cell.win h3,.cell.win p{color:var(--accent)}
+.x{color:var(--red)} .ok{color:var(--accent)}
+
+/* Clarification box */
+.note{border:1px solid var(--border);border-radius:10px;padding:14px 18px;font-size:14px}
+.note p,.note li{font-size:14px} .note p:last-child{margin-bottom:0}
+.note ul{padding-left:18px}
+
+.foot{margin-top:22px;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+.foot p{font-size:13px}
+.lab-link{display:inline-block;font-size:13px;border:1px solid var(--accent-border);background:var(--accent-bg);color:var(--accent);border-radius:6px;padding:4px 10px;margin:2px 0 10px;text-decoration:none}
+
+/* SVG */
+.rt{fill:var(--text)} .ed{fill:none;stroke:var(--faint);stroke-width:1.2}
+svg{display:block;max-width:100%;height:auto;margin-top:6px}
+.sl{font-size:12px;fill:var(--muted)} .st{font-size:13px;fill:var(--text)} .sh{font-size:13px;font-weight:600;fill:var(--text)}
+.bx{fill:var(--surface);stroke:var(--faint);stroke-width:1}
+.bxa{fill:var(--accent-bg);stroke:var(--accent);stroke-width:1.6}
+.sa{font-size:13px;fill:var(--accent);font-weight:600}
+.slot{fill:none;stroke:var(--border);stroke-width:1}
+.slota{fill:var(--accent-bg);stroke:var(--accent);stroke-width:1.4}
+.slotb{fill:var(--surface2);stroke:var(--faint);stroke-width:1}
+.lk{stroke:var(--accent);stroke-width:1;stroke-dasharray:3 3;fill:none}
+.dv{stroke:var(--border);stroke-width:1}
+@media (max-width:560px){.grid2{grid-template-columns:1fr}.card{padding:20px 16px}}
+a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+/* series-nav */
+.sn{max-width:820px;margin:0 auto;padding:16px 32px 0;font-family:-apple-system,"Inter",system-ui,sans-serif;font-size:13px;line-height:1.5;color:var(--muted)}
+.sn a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+.sn .crumbs{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 7px}
+.sn .crumbs b{color:var(--text);font-weight:600}
+.sn .sep{color:var(--faint)}
+.sn .step{margin-left:auto;white-space:nowrap}
+.sn .dep{margin-top:5px;padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface)}
+.sn .dep .ok{color:var(--accent);font-weight:600}
+.snx{max-width:820px;margin:0 auto;padding:6px 32px 44px;font-family:-apple-system,"Inter",system-ui,sans-serif}
+.snx .nx{display:grid;grid-template-columns:280px 1fr;text-decoration:none;color:var(--text);background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.snx .nx:hover,.snx .nx:focus-visible{border-color:var(--accent-border);outline:none}
+.snx .mini{position:relative;height:210px;overflow:hidden;background:var(--bg);border-right:1px solid var(--border);padding:14px 16px}
+.snx .mini span{display:block}
+.snx .mini .m1{font-size:12.5px;font-weight:600;margin:0 0 4px;line-height:1.3}
+.snx .mini .m2{font-size:9px;color:var(--muted);margin:0 0 8px;line-height:1.4}
+.snx .mini .m3{font-size:8.5px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;margin:0 0 3px}
+.snx .mini .m4{font-size:9.5px;margin:0;line-height:1.45}
+.snx .tx{padding:16px 20px}
+.snx .lab{font-size:12px;font-weight:600;color:var(--accent);letter-spacing:.04em;text-transform:uppercase}
+.snx .tt{display:block;font-size:20px;font-weight:600;margin:5px 0 4px;line-height:1.25}
+.snx .ds{display:block;font-size:14px;color:var(--muted)}
+.snx .nd{display:block;font-size:13px;color:var(--muted);margin-top:10px}
+.snx .go{display:block;margin-top:12px;font-size:14px;font-weight:600;color:var(--accent)}
+.snx .aux{display:flex;justify-content:space-between;gap:12px;margin-top:10px;font-size:13px;color:var(--muted)}
+.snx .aux a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+@media (max-width:560px){.sn,.snx{padding-left:16px;padding-right:16px}.snx .nx{grid-template-columns:1fr}.snx .mini{display:none}.sn .step{margin-left:0}}
+/* /series-nav */
+</style>
+</head>
+<body>
+<!-- series-nav:top -->
+<nav class="sn" aria-label="Series navigation"><div class="crumbs"><a href="../perf-0-map/index.html" target="_top">AI perf engineering</a><span class="sep">›</span><a href="index.html" target="_top">4 · Attention &amp; KV cache</a><span class="sep">›</span><b>16 / 19</b><span class="step"><a href="index.html#radixattention" target="_top">← prev</a> · <a href="index.html#mooncake-store" target="_top">next →</a></span></div>
+<div class="dep"><b>Before this:</b> <a href="index.html#radixattention" target="_top">RadixAttention I: the radix tree of KV caches</a></div></nav>
+<!-- /series-nav:top -->
+<article class="card">
+<h1>RadixAttention II: cache-aware scheduling</h1>
+<p class="sub">Also called longest-shared-prefix-first (LSPF) scheduling, DFS order, the fix for cache thrashing, and, across replicas, prefix-aware routing. This is SGLang (Zheng et al., NeurIPS 2024) §3 "Cache-aware scheduling" with Theorem 3.1, Appendix A.2–A.4 and the §6 evaluation. Card 2 of 2: the tree and its LRU eviction are in <a href="radixattention.html">card 1</a>. The 64-request batch below is our recomputation, from labs/radix-schedule.py.</p>
+
+<h2>In one breath</h2>
+<p>The radix tree can only reuse KV that is still in memory. So when many requests are waiting, run the ones whose prompt shares the longest prefix with what is cached. Then each shared prefix serves all of its requests back to back, instead of being evicted and recomputed between them. For a fixed batch this order is provably optimal: it is a depth-first walk of the requests' radix tree.</p>
+
+<h2>The problem: cache thrashing under first-come, first-served</h2>
+<p>The paper defines the hit rate over prompt tokens only (§3):</p>
+<div class="mathbox">
+<math display="block">
+  <mtext>hit rate</mtext><mo>=</mo>
+  <mfrac><mrow class="t2"><mtext>cached prompt tokens</mtext></mrow><mtext>prompt tokens</mtext></mfrac>
+  <mo>=</mo><mn>1</mn><mo>&#8722;</mo>
+  <mfrac><mi>C</mi><mrow><munder><mo>&#8721;</mo><mrow><mi>r</mi><mo>&#8712;</mo><mi>R</mi></mrow></munder><msub><mi>n</mi><mtext>prefill</mtext></msub><mo>(</mo><mi>r</mi><mo>)</mo></mrow></mfrac>
+</math>
+<div class="legend">
+  <span class="sym">R</span><span>the batch of requests</span><span class="v">64 in our example</span>
+  <span class="sym">n_prefill(r)</span><span>prompt tokens of request r</span><span class="v">1,550 each, 99,200 in all</span>
+  <span class="sym">C</span><span>prompt tokens whose KV actually had to be computed</span><span class="v">15,200 at best</span>
+</div>
+</div>
+<p>"If the request scheduler frequently switches between different, unrelated requests, it can lead to cache thrashing and a low hit rate" (§3). Our example: 8 few-shot templates of 1,500 tokens, each followed by 8 different 50-token questions (64 requests), with room for only 3 templates' worth of KV. The first 16 requests in a shuffled arrival order, run first-come, first-served (FCFS), and then the same queue re-sorted by longest shared prefix:</p>
+<div class="stream">
+  <div class="lbl">FCFS (arrival)</div>
+  <div class="chips"><span>T3</span><span class="a">T3</span><span class="a">T3</span><span>T4</span><span class="a">T4</span><span>T7</span><span>T2</span><span>T5</span><span>T1</span><span class="r">T3</span><span class="r">T7</span><span>T0</span><span class="a">T0</span><span class="a">T0</span><span class="r">T5</span><span class="a">T5</span><span class="gap">… 48 more</span></div>
+  <div class="lbl">LSPF (re-sorted)</div>
+  <div class="chips"><span>T3</span><span class="a">T3</span><span class="a">T3</span><span class="a">T3</span><span class="a">T3</span><span class="a">T3</span><span class="a">T3</span><span class="a">T3</span><span>T4</span><span class="a">T4</span><span class="a">T4</span><span class="a">T4</span><span class="a">T4</span><span class="a">T4</span><span class="a">T4</span><span class="a">T4</span><span class="gap">… 48 more</span></div>
+</div>
+<div class="keyl"><span><i></i>template prefilled for the first time</span><span><i class="ka"></i>template hit in the cache</span><span><i class="kr"></i>prefilled again after eviction</span></div>
+<p class="cap">From labs/radix-schedule.py, seed 0. Under FCFS, T3 is evicted after five other templates pass through a cache that holds three. Over all 64 requests FCFS prefills templates 44 times: 8 first-time prefills and 36 recomputations (36 × 1,500 = 54,000 wasted tokens). LSPF prefills each template once.</p>
+
+<h2>Worked example: 64 requests, a cache for 3 templates</h2>
+<div class="formula">prompt tokens      = 64 × (1,500 + 50)                   = 99,200
+cache              = 3 × 1,550 slots = 4,650 × 128 KiB   = 609 MB of Llama-3.1-8B KV
+lower bound Σ|e|   = 8 × 1,500 + 64 × 50                 = 15,200 tokens must be computed
+optimal hit rate   = 1 − 15,200 / 99,200                 = 84.7%
+prefill floor      = computed tokens × 16.2 ms / 1,000   (H100, 100% MFU, course facts)</div>
+<div class="tw">
+<table>
+  <tr><th>Schedule (same 64 requests)</th><th class="num">Template prefills</th><th class="num">Computed tokens</th><th class="num">Hit rate</th><th class="num">Share of optimal</th><th class="num">Prefill floor</th></tr>
+  <tr><td>FCFS, round-robin arrival (T0…T7, T0…T7, …)</td><td class="num lo">64</td><td class="num lo">99,200</td><td class="num lo">0.0%</td><td class="num lo">0%</td><td class="num lo">1,610.9 ms</td></tr>
+  <tr><td>FCFS, shuffled arrival (seed 0)</td><td class="num">44</td><td class="num">69,200</td><td class="num">30.2%</td><td class="num">35.7%</td><td class="num">1,123.7 ms</td></tr>
+  <tr><td>Random schedule, mean of 200 orders</td><td class="num mu">–</td><td class="num">70,618</td><td class="num">28.8%<br><span class="mu">(16.6 to 40.8)</span></td><td class="num">34.0%</td><td class="num">1,146.7 ms</td></tr>
+  <tr><td>LSPF (= DFS), same arrivals</td><td class="num hi">8</td><td class="num hi">15,200</td><td class="num hi">84.7%</td><td class="num hi">100%</td><td class="num hi">246.8 ms</td></tr>
+</table>
+</div>
+<p class="cap">All rows from labs/radix-schedule.py (our recomputation; the workload and the 609 MB cache are illustrative, a cache squeezed by a large running batch). FCFS computes 69,200 / 15,200 = 4.55× as many prompt tokens. Round-robin arrival is the worst case: each template is evicted just before its next request. Random order and FCFS on shuffled arrivals are the same thing statistically. The paper's ablation has both bars, and both lose to cache-aware scheduling.</p>
+
+<h2>Theorem 3.1: depth-first order is optimal</h2>
+<p>"For a batch of requests, we can achieve an optimal cache hit rate by visiting the radix tree of the requests in the depth-first search order, with a cache size ≥ the maximum request length. The longest-shared-prefix-first order is equivalent to a depth-first search order." The request radix tree for our batch, drawn in the order LSPF visits it:</p>
+<svg viewBox="0 0 800 264" role="img" aria-label="The request radix tree: a root with 8 template edges of 1,500 tokens, each with 8 question edges of 50 tokens, visited in depth-first order">
+<text class="sl" x="40" y="12">template edge, 1,500 tokens</text><text class="sl" x="352" y="12">8 question edges, 50 each</text><text class="sl" x="520" y="12">DFS / LSPF visit</text><text class="sl" x="800" y="12" text-anchor="end">FCFS prefills</text>
+<path class="ed" d="M18 122.0 C29 122.0 29 34 40 34"/>
+<rect class="bxa" x="40" y="24" width="300" height="20" rx="4"/><text class="sa" x="190" y="39" text-anchor="middle">T3 examples · 1,500</text>
+<line class="ed" x1="340" y1="34" x2="352" y2="34"/>
+<rect class="bx" x="352" y="27" width="10" height="14" rx="2"/>
+<rect class="bx" x="366" y="27" width="10" height="14" rx="2"/>
+<rect class="bx" x="380" y="27" width="10" height="14" rx="2"/>
+<rect class="bx" x="394" y="27" width="10" height="14" rx="2"/>
+<rect class="bx" x="408" y="27" width="10" height="14" rx="2"/>
+<rect class="bx" x="422" y="27" width="10" height="14" rx="2"/>
+<rect class="bx" x="436" y="27" width="10" height="14" rx="2"/>
+<rect class="bx" x="450" y="27" width="10" height="14" rx="2"/>
+<text class="st" x="520" y="39">#1–8</text>
+<text class="st" x="800" y="39" text-anchor="end">5×</text>
+<path class="ed" d="M18 122.0 C29 122.0 29 62 40 62"/>
+<rect class="bxa" x="40" y="52" width="300" height="20" rx="4"/><text class="sa" x="190" y="67" text-anchor="middle">T4 examples · 1,500</text>
+<line class="ed" x1="340" y1="62" x2="352" y2="62"/>
+<rect class="bx" x="352" y="55" width="10" height="14" rx="2"/>
+<rect class="bx" x="366" y="55" width="10" height="14" rx="2"/>
+<rect class="bx" x="380" y="55" width="10" height="14" rx="2"/>
+<rect class="bx" x="394" y="55" width="10" height="14" rx="2"/>
+<rect class="bx" x="408" y="55" width="10" height="14" rx="2"/>
+<rect class="bx" x="422" y="55" width="10" height="14" rx="2"/>
+<rect class="bx" x="436" y="55" width="10" height="14" rx="2"/>
+<rect class="bx" x="450" y="55" width="10" height="14" rx="2"/>
+<text class="st" x="520" y="67">#9–16</text>
+<text class="st" x="800" y="67" text-anchor="end">5×</text>
+<path class="ed" d="M18 122.0 C29 122.0 29 90 40 90"/>
+<rect class="bxa" x="40" y="80" width="300" height="20" rx="4"/><text class="sa" x="190" y="95" text-anchor="middle">T7 examples · 1,500</text>
+<line class="ed" x1="340" y1="90" x2="352" y2="90"/>
+<rect class="bx" x="352" y="83" width="10" height="14" rx="2"/>
+<rect class="bx" x="366" y="83" width="10" height="14" rx="2"/>
+<rect class="bx" x="380" y="83" width="10" height="14" rx="2"/>
+<rect class="bx" x="394" y="83" width="10" height="14" rx="2"/>
+<rect class="bx" x="408" y="83" width="10" height="14" rx="2"/>
+<rect class="bx" x="422" y="83" width="10" height="14" rx="2"/>
+<rect class="bx" x="436" y="83" width="10" height="14" rx="2"/>
+<rect class="bx" x="450" y="83" width="10" height="14" rx="2"/>
+<text class="st" x="520" y="95">#17–24</text>
+<text class="st" x="800" y="95" text-anchor="end" style="fill:var(--red);font-weight:600">7×</text>
+<path class="ed" d="M18 122.0 C29 122.0 29 118 40 118"/>
+<rect class="bxa" x="40" y="108" width="300" height="20" rx="4"/><text class="sa" x="190" y="123" text-anchor="middle">T2 examples · 1,500</text>
+<line class="ed" x1="340" y1="118" x2="352" y2="118"/>
+<rect class="bx" x="352" y="111" width="10" height="14" rx="2"/>
+<rect class="bx" x="366" y="111" width="10" height="14" rx="2"/>
+<rect class="bx" x="380" y="111" width="10" height="14" rx="2"/>
+<rect class="bx" x="394" y="111" width="10" height="14" rx="2"/>
+<rect class="bx" x="408" y="111" width="10" height="14" rx="2"/>
+<rect class="bx" x="422" y="111" width="10" height="14" rx="2"/>
+<rect class="bx" x="436" y="111" width="10" height="14" rx="2"/>
+<rect class="bx" x="450" y="111" width="10" height="14" rx="2"/>
+<text class="st" x="520" y="123">#25–32</text>
+<text class="st" x="800" y="123" text-anchor="end">6×</text>
+<path class="ed" d="M18 122.0 C29 122.0 29 146 40 146"/>
+<rect class="bxa" x="40" y="136" width="300" height="20" rx="4"/><text class="sa" x="190" y="151" text-anchor="middle">T5 examples · 1,500</text>
+<line class="ed" x1="340" y1="146" x2="352" y2="146"/>
+<rect class="bx" x="352" y="139" width="10" height="14" rx="2"/>
+<rect class="bx" x="366" y="139" width="10" height="14" rx="2"/>
+<rect class="bx" x="380" y="139" width="10" height="14" rx="2"/>
+<rect class="bx" x="394" y="139" width="10" height="14" rx="2"/>
+<rect class="bx" x="408" y="139" width="10" height="14" rx="2"/>
+<rect class="bx" x="422" y="139" width="10" height="14" rx="2"/>
+<rect class="bx" x="436" y="139" width="10" height="14" rx="2"/>
+<rect class="bx" x="450" y="139" width="10" height="14" rx="2"/>
+<text class="st" x="520" y="151">#33–40</text>
+<text class="st" x="800" y="151" text-anchor="end">5×</text>
+<path class="ed" d="M18 122.0 C29 122.0 29 174 40 174"/>
+<rect class="bxa" x="40" y="164" width="300" height="20" rx="4"/><text class="sa" x="190" y="179" text-anchor="middle">T1 examples · 1,500</text>
+<line class="ed" x1="340" y1="174" x2="352" y2="174"/>
+<rect class="bx" x="352" y="167" width="10" height="14" rx="2"/>
+<rect class="bx" x="366" y="167" width="10" height="14" rx="2"/>
+<rect class="bx" x="380" y="167" width="10" height="14" rx="2"/>
+<rect class="bx" x="394" y="167" width="10" height="14" rx="2"/>
+<rect class="bx" x="408" y="167" width="10" height="14" rx="2"/>
+<rect class="bx" x="422" y="167" width="10" height="14" rx="2"/>
+<rect class="bx" x="436" y="167" width="10" height="14" rx="2"/>
+<rect class="bx" x="450" y="167" width="10" height="14" rx="2"/>
+<text class="st" x="520" y="179">#41–48</text>
+<text class="st" x="800" y="179" text-anchor="end">6×</text>
+<path class="ed" d="M18 122.0 C29 122.0 29 202 40 202"/>
+<rect class="bxa" x="40" y="192" width="300" height="20" rx="4"/><text class="sa" x="190" y="207" text-anchor="middle">T0 examples · 1,500</text>
+<line class="ed" x1="340" y1="202" x2="352" y2="202"/>
+<rect class="bx" x="352" y="195" width="10" height="14" rx="2"/>
+<rect class="bx" x="366" y="195" width="10" height="14" rx="2"/>
+<rect class="bx" x="380" y="195" width="10" height="14" rx="2"/>
+<rect class="bx" x="394" y="195" width="10" height="14" rx="2"/>
+<rect class="bx" x="408" y="195" width="10" height="14" rx="2"/>
+<rect class="bx" x="422" y="195" width="10" height="14" rx="2"/>
+<rect class="bx" x="436" y="195" width="10" height="14" rx="2"/>
+<rect class="bx" x="450" y="195" width="10" height="14" rx="2"/>
+<text class="st" x="520" y="207">#49–56</text>
+<text class="st" x="800" y="207" text-anchor="end">5×</text>
+<path class="ed" d="M18 122.0 C29 122.0 29 230 40 230"/>
+<rect class="bxa" x="40" y="220" width="300" height="20" rx="4"/><text class="sa" x="190" y="235" text-anchor="middle">T6 examples · 1,500</text>
+<line class="ed" x1="340" y1="230" x2="352" y2="230"/>
+<rect class="bx" x="352" y="223" width="10" height="14" rx="2"/>
+<rect class="bx" x="366" y="223" width="10" height="14" rx="2"/>
+<rect class="bx" x="380" y="223" width="10" height="14" rx="2"/>
+<rect class="bx" x="394" y="223" width="10" height="14" rx="2"/>
+<rect class="bx" x="408" y="223" width="10" height="14" rx="2"/>
+<rect class="bx" x="422" y="223" width="10" height="14" rx="2"/>
+<rect class="bx" x="436" y="223" width="10" height="14" rx="2"/>
+<rect class="bx" x="450" y="223" width="10" height="14" rx="2"/>
+<text class="st" x="520" y="235">#57–64</text>
+<text class="st" x="800" y="235" text-anchor="end">5×</text>
+<circle class="rt" cx="14" cy="122.0" r="4"/>
+</svg>
+<p class="cap">Green: each template edge is computed once under LSPF and then hit by its 7 other questions. Right column: how many times FCFS (seed 0) prefilled that template. Visit numbers are the position in the LSPF run. Ties (all matches 0) go to the earliest arrival, which is why T3 comes first.</p>
+<p>The proof in Appendix A.3 has two halves:</p>
+<div class="mathbox">
+<math display="block">
+  <mi>C</mi><mo>&#8805;</mo>
+  <munder><mo>&#8721;</mo><mrow><mi>e</mi><mo>&#8712;</mo><mtext>edges</mtext><mo>(</mo><mi>T</mi><mo>)</mo></mrow></munder>
+  <mrow class="t2"><mo>|</mo><mi>e</mi><mo>|</mo></mrow>
+  <mo>=</mo><mn>8</mn><mo>&#215;</mo><mn>1,500</mn><mo>+</mo><mn>64</mn><mo>&#215;</mo><mn>50</mn><mo>=</mo><mn>15,200</mn>
+</math>
+<div class="legend">
+  <span class="sym">T</span><span>the radix tree built from all requests in the batch</span><span class="v">1 root, 8 + 64 edges</span>
+  <span class="sym">|e|</span><span>tokens (KV slots) on edge e</span><span class="v">1,500 or 50</span>
+  <span class="sym">C</span><span>total prompt tokens computed, under any order</span><span class="v">LSPF: 15,200</span>
+</div>
+</div>
+<ul>
+  <li><b>Lower bound.</b> Every edge's KV has to be computed at least once, so no order can compute less than the sum of edge lengths.</li>
+  <li><b>DFS meets it.</b> The first time DFS computes an edge, it finishes that edge's whole subtree before leaving. During the subtree the edge is hit every time, and afterwards it is never needed again. If the cache holds at least the longest request (the longest root-to-leaf path), the path being worked on always fits, so the edge is never evicted mid-subtree. Each edge is computed exactly once: C = Σ|e|, and the hit rate is at its maximum.</li>
+  <li><b>LSPF is a DFS</b> (by induction). At the start nothing is cached, so any request runs and its root path gets cached. After visiting node y, the cached path runs from the root to y, and every unvisited node branches off somewhere on that path. The unvisited request with the longest shared prefix branches off deepest, which is exactly where DFS would go next.</li>
+</ul>
+<p>The lab checks it: LSPF computes exactly 15,200 tokens, the bound. The theorem needs only one request's worth of cache, and with <code>BUDGET = 1,550</code> LSPF still computes 15,200 while FCFS drops to 18.1% (lab, try-this 1). The paper's footnote adds a caveat: "In practice, the computation is not the same as what is described in the proof of Theorem 3.1 because the unpredictable number of output tokens can cause the recomputation of the KV cache." Our lab ignores outputs (one-token answers, like the paper's MMLU runs), so it meets the bound exactly.</p>
+
+<h2>Online: DFS gets disrupted, and greedy can starve</h2>
+<p>A real server doesn't get one fixed batch. New requests keep joining the tree. Appendix A.3 argues the schedule "still approximates the DFS behavior on the augmented part" of the tree. It runs the unfinished subtree under the deepest still-cached node, and evictions shrink the cached set (C → C⁽¹⁾ → … ) until it is back in a valid DFS state. There's no optimality claim for this case. The paper then states the cost plainly: "While greedy cache-aware scheduling can achieve high throughput, it can lead to starvation. We leave its integration with other fair scheduling methods [42] as future work." Our lab shows it with a burst of traffic: one hot template gets 70% of the requests and the other seven share 30%.</p>
+<div class="tw">
+<table>
+  <tr><th>Online policy (485 requests)</th><th class="num">Hit rate</th><th class="num">Mean wait</th><th class="num">Worst wait, hot template</th><th class="num">Worst wait, cold templates</th><th class="num">Mean wait, cold</th></tr>
+  <tr><td>FCFS</td><td class="num">69.6%</td><td class="num">45.0</td><td class="num">84</td><td class="num">85</td><td class="num">42.4</td></tr>
+  <tr><td>Greedy LSPF (the paper's rule)</td><td class="num hi">93.2%</td><td class="num">45.0</td><td class="num">17</td><td class="num lo">354</td><td class="num lo">126.6</td></tr>
+  <tr><td>LSPF + age cap of 60 slots (ours)</td><td class="num">80.4%</td><td class="num">45.0</td><td class="num">84</td><td class="num">85</td><td class="num">46.8</td></tr>
+</table>
+</div>
+<p class="cap">Waits in scheduling slots, from labs/radix-schedule.py. Everything here is illustrative: 1.2 arrivals per slot for 400 slots, then the queue drains, and one request is served per slot whatever it hits. With fixed slots, reordering can't change the mean wait (45.0 in every row), only who waits. The cold requests match 0 tokens and keep getting sorted behind the hot ones. The age cap is our example of a guard (any request waiting ≥ 60 slots goes first), not the paper's. It buys back the worst case for 12.8 points of hit rate. In a real engine a hit also shortens prefill, so LSPF should cut the mean wait too (our inference, consistent with the paper's Fig 8(a)(b): lower latency at higher hit rate).</p>
+
+<h2>Algorithm 1, step by step</h2>
+<p>Appendix A.2 gives the scheduler for continuous batching. Each step is below, with one example from our batch and one from the running example (Llama-3.1-8B, BF16, one H100):</p>
+<div class="tw">
+<table class="parts">
+  <tr><th>Step</th><th class="what">What actually happens</th><th>Example A: the 64-request batch (lab)</th><th>Example B: Llama-3.1-8B on H100</th></tr>
+  <tr><td>1. match_prefix</td><td class="what">For every waiting request, walk the tree and record the deepest matching node and the matched length</td>
+      <td class="ex"><b class="ok">1,500 of 1,550</b><span>for each other T3 request once the first T3 has run. The rest match 0</span></td>
+      <td class="ex"><b>24.4 ms</b><span>of prefill skipped per 1,500-token hit (2 × 8.03e9 × 1,500 / 989e12)</span></td></tr>
+  <tr><td>2. sort</td><td class="what">Order the waiting requests by matched prefix length, longest first</td>
+      <td class="ex"><b>T3 ×8, then T4 ×8 …</b><span>the LSPF row of chips above</span></td>
+      <td class="ex"><b>a returning chat goes first</b><span>its history is cached; a brand-new prompt waits (illustrative)</span></td></tr>
+  <tr><td>3. available = evictable + free</td><td class="what">The budget counts free pool slots plus cached tokens with reference count 0. Cache is spare room, not reserved</td>
+      <td class="ex"><b>4,650 slots</b><span>everything not locked by the running request</span></td>
+      <td class="ex"><b>up to 63.9 GB</b><span>≈ 488k tokens of KV, all free HBM after the weights</span></td></tr>
+  <tr><td>4. admit, ref++</td><td class="what">Walk the sorted list. Admit a request if it fits, and raise the reference count on its matched node so that prefix can't be evicted. Available changes by the returned delta</td>
+      <td class="ex"><b>one per step</b><span>the lab admits one request at a time, as in the proof</span></td>
+      <td class="ex"><b>ref = active users</b><span>a shared 1,500-token template (197 MB) stays pinned while any of its requests runs</span></td></tr>
+  <tr><td>5. alloc, evict on failure</td><td class="what">Allocate KV slots for the batch. If that fails, evict LRU leaves with reference count 0, then allocate again</td>
+      <td class="ex"><b class="lo">36 evictions that hurt</b><span>under FCFS, each forces a 1,500-token template to be recomputed</span></td>
+      <td class="ex"><b>cache yields to batch</b><span>a bigger batch evicts cached prefixes first</span></td></tr>
+  <tr><td>6. finish: ref--, insert</td><td class="what">When a request finishes, lower its reference counts and insert its prompt and output into the tree, where they become evictable</td>
+      <td class="ex"><b>+50 tokens</b><span>each question becomes a leaf under its template</span></td>
+      <td class="ex"><b>+reply</b><span>a chat's answer is cached for its next turn</span></td></tr>
+</table>
+</div>
+<p class="cap">Step names follow the pseudocode (<code>T.match_prefix</code>, <code>T.evictable_size() + P.available_size()</code>, <code>T.increase_ref_counter</code>, <code>P.alloc</code>/<code>T.evict</code>, <code>T.decrease_ref_counter</code>/<code>T.insert</code>). Two things are our reading of it. The admit test is <code>req.size() + current_size &lt; available_size</code>, but as printed <code>current_size</code> is never increased inside the loop. And the sign of <code>delta</code> isn't stated: locking a prefix should shrink the evictable pool.</p>
+
+<h2>Across replicas: the router's meta-tree (Appendix A.4)</h2>
+<p>With data parallelism, each worker keeps its own radix tree and a router keeps a <b>meta-tree</b>: a trie of all the workers' sub-trees, recording which device holds what. New requests are prefix-matched on the meta-tree and dispatched by <b>affinity</b>, "measured by the length of the shared prefix with specific workers and other requests in the same group". Router and workers update their trees independently. When a worker evicts, it queues the eviction and the router applies it "during periods of low activity", so the router's view is only weakly consistent. On MMLU with four workers the paper reports "linear scaling and an optimal cache hit rate with minimal overhead". It notes a trade-off between data locality and parallel efficiency and leaves better policies to future work (Preble is concurrent work on this).</p>
+<div class="tw">
+<table>
+  <tr><th>Our toy: 4 workers, 4,650 slots each, same 64 shuffled requests</th><th class="num">Hit rate</th><th class="num">Computed tokens</th><th class="num">Requests per worker</th></tr>
+  <tr><td>Random routing (each worker runs FCFS)</td><td class="num lo">30.2%</td><td class="num">69,200</td><td class="num">22 · 15 · 12 · 15</td></tr>
+  <tr><td>Prefix-affinity routing (longest match, ties → least loaded)</td><td class="num hi">78.6%</td><td class="num">21,200</td><td class="num lo">8 · 16 · 16 · 24</td></tr>
+</table>
+</div>
+<p class="cap">From labs/radix-schedule.py. The toy router never learns about evictions (lazy updates, taken to the extreme). Affinity keeps each template on one worker, so the four caches together hold all eight. It still falls short of the 84.7% optimum because one worker got three templates and their question leaves overflow its cache. The load is uneven (24 vs 8 requests, 3×): that is the locality-versus-parallelism trade-off. Chats with affinity routing: <a href="../perf-2-scaling-book-inference/inference-engine-design.html">perf-2's engine-design sim</a>. Cluster-scale version: <a href="mooncake-scheduling.html">Mooncake II</a>.</p>
+
+<h2>What the paper measured (§6)</h2>
+<p>Workloads: 5-shot MMLU, 20-shot HellaSwag, ReAct agents, generative agents, tree-of-thought (GSM-8K), skeleton-of-thought, LLM judges (branch-solve-merge), JSON decoding, multi-turn chat (4 turns of 256–512 input tokens, with short 4–8-token or long 256–512-token outputs) and a DSPy RAG pipeline. Baselines: Guidance 0.1.8, vLLM 0.2.5 and LMQL 0.7.3. Every result is FP16 and comes from the paper's own hardware:</p>
+<div class="tw">
+<table>
+  <tr><th>Result</th><th>Model and GPU</th><th class="num">Number</th></tr>
+  <tr><td>Throughput vs the baselines</td><td>Llama-7B on one A10G 24 GB (Fig 5), also Mixtral-8x7B on 8 A10G, Llama-2-70B on 4 A100 80 GB</td><td class="num hi">up to 6.4×</td></tr>
+  <tr><td>Latency vs the baselines</td><td>same (Fig 6)</td><td class="num hi">up to 3.7× lower</td></tr>
+  <tr><td>Cache hit rate across benchmarks</td><td>same</td><td class="num">50%–99%</td></tr>
+  <tr><td>Cache-aware scheduling vs the optimal hit rate</td><td>Fig 13, average over benchmarks</td><td class="num hi">≈ 96%</td></tr>
+  <tr><td>Images, vs the authors' HF implementation (Table 2)</td><td>LLaVA-v1.5-7B, one A10G</td><td class="num">0.18 → 1.15 image/s (6.4×)</td></tr>
+  <tr><td>Video (Table 2)</td><td>LLaVA-NeXT-34B, one A100 80 GB</td><td class="num">0.02 → 0.10 frame/s (5.0×)</td></tr>
+  <tr><td>Chatbot Arena, one month in production</td><td>LLaVA-Next-34B / Vicuna-33B, one worker each</td><td class="num">52.4% / 74.1% hit rate</td></tr>
+  <tr><td>First-token latency in production</td><td>Vicuna-33B</td><td class="num hi">1.7× lower on average</td></tr>
+</table>
+</div>
+<p class="cap">The Table 2 ratios are our arithmetic (1.15 / 0.18, 0.10 / 0.02). The paper sums it up as "up to 6×". The 6.4× and 3.7× headlines combine KV reuse, parallelism inside a program and faster constrained decoding. They are not the scheduler alone. Multi-turn chat with long outputs shows "almost no speedup" because decoding dominates. Production hits came from "common system messages, frequently reused example images, and multi-turn chat histories".</p>
+<p><b>Ablation (Fig 8(c)</b>, Llama-7B on one A10G, on LLM judge, tree-of-thought, MMLU and short multi-turn chat): no cache, no tree structure (a table-based cache), FCFS schedule, random schedule, no frontend parallelism and no frontend hint are each compared with full optimization. The paper's conclusion: "each of these components is required to achieve the best performance". So scheduling is a measured contributor, not an afterthought. The paper gives the bars only as a figure, so we don't quote their heights. Fig 8(a)(b), on tree-of-thought, shows that a higher hit rate gives a larger batch, higher throughput and lower latency.</p>
+<p><b>The paper's other runtime trick, in one paragraph.</b> For outputs constrained by a regex (such as a JSON schema), SGLang compresses chains of forced single-token transitions in the finite state machine, so a constant run like <code>{"summary": "</code> decodes in one forward pass instead of several (§4; Appendix B calls it jump-forward decoding). On the JSON benchmark that gives 1.6× throughput. Not reusing the preprocessed FSM across a batch makes throughput 2.4× lower. Constrained decoding in engines is covered in perf-5 (inference engines).</p>
+
+<h2>Why it beats the alternatives</h2>
+<div class="grid2">
+  <div class="cell"><h3><span class="x">&#10007;</span> First-come, first-served</h3><p>Fair and simple, but it interleaves unrelated prefixes, so LRU evicts a template just before its next request. Our batch: 30.2% hit rate, 36 template recomputations, 1,123.7 ms of prefill. Round-robin arrivals: 0%.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Random order</h3><p>Statistically the same as FCFS on shuffled arrivals: 28.8% on average, anywhere from 16.6% to 40.8% depending on luck. It is a separate bar in the paper's ablation, and it loses to cache-aware scheduling there too.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> LSPF online, with a starvation guard</h3><p>Needed in practice, but a guard gives up hit rate and any optimality claim. Our age cap (ours, not the paper's) keeps the worst wait at 85 slots instead of 354, but drops the hit rate from 93.2% to 80.4%. The paper leaves fairness to future work [42].</p></div>
+  <div class="cell win"><h3><span class="ok">&#10003;</span> LSPF = DFS order</h3><p>Each shared prefix is computed once and reused by its whole subtree. That is provably optimal for a batch once the cache holds the longest request. Ours: 84.7%, exactly the 15,200-token lower bound, 4.55× less prefill than FCFS. The paper: ≈ 96% of the optimal hit rate on its benchmarks.</p></div>
+</div>
+
+<h2>Doesn't reordering hurt fairness and latency?</h2>
+<div class="note">
+  <p><b>Yes, it can, and the paper says so.</b> Greedy longest-prefix-first "can lead to starvation". A request that shares nothing with the cache keeps getting sorted behind requests that do. In our burst, cold requests waited 354 slots in the worst case against 85 under FCFS. The paper's own hedge is "In more latency-sensitive settings we may still be able to tolerate limited batch re-ordering". It points to fair-scheduling work (its ref. [42], Sheng et al., "Fairness in serving large language models") and lists "fixing starvation in cache-aware scheduling" as a future direction.</p>
+  <ul>
+    <li><b>Common fixes (our suggestions, not from this paper):</b> cap how long a request may wait (our lab's age cap), bound how far a request can be reordered, or schedule fairly per client and only sort by prefix within that.</li>
+    <li><b>Mean latency usually improves anyway (our inference).</b> Hits shorten prefill and allow bigger batches, so most requests finish sooner. The cost lands on the tail and on requests that share nothing.</li>
+  </ul>
+  <p><b>When it doesn't help:</b> if prompts share nothing, every match is 0 and LSPF is just FCFS plus the matching cost. If the cache holds the whole request tree, every order reaches the optimum (lab, try-this 2: all three reach 84.7% at 15,200 slots). And with strict per-request deadlines, a fair or deadline-aware queue matters more than the last few points of hit rate.</p>
+</div>
+
+<div class="foot">
+<p><a class="lab-link" href="https://github.com/seyonv/explainers/blob/main/perf-4-attention-kv/labs/radix-schedule.py">Run it: labs/radix-schedule.py</a> Builds the request radix tree (tree code copied from labs/radix-tree.py) and simulates a 4,650-slot KV budget with LRU leaf eviction. It compares FCFS, random and LSPF on the 64-request batch, checks that LSPF computes exactly Σ|e|, and runs the online burst (FCFS, greedy LSPF, LSPF with an age cap) and the 4-worker routing toy. Stdlib only, about 6 s. Try this: set <code>BUDGET = 1 * (T_LEN + Q_LEN)</code>. FCFS falls to 18.1% and LSPF still hits the bound.</p>
+<p><b>Read next:</b> Zheng et al., <a href="https://arxiv.org/abs/2312.07104">"SGLang: Efficient Execution of Structured Language Model Programs"</a>: §3 from "Cache-aware scheduling" to the end of "Distributed Cases" with footnote 2 (10 min), Appendix A.2 Algorithm 1 (10 min), A.3 the proof, including the online argument (15 min), A.4 data-parallel (5 min), §6.1–6.3 evaluation and ablation (20 min), and Appendix C Fig 13 (2 min). About 1 h.</p>
+<p><b>Related:</b> <a href="radixattention.html">RadixAttention I: the radix tree of KV caches</a> · <a href="paged-results.html">PagedAttention III: implementation and results</a> · <a href="mooncake-scheduling.html">Mooncake II: KV-centric scheduling (cluster-level cache-aware scheduling)</a> · <a href="paged-sharing.html">PagedAttention II: sharing, copy-on-write and preemption</a> · <a href="../perf-2-scaling-book-inference/inference-engine-design.html">perf-2: designing an inference engine (prefix-affinity routing sim)</a> · <a href="../llm-latency/prompt-caching.html">llm-latency: prompt caching from the API side</a></p>
+<p><b>Sources:</b> hit-rate definition, thrashing, LSPF, Theorem 3.1 and its proof, footnote 2, the online argument, the starvation quote, Algorithm 1, the A.4 meta-tree, workloads, hardware, 6.4× / 3.7×, 50%–99%, ≈ 96% of optimal, Table 2, Chatbot Arena 52.4% / 74.1% / 1.7×, Fig 8 ablation, and compressed FSM 1.6× / 2.4×: <a href="https://arxiv.org/abs/2312.07104">arXiv 2312.07104</a> (v2, NeurIPS 2024). Ref. [42]: Sheng et al., "Fairness in serving large language models", arXiv:2401.00588, as listed in the SGLang references (not read for this card). Llama-3.1-8B KV size (128 KiB/token), 63.9 GB free HBM, 16.2 ms per 1,000-token prefill floor: the course's shared facts. The 64-request workload, the 609 MB cache, the online burst, the age cap and the 4-worker toy are illustrative, and all their numbers are our recomputation in labs/radix-schedule.py.</p>
+</div>
+</article>
+<!-- series-nav:bottom -->
+<div class="snx"><a class="nx" href="index.html#mooncake-store" target="_top">
+<span class="mini" aria-hidden="true"><span class="m1">Mooncake I: trading storage for computation</span><span class="m2">Also called a KVCache-centric architecture, a disaggregated KV cache, Mooncake Store, or KV tiers (HBM → CPU DRAM → SSD → remote DRAM). This is the FAST'25 Mooncake paper (Qin et al., Moonshot AI and…</span><span class="m3">In one breath</span><span class="m4">A prefix's KV cache is expensive to compute and cheap to keep, so keep all of it. Pool the spare CPU DRAM and SSD of every machine in the GPU cluster into one shared KV store, and connect it with fast RDMA networking. When a request arrives, load its prefix's KV from the pool instead of running prefill on it again. Loading wins…</span></span>
+<span class="tx"><span class="lab">Next up · 17 / 19</span><span class="tt">Mooncake I: trading storage for computation</span><span class="ds">When loading KV beats recomputing it</span><span class="nd">Builds on: RadixAttention I: the radix tree of KV caches.</span><span class="go">Continue →</span></span></a><div class="aux"><span><a href="index.html#radixattention" target="_top">← RadixAttention I: the radix tree of KV caches</a></span><a href="index.html" target="_top">All cards in 4 · Attention &amp; KV cache</a></div></div>
+<!-- /series-nav:bottom -->
+</body>
+</html>

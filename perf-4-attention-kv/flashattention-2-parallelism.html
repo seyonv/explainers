@@ -1,0 +1,347 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FlashAttention-2 II: parallelism and work partitioning</title>
+<style>
+:root{
+  --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
+  --text:#1c1f23; --muted:#6b7068; --faint:#b9b9b3;
+  --accent:#4a9d77; --accent-bg:#dcefdf; --accent-border:#8cc79c;
+  --red:#c0492b; --red-bg:#fbeceb;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#15171a; --surface:#1d2024; --surface2:#24282d; --border:#32373d;
+    --text:#e6e8ea; --muted:#9aa1a9; --faint:#4a5057;
+    --accent:#5fb37f; --accent-bg:#1c2b22; --accent-border:#3f7a55;
+    --red:#e57368; --red-bg:#2e1f1e;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text)}
+.card{max-width:820px;margin:0 auto;padding:28px 32px;font-family:-apple-system,"Inter",system-ui,sans-serif;line-height:1.45}
+h1{font-size:26px;font-weight:600;margin:0 0 6px;letter-spacing:-0.01em}
+.sub{font-size:15px;color:var(--muted);margin:0 0 20px}
+h2{font-size:17px;font-weight:600;margin:26px 0 10px}
+p{font-size:15px;margin:0 0 10px}
+ul{margin:0 0 10px;padding-left:20px} li{font-size:15px;margin:0 0 4px}
+.cap{font-size:13px;color:var(--muted);margin:8px 0 0;text-align:center}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+
+/* Horizontal bars */
+.bars{display:grid;grid-template-columns:150px 1fr 120px;column-gap:14px;row-gap:10px;align-items:center;font-size:14px}
+.bars .hd{font-size:13px;color:var(--muted)}
+.bars .hd.r,.bars .tot{text-align:right;font-variant-numeric:tabular-nums}
+.bars .track{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted)}
+.bars .bar{height:20px;border-radius:3px;background:var(--accent)}
+.bars .bar.g{background:var(--faint)}
+.bars .tot{font-size:14px}
+
+/* Tables and formulas */
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border)}
+th{font-size:12px;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:none}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+.hi{color:var(--accent);font-weight:600} .lo{color:var(--red)}
+.formula{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin:10px 0;white-space:pre;overflow-x:auto;line-height:1.55}
+.tw{overflow-x:auto}
+.tw table{min-width:600px}
+
+/* MathML */
+.mathbox{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px 16px 12px;margin:10px 0;overflow-x:auto}
+.mathbox math{font-size:21px;color:var(--text);font-family:"STIX Two Math","Latin Modern Math","Cambria Math",math}
+.mathbox .t1{color:var(--text)} .mathbox .t2{color:var(--accent)} .mathbox .t3{color:var(--muted)}
+.mathbox .lab{font-size:12px;font-family:-apple-system,"Inter",system-ui,sans-serif;padding-top:3px;border-top:1.5px solid currentColor;margin-top:2px}
+.legend{display:grid;grid-template-columns:auto 1fr auto;column-gap:14px;row-gap:5px;font-size:13px;margin-top:12px;align-items:baseline}
+.legend .sym{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;text-align:right}
+.legend .v{color:var(--muted);text-align:right;font-variant-numeric:tabular-nums}
+@media (max-width:560px){.legend{grid-template-columns:auto 1fr}.legend .v{display:none}}
+
+/* Two examples per term */
+.parts td{vertical-align:top} .parts td:first-child{font-weight:600;white-space:nowrap}
+.parts .ex{font-size:13px} .parts .ex span{display:block;color:var(--muted)}
+@media (max-width:560px){.parts .what{display:none}}
+
+/* 2x2 grid */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.cell{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.cell.win{background:var(--accent-bg);border-color:var(--accent-border)}
+.cell h3{font-size:16px;font-weight:600;margin:0 0 5px;display:flex;gap:8px;align-items:baseline}
+.cell p{font-size:14px;margin:0;color:var(--text)}
+.cell.win h3,.cell.win p{color:var(--accent)}
+.x{color:var(--red)} .ok{color:var(--accent)}
+
+/* Clarification box */
+.note{border:1px solid var(--border);border-radius:10px;padding:14px 18px;font-size:14px}
+.note p,.note li{font-size:14px} .note p:last-child{margin-bottom:0}
+
+.foot{margin-top:22px;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+.foot p{font-size:13px}
+.lab-link{display:inline-block;font-size:13px;border:1px solid var(--accent-border);background:var(--accent-bg);color:var(--accent);border-radius:6px;padding:4px 10px;margin:2px 0 10px;text-decoration:none}
+svg{display:block;max-width:100%;height:auto}
+.sl{font-size:12px;fill:var(--muted)} .st{font-size:13px;fill:var(--text)}
+@media (max-width:560px){.grid2{grid-template-columns:1fr}.card{padding:20px 16px}.bars{grid-template-columns:92px 1fr 78px}}
+a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+/* series-nav */
+.sn{max-width:820px;margin:0 auto;padding:16px 32px 0;font-family:-apple-system,"Inter",system-ui,sans-serif;font-size:13px;line-height:1.5;color:var(--muted)}
+.sn a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+.sn .crumbs{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 7px}
+.sn .crumbs b{color:var(--text);font-weight:600}
+.sn .sep{color:var(--faint)}
+.sn .step{margin-left:auto;white-space:nowrap}
+.sn .dep{margin-top:5px;padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface)}
+.sn .dep .ok{color:var(--accent);font-weight:600}
+.snx{max-width:820px;margin:0 auto;padding:6px 32px 44px;font-family:-apple-system,"Inter",system-ui,sans-serif}
+.snx .nx{display:grid;grid-template-columns:280px 1fr;text-decoration:none;color:var(--text);background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.snx .nx:hover,.snx .nx:focus-visible{border-color:var(--accent-border);outline:none}
+.snx .mini{position:relative;height:210px;overflow:hidden;background:var(--bg);border-right:1px solid var(--border);padding:14px 16px}
+.snx .mini span{display:block}
+.snx .mini .m1{font-size:12.5px;font-weight:600;margin:0 0 4px;line-height:1.3}
+.snx .mini .m2{font-size:9px;color:var(--muted);margin:0 0 8px;line-height:1.4}
+.snx .mini .m3{font-size:8.5px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;margin:0 0 3px}
+.snx .mini .m4{font-size:9.5px;margin:0;line-height:1.45}
+.snx .tx{padding:16px 20px}
+.snx .lab{font-size:12px;font-weight:600;color:var(--accent);letter-spacing:.04em;text-transform:uppercase}
+.snx .tt{display:block;font-size:20px;font-weight:600;margin:5px 0 4px;line-height:1.25}
+.snx .ds{display:block;font-size:14px;color:var(--muted)}
+.snx .nd{display:block;font-size:13px;color:var(--muted);margin-top:10px}
+.snx .go{display:block;margin-top:12px;font-size:14px;font-weight:600;color:var(--accent)}
+.snx .aux{display:flex;justify-content:space-between;gap:12px;margin-top:10px;font-size:13px;color:var(--muted)}
+.snx .aux a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+@media (max-width:560px){.sn,.snx{padding-left:16px;padding-right:16px}.snx .nx{grid-template-columns:1fr}.snx .mini{display:none}.sn .step{margin-left:0}}
+/* /series-nav */
+</style>
+</head>
+<body>
+<!-- series-nav:top -->
+<nav class="sn" aria-label="Series navigation"><div class="crumbs"><a href="../perf-0-map/index.html" target="_top">AI perf engineering</a><span class="sep">›</span><a href="index.html" target="_top">4 · Attention &amp; KV cache</a><span class="sep">›</span><b>07 / 19</b><span class="step"><a href="index.html#flashattention-2-algorithm" target="_top">← prev</a> · <a href="index.html#flashattention-3-4-flashinfer" target="_top">next →</a></span></div>
+<div class="dep"><b>Before this:</b> <a href="index.html#flashattention-2-algorithm" target="_top">FlashAttention-2 I: fewer non-matmul FLOPs</a> · <a href="../perf-3-kernels/index.html#occupancy" target="_top">Occupancy and latency hiding</a> (perf-3)</div></nav>
+<!-- /series-nav:top -->
+<article class="card">
+<h1>FlashAttention-2 II: parallelism and work partitioning</h1>
+<p class="sub">Also called FA2, split-K vs split-Q, or sequence parallelism across thread blocks. Card 2 of 2 on Tri Dao's FlashAttention-2 paper (arXiv 2307.08691). It walks §3.2 (thread blocks), §3.3 (warps), §4 (A100 and H100 benchmarks, end-to-end training) and §5 in order, then recounts the thread blocks for Llama-3.1-8B on an H100.</p>
+
+<h2>In one breath</h2>
+<p>FlashAttention-2 changes <i>who does which piece</i> of attention, at two levels. Across the GPU, it gives each thread block one slice of query rows, not a whole head, so a single long sequence becomes thousands of independent jobs that fill every SM. Inside a block, it gives each warp its own query rows and lets all warps read the same K and V, so warps never have to add up each other's partial results through shared memory.</p>
+
+<h2>1. Across thread blocks: parallelize over the sequence too (§3.2)</h2>
+<p>FlashAttention (FA1) launched one thread block per attention head: <b>batch × heads</b> blocks in total. Each block runs on one SM, and an A100 has 108 SMs. The paper says this "is efficient when this number is large (say ≥ 80)". Long sequences usually come with small batches, and then most SMs sit idle. FA2 therefore also splits the sequence. In the forward pass the outer loop runs over blocks of query rows, and those row blocks are "embarrassingly parallel": each one gets its own thread block, and they never talk to each other. The paper credits Phil Tillet's Triton implementation with first swapping the loop order and parallelizing over sequence length.</p>
+<div class="mathbox">
+<math display="block">
+  <munder class="t3"><mrow><msub><mtext>blocks</mtext><mtext>FA1</mtext></msub><mo>=</mo><mi>B</mi><mo>&#183;</mo><mi>h</mi></mrow><mtext class="lab">one per (sequence, head)</mtext></munder>
+  <mspace width="1.4em"/>
+  <munder class="t2"><mrow><msub><mtext>blocks</mtext><mtext>FA2</mtext></msub><mo>=</mo><mi>B</mi><mo>&#183;</mo><mi>h</mi><mo>&#183;</mo><mo>&#8968;</mo><mfrac><mi>N</mi><msub><mi>B</mi><mi>r</mi></msub></mfrac><mo>&#8969;</mo></mrow><mtext class="lab">one per (sequence, head, row block)</mtext></munder>
+</math>
+<div class="legend">
+  <span class="sym">B</span><span>batch size (sequences in the launch)</span><span class="v">1 in prefill of one long prompt</span>
+  <span class="sym">h</span><span>query heads (with GQA, still one block per query head)</span><span class="v">16 in the paper's d=128 runs · 32 for Llama-3.1-8B</span>
+  <span class="sym">N</span><span>sequence length in tokens</span><span class="v">512 … 16k</span>
+  <span class="sym">B_r</span><span>query rows per block; FA2 picks from {64, 128}</span><span class="v">128 here</span>
+</div>
+</div>
+
+<svg viewBox="0 0 760 214" role="img" aria-label="Figure 2 redrawn: forward workers own row blocks, backward workers own column blocks">
+  <text class="st" x="40" y="18" font-weight="600">Forward: each worker owns a block of rows</text>
+  <g stroke="var(--border)" stroke-width="1">
+    <rect x="40" y="34" width="150" height="37.5" fill="var(--accent-bg)"/><rect x="40" y="71.5" width="150" height="37.5" fill="var(--surface2)"/>
+    <rect x="40" y="109" width="150" height="37.5" fill="var(--accent-bg)"/><rect x="40" y="146.5" width="150" height="37.5" fill="var(--surface2)"/>
+  </g>
+  <g class="sl"><text x="115" y="57" text-anchor="middle">thread block 1</text><text x="115" y="94.5" text-anchor="middle">thread block 2</text><text x="115" y="132" text-anchor="middle">thread block 3</text><text x="115" y="169.5" text-anchor="middle">thread block 4</text></g>
+  <text class="sl" x="115" y="202" text-anchor="middle">rows = queries Q_i · columns = keys K_j</text>
+  <text class="st" x="206" y="70">Block i loops over all K_j, V_j</text>
+  <text class="st" x="206" y="90">and writes O_i once.</text>
+  <text class="st" x="206" y="118" fill="var(--accent)">No communication</text>
+  <text class="st" x="206" y="138" fill="var(--accent)">between blocks.</text>
+
+  <text class="st" x="420" y="18" font-weight="600">Backward: each worker owns a block of columns</text>
+  <g stroke="var(--border)" stroke-width="1">
+    <rect x="420" y="34" width="37.5" height="150" fill="var(--accent-bg)"/><rect x="457.5" y="34" width="37.5" height="150" fill="var(--surface2)"/>
+    <rect x="495" y="34" width="37.5" height="150" fill="var(--accent-bg)"/><rect x="532.5" y="34" width="37.5" height="150" fill="var(--surface2)"/>
+  </g>
+  <g class="sl"><text x="438.75" y="113" text-anchor="middle">1</text><text x="476.25" y="113" text-anchor="middle">2</text><text x="513.75" y="113" text-anchor="middle">3</text><text x="551.25" y="113" text-anchor="middle">4</text></g>
+  <text class="sl" x="495" y="202" text-anchor="middle">block j owns K_j, V_j → dK_j, dV_j</text>
+  <text class="st" x="586" y="70">Every column block adds</text>
+  <text class="st" x="586" y="90">into the same dQ_i rows:</text>
+  <text class="st" x="586" y="118" fill="var(--red)">atomic adds to dQ</text>
+  <text class="st" x="586" y="138" fill="var(--red)">in HBM.</text>
+</svg>
+<p class="cap">Figure 2 of the paper, redrawn (4 workers shown). In the backward pass the only thing column blocks share is the dQ update, dQ<sub>i</sub> ← dQ<sub>i</sub> + dS<sub>i</sub><sup>(j)</sup>K<sub>j</sub>, so FA2 gives each column block its own thread block and resolves dQ with atomic adds.</p>
+
+<p><b>Worked example: count the blocks (our recomputation).</b> Llama-3.1-8B prefill on one H100 (132 SMs): one 8,192-token prompt, 32 query heads, B<sub>r</sub> = 128. The table also shows the paper's own long-sequence A100 setting.</p>
+<div class="formula">H100, Llama-3.1-8B prefill, batch 1, N = 8,192:
+  FA1:  1 × 32              =     32 blocks  →  32 / 132 = 24.2% of SMs busy, 100 idle
+  FA2:  1 × 32 × 8,192/128  = 32 × 64 = 2,048 blocks
+        2,048 / 132         = 15.52 waves  (15 full waves + a last wave of 68 blocks)
+        average SM use      = 2,048 / (16 × 132) = 97.0%</div>
+<div class="tw"><table>
+<tr><th>Setting</th><th class="num">SMs</th><th class="num">FA1 blocks · first-wave SMs</th><th class="num">FA2 blocks · waves</th></tr>
+<tr><td>A100, paper §4.1: batch 32 × 16 heads, N = 512</td><td class="num">108</td><td class="num">512 · 100%</td><td class="num">2,048 · 18.96</td></tr>
+<tr><td>A100, paper §4.1: batch 1 × 16 heads, N = 16k</td><td class="num">108</td><td class="num"><span class="lo">16 · 14.8%</span></td><td class="num hi">2,048 · 18.96</td></tr>
+<tr><td>H100, Llama-3.1-8B prefill, batch 1, N = 8,192</td><td class="num">132</td><td class="num"><span class="lo">32 · 24.2%</span></td><td class="num hi">2,048 · 15.52</td></tr>
+<tr><td>H100, same, batch 4</td><td class="num">132</td><td class="num">128 · 97.0%</td><td class="num">8,192 · 62.06</td></tr>
+<tr><td>H100, same, batch 8</td><td class="num">132</td><td class="num">256 · 100%</td><td class="num">16,384 · 124.12</td></tr>
+<tr><td>H100, Llama-3.1-8B <b>decode</b>, batch 1 (1 query token)</td><td class="num">132</td><td class="num"><span class="lo">32 · 24.2%</span></td><td class="num"><span class="lo">32 · 0.24</span></td></tr>
+</table></div>
+<p class="cap">From labs/fa2-occupancy.py. Our model: blocks from the formula above, and one resident block per SM, so a "wave" is one block on every SM. Real kernels may fit two blocks on an SM, which halves the wave count but doesn't change the conclusion. The paper's setting keeps batch × N = 16k tokens and d = 128, so 16 heads.</p>
+
+<p><b>Decode is the case FA2's split doesn't fix.</b> A decode step has one query row per sequence, so ⌈1/128⌉ = 1 row block and FA2 launches the same 32 blocks as FA1. The Flash-Decoding post (Dao, Haziza, Massa, Sizov, Oct 2023) states the problem directly: "With a batch size of 1, FlashAttention will use less than 1% of the GPU!" Their fix splits the <i>keys and values</i> into chunks, runs attention on each chunk in parallel, and writes one extra scalar per row and chunk, the log-sum-exp, used to rescale and combine the chunks at the end. That is the online-softmax ⊕ from <a href="online-softmax.html">card 1</a> applied across thread blocks. Splitting Llama's 8,192 keys into 16 chunks of 512 (an illustrative choice) gives 32 × 16 = 512 blocks, 3.88 waves. The post reports "up to 8x" faster decoding for very long sequences on CodeLlama-34B, and attention up to 50× faster than FlashAttention at up to 64k tokens (A100, f16).</p>
+
+<h2>2. Inside a block: split Q, not K (§3.3)</h2>
+<p>A thread block typically has 4 or 8 warps (32 threads each). The question is how to divide the block's tile of work between them. FA1 used what the paper calls the <b>"split-K"</b> scheme: every warp sees all of Q, and K and V are cut into slices across the warps. FA2 flips it.</p>
+
+<svg viewBox="0 0 760 270" role="img" aria-label="Figure 3 redrawn: split-K needs a shared-memory reduction, split-Q does not">
+  <text class="st" x="10" y="20" font-weight="600">(a) FlashAttention: "split-K"</text>
+  <rect x="10" y="50" width="48" height="120" fill="var(--surface2)" stroke="var(--border)"/>
+  <text class="st" x="34" y="114" text-anchor="middle">Q</text>
+  <text class="sl" x="34" y="186" text-anchor="middle">all warps</text>
+  <text class="st" x="72" y="115" text-anchor="middle">×</text>
+  <g stroke="var(--border)">
+    <rect x="86" y="85" width="30" height="50" fill="var(--accent-bg)"/><rect x="116" y="85" width="30" height="50" fill="var(--surface)"/>
+    <rect x="146" y="85" width="30" height="50" fill="var(--accent-bg)"/><rect x="176" y="85" width="30" height="50" fill="var(--surface)"/>
+  </g>
+  <g class="sl" text-anchor="middle"><text x="101" y="114">W1</text><text x="131" y="114">W2</text><text x="161" y="114">W3</text><text x="191" y="114">W4</text></g>
+  <text class="st" x="146" y="76" text-anchor="middle">Kᵀ split across warps</text>
+  <text class="st" x="220" y="115" text-anchor="middle">×</text>
+  <g stroke="var(--border)">
+    <rect x="234" y="50" width="48" height="30" fill="var(--accent-bg)"/><rect x="234" y="80" width="48" height="30" fill="var(--surface)"/>
+    <rect x="234" y="110" width="48" height="30" fill="var(--accent-bg)"/><rect x="234" y="140" width="48" height="30" fill="var(--surface)"/>
+  </g>
+  <g class="sl" text-anchor="middle"><text x="258" y="69">W1</text><text x="258" y="99">W2</text><text x="258" y="129">W3</text><text x="258" y="159">W4</text></g>
+  <text class="sl" x="258" y="186" text-anchor="middle">V split</text>
+  <line x1="170" y1="196" x2="170" y2="212" stroke="var(--red)" stroke-width="1.5"/>
+  <rect x="20" y="214" width="330" height="46" rx="6" fill="var(--red-bg)" stroke="var(--red)"/>
+  <text class="st" x="185" y="233" text-anchor="middle">4 partial O (all rows, fp32) → write SMEM</text>
+  <text class="st" x="185" y="251" text-anchor="middle" fill="var(--red)">→ __syncthreads → read back and add</text>
+
+  <text class="st" x="400" y="20" font-weight="600">(b) FlashAttention-2: split Q</text>
+  <g stroke="var(--border)">
+    <rect x="400" y="50" width="48" height="30" fill="var(--accent-bg)"/><rect x="400" y="80" width="48" height="30" fill="var(--surface)"/>
+    <rect x="400" y="110" width="48" height="30" fill="var(--accent-bg)"/><rect x="400" y="140" width="48" height="30" fill="var(--surface)"/>
+  </g>
+  <g class="sl" text-anchor="middle"><text x="424" y="69">W1</text><text x="424" y="99">W2</text><text x="424" y="129">W3</text><text x="424" y="159">W4</text></g>
+  <text class="sl" x="424" y="186" text-anchor="middle">Q split</text>
+  <text class="st" x="462" y="115" text-anchor="middle">×</text>
+  <rect x="476" y="85" width="120" height="50" fill="var(--surface2)" stroke="var(--border)"/>
+  <text class="st" x="536" y="114" text-anchor="middle">Kᵀ</text>
+  <text class="st" x="536" y="76" text-anchor="middle">shared by all warps</text>
+  <text class="st" x="610" y="115" text-anchor="middle">×</text>
+  <rect x="624" y="50" width="48" height="120" fill="var(--surface2)" stroke="var(--border)"/>
+  <text class="st" x="648" y="114" text-anchor="middle">V</text>
+  <text class="sl" x="648" y="186" text-anchor="middle">shared</text>
+  <text class="st" x="686" y="115" text-anchor="middle">=</text>
+  <g stroke="var(--border)">
+    <rect x="700" y="50" width="48" height="30" fill="var(--accent-bg)"/><rect x="700" y="80" width="48" height="30" fill="var(--surface)"/>
+    <rect x="700" y="110" width="48" height="30" fill="var(--accent-bg)"/><rect x="700" y="140" width="48" height="30" fill="var(--surface)"/>
+  </g>
+  <g class="sl" text-anchor="middle"><text x="724" y="69">W1</text><text x="724" y="99">W2</text><text x="724" y="129">W3</text><text x="724" y="159">W4</text></g>
+  <text class="sl" x="724" y="186" text-anchor="middle">O rows</text>
+  <rect x="410" y="214" width="340" height="46" rx="6" fill="var(--accent-bg)" stroke="var(--accent-border)"/>
+  <text class="st" x="580" y="233" text-anchor="middle" fill="var(--accent)">each warp: its Q rows × all of K, V</text>
+  <text class="st" x="580" y="251" text-anchor="middle" fill="var(--accent)">→ its own O rows. No exchange.</text>
+</svg>
+<p class="cap">Figure 3 of the paper (forward pass), redrawn. In split-K each warp gets a slice of QKᵀ and multiplies it by its slice of V, which yields a partial sum for <i>every</i> output row. In split-Q each warp's slice of QKᵀ times all of V is already the finished output for its rows.</p>
+
+<p>The paper's words: split-K "is inefficient since all warps need to write their intermediate results out to shared memory, synchronize, then add up the intermediate results". With split-Q, "there is no need for communication between warps" in the forward pass. In the backward pass FA2 also avoids split-K, but it "still requires some synchronization" because of the dependencies between Q, K, V, O, dO, dQ, dK and dV.</p>
+
+<p><b>How much traffic is that? (our model, not from the paper.)</b> Count only what warps must exchange per inner-loop iteration, that is, per K<sub>j</sub>, V<sub>j</sub> tile of B<sub>c</sub> columns. Both schemes load the same K, V tile, so it cancels.</p>
+<div class="formula">split-K, per iteration:
+  write  W·B_r·d·4 B (partial O, fp32) + W·B_r·2·4 B (row max, sum)
+  read   the same back, plus ≥ 2 __syncthreads
+split-Q: 0 B, 0 syncs
+
+W=4, B_r=64, B_c=64, d=64:
+  67,584 + 67,584 = 135,168 B = 8.2× the 16,384 B K,V tile
+W=4, B_r=128, B_c=64, d=128:
+  266,240 + 266,240 = 532,480 B = 16.2× the 32,768 B K,V tile
+  × 128 iterations (N = 8,192) = 65.0 MiB per row block, 256 syncs</div>
+<p class="cap">From labs/fa2-occupancy.py. At the larger tile the four fp32 partials alone are 256 KiB, more than the 227 KB an H100 block may use (163 KB on an A100). So a real split-K kernel at that size would need smaller tiles or a reduction in rounds; that's our inference, not the paper's. Split-Q with 4 warps and B<sub>r</sub> = 128 gives each warp 32 rows (16 rows with 8 warps).</p>
+
+<p><b>Tuning block sizes (§3.3).</b> Bigger blocks cut shared-memory loads and stores but need more registers and more shared memory. Past some size, register spilling "causes significant slowdown", or the kernel needs more shared memory than the GPU has and can't run at all. FA2 uses blocks of {64, 128} × {64, 128}, chosen by hand for each head dimension and device. With "essentially only 4 choices", the paper leaves auto-tuning to future work.</p>
+
+<h2>The words, with two examples each</h2>
+<p>Think of grading a stack of exams. Thread blocks are separate rooms, warps are graders in one room. FA1 gave each room one whole subject. FA2 splits each subject's exams across many rooms, and inside a room it gives each grader whole exams, not one page of every exam.</p>
+<table class="parts">
+<tr><th>Term</th><th class="what">What it means</th><th>Example A</th><th>Example B</th></tr>
+<tr><td>Thread block</td><td class="what">A group of warps that runs on one SM and shares its shared memory; the unit FA2 hands out per row block</td><td class="ex"><b>32 blocks</b><span>FA1, Llama-3.1-8B, batch 1</span></td><td class="ex"><b>2,048 blocks</b><span>FA2, same prompt, 8,192 tokens</span></td></tr>
+<tr><td>Wave</td><td class="what">One round in which every SM runs one block (our model); a partial last wave leaves SMs idle</td><td class="ex"><b>0.24 waves</b><span>FA1 on the H100 above</span></td><td class="ex"><b>15.52 waves</b><span>FA2: last wave 68 of 132 SMs</span></td></tr>
+<tr><td>Sequence parallelism</td><td class="what">Giving different row blocks (forward) or column blocks (backward) of one head to different thread blocks</td><td class="ex"><b>forward</b><span>row blocks, no communication</span></td><td class="ex"><b>backward</b><span>column blocks, atomic adds to dQ</span></td></tr>
+<tr><td>Split-K</td><td class="what">Warps split K and V; each makes a partial output for all rows, then they add through shared memory</td><td class="ex"><b>FA1 forward</b><span>write, sync, add every iteration</span></td><td class="ex"><b>Flash-Decoding</b><span>the same idea across blocks, over the KV length</span></td></tr>
+<tr><td>Split-Q</td><td class="what">Warps split Q; each warp finishes its own output rows alone</td><td class="ex"><b>32 rows per warp</b><span>B_r = 128, 4 warps</span></td><td class="ex"><b>16 rows per warp</b><span>B_r = 128, 8 warps</span></td></tr>
+<tr><td>Atomic add</td><td class="what">A read-modify-write in memory that can't be interrupted, so many blocks can add into one value safely</td><td class="ex"><b>dQ in FA2 backward</b><span>every column block adds into dQ<sub>i</sub></span></td><td class="ex"><b>not needed</b><span>FA2 forward: each O<sub>i</sub> has one owner</span></td></tr>
+</table>
+
+<h2>3. Benchmarks: about 2× FlashAttention (§4.1)</h2>
+<p>Setup: an A100 80GB SXM4, sequence length 512 to 16k with batch set so that there are 16k tokens in total, hidden size 2048, head dimension 64 or 128 (32 or 16 heads), with and without a causal mask. FLOPs are counted by formula, not measured:</p>
+<div class="formula">forward FLOPs  = 4 · N² · d · heads
+                 (causal: ÷ 2, "approximately only half" is computed)
+backward FLOPs = 2.5 × forward
+                 (2 matmuls forward, 5 backward, due to recomputation)
+
+our example, N = 16k, batch 1, d = 128, 16 heads:
+  forward   = 4 · 16,384² · 128 · 16 = 2.20 TFLOP
+  fwd + bwd = 3.5 × 2.20             = 7.70 TFLOP
+  at FA2's plotted 203 TFLOPs/s: 7.70 / 203 = 37.9 ms</div>
+
+<svg viewBox="0 0 760 300" role="img" aria-label="FlashAttention-2 vs FlashAttention vs PyTorch, TFLOPs/s"><text class="st" x="45" y="18" font-weight="600">A100 80GB (Fig 4b)</text><line x1="45" y1="250.0" x2="365" y2="250.0" stroke="var(--border)" stroke-width="1"/><text class="sl" x="39" y="254.0" text-anchor="end">0</text><line x1="45" y1="188.3" x2="365" y2="188.3" stroke="var(--border)" stroke-width="1"/><text class="sl" x="39" y="192.3" text-anchor="end">100</text><line x1="45" y1="126.6" x2="365" y2="126.6" stroke="var(--border)" stroke-width="1"/><text class="sl" x="39" y="130.6" text-anchor="end">200</text><line x1="45" y1="64.9" x2="365" y2="64.9" stroke="var(--border)" stroke-width="1"/><text class="sl" x="39" y="68.9" text-anchor="end">300</text><text class="sl" x="55.0" y="268" text-anchor="middle">512</text><text class="sl" x="115.0" y="268" text-anchor="middle">1k</text><text class="sl" x="175.0" y="268" text-anchor="middle">2k</text><text class="sl" x="235.0" y="268" text-anchor="middle">4k</text><text class="sl" x="295.0" y="268" text-anchor="middle">8k</text><text class="sl" x="355.0" y="268" text-anchor="middle">16k</text><polyline points="55.0,217.3 115.0,208.7 175.0,203.1 235.0,201.2 295.0,196.9" fill="none" stroke="var(--red)" stroke-width="1.8"/><circle cx="55.0" cy="217.3" r="3" fill="var(--red)"/><circle cx="115.0" cy="208.7" r="3" fill="var(--red)"/><circle cx="175.0" cy="203.1" r="3" fill="var(--red)"/><circle cx="235.0" cy="201.2" r="3" fill="var(--red)"/><circle cx="295.0" cy="196.9" r="3" fill="var(--red)"/><text x="363.0" y="237.7" text-anchor="end" font-size="12" fill="var(--red)">OOM</text><polyline points="55.0,203.1 115.0,205.6 175.0,203.1 235.0,200.6 295.0,199.4 355.0,198.8" fill="none" stroke="var(--muted)" stroke-width="1.8"/><circle cx="55.0" cy="203.1" r="3" fill="var(--muted)"/><text x="55.0" y="195.1" text-anchor="middle" font-size="11" fill="var(--muted)">76</text><circle cx="115.0" cy="205.6" r="3" fill="var(--muted)"/><text x="115.0" y="197.6" text-anchor="middle" font-size="11" fill="var(--muted)">72</text><circle cx="175.0" cy="203.1" r="3" fill="var(--muted)"/><text x="175.0" y="218.1" text-anchor="middle" font-size="11" fill="var(--muted)">76</text><circle cx="235.0" cy="200.6" r="3" fill="var(--muted)"/><text x="235.0" y="192.6" text-anchor="middle" font-size="11" fill="var(--muted)">80</text><circle cx="295.0" cy="199.4" r="3" fill="var(--muted)"/><text x="295.0" y="214.4" text-anchor="middle" font-size="11" fill="var(--muted)">82</text><circle cx="355.0" cy="198.8" r="3" fill="var(--muted)"/><text x="355.0" y="190.8" text-anchor="middle" font-size="11" fill="var(--muted)">83</text><polyline points="55.0,156.8 115.0,143.2 175.0,134.6 235.0,129.0 295.0,126.0 355.0,124.7" fill="none" stroke="var(--accent)" stroke-width="2.5"/><circle cx="55.0" cy="156.8" r="3" fill="var(--accent)"/><text x="55.0" y="148.8" text-anchor="middle" font-size="11" fill="var(--accent)">151</text><circle cx="115.0" cy="143.2" r="3" fill="var(--accent)"/><text x="115.0" y="135.2" text-anchor="middle" font-size="11" fill="var(--accent)">173</text><circle cx="175.0" cy="134.6" r="3" fill="var(--accent)"/><text x="175.0" y="126.6" text-anchor="middle" font-size="11" fill="var(--accent)">187</text><circle cx="235.0" cy="129.0" r="3" fill="var(--accent)"/><text x="235.0" y="121.0" text-anchor="middle" font-size="11" fill="var(--accent)">196</text><circle cx="295.0" cy="126.0" r="3" fill="var(--accent)"/><text x="295.0" y="118.0" text-anchor="middle" font-size="11" fill="var(--accent)">201</text><circle cx="355.0" cy="124.7" r="3" fill="var(--accent)"/><text x="355.0" y="116.7" text-anchor="middle" font-size="11" fill="var(--accent)">203</text><text class="st" x="440" y="18" font-weight="600">H100 80GB (Fig 7b)</text><line x1="440" y1="250.0" x2="760" y2="250.0" stroke="var(--border)" stroke-width="1"/><text class="sl" x="434" y="254.0" text-anchor="end">0</text><line x1="440" y1="188.3" x2="760" y2="188.3" stroke="var(--border)" stroke-width="1"/><text class="sl" x="434" y="192.3" text-anchor="end">100</text><line x1="440" y1="126.6" x2="760" y2="126.6" stroke="var(--border)" stroke-width="1"/><text class="sl" x="434" y="130.6" text-anchor="end">200</text><line x1="440" y1="64.9" x2="760" y2="64.9" stroke="var(--border)" stroke-width="1"/><text class="sl" x="434" y="68.9" text-anchor="end">300</text><text class="sl" x="450.0" y="268" text-anchor="middle">512</text><text class="sl" x="510.0" y="268" text-anchor="middle">1k</text><text class="sl" x="570.0" y="268" text-anchor="middle">2k</text><text class="sl" x="630.0" y="268" text-anchor="middle">4k</text><text class="sl" x="690.0" y="268" text-anchor="middle">8k</text><text class="sl" x="750.0" y="268" text-anchor="middle">16k</text><polyline points="450.0,192.6 510.0,175.9 570.0,160.5 630.0,151.3 690.0,146.9" fill="none" stroke="var(--red)" stroke-width="1.8"/><circle cx="450.0" cy="192.6" r="3" fill="var(--red)"/><circle cx="510.0" cy="175.9" r="3" fill="var(--red)"/><circle cx="570.0" cy="160.5" r="3" fill="var(--red)"/><circle cx="630.0" cy="151.3" r="3" fill="var(--red)"/><circle cx="690.0" cy="146.9" r="3" fill="var(--red)"/><text x="758.0" y="237.7" text-anchor="end" font-size="12" fill="var(--red)">OOM</text><polyline points="450.0,171.6 510.0,171.6 570.0,171.0 630.0,169.2 690.0,165.5 750.0,164.2" fill="none" stroke="var(--muted)" stroke-width="1.8"/><circle cx="450.0" cy="171.6" r="3" fill="var(--muted)"/><text x="450.0" y="163.6" text-anchor="middle" font-size="11" fill="var(--muted)">127</text><circle cx="510.0" cy="171.6" r="3" fill="var(--muted)"/><text x="510.0" y="163.6" text-anchor="middle" font-size="11" fill="var(--muted)">127</text><circle cx="570.0" cy="171.0" r="3" fill="var(--muted)"/><text x="570.0" y="186.0" text-anchor="middle" font-size="11" fill="var(--muted)">128</text><circle cx="630.0" cy="169.2" r="3" fill="var(--muted)"/><text x="630.0" y="184.2" text-anchor="middle" font-size="11" fill="var(--muted)">131</text><circle cx="690.0" cy="165.5" r="3" fill="var(--muted)"/><text x="690.0" y="180.5" text-anchor="middle" font-size="11" fill="var(--muted)">137</text><circle cx="750.0" cy="164.2" r="3" fill="var(--muted)"/><text x="750.0" y="156.2" text-anchor="middle" font-size="11" fill="var(--muted)">139</text><polyline points="450.0,96.9 510.0,68.6 570.0,52.5 630.0,48.8 690.0,43.3 750.0,41.4" fill="none" stroke="var(--accent)" stroke-width="2.5"/><circle cx="450.0" cy="96.9" r="3" fill="var(--accent)"/><text x="450.0" y="88.9" text-anchor="middle" font-size="11" fill="var(--accent)">248</text><circle cx="510.0" cy="68.6" r="3" fill="var(--accent)"/><text x="510.0" y="60.6" text-anchor="middle" font-size="11" fill="var(--accent)">294</text><circle cx="570.0" cy="52.5" r="3" fill="var(--accent)"/><text x="570.0" y="44.5" text-anchor="middle" font-size="11" fill="var(--accent)">320</text><circle cx="630.0" cy="48.8" r="3" fill="var(--accent)"/><text x="630.0" y="40.8" text-anchor="middle" font-size="11" fill="var(--accent)">326</text><circle cx="690.0" cy="43.3" r="3" fill="var(--accent)"/><text x="690.0" y="35.3" text-anchor="middle" font-size="11" fill="var(--accent)">335</text><circle cx="750.0" cy="41.4" r="3" fill="var(--accent)"/><text x="750.0" y="33.4" text-anchor="middle" font-size="11" fill="var(--accent)">338</text><text class="sl" x="380.0" y="292" text-anchor="middle">sequence length (batch × length = 16k tokens) · y = attention fwd+bwd TFLOPs/s, d = 128, no causal mask</text></svg>
+<p class="cap">Fig 4b (A100) and Fig 7b (H100) of the paper, forward + backward, d = 128, no causal mask. Values are the figure labels in the paper; which label belongs to which line is our reading of the figure (the FA1 line reads 72–83 on A100). Green FA2, grey FlashAttention (FA1), red PyTorch standard attention, which runs out of memory at 16k. The xformers and Triton lines are left out.</p>
+
+<div class="formula">A100 FA2 / FA1:     1.99  2.40  2.46  2.45  2.45  2.45×   (512 … 16k)
+A100 FA2 / PyTorch: 2.85  2.58  2.46  2.48  2.34×         (512 … 8k)
+best FA2 point here: 203 / 312 = 65.1% of A100 BF16 peak;  FA1 at best 83 / 312 = 26.6%</div>
+<p>The paper's summary claims: <b>1.7–3.0×</b> faster than FlashAttention, <b>1.3–2.5×</b> faster than FlashAttention in Triton, <b>3–10×</b> faster than standard PyTorch attention, and <b>up to 230 TFLOPs/s, 73%</b> of the A100's theoretical peak (the forward pass alone reaches 227 at d = 128 in Fig 5b). Against Triton FA2 is about 1.3–1.5× faster forward and about 2× backward. The paper gives no ablation that separates the three changes (fewer non-matmul FLOPs, sequence parallelism, split-Q), so the ~2× can't be attributed to any one of them.</p>
+
+<p><b>H100, same code.</b> Run unchanged on an H100 80GB SXM5, "using no special instructions to make use of new features such as TMA and 4th-gen Tensor Cores", FA2 reaches "up to 335 TFLOPs/s" (the plotted 16k point reads 338). The paper expects "another 1.5x-2x speedup" from the new instructions and leaves it to future work. That became <a href="flashattention-3-4-flashinfer.html">FlashAttention-3</a>.</p>
+<div class="tw"><table>
+<tr><th>GPU (paper figure)</th><th class="num">SMs</th><th class="num">Dense BF16 peak</th><th class="num">FA1 fwd+bwd, d128</th><th class="num">FA2 fwd+bwd, d128</th><th class="num">FA2 share of peak</th></tr>
+<tr><td>A100 80GB SXM4 (Fig 4b)</td><td class="num">108</td><td class="num">312 TF</td><td class="num">72–83</td><td class="num">151–203</td><td class="num hi">65.1%</td></tr>
+<tr><td>H100 80GB SXM5 (Fig 7b)</td><td class="num">132</td><td class="num">989 TF</td><td class="num">127–139</td><td class="num">248–338</td><td class="num lo">34.2%</td></tr>
+</table></div>
+<p class="cap">TFLOPs/s ranges over N = 512 … 16k. Shares of peak are our arithmetic (338 / 989, 203 / 312). The same code gets 1.7× more TFLOPs/s on a GPU with 3.2× the peak, so on the H100 the kernel leaves two-thirds of the tensor cores unused. The FA3 paper states the same thing: FA2 reaches only 35% of H100 peak.</p>
+
+<h2>4. End to end: GPT training on 8×A100 (§4.2) and §5</h2>
+<div class="tw"><table>
+<tr><th>Model, context</th><th class="num">Without FlashAttention</th><th class="num">FlashAttention</th><th class="num">FlashAttention-2</th><th class="num">FA2 / none</th><th class="num">FA2 / FA1</th></tr>
+<tr><td>GPT3-1.3B, 2k</td><td class="num">142</td><td class="num">189</td><td class="num">196</td><td class="num">1.38×</td><td class="num">1.04×</td></tr>
+<tr><td>GPT3-1.3B, 8k</td><td class="num"><span class="lo">72</span></td><td class="num">170</td><td class="num">220</td><td class="num">3.06×</td><td class="num">1.29×</td></tr>
+<tr><td>GPT3-2.7B, 2k</td><td class="num">149</td><td class="num">189</td><td class="num">205</td><td class="num">1.38×</td><td class="num">1.08×</td></tr>
+<tr><td>GPT3-2.7B, 8k</td><td class="num"><span class="lo">80</span></td><td class="num">175</td><td class="num hi">225</td><td class="num">2.81×</td><td class="num">1.29×</td></tr>
+</table></div>
+<p class="cap">Table 1, training TFLOPs/s per GPU, 8×A100 80GB SXM. Ratios are our arithmetic. FLOPs follow Megatron-LM: 6 · seqlen · params + 12 · layers · hidden · seqlen², <i>without</i> halving the attention term for the causal mask ("for consistency" with the literature). 225 / 312 = 72% model FLOPs utilization, as the paper says. Quirks: the paper headlines "2.8×" vs no FlashAttention, but the 1.3B 8k row works out to 3.06×; and §4.2's text says "1.3× speedup compared to FlashAttention-2" where it means FlashAttention.</p>
+<p>The gain grows with context: at 2k, attention is a small share of the model's work and FA2 adds only 4–8% over FA1; at 8k, 29%. §5 turns this into its headline: being 2× faster than FlashAttention "means that we can train models with 16k longer context for the same price as previously training a 8k context model". Our reading of why: attention FLOPs per token grow linearly with N (4·N²·d·heads over N tokens), so doubling the context roughly doubles attention's cost per token, and a 2× faster kernel pays for it. The rest of the model's cost per token doesn't change with N. The paper then lists next steps: H100 features (TMA, 4th-gen Tensor Cores, FP8), AMD GPUs, and combining with local, dilated and block-sparse attention.</p>
+
+<h2>Four ways to divide the work</h2>
+<div class="grid2">
+  <div class="cell"><h3><span class="x">&#10007;</span> FA1 grid: one block per (batch, head)</h3><p>Fine at batch × heads ≥ 80 on an A100. One 8k-token Llama-3.1-8B prompt makes only 32 blocks, so 100 of the H100's 132 SMs sit idle (24.2% busy).</p></div>
+  <div class="cell win"><h3><span class="ok">&#10003;</span> FA2 grid: + one block per row block</h3><p>The same prompt becomes 2,048 independent blocks, 15.52 waves, 97% average SM use. Forward row blocks never communicate; backward pays only atomic adds on dQ.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Split-K warps (FA1)</h3><p>Every warp makes a partial output for all rows, so each K,V tile ends in a shared-memory write, a sync and an add: in our model 8–16× the bytes of the tile itself, every iteration.</p></div>
+  <div class="cell win"><h3><span class="ok">&#10003;</span> Split-Q warps (FA2)</h3><p>Each warp owns 32 (or 16) query rows and reads the shared K and V. Its output rows are final, so the forward pass needs no warp-to-warp exchange at all.</p></div>
+</div>
+<p class="cap">Two winners, one per level: the top row is how blocks divide the grid, the bottom row how warps divide a block.</p>
+
+<h2>When does sequence parallelism not help?</h2>
+<div class="note">
+  <p>When batch × heads already fills the GPU. The paper's own threshold is "say ≥ 80" blocks on a 108-SM A100. In training (batch 32 × 16 heads = 512 blocks in its N = 512 setting) and in batched serving (Llama-3.1-8B at batch 8 = 256 blocks), FA1's grid already fills every SM, and cutting rows into more blocks mainly smooths the last wave (97.0% → 99.3% in our model). The gain is in long prompts at small batch, like a single 8k or 16k prefill.</p>
+  <ul>
+    <li><b>It doesn't help decode.</b> One query token per sequence is one row block. The KV length is the long axis, so the fix is Flash-Decoding's split over keys and values, combined by log-sum-exp, which is split-K again, this time between thread blocks.</li>
+    <li><b>It isn't free in the backward pass.</b> Column blocks all write into dQ with atomic adds, and inside a block the backward still needs some synchronization.</li>
+    <li><b>Split-Q isn't a law.</b> It wins in FA2's forward pass because each warp's rows are independent. When there are few rows, as in decode, splitting over K is the only parallelism left.</li>
+  </ul>
+</div>
+
+<div class="foot">
+<p><a class="lab-link" href="https://github.com/seyonv/explainers/blob/main/perf-4-attention-kv/labs/fa2-occupancy.py">Run it: labs/fa2-occupancy.py</a> Prints FA1 vs FA2 thread blocks, first-wave SM use, waves and last wave for the paper's A100 settings and Llama-3.1-8B prefill and decode on the H100, then the split-K vs split-Q shared-memory exchange model. Try this: set B<sub>r</sub> = 64, or change the prefill to 32k tokens.</p>
+<p><b>Read next:</b> <a href="https://arxiv.org/abs/2307.08691">FlashAttention-2 (Dao, 2023)</a>: §3.2 "Parallelism", §3.3 "Work Partitioning Between Warps" with Figs 2–3, §4 "Empirical Validation" (Figs 4–7, Table 1) and §5: all of it, ~45 min. Then the <a href="https://crfm.stanford.edu/2023/10/12/flashdecoding.html">Flash-Decoding post</a> for the decode case, ~10 min.</p>
+<p><b>Related:</b> <a href="flashattention-2-algorithm.html">FlashAttention-2 I: fewer non-matmul FLOPs</a> · <a href="flashattention-3-4-flashinfer.html">FlashAttention-3, -4 and FlashInfer</a> · <a href="online-softmax.html">Online softmax</a> (the ⊕ that merges split results) · <a href="../perf-3-kernels/occupancy.html">perf-3: occupancy and latency hiding</a> · <a href="../perf-3-kernels/execution-model.html">perf-3: the CUDA execution model</a> (blocks, warps, SMs) · <a href="../perf-3-kernels/matmul-warptiling.html">perf-3: matmul warptiling</a> (the matmul version of dividing a block's tile between warps)</p>
+<p><b>Sources:</b> FlashAttention-2, <a href="https://arxiv.org/abs/2307.08691">arXiv 2307.08691</a>: 108 SMs and "≥ 80", Phil Tillet, atomic adds for dQ, 4 or 8 warps, "split-K", {64,128}×{64,128}, benchmark setup and FLOPs formulas, 1.7–3.0× / 1.3–2.5× / 3–10×, 230 TFLOPs/s and 73%, Fig 4b and Fig 7b labels, 335 TFLOPs/s and "1.5x-2x", Table 1, 225 TFLOPs/s and 72% MFU, the 16k-for-8k sentence. FA3 "35%": <a href="https://arxiv.org/abs/2407.08608">arXiv 2407.08608</a>. Flash-Decoding (Dao, Haziza, Massa, Sizov): <a href="https://crfm.stanford.edu/2023/10/12/flashdecoding.html">Stanford CRFM blog, Oct 2023</a>: "less than 1%", split KV with log-sum-exp, up to 8× on CodeLlama-34B, up to 50× attention at 64k on A100. Max shared memory per block, 227 KB H100 and 163 KB A100: <a href="https://docs.nvidia.com/cuda/hopper-tuning-guide/index.html">Hopper</a> and <a href="https://docs.nvidia.com/cuda/ampere-tuning-guide/index.html">Ampere</a> tuning guides. A100 312 TF BF16: FA2 paper §2.1. H100 989 TF and 132 SMs: course facts. Block counts, waves, the SMEM exchange model and all ratios are our recomputation in labs/fa2-occupancy.py. The KV split of 16 chunks is illustrative.</p>
+</div>
+</article>
+<!-- series-nav:bottom -->
+<div class="snx"><a class="nx" href="index.html#flashattention-3-4-flashinfer" target="_top">
+<span class="mini" aria-hidden="true"><span class="m1">FlashAttention-3, -4 and FlashInfer</span><span class="m2">Also called FA3 (the Hopper/H100 version), FA4 (the Blackwell/B200 version), warp specialization, pingpong scheduling, and the FlashInfer kernel library. A skim card: one section per source (FA3,…</span><span class="m3">In one breath</span><span class="m4">The FlashAttention algorithm (tiles, online softmax, never writing the N×N matrix to HBM) hasn't changed since FA2. What changes each GPU generation is the kernel. Each new chip makes matmul much faster but leaves the exponential unit and shared memory almost where they were. So FA3 and FA4 are mostly about keeping the tensor…</span></span>
+<span class="tx"><span class="lab">Next up · 08 / 19</span><span class="tt">FlashAttention-3, -4 and FlashInfer</span><span class="ds">What Hopper and Blackwell forced, and the serving library</span><span class="nd">Builds directly on this card.</span><span class="go">Continue →</span></span></a><div class="aux"><span><a href="index.html#flashattention-2-algorithm" target="_top">← FlashAttention-2 I: fewer non-matmul FLOPs</a></span><a href="index.html" target="_top">All cards in 4 · Attention &amp; KV cache</a></div></div>
+<!-- /series-nav:bottom -->
+</body>
+</html>
