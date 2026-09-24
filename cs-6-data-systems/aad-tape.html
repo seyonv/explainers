@@ -1,0 +1,332 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Designing an autodiff tape</title>
+<style>
+:root{
+  --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
+  --text:#1c1f23; --muted:#6b7068; --faint:#b9b9b3;
+  --accent:#4a9d77; --accent-bg:#dcefdf; --accent-border:#8cc79c;
+  --red:#c0492b; --red-bg:#fbeceb;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#15171a; --surface:#1d2024; --surface2:#24282d; --border:#32373d;
+    --text:#e6e8ea; --muted:#9aa1a9; --faint:#4a5057;
+    --accent:#5fb37f; --accent-bg:#1c2b22; --accent-border:#3f7a55;
+    --red:#e57368; --red-bg:#2e1f1e;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text)}
+.card{max-width:820px;margin:0 auto;padding:28px 32px;font-family:-apple-system,"Inter",system-ui,sans-serif;line-height:1.45}
+h1{font-size:26px;font-weight:600;margin:0 0 6px;letter-spacing:-0.01em}
+.sub{font-size:15px;color:var(--muted);margin:0 0 20px}
+h2{font-size:17px;font-weight:600;margin:26px 0 10px}
+p{font-size:15px;margin:0 0 10px}
+.cap{font-size:13px;color:var(--muted);margin:8px 0 0;text-align:center}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+
+/* Tables and formulas */
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border)}
+th{font-size:12px;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:none}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+.hi{color:var(--accent);font-weight:600} .lo{color:var(--red);font-weight:600}
+.formula{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin:10px 0;white-space:pre;overflow-x:auto;line-height:1.55}
+.wrap{overflow-x:auto}
+
+/* Code (series CSS, verbatim) */
+.code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;line-height:1.5;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin:10px 0;white-space:pre;overflow-x:auto;tab-size:4;color:var(--text)}
+.code .k{color:var(--accent);font-weight:600}.code .c{color:var(--muted)}.code .o{color:var(--muted)}
+
+/* MathML formula */
+.mathbox{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px 16px 12px;margin:10px 0;overflow-x:auto}
+.mathbox math{font-size:21px;color:var(--text);font-family:"STIX Two Math","Latin Modern Math","Cambria Math",math}
+.mathbox .t1{color:var(--text)} .mathbox .t2{color:var(--accent)} .mathbox .t3{color:var(--muted)}
+.mathbox .lab{font-size:12px;font-family:-apple-system,"Inter",system-ui,sans-serif;padding-top:3px;border-top:1.5px solid currentColor;margin-top:2px}
+.legend{display:grid;grid-template-columns:auto 1fr auto;column-gap:14px;row-gap:5px;font-size:13px;margin-top:12px;align-items:baseline}
+.legend .sym{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;text-align:right}
+.legend .v{color:var(--muted);text-align:right;font-variant-numeric:tabular-nums}
+
+/* Tape trace */
+.tape td{vertical-align:top;padding:6px 10px}
+.tape td.m{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;font-variant-numeric:tabular-nums}
+.tape .pass td{padding-top:14px;font-size:12px;font-weight:600;color:var(--muted);letter-spacing:.02em}
+.tape .w{color:var(--muted)}
+.tape .seed td{background:var(--accent-bg)}
+.tape .ans td.num{color:var(--accent);font-weight:600}
+
+/* Checkpoint strip */
+.strip small{color:var(--muted)}
+.strip{display:grid;grid-template-columns:128px 1fr;column-gap:12px;row-gap:10px;align-items:center;font-size:13px}
+.cells{display:flex;gap:2px;height:18px}
+.cells i{flex:1;border-radius:1px;background:var(--surface2)}
+.cells i.s{background:var(--accent)}
+.cells i.r{background:var(--accent-bg);outline:1px solid var(--accent-border)}
+
+/* Terms: two examples each */
+.parts td{vertical-align:top}
+.parts td:first-child{font-weight:600;white-space:nowrap}
+.parts .ex{font-size:13px}
+.parts .ex span{display:block;color:var(--muted)}
+
+/* 2x2 grid */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.cell{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.cell.win{background:var(--accent-bg);border-color:var(--accent-border)}
+.cell h3{font-size:16px;font-weight:600;margin:0 0 5px;display:flex;gap:8px;align-items:baseline}
+.cell p{font-size:14px;margin:0;color:var(--text)}
+.cell.win h3,.cell.win p{color:var(--accent)}
+.x{color:var(--red)} .ok{color:var(--accent)}
+
+.fix{font-size:13px;color:var(--muted);margin:0 0 10px}
+.cx{font-size:14px;margin:12px 0 0}
+
+/* Clarification box */
+.note{border:1px solid var(--border);border-radius:10px;padding:14px 18px;font-size:14px}
+.note p{font-size:14px} .note p:last-child{margin-bottom:0}
+
+.foot{margin-top:22px;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+.foot p{font-size:13px;margin:0 0 4px}
+.foot p:last-child{margin:0}
+.foot b{color:var(--text);font-weight:600}
+@media (max-width:560px){
+  .card{padding:22px 16px}
+  .grid2{grid-template-columns:1fr}
+  .parts .what{display:none}
+  .legend{grid-template-columns:auto 1fr}.legend .v{display:none}
+  .strip{grid-template-columns:1fr}
+  .tape td{padding:6px 5px}
+}
+/* series-nav */
+.sn{max-width:820px;margin:0 auto;padding:16px 32px 0;font-family:-apple-system,"Inter",system-ui,sans-serif;font-size:13px;line-height:1.5;color:var(--muted)}
+.sn a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
+.sn .crumbs{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 7px}
+.sn .crumbs b{color:var(--text);font-weight:600}
+.sn .sep{color:var(--faint,var(--border))}
+.sn .step{margin-left:auto;white-space:nowrap}
+.sn .dep{margin-top:5px;padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface)}
+.sn .dep .ok{color:var(--accent);font-weight:600}
+.snx{max-width:820px;margin:0 auto;padding:6px 32px 44px;font-family:-apple-system,"Inter",system-ui,sans-serif}
+.snx .nx{display:grid;grid-template-columns:280px 1fr;text-decoration:none;color:var(--text);background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.snx .nx:hover,.snx .nx:focus-visible{border-color:var(--accent-border,var(--accent));outline:none}
+.snx .mini{position:relative;height:210px;overflow:hidden;background:var(--bg);border-right:1px solid var(--border);padding:14px 16px}
+.snx .mini span{display:block}
+.snx .mini .m1{font-size:12.5px;font-weight:600;margin:0 0 4px;line-height:1.3}
+.snx .mini .m2{font-size:9px;color:var(--muted);margin:0 0 8px;line-height:1.4}
+.snx .mini .m3{font-size:8.5px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;margin:0 0 3px}
+.snx .mini .m4{font-size:9.5px;margin:0;line-height:1.45}
+.snx .tx{padding:16px 20px}
+.snx .lab{font-size:12px;font-weight:600;color:var(--accent);letter-spacing:.04em;text-transform:uppercase}
+.snx .tt{display:block;font-size:20px;font-weight:600;margin:5px 0 4px;line-height:1.25}
+.snx .ds{display:block;font-size:14px;color:var(--muted)}
+.snx .nd{display:block;font-size:13px;color:var(--muted);margin-top:10px}
+.snx .go{display:block;margin-top:12px;font-size:14px;font-weight:600;color:var(--accent)}
+.snx .aux{display:flex;justify-content:space-between;gap:12px;margin-top:10px;font-size:13px;color:var(--muted)}
+.snx .aux a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
+@media (max-width:560px){.sn,.snx{padding-left:16px;padding-right:16px}.snx .nx{grid-template-columns:1fr}.snx .mini{display:none}.sn .step{margin-left:0}}
+/* /series-nav */
+</style>
+</head>
+<body>
+<!-- series-nav:top -->
+<nav class="sn" aria-label="Course navigation"><div class="crumbs"><a href="../cs-0-map/index.html" target="_top">CS interview cheat sheet</a><span class="sep">›</span><a href="index.html" target="_top">6 · Data systems &amp; infrastructure</a><span class="sep">›</span><b>18 / 18</b><span class="step"><a href="index.html#order-book-to-system" target="_top">← prev</a> · <a href="../cs-7-operating-systems/index.html#_overview" target="_top">next →</a></span></div>
+<div class="dep"><span class="ok">Stands alone.</span> You can jump in here without reading earlier cards.</div></nav>
+<!-- /series-nav:top -->
+<article class="card">
+<h1>Designing an autodiff tape</h1>
+<p class="sub">Also called reverse-mode automatic differentiation, the adjoint method, backpropagation (machine learning) or AAD, adjoint algorithmic differentiation (finance). The cheat-sheet poses it as a hedge-fund interview prompt with no answers: price thousands of contracts, get sensitivities to hundreds of parameters, and design the tape that makes that cheap. This card answers it.</p>
+
+<h2>In one breath</h2>
+<p>Run the pricer once and write every operation onto a list, the <b>tape</b>, with each result's local derivatives. Then walk the tape backwards, pushing "how much does the output move if this value moves" (the <b>adjoint</b>) from each node to its inputs. One backward walk gives the derivative with respect to <i>every</i> input, however many there are.</p>
+
+<h2>Why bother: bump-and-reprice pays per parameter</h2>
+<table>
+  <tr><th>Parameters N</th><th class="num">Bump, one-sided<br>1 + N valuations</th><th class="num">Bump, central<br>2N valuations</th><th class="num">Tape (AAD)</th></tr>
+  <tr><td>2 (this card's f(x, y))</td><td class="num">3</td><td class="num">4</td><td class="num hi">1 forward + 1 backward</td></tr>
+  <tr><td>100</td><td class="num">101</td><td class="num">200</td><td class="num hi">1 forward + 1 backward</td></tr>
+  <tr><td>500 ("hundreds of market parameters")</td><td class="num lo">501</td><td class="num lo">1,000</td><td class="num hi">1 forward + 1 backward</td></tr>
+</table>
+<p class="cap">Counts, not timings. The backward pass costs a small constant multiple of one forward pass whatever N is; the source gives the 1 + N figure, central differences (more accurate) double it.</p>
+
+<h2>The rule: the adjoint of a node</h2>
+<div class="mathbox">
+<math display="block">
+  <munder class="t2"><msub><mover><mi>v</mi><mo>&#175;</mo></mover><mi>i</mi></msub><mtext class="lab">adjoint of node i</mtext></munder>
+  <mo>=</mo>
+  <munder><mo>&#8721;</mo><mrow><mi>j</mi><mo>&#8712;</mo><mtext>children</mtext><mo stretchy="false">(</mo><mi>i</mi><mo stretchy="false">)</mo></mrow></munder>
+  <munder class="t1"><msub><mover><mi>v</mi><mo>&#175;</mo></mover><mi>j</mi></msub><mtext class="lab">already known</mtext></munder>
+  <mo>&#183;</mo>
+  <munder class="t3"><mfrac><mrow><mo>&#8706;</mo><msub><mi>v</mi><mi>j</mi></msub></mrow><mrow><mo>&#8706;</mo><msub><mi>v</mi><mi>i</mi></msub></mrow></mfrac><mtext class="lab">local, saved on the tape</mtext></munder>
+  <mspace width="1.2em"/>
+  <mtext>seed</mtext><mspace width="0.3em"/>
+  <mover><mi>f</mi><mo>&#175;</mo></mover><mo>=</mo><mn>1</mn>
+</math>
+<div class="legend">
+  <span class="sym">v̄<sub>i</sub></span><span>∂f / ∂v<sub>i</sub>: how much the final output moves per unit move in v<sub>i</sub></span><span class="v">the Greek, at an input</span>
+  <span class="sym">children(i)</span><span>nodes that used v<sub>i</sub> as an input; later on the tape</span><span class="v">x feeds a and b</span>
+  <span class="sym">∂v<sub>j</sub>/∂v<sub>i</sub></span><span>derivative of one operation, recorded during the forward pass</span><span class="v">∂(x·y)/∂x = y</span>
+</div>
+</div>
+<div class="formula">adjoint[i] = sum(adjoint[j] * local[j][i] for j that used i)
+strict unary chain (the source's case):  adjoint[k] = adjoint[k+1] * f_k'(v_k)</div>
+<p class="cap">Every child must be finished before its parent is read, so the backward pass visits nodes in reverse topological order. On a tape that's simply reverse recording order.</p>
+
+<h2>Worked example: f(x, y) = x·y + sin x at (2, 3)</h2>
+<div class="wrap">
+<table class="tape">
+  <tr><th>#</th><th>Operation</th><th>Local derivatives saved</th><th class="num">Value</th></tr>
+  <tr class="pass"><td colspan="4">FORWARD · record in order</td></tr>
+  <tr><td>0</td><td class="m">x</td><td class="m w">input</td><td class="num">2</td></tr>
+  <tr><td>1</td><td class="m">y</td><td class="m w">input</td><td class="num">3</td></tr>
+  <tr><td>2</td><td class="m">a = x · y</td><td class="m">∂a/∂x = y = 3, ∂a/∂y = x = 2</td><td class="num">6</td></tr>
+  <tr><td>3</td><td class="m">b = sin x</td><td class="m">∂b/∂x = cos 2 = −0.416147</td><td class="num">0.909297</td></tr>
+  <tr><td>4</td><td class="m">f = a + b</td><td class="m">∂f/∂a = 1, ∂f/∂b = 1</td><td class="num">6.909297</td></tr>
+  <tr class="pass"><td colspan="4">BACKWARD · replay in reverse, adding into parents</td></tr>
+  <tr><th>#</th><th>Node</th><th>Pushes to parents</th><th class="num">Running adjoints</th></tr>
+  <tr class="seed"><td>4</td><td class="m">f</td><td class="m">seed f̄ = 1 → ā += 1·1, b̄ += 1·1</td><td class="num">ā = 1, b̄ = 1</td></tr>
+  <tr><td>3</td><td class="m">b</td><td class="m">x̄ += b̄ · cos 2 = 1 · (−0.416147)</td><td class="num">x̄ = −0.416147</td></tr>
+  <tr><td>2</td><td class="m">a</td><td class="m">x̄ += ā · 3,  ȳ += ā · 2</td><td class="num">x̄ = 2.583853, ȳ = 2</td></tr>
+  <tr class="ans"><td>1, 0</td><td class="m">y, x</td><td class="m w">inputs: nothing to push</td><td class="num">∂f/∂x = 2.583853, ∂f/∂y = 2</td></tr>
+</table>
+</div>
+<div class="formula">tape       df/dx = 2.583853163   df/dy = 2.000000000
+exact      df/dx = 3 + cos 2 = 2.583853163
+FD (h=1e-6, central)  |tape − FD| = 2.4e-11 and 2.8e-10</div>
+<p class="cap">x̄ gets two contributions because x feeds two operations: that <code>+=</code> is the whole reason adjoints accumulate instead of being assigned. All numbers from <span class="mono">code/aad-tape.py</span>.</p>
+
+<h2>In Python: a tape in 30 lines</h2>
+<pre class="code"><span class="k">import</span> math
+
+<span class="k">class</span> Var:
+    <span class="k">def</span> __init__(self, val, parents=()):
+        self.val = val
+        self.parents = parents      <span class="c"># tuple of (Var, local gradient)</span>
+        self.grad = 0.0             <span class="c"># the adjoint, filled by backward</span>
+    <span class="k">def</span> __add__(self, o):
+        <span class="k">return</span> Var(self.val + o.val, ((self, 1.0), (o, 1.0)))
+    <span class="k">def</span> __mul__(self, o):
+        <span class="k">return</span> Var(self.val * o.val, ((self, o.val), (o, self.val)))
+
+<span class="k">def</span> sin(a):
+    <span class="k">return</span> Var(math.sin(a.val), ((a, math.cos(a.val)),))
+
+<span class="k">def</span> backward(out):
+    order, seen = [], set()
+    <span class="k">def</span> visit(v):                   <span class="c"># DFS post-order = topological</span>
+        <span class="k">if</span> id(v) <span class="k">not in</span> seen:
+            seen.add(id(v))
+            <span class="k">for</span> p, _ <span class="k">in</span> v.parents:
+                visit(p)
+            order.append(v)
+    visit(out)
+    out.grad = 1.0                  <span class="c"># seed: d out / d out</span>
+    <span class="k">for</span> v <span class="k">in</span> reversed(order):       <span class="c"># successors before predecessors</span>
+        <span class="k">for</span> p, local <span class="k">in</span> v.parents:
+            p.grad += v.grad * local  <span class="c"># chain rule, accumulated</span>
+
+x, y = Var(2.0), Var(3.0)
+f = x * y + sin(x)
+backward(f)
+print(f.val, x.grad, y.grad)
+<span class="o"># → 6.909297426825682 2.5838531634528574 2.0</span></pre>
+<p class="cx"><b>Time O(ops) · Space O(ops).</b> The backward pass touches each recorded edge once, so it costs about as much as the forward pass. The catch is memory: every intermediate value has to stay alive until the backward pass reads it.</p>
+
+<h2>The source's tape: why a plain array isn't enough</h2>
+<p>The prompt wants a strict unary chain that grows at the end, drops old nodes (a sliding window), gets cut in the middle when a barrier is knocked out (everything downstream goes), and is split into segments for checkpointing. A design that fits: a <b>doubly linked list of fixed-size segments</b>, each segment an array of nodes plus the value at its start.</p>
+<table>
+  <tr><th>Operation</th><th>One flat array</th><th>Linked segments</th></tr>
+  <tr><td>Append a node</td><td>O(1) amortized</td><td class="hi">O(1)</td></tr>
+  <tr><td>Drop the oldest (sliding window)</td><td class="lo">O(n) shift, or index bookkeeping</td><td class="hi">O(1): unlink the head segment</td></tr>
+  <tr><td>Cut everything after node i (barrier hit)</td><td>O(1) truncate, but indices into it go stale</td><td class="hi">O(1) unlink + O(segment) trim</td></tr>
+  <tr><td>Mark a checkpoint / split</td><td class="lo">a side table of offsets</td><td class="hi">it's a segment boundary</td></tr>
+  <tr><td>Walk backwards, segment by segment</td><td>yes</td><td class="hi">yes, tail → head via <code>prev</code></td></tr>
+</table>
+<pre class="code">tp = SegTape(seg_len=3)
+<span class="k">for</span> k <span class="k">in</span> range(12): tp.append(k)   <span class="c"># [0 1 2][3 4 5][6 7 8][9 10 11]</span>
+tp.drop_oldest(); tp.truncate_after(7)
+<span class="o"># → [3, 4, 5] &lt;-&gt; [6, 7]</span></pre>
+<p class="cap">Full <code>SegTape</code> class in <span class="mono">code/aad-tape.py</span>. Freed segments can go back to a pool, so a GPU allocator isn't hit on every window slide (our design, not the source's).</p>
+
+<h2>Trading memory for recompute: √n checkpoints</h2>
+<p>Keep only the value at the start of each segment. On the way back, re-run one segment forward from its checkpoint, back-propagate through it, throw it away, move to the previous one. Checkpoints plus one live segment is n/s + s values, smallest at s = √n.</p>
+<div class="strip">
+  <span>Full tape<br><small>stores all 10,001</small></span>
+  <div class="cells"><i class="s"></i><i class="s"></i><i class="s"></i><i class="s"></i><i class="s"></i><i class="s"></i><i class="s"></i><i class="s"></i><i class="s"></i><i class="s"></i><i class="s"></i><i class="s"></i><i class="s"></i><i class="s"></i><i class="s"></i><i class="s"></i><i class="s"></i><i class="s"></i><i class="s"></i><i class="s"></i></div>
+  <span>√n checkpoints<br><small>stores 200</small></span>
+  <div class="cells"><i class="s"></i><i></i><i></i><i></i><i class="s"></i><i></i><i></i><i></i><i class="s"></i><i></i><i></i><i></i><i class="s"></i><i class="r"></i><i class="r"></i><i class="r"></i><i class="s"></i><i></i><i></i><i></i></div>
+</div>
+<p class="cap">Schematic (20 cells stand for 10,000 steps). Green = stored, pale green = the one segment being recomputed right now, grey = not kept.</p>
+<table>
+  <tr><th>Unary chain, n = 10,000 steps of x ← x + 0.001·sin x, x₀ = 0.5</th><th class="num">Values stored</th><th class="num">Forward steps</th><th class="num">dx<sub>n</sub>/dx<sub>0</sub></th></tr>
+  <tr><td>Full tape</td><td class="num lo">10,001</td><td class="num">10,000</td><td class="num">0.000739747880</td></tr>
+  <tr><td>√n = 100 checkpoints</td><td class="num hi">200</td><td class="num">19,900</td><td class="num">0.000739747880</td></tr>
+</table>
+<div class="formula">stored  = n/s + s          = 10,000/100 + 100   = 200     (50× less)
+forward = n + (n/s)(s − 1) = 10,000 + 100 · 99 = 19,900  (≈ one extra forward pass)</div>
+<p class="cap">Gradients match bit for bit (the chain is illustrative, a stand-in for time steps of a path). Chen et al. report the same shape for deep nets: O(√n) memory for about one extra forward pass. PyTorch ships it as <code>torch.utils.checkpoint</code>.</p>
+
+<h2>Plugging into PyTorch without breaking the gradient</h2>
+<p>For the Bermudan swaption's linked list of exercise dates (date, discount factor, exercise-value tensor): inside a custom <code>torch.autograd.Function.forward</code>, inputs are handed over with history tracking switched off, so a list built there is invisible to autograd. Two ways that keep gradients flowing: build the list <i>outside</i> any custom Function from ordinary tensor ops, so every tensor field has its own <code>grad_fn</code>; or, if you need a custom Function, save the tensors with <code>ctx.save_for_backward</code> and write <code>backward</code> to walk the list in reverse and return one gradient per input. The list is plain Python holding tensors; the tape lives in the tensors. (Our design, following the PyTorch docs.)</p>
+
+<h2>Non-differentiable payoffs</h2>
+<p>A call, max(S − K, 0), is fine: its slope is 0 or 1 except at one point. A digital, 1{S &gt; K}, has slope 0 almost everywhere, so a tape returns Delta = 0. Fix it by <b>smoothing</b> the step (a sigmoid of width ε) or by the <b>likelihood-ratio</b> trick, which differentiates the probability density instead of the payoff.</p>
+<table>
+  <tr><th>Digital call Delta, S₀ = K = 100, σ = 20%, T = 1, r = 0, 200k paths</th><th class="num">Estimate</th></tr>
+  <tr><td>Pathwise through the tape</td><td class="num lo">0.00000</td></tr>
+  <tr><td>Sigmoid smoothing, ε = 1</td><td class="num">0.01980</td></tr>
+  <tr><td>Likelihood ratio: E[payoff · z / (S₀σ√T)]</td><td class="num">0.01991</td></tr>
+  <tr><td>Exact: φ(d₂) / (S₀σ√T), d₂ = −0.1</td><td class="num hi">0.01985</td></tr>
+</table>
+<p class="cap">Monte Carlo with seed 0 in <span class="mono">code/aad-tape.py</span>; the parameters are illustrative. Smoothing adds a small bias that shrinks with ε; likelihood ratio is unbiased but noisier.</p>
+
+<h2>The words, with two examples each</h2>
+<table class="parts">
+  <tr><th>Term</th><th class="what">What it means</th><th>Example A</th><th>Example B</th></tr>
+  <tr><td>Tape</td><td class="what">The recorded list of operations, in execution order, with what the backward pass needs.</td>
+    <td class="ex"><b>5 entries</b><span>this card's x, y, a, b, f</span></td>
+    <td class="ex"><b>A <code>grad_fn</code> chain</b><span>PyTorch keeps its tape on the tensors</span></td></tr>
+  <tr><td>Adjoint</td><td class="what">∂(output)/∂(this node), filled in on the way back.</td>
+    <td class="ex"><b class="ok">x̄ = 2.583853</b><span>two contributions summed</span></td>
+    <td class="ex"><b>Delta</b><span>the adjoint of the spot price in a pricer</span></td></tr>
+  <tr><td>Checkpoint</td><td class="what">A saved value from which a stretch of the tape can be re-run.</td>
+    <td class="ex"><b>100 of 10,000</b><span>every 100th step of the chain</span></td>
+    <td class="ex"><b>An exercise date</b><span>a natural split point in a Bermudan's schedule (our reading)</span></td></tr>
+  <tr><td>Pathwise vs likelihood ratio</td><td class="what">Differentiate the payoff along each path, or differentiate the density.</td>
+    <td class="ex"><b>Call</b><span>pathwise works: slope 0 or 1</span></td>
+    <td class="ex"><b class="lo">Digital</b><span>pathwise gives 0; use likelihood ratio</span></td></tr>
+</table>
+
+<h2>Why it beats the alternatives</h2>
+<div class="grid2">
+  <div class="cell"><h3><span class="x">&#10007;</span> Bump and reprice</h3><p>Finite differences: 1 + N full valuations, 501 for N = 500, and the step size trades truncation error against rounding error. Useless on digitals, where a small bump rarely crosses the strike.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Symbolic differentiation</h3><p>Differentiate the formula by hand or with a CAS. Exact, but expressions blow up with repeated subterms, and a pricer with loops, branches and a Monte Carlo isn't one formula.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Forward-mode AD</h3><p>Carry a derivative alongside each value (dual numbers). No tape, no extra memory, but one pass per input: N passes for N sensitivities, the same scaling as bumping.</p></div>
+  <div class="cell win"><h3><span class="ok">&#10003;</span> Reverse-mode tape</h3><p>One forward and one backward pass for all N sensitivities, exact to rounding (2.4e-11 off here). Pays in memory, which checkpointing buys back.</p></div>
+</div>
+
+<h2>Is reverse mode always the answer?</h2>
+<div class="note">
+  <p>No. It wins when there are many inputs and few outputs: one portfolio value, hundreds of market parameters. With few inputs and many outputs (a Jacobian that's tall rather than wide, or one parameter feeding thousands of prices), forward mode is cheaper and needs no tape. For one or two Greeks, bump-and-reprice is often the pragmatic choice: no new code paths and nothing to go stale.</p>
+  <p>The tape is also the bottleneck in memory, not flops: it grows with every operation, which is why the prompt asks about checkpointing on a GPU. And the source's "strict unary chain" is a simplification: real pricers fan in (a portfolio sums many contracts), which is why the general rule sums over children.</p>
+</div>
+<p class="fix">The source says the adjoint method "steps through time going forward to the payoff"; that's only its first half. The sensitivities come from the second sweep, which runs backwards from the payoff.</p>
+
+<footer class="foot">
+  <p><b>Source:</b> <a href="https://github.com/ljeng/cheat-sheet/blob/main/large-scale-design/system-design/example.md">cheat-sheet › System Design › Example: Backpropagate Computational Graph</a> (commit 5cedb05), an interview prompt with no answers; the answers here are ours. Checkpointing: Chen, Xu, Zhang and Guestrin, <a href="https://arxiv.org/abs/1604.06174">Training Deep Nets with Sublinear Memory Cost</a> (2016). PyTorch: <a href="https://docs.pytorch.org/docs/stable/notes/extending.html">Extending autograd</a> and <a href="https://docs.pytorch.org/docs/stable/checkpoint.html">torch.utils.checkpoint</a>. Likelihood-ratio Greeks: Glasserman, <i>Monte Carlo Methods in Financial Engineering</i> (2003).</p>
+  <p><b>Run it:</b> <a href="https://github.com/seyonv/explainers/blob/main/cs-6-data-systems/code/aad-tape.py">code/aad-tape.py</a> prints the tape, the finite-difference check, the checkpoint table, the digital Deltas and the SegTape demo (Python 3.10).</p>
+  <p><b>Related:</b> <a href="../cs-3-graphs-dp-math/toposort.html">topological sort</a> · <a href="../cs-10-financial-math/black-scholes-greeks.html">Black-Scholes and the Greeks</a> · <a href="../cs-10-financial-math/monte-carlo-pricing.html">Monte Carlo pricing</a> · <a href="log-structured-memory.html">log-structured memory</a>.</p>
+</footer>
+</article>
+<!-- series-nav:bottom -->
+<div class="snx"><a class="nx" href="../cs-7-operating-systems/index.html#_overview" target="_top">
+<span class="mini" aria-hidden="true"><span class="m1">Choosing a unit of execution</span><span class="m2">The overview for course 7 of the cheat-sheet series. It ties together the 13 cards on the cheat-sheet's Operating Systems page (processes, threads, the four synchronization tools, deadlock and…</span><span class="m3">In one breath</span><span class="m4">First ask what your work is waiting on. If it is the CPU, you need more cores actually running Python: processes on a GIL build, threads on a free-threaded one. If it is I/O, you need more waits in flight at once: threads for dozens, asyncio for thousands. Then pay as little as you can for the unit itself, because the costs span…</span></span>
+<span class="tx"><span class="lab">Next course · 7 · Operating systems &amp; concurrency</span><span class="tt">Choosing a unit of execution</span><span class="ds">The map of this course, what matters most, and the words people use</span><span class="nd">No prerequisites. Every number was measured on an M3 in Python.</span><span class="go">Continue →</span></span></a><div class="aux"><span><a href="index.html#order-book-to-system" target="_top">← From a math spec to a system: the limit order book</a></span><a href="index.html" target="_top">All cards in 6 · Data systems &amp; infrastructure</a></div></div>
+<!-- /series-nav:bottom -->
+</body>
+</html>

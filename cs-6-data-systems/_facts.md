@@ -15,7 +15,7 @@ The cheat-sheet's storage, caching, MapReduce, graph-query and case-study pages:
 - The source is terse: mostly problem statements plus one-line solutions, or dense paper notes. **Your job is to teach the idea**, not transcribe. Keep the source's own example or problem as the worked example wherever there is one, so the card is faithful to it.
 - When the source is wrong, show the correct thing and add one muted line: "The source's version has X; corrected here." Never silently copy a bug.
 
-### The series (link siblings only as `../<slug>/index.html#<card>` for cards that exist when you write; otherwise plain text)
+### The series (link sibling cards as `../<course-slug>/<card>.html`, using the card list at the end of this section)
 cs-0-map · cs-1-data-structures · cs-2-algorithms · cs-3-graphs-dp-math · cs-4-design-foundations · cs-5-distributed-systems · cs-6-data-systems · cs-7-operating-systems · cs-8-probability-discrete · cs-9-probability-continuous · cs-10-financial-math
 
 ### The reader
@@ -46,7 +46,7 @@ Only measurements in this table may be shown as "measured on an M3". Label anyth
 |---|---|
 | `sorted()` 10⁶ random floats (Timsort), 3.10 | 0.130 s |
 | `sorted()` on already-sorted 10⁶ | 0.157 s (includes the inner sort; Timsort on sorted input alone is O(n)) |
-| `np.sort` 10⁶, kind="quicksort" (introsort) / "stable" (radix/timsort) | 0.031 s / 0.072 s |
+| `np.sort` 10⁶ float64, kind="quicksort" (introsort) / "stable" (timsort for floats; radix only for ≤16-bit ints) | 0.031 s / 0.072 s |
 | pure-Python insertion sort, n = 5,000 random | 0.828 s (vs `sorted()` 0.00026 s) |
 | 1,000 membership tests, n = 10⁵: list / set / dict | 0.232 s / 24.6 µs / 26.5 µs (≈ 9,400× list→set) |
 | `for i in range(len(L)): L[i] += 17`, 10⁷ items / numpy `a += 17` | 0.582 s / 0.00286 s (≈ 203×) (the source's 10⁸ numbers: 9.64 s vs 0.188 s) |

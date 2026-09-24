@@ -1,0 +1,275 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LFU cache in O(1)</title>
+<style>
+:root{
+  --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
+  --text:#1c1f23; --muted:#6b7068; --faint:#b9b9b3;
+  --accent:#4a9d77; --accent-bg:#dcefdf; --accent-border:#8cc79c;
+  --red:#c0492b; --red-bg:#fbeceb;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#15171a; --surface:#1d2024; --surface2:#24282d; --border:#32373d;
+    --text:#e6e8ea; --muted:#9aa1a9; --faint:#4a5057;
+    --accent:#5fb37f; --accent-bg:#1c2b22; --accent-border:#3f7a55;
+    --red:#e57368; --red-bg:#2e1f1e;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text)}
+.card{max-width:820px;margin:0 auto;padding:28px 32px;font-family:-apple-system,"Inter",system-ui,sans-serif;line-height:1.45}
+h1{font-size:26px;font-weight:600;margin:0 0 6px;letter-spacing:-0.01em}
+.sub{font-size:15px;color:var(--muted);margin:0 0 20px}
+h2{font-size:17px;font-weight:600;margin:26px 0 10px}
+p{font-size:15px;margin:0 0 10px}
+.cap{font-size:13px;color:var(--muted);margin:8px 0 0;text-align:center}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+
+/* Tables and formulas */
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border)}
+th{font-size:12px;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:none}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+.hi{color:var(--accent);font-weight:600} .lo{color:var(--red);font-weight:600}
+.formula{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin:10px 0;white-space:pre;overflow-x:auto;line-height:1.55}
+
+/* 2x2 grid */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.cell{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.cell.win{background:var(--accent-bg);border-color:var(--accent-border)}
+.cell h3{font-size:16px;font-weight:600;margin:0 0 5px;display:flex;gap:8px;align-items:baseline}
+.cell p{font-size:14px;margin:0;color:var(--text)}
+.cell.win h3,.cell.win p{color:var(--accent)}
+.x{color:var(--red)} .ok{color:var(--accent)}
+
+/* Clarification box */
+.note{border:1px solid var(--border);border-radius:10px;padding:14px 18px;font-size:14px}
+.note p{font-size:14px} .note p:last-child{margin-bottom:0}
+
+.foot{margin-top:22px;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+svg{display:block;max-width:100%}
+.sl{font-size:12px;fill:var(--muted)} .st{font-size:13px;fill:var(--text)}
+.mt{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;fill:var(--text)}
+a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+
+/* Code (series) */
+.code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;line-height:1.5;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin:10px 0;white-space:pre;overflow-x:auto;tab-size:4;color:var(--text)}
+.code .k{color:var(--accent);font-weight:600}.code .c{color:var(--muted)}.code .o{color:var(--muted)}
+
+/* Terms, two examples each */
+.parts td{vertical-align:top} .parts td:first-child{font-weight:600;white-space:nowrap}
+.parts .ex{font-size:13px} .parts .ex span{display:block;color:var(--muted)}
+.parts .ex code{font-size:12.5px}
+
+/* Hand trace */
+.trace td{vertical-align:top;padding:6px 10px}
+.trace .op{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;white-space:nowrap}
+.trace .op span{display:block;font-family:-apple-system,"Inter",system-ui,sans-serif;font-size:12px;color:var(--muted)}
+.trace .why{font-size:13px;color:var(--muted)}
+.trace tr.ev td{background:var(--red-bg)}
+.bks{display:flex;flex-wrap:wrap;gap:4px 12px}
+.bk{display:flex;gap:4px;align-items:center}
+.bk b{font-size:11px;font-weight:600;color:var(--muted);font-variant-numeric:tabular-nums;margin-right:1px}
+.bk span{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;padding:1px 6px;border-radius:4px;border:1px solid var(--border);background:var(--surface);font-variant-numeric:tabular-nums}
+.bk .a{background:var(--accent-bg);border-color:var(--accent-border);color:var(--accent)}
+.bk .gone{background:none;border-style:dashed;border-color:var(--red);color:var(--red);text-decoration:line-through}
+.wrap{overflow-x:auto}
+.fix{font-size:13px;color:var(--muted);margin:0 0 10px}
+.cx{font-size:14px;margin:12px 0 0}
+.foot p{font-size:13px;margin:0 0 4px}
+.foot p:last-child{margin:0}
+.foot b{color:var(--text);font-weight:600}
+
+@media (max-width:560px){
+  .card{padding:22px 16px}
+  .grid2{grid-template-columns:1fr}
+  .parts .what{display:none}
+  .trace td,.trace th{padding:6px 5px}
+  .trace .why{display:none}
+}
+/* series-nav */
+.sn{max-width:820px;margin:0 auto;padding:16px 32px 0;font-family:-apple-system,"Inter",system-ui,sans-serif;font-size:13px;line-height:1.5;color:var(--muted)}
+.sn a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
+.sn .crumbs{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 7px}
+.sn .crumbs b{color:var(--text);font-weight:600}
+.sn .sep{color:var(--faint,var(--border))}
+.sn .step{margin-left:auto;white-space:nowrap}
+.sn .dep{margin-top:5px;padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface)}
+.sn .dep .ok{color:var(--accent);font-weight:600}
+.snx{max-width:820px;margin:0 auto;padding:6px 32px 44px;font-family:-apple-system,"Inter",system-ui,sans-serif}
+.snx .nx{display:grid;grid-template-columns:280px 1fr;text-decoration:none;color:var(--text);background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.snx .nx:hover,.snx .nx:focus-visible{border-color:var(--accent-border,var(--accent));outline:none}
+.snx .mini{position:relative;height:210px;overflow:hidden;background:var(--bg);border-right:1px solid var(--border);padding:14px 16px}
+.snx .mini span{display:block}
+.snx .mini .m1{font-size:12.5px;font-weight:600;margin:0 0 4px;line-height:1.3}
+.snx .mini .m2{font-size:9px;color:var(--muted);margin:0 0 8px;line-height:1.4}
+.snx .mini .m3{font-size:8.5px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;margin:0 0 3px}
+.snx .mini .m4{font-size:9.5px;margin:0;line-height:1.45}
+.snx .tx{padding:16px 20px}
+.snx .lab{font-size:12px;font-weight:600;color:var(--accent);letter-spacing:.04em;text-transform:uppercase}
+.snx .tt{display:block;font-size:20px;font-weight:600;margin:5px 0 4px;line-height:1.25}
+.snx .ds{display:block;font-size:14px;color:var(--muted)}
+.snx .nd{display:block;font-size:13px;color:var(--muted);margin-top:10px}
+.snx .go{display:block;margin-top:12px;font-size:14px;font-weight:600;color:var(--accent)}
+.snx .aux{display:flex;justify-content:space-between;gap:12px;margin-top:10px;font-size:13px;color:var(--muted)}
+.snx .aux a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
+@media (max-width:560px){.sn,.snx{padding-left:16px;padding-right:16px}.snx .nx{grid-template-columns:1fr}.snx .mini{display:none}.sn .step{margin-left:0}}
+/* /series-nav */
+</style>
+</head>
+<body>
+<!-- series-nav:top -->
+<nav class="sn" aria-label="Course navigation"><div class="crumbs"><a href="../cs-0-map/index.html" target="_top">CS interview cheat sheet</a><span class="sep">›</span><a href="index.html" target="_top">1 · Data structures &amp; coding</a><span class="sep">›</span><b>17 / 21</b><span class="step"><a href="index.html#fibonacci-heap" target="_top">← prev</a> · <a href="index.html#random-pick-structures" target="_top">next →</a></span></div>
+<div class="dep"><span class="ok">Stands alone.</span> You can jump in here without reading earlier cards.</div></nav>
+<!-- /series-nav:top -->
+<article class="card">
+<h1>LFU cache in O(1)</h1>
+<p class="sub">Also called a least-frequently-used cache, or an LFU cache with LRU tie-breaking. The cheat-sheet asks for LeetCode's version under Object-oriented Design: <code>get</code> and <code>put</code> in Θ(1), a use counter per key, and ties broken by least recently used.</p>
+
+<h2>In one breath</h2>
+<p>When the cache is full, throw out the key used the fewest times, and among equals the one untouched for longest. The trick for O(1) is to never sort: keep one bucket of keys per use count, each bucket in recency order, and remember the smallest count in use. The victim is always the oldest key in that bucket.</p>
+
+<h2>Worked example: capacity 2, just before <code>put(4, 4)</code></h2>
+<svg viewBox="0 0 760 176" role="img" aria-label="Three maps: values, counts, and buckets by count. Keys 1 and 3 both have count 2; key 1 is older in the bucket so it is evicted.">
+  <text x="20" y="22" class="sl">val: key → value</text>
+  <rect x="20" y="32" width="170" height="34" rx="6" fill="var(--surface)" stroke="var(--border)"/>
+  <text x="105" y="54" text-anchor="middle" class="mt">{1: 1, 3: 3}</text>
+  <text x="20" y="96" class="sl">cnt: key → use count</text>
+  <rect x="20" y="106" width="170" height="34" rx="6" fill="var(--surface)" stroke="var(--border)"/>
+  <text x="105" y="128" text-anchor="middle" class="mt">{1: 2, 3: 2}</text>
+
+  <text x="250" y="22" class="sl">keys: count → keys in use order (OrderedDict)</text>
+  <text x="250" y="54" class="st" style="font-weight:600">count 2</text>
+  <rect x="330" y="32" width="240" height="34" rx="6" fill="var(--surface2)" stroke="var(--border)"/>
+  <rect x="338" y="38" width="80" height="22" rx="4" fill="var(--red-bg)" stroke="var(--red)" stroke-dasharray="4 3"/>
+  <text x="378" y="54" text-anchor="middle" class="mt" style="fill:var(--red)">1</text>
+  <rect x="482" y="38" width="80" height="22" rx="4" fill="var(--surface)" stroke="var(--border)"/>
+  <text x="522" y="54" text-anchor="middle" class="mt">3</text>
+  <text x="378" y="82" text-anchor="middle" class="sl">oldest use (op 3)</text>
+  <text x="522" y="82" text-anchor="middle" class="sl">newest use (op 6)</text>
+  <text x="250" y="124" class="st" style="font-weight:600">min = 2</text>
+  <path d="M312 120 L 360 120 Q 378 120 378 104 L 378 90" fill="none" stroke="var(--accent)" stroke-width="1.5"/>
+  <path d="M373 96 L378 88 L383 96" fill="none" stroke="var(--accent)" stroke-width="1.5"/>
+  <text x="592" y="46" class="st" style="fill:var(--red);font-weight:600">evict 1</text>
+  <text x="592" y="62" class="sl">tie → oldest goes</text>
+  <text x="592" y="118" class="st" style="fill:var(--accent);font-weight:600">then insert 4</text>
+  <text x="592" y="134" class="sl">keys[1] = [4], min = 1</text>
+  <text x="250" y="162" class="sl">No bucket for count 1 exists here: it emptied at op 6, which is why min moved to 2.</text>
+</svg>
+<div class="formula">victim = keys[min].popitem(last=False)   # smallest count, then oldest
+here:    keys[2] = [1, 3]  →  victim 1    (count 2 = 2, but 1 was used at op 3, 3 at op 6)</div>
+<p class="cap">Each <code>get</code> or <code>put</code> on a key moves it from bucket c to the end of bucket c + 1. A new key always enters bucket 1, so after an insert min is 1.</p>
+
+<h2>The three maps, two examples each</h2>
+<table class="parts">
+  <colgroup><col style="width:14%"><col class="what" style="width:34%"><col style="width:26%"><col style="width:26%"></colgroup>
+  <tr><th>Part</th><th class="what">What it answers</th><th>After op 4 (<code>put 3</code>)</th><th>After op 7 (<code>put 4</code>)</th></tr>
+  <tr><td>val</td><td class="what">What is the value? Membership test for <code>get</code>.</td>
+    <td class="ex"><code>{1: 1, 3: 3}</code><span>2 was just evicted</span></td>
+    <td class="ex"><code>{3: 3, 4: 4}</code><span>1 was just evicted</span></td></tr>
+  <tr><td>cnt</td><td class="what">Which bucket is this key in? Needed to unlink it in O(1).</td>
+    <td class="ex"><code>{1: 2, 3: 1}</code><span>1 was read once</span></td>
+    <td class="ex"><code>{3: 2, 4: 1}</code><span>4 is new, so count 1</span></td></tr>
+  <tr><td>keys + min</td><td class="what">Who goes next? Bucket per count, oldest use first; min names the lowest non-empty bucket.</td>
+    <td class="ex"><code>{1: [3], 2: [1]}</code>, min 1<span>next victim: 3</span></td>
+    <td class="ex"><code>{1: [4], 2: [3]}</code>, min 1<span>next victim: 4, the newcomer</span></td></tr>
+</table>
+
+<h2>Hand trace</h2>
+<div class="wrap">
+<table class="trace">
+  <tr><th>#</th><th>Op → returns</th><th>Buckets after (count: keys, oldest first)</th><th class="num">min</th><th class="why">Why</th></tr>
+  <tr><td class="num">1</td><td class="op">put(1, 1)</td><td><div class="bks"><div class="bk"><b>1:</b><span class="a">1</span></div></div></td><td class="num">1</td><td class="why">new key, count 1</td></tr>
+  <tr><td class="num">2</td><td class="op">put(2, 2)</td><td><div class="bks"><div class="bk"><b>1:</b><span>1</span><span class="a">2</span></div></div></td><td class="num">1</td><td class="why">cache now full</td></tr>
+  <tr><td class="num">3</td><td class="op">get(1) → <span class="hi" style="display:inline;font-family:inherit;font-size:inherit">1</span></td><td><div class="bks"><div class="bk"><b>1:</b><span>2</span></div><div class="bk"><b>2:</b><span class="a">1</span></div></div></td><td class="num">1</td><td class="why">1 moves up a bucket</td></tr>
+  <tr class="ev"><td class="num">4</td><td class="op">put(3, 3)</td><td><div class="bks"><div class="bk"><b>1:</b><span class="gone">2</span><span class="a">3</span></div><div class="bk"><b>2:</b><span>1</span></div></div></td><td class="num">1</td><td class="why">full: evict oldest of bucket 1 = <b class="lo">2</b></td></tr>
+  <tr><td class="num">5</td><td class="op">get(2) → <span class="lo" style="display:inline;font-family:inherit;font-size:inherit">−1</span></td><td><div class="bks"><div class="bk"><b>1:</b><span>3</span></div><div class="bk"><b>2:</b><span>1</span></div></div></td><td class="num">1</td><td class="why">miss: nothing changes</td></tr>
+  <tr><td class="num">6</td><td class="op">get(3) → <span class="hi" style="display:inline;font-family:inherit;font-size:inherit">3</span></td><td><div class="bks"><div class="bk"><b>2:</b><span>1</span><span class="a">3</span></div></div></td><td class="num hi">2</td><td class="why">bucket 1 empties and was min → min = 2</td></tr>
+  <tr class="ev"><td class="num">7</td><td class="op">put(4, 4)</td><td><div class="bks"><div class="bk"><b>1:</b><span class="a">4</span></div><div class="bk"><b>2:</b><span class="gone">1</span><span>3</span></div></div></td><td class="num">1</td><td class="why">tie at count 2: evict older <b class="lo">1</b></td></tr>
+  <tr><td class="num">8</td><td class="op">get(1) → <span class="lo" style="display:inline;font-family:inherit;font-size:inherit">−1</span></td><td><div class="bks"><div class="bk"><b>1:</b><span>4</span></div><div class="bk"><b>2:</b><span>3</span></div></div></td><td class="num">1</td><td class="why">miss</td></tr>
+  <tr><td class="num">9</td><td class="op">get(3) → <span class="hi" style="display:inline;font-family:inherit;font-size:inherit">3</span></td><td><div class="bks"><div class="bk"><b>1:</b><span>4</span></div><div class="bk"><b>3:</b><span class="a">3</span></div></div></td><td class="num">1</td><td class="why">3 reaches count 3</td></tr>
+  <tr><td class="num">10</td><td class="op">get(4) → <span class="hi" style="display:inline;font-family:inherit;font-size:inherit">4</span></td><td><div class="bks"><div class="bk"><b>2:</b><span class="a">4</span></div><div class="bk"><b>3:</b><span>3</span></div></div></td><td class="num">2</td><td class="why">bucket 1 empties → min = 2</td></tr>
+</table>
+</div>
+<p class="cap">Green chip = the key just touched. Dashed red = evicted by that op. Ops 1–7 are the brief's sequence; 8–10 finish LeetCode 460's example. Output printed by <span class="mono">code/lfu-cache.py</span>.</p>
+
+<h2>In Python</h2>
+<pre class="code"><span class="k">from</span> collections <span class="k">import</span> OrderedDict, defaultdict
+
+<span class="k">class</span> LFUCache:
+    <span class="k">def</span> __init__(self, capacity):
+        self.cap = capacity
+        self.val = {}                        <span class="c"># key -&gt; value</span>
+        self.cnt = {}                        <span class="c"># key -&gt; use count</span>
+        self.keys = defaultdict(OrderedDict)  <span class="c"># count -&gt; keys, LRU first</span>
+        self.min = 0                         <span class="c"># smallest count in use</span>
+
+    <span class="k">def</span> _touch(self, key):                   <span class="c"># count += 1, move bucket</span>
+        c = self.cnt[key]
+        <span class="k">del</span> self.keys[c][key]
+        <span class="k">if</span> <span class="k">not</span> self.keys[c]:
+            <span class="k">del</span> self.keys[c]
+            <span class="k">if</span> self.min == c:
+                self.min = c + 1             <span class="c"># key went to c + 1</span>
+        self.cnt[key] = c + 1
+        self.keys[c + 1][key] = None         <span class="c"># newest in its bucket</span>
+
+    <span class="k">def</span> get(self, key):
+        <span class="k">if</span> key <span class="k">not</span> <span class="k">in</span> self.val:
+            <span class="k">return</span> -1
+        self._touch(key)
+        <span class="k">return</span> self.val[key]
+
+    <span class="k">def</span> put(self, key, value):
+        <span class="k">if</span> self.cap &lt;= 0:
+            <span class="k">return</span>
+        <span class="k">if</span> key <span class="k">in</span> self.val:
+            self.val[key] = value
+            self._touch(key)
+            <span class="k">return</span>
+        <span class="k">if</span> len(self.val) == self.cap:        <span class="c"># evict: min count, LRU</span>
+            old, _ = self.keys[self.min].popitem(last=False)
+            <span class="k">if</span> <span class="k">not</span> self.keys[self.min]:
+                <span class="k">del</span> self.keys[self.min]
+            <span class="k">del</span> self.val[old], self.cnt[old]  <span class="c"># the evicted key</span>
+        self.val[key], self.cnt[key] = value, 1
+        self.keys[1][key] = None
+        self.min = 1
+<span class="o"># get(3)     -&gt; 3   buckets={2: [1, 3]} min=2
+# put(4, 4)         buckets={1: [4], 2: [3]} min=1
+# 1000 random op sequences match brute force</span></pre>
+<p class="fix">The source's Java evicts with <code>key_count.remove(key)</code>, the new key, where it should remove <code>lfu</code>. Answers stay right (a line-for-line port matches the brute force on 1,000 random sequences), but evicted keys' counts are never freed: after 1,000 distinct puts into a capacity-2 cache its count map holds 1,000 entries, not 2. Corrected here. It also never deletes empty count buckets, and with capacity 0 it looks up the missing bucket 0 (a null in Java).</p>
+<p class="cx"><b>Time O(1) per <code>get</code>/<code>put</code> · Space O(capacity).</b> Every step is a fixed number of dict and OrderedDict operations (O(1) average-case hashing), and a count only ever moves by 1, so min can only reset to 1 on insert or step up by 1 when its bucket empties. Nothing is ever searched.</p>
+
+<h2>Why it beats the alternatives</h2>
+<div class="grid2">
+  <div class="cell"><h3><span class="x">&#10007;</span> Dict + scan on evict</h3><p>Store (value, count, last use) and take <code>min</code> over all keys when full. Correct, and it is the brute force the code tests against, but every eviction is O(n): a pass over all 10,000 keys at capacity 10⁴.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Heap of (count, time)</h3><p>O(log n) per op, about 14 levels at 10⁴ (log₂ 10⁴ = 13.3). Every touch changes a key's priority, so old heap entries go stale and must be skipped lazily.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Plain LRU</h3><p>O(1) with one <code>OrderedDict</code>, but a different policy. On this trace it happens to evict the same keys (2, then 1), purely by age: a key read 100 times is evicted after one quiet stretch.</p></div>
+  <div class="cell win"><h3><span class="ok">&#10003;</span> Count buckets + min</h3><p>O(1) for both ops. Counts step by exactly 1, so a key only hops to the neighbouring bucket, and the victim is always at the front of bucket min.</p></div>
+</div>
+
+<h2>Is exact LFU what real caches use?</h2>
+<div class="note">
+  <p>Rarely. Exact LFU never forgets: a key that was hot yesterday keeps its big count and squats in the cache, while every newcomer enters at count 1 and is the next victim (key 4 above is first in line the moment it arrives). If the access pattern shifts, the hit rate suffers until the old counts are outgrown.</p>
+  <p>Production caches approximate it and add decay. Redis's <code>allkeys-lfu</code> keeps a few-bit probabilistic (Morris) counter per key that decays over time and evicts from a random sample, not an exact minimum. TinyLFU keeps approximate frequencies in a Bloom-filter-like sketch and uses them to decide whether a newcomer is worth admitting. Plain LRU remains the default when recency predicts reuse, as with most web and page caches. The exact structure here is the interview answer and a fine choice for small, stable workloads.</p>
+</div>
+
+<footer class="foot">
+  <p><b>Source:</b> <a href="https://github.com/ljeng/cheat-sheet/blob/main/coding-algorithms/coding.md#lfu-cache">cheat-sheet › Coding › Object-oriented Design and Programming › LFU Cache</a> (commit 5cedb05, Java; rewritten in Python). References: Redis docs, <a href="https://redis.io/docs/latest/develop/reference/eviction/">Key eviction › LFU eviction</a>; Einziger, Friedman and Manes, <a href="https://arxiv.org/abs/1512.00727">TinyLFU: a highly efficient cache admission policy</a>; Python docs, <a href="https://docs.python.org/3/library/collections.html#collections.OrderedDict">OrderedDict</a>.</p>
+  <p><b>Run it:</b> <a href="https://github.com/seyonv/explainers/blob/main/cs-1-data-structures/code/lfu-cache.py">code/lfu-cache.py</a> prints the trace above, checks 1,000 random op sequences against a brute force, and shows the source's count-map leak (Python 3.10).</p>
+  <p><b>Related:</b> <a href="linked-bucket-list.html">Linked lists of buckets</a> · <a href="hash-buckets.html">Hashing and buckets</a> · <a href="testing-your-code.html">How to test your code</a> · <a href="../cs-6-data-systems/cache-patterns.html">Caching patterns</a></p>
+</footer>
+</article>
+<!-- series-nav:bottom -->
+<div class="snx"><a class="nx" href="index.html#random-pick-structures" target="_top">
+<span class="mini" aria-hidden="true"><span class="m1">Random pick with a blacklist</span><span class="m2">Also called uniform sampling with exclusions, or the remap trick (LeetCode 710). Pick a uniformly random integer in [0, n) that isn't blacklisted, with one call to the random function per pick. The…</span><span class="m3">In one breath</span><span class="m4">If b values are banned, only m = n − b values are allowed, so draw from [0, m) and nothing else. Some banned values sit inside [0, m) and leave holes; the same number of allowed values sit outside it, at m or above. Build a small dict that sends each hole to one of those outside values, and every draw lands on a distinct allowed…</span></span>
+<span class="tx"><span class="lab">Next up · 18 / 21</span><span class="tt">Random pick with a blacklist</span><span class="ds">Remap blacklisted values so one random call picks uniformly</span><span class="nd">Stands alone.</span><span class="go">Continue →</span></span></a><div class="aux"><span><a href="index.html#fibonacci-heap" target="_top">← Fibonacci heap</a></span><a href="index.html" target="_top">All cards in 1 · Data structures &amp; coding</a></div></div>
+<!-- /series-nav:bottom -->
+</body>
+</html>

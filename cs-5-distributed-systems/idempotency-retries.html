@@ -1,0 +1,331 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Idempotency and retries</title>
+<style>
+:root{
+  --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
+  --text:#1c1f23; --muted:#6b7068; --faint:#b9b9b3;
+  --accent:#4a9d77; --accent-bg:#dcefdf; --accent-border:#8cc79c;
+  --red:#c0492b; --red-bg:#fbeceb;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#15171a; --surface:#1d2024; --surface2:#24282d; --border:#32373d;
+    --text:#e6e8ea; --muted:#9aa1a9; --faint:#4a5057;
+    --accent:#5fb37f; --accent-bg:#1c2b22; --accent-border:#3f7a55;
+    --red:#e57368; --red-bg:#2e1f1e;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text)}
+.card{max-width:820px;margin:0 auto;padding:28px 32px;font-family:-apple-system,"Inter",system-ui,sans-serif;line-height:1.45}
+h1{font-size:26px;font-weight:600;margin:0 0 6px;letter-spacing:-0.01em}
+.sub{font-size:15px;color:var(--muted);margin:0 0 20px}
+h2{font-size:17px;font-weight:600;margin:26px 0 10px}
+p{font-size:15px;margin:0 0 10px}
+.cap{font-size:13px;color:var(--muted);margin:8px 0 0;text-align:center}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+
+/* Tables and formulas */
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border)}
+th{font-size:12px;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:none}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+th.num{text-align:right}
+.hi{color:var(--accent);font-weight:600} .lo{color:var(--red);font-weight:600}
+.formula{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin:10px 0;white-space:pre;overflow-x:auto;line-height:1.55}
+.wrap{overflow-x:auto}
+
+/* Typeset formula (patterns §1) */
+.mathbox{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px 16px 12px;margin:10px 0;overflow-x:auto}
+.mathbox math{font-size:21px;color:var(--text);font-family:"STIX Two Math","Latin Modern Math","Cambria Math",math}
+.mathbox .t1{color:var(--text)} .mathbox .t2{color:var(--accent)} .mathbox .t3{color:var(--muted)}
+.mathbox .lab{font-size:12px;font-family:-apple-system,"Inter",system-ui,sans-serif;padding-top:3px;border-top:1.5px solid currentColor;margin-top:2px}
+.legend{display:grid;grid-template-columns:auto 1fr auto;column-gap:14px;row-gap:5px;font-size:13px;margin-top:12px;align-items:baseline}
+.legend .sym{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;text-align:right}
+.legend .v{color:var(--muted);text-align:right;font-variant-numeric:tabular-nums}
+@media (max-width:560px){.legend{grid-template-columns:auto 1fr}.legend .v{display:none}}
+
+/* Code (series CSS, verbatim) */
+.code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;line-height:1.5;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin:10px 0;white-space:pre;overflow-x:auto;tab-size:4;color:var(--text)}
+.code .k{color:var(--accent);font-weight:600}.code .c{color:var(--muted)}.code .o{color:var(--muted)}
+
+/* Two traces side by side: client, server, bill */
+.traces{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.trace{border:1px solid var(--border);border-radius:10px;padding:10px 12px 6px}
+.trace h3{font-size:14px;font-weight:600;margin:0 0 4px;display:flex;gap:8px;align-items:baseline}
+.trace table{font-size:13px}
+.trace th,.trace td{padding:5px 6px;vertical-align:top}
+.trace td{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
+.trace td.num,.trace th.num{width:40px}
+.trace .w{color:var(--faint)}
+.trace .bad td{background:var(--red-bg)}
+.trace .bad .num{color:var(--red);font-weight:600}
+.trace .good .num{color:var(--accent);font-weight:600}
+.trace .end{font-size:13px;margin:6px 0 4px}
+
+/* Key table outcomes */
+.keys td{vertical-align:top}
+.keys td.m{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px}
+.keys td small{display:block;color:var(--muted);font-size:12px}
+
+/* Backoff schedule: ceiling (grey) with one jittered draw (green), linear scale */
+.sched td{vertical-align:middle;font-variant-numeric:tabular-nums}
+.bk{position:relative;height:14px;width:100%;min-width:120px}
+.bk .c{position:absolute;left:0;top:0;height:14px;border-radius:2px;background:var(--surface2);border:1px solid var(--border)}
+.bk .d{position:absolute;left:0;top:4px;height:6px;border-radius:2px;background:var(--accent)}
+.key{display:flex;gap:16px;justify-content:center;font-size:13px;color:var(--muted);margin-top:8px}
+.key i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;vertical-align:-1px}
+.key .kc{background:var(--surface2);border:1px solid var(--border)} .key .kd{background:var(--accent)}
+
+/* Amplification */
+.amp td.hot{color:var(--red);font-weight:600;background:var(--red-bg)}
+
+/* Terms: two examples each */
+.parts td{vertical-align:top}
+.parts td:first-child{font-weight:600;white-space:nowrap}
+.parts .ex{font-size:13px}
+.parts .ex span{display:block;color:var(--muted)}
+
+/* 2x2 grid */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.cell{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.cell.win{background:var(--accent-bg);border-color:var(--accent-border)}
+.cell h3{font-size:16px;font-weight:600;margin:0 0 5px;display:flex;gap:8px;align-items:baseline}
+.cell p{font-size:14px;margin:0;color:var(--text)}
+.cell.win h3,.cell.win p{color:var(--accent)}
+.x{color:var(--red)} .ok{color:var(--accent)}
+
+/* Clarification box */
+.note{border:1px solid var(--border);border-radius:10px;padding:14px 18px;font-size:14px}
+.note p{font-size:14px} .note p:last-child{margin-bottom:0}
+
+.cx{font-size:14px;margin:12px 0 0}
+.foot{margin-top:22px;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+.foot p{font-size:13px;margin:0 0 4px}
+.foot b{color:var(--text);font-weight:600}
+@media (max-width:560px){
+  .card{padding:22px 16px}
+  .grid2,.traces{grid-template-columns:1fr}
+  .parts .what{display:none}
+  .sched .hide,.keys .hide{display:none}
+  .sched td,.sched th,.keys td,.keys th{padding:6px 5px}
+}
+/* series-nav */
+.sn{max-width:820px;margin:0 auto;padding:16px 32px 0;font-family:-apple-system,"Inter",system-ui,sans-serif;font-size:13px;line-height:1.5;color:var(--muted)}
+.sn a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
+.sn .crumbs{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 7px}
+.sn .crumbs b{color:var(--text);font-weight:600}
+.sn .sep{color:var(--faint,var(--border))}
+.sn .step{margin-left:auto;white-space:nowrap}
+.sn .dep{margin-top:5px;padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface)}
+.sn .dep .ok{color:var(--accent);font-weight:600}
+.snx{max-width:820px;margin:0 auto;padding:6px 32px 44px;font-family:-apple-system,"Inter",system-ui,sans-serif}
+.snx .nx{display:grid;grid-template-columns:280px 1fr;text-decoration:none;color:var(--text);background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.snx .nx:hover,.snx .nx:focus-visible{border-color:var(--accent-border,var(--accent));outline:none}
+.snx .mini{position:relative;height:210px;overflow:hidden;background:var(--bg);border-right:1px solid var(--border);padding:14px 16px}
+.snx .mini span{display:block}
+.snx .mini .m1{font-size:12.5px;font-weight:600;margin:0 0 4px;line-height:1.3}
+.snx .mini .m2{font-size:9px;color:var(--muted);margin:0 0 8px;line-height:1.4}
+.snx .mini .m3{font-size:8.5px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;margin:0 0 3px}
+.snx .mini .m4{font-size:9.5px;margin:0;line-height:1.45}
+.snx .tx{padding:16px 20px}
+.snx .lab{font-size:12px;font-weight:600;color:var(--accent);letter-spacing:.04em;text-transform:uppercase}
+.snx .tt{display:block;font-size:20px;font-weight:600;margin:5px 0 4px;line-height:1.25}
+.snx .ds{display:block;font-size:14px;color:var(--muted)}
+.snx .nd{display:block;font-size:13px;color:var(--muted);margin-top:10px}
+.snx .go{display:block;margin-top:12px;font-size:14px;font-weight:600;color:var(--accent)}
+.snx .aux{display:flex;justify-content:space-between;gap:12px;margin-top:10px;font-size:13px;color:var(--muted)}
+.snx .aux a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
+@media (max-width:560px){.sn,.snx{padding-left:16px;padding-right:16px}.snx .nx{grid-template-columns:1fr}.snx .mini{display:none}.sn .step{margin-left:0}}
+/* /series-nav */
+</style>
+</head>
+<body>
+<!-- series-nav:top -->
+<nav class="sn" aria-label="Course navigation"><div class="crumbs"><a href="../cs-0-map/index.html" target="_top">CS interview cheat sheet</a><span class="sep">›</span><a href="index.html" target="_top">5 · Distributed systems</a><span class="sep">›</span><b>21 / 21</b><span class="step"><a href="index.html#sharding-hot-keys" target="_top">← prev</a> · <a href="../cs-6-data-systems/index.html#_overview" target="_top">next →</a></span></div>
+<div class="dep"><span class="ok">Stands alone.</span> You can jump in here without reading earlier cards.</div></nav>
+<!-- /series-nav:top -->
+<article class="card">
+<h1>Idempotency and retries</h1>
+<p class="sub">Also called safe retries, retry with exponential backoff and jitter, idempotency keys, or "at-least-once delivery plus dedup = effectively once". The cheat-sheet says timeouts and exponential backoff are essential and that the app should do its own retries, but never shows how; this card fills that in for the image-resize service.</p>
+
+<h2>In one breath</h2>
+<p>When a call times out you can't tell whether the request was lost or only the reply was, so the only safe move is to try again, and that is only safe if doing it twice has the same effect as doing it once. Make the operation idempotent (often with a client-chosen key the server remembers), then retry with waits that grow exponentially and are randomised, and retry at one layer only.</p>
+
+<h2>Worked example: the reply to a billing write is lost</h2>
+<p>The image-resize service reports usage for billing. <code>POST /usage</code> adds 40 conversions to a customer's bill. The server applies it, but the reply is dropped on the way back (one of the source's six network failures). The client times out and retries.</p>
+<div class="traces">
+  <div class="trace">
+    <h3><span class="x">&#10007;</span> Retry, no key</h3>
+    <table>
+      <tr><th>Client</th><th>Server</th><th class="num">Bill</th></tr>
+      <tr><td>POST +40</td><td>apply</td><td class="num">40</td></tr>
+      <tr><td class="w">reply lost; wait 24 ms</td><td class="w">201 → dropped</td><td class="num">40</td></tr>
+      <tr class="bad"><td>POST +40 again</td><td>apply again</td><td class="num">80</td></tr>
+      <tr><td>gets 201</td><td></td><td class="num">80</td></tr>
+    </table>
+    <p class="end"><span class="lo">Billed 80</span> for 40 conversions. The server had no way to know the second POST was a copy.</p>
+  </div>
+  <div class="trace">
+    <h3><span class="ok">&#10003;</span> Retry with an idempotency key</h3>
+    <table>
+      <tr><th>Client</th><th>Server</th><th class="num">Bill</th></tr>
+      <tr><td>POST +40, key k1</td><td>k1 new: apply, store reply</td><td class="num">40</td></tr>
+      <tr><td class="w">reply lost; wait 24 ms</td><td class="w">201 → dropped</td><td class="num">40</td></tr>
+      <tr class="good"><td>POST +40, key k1</td><td>k1 seen: replay stored 201</td><td class="num">40</td></tr>
+      <tr><td>gets 201</td><td></td><td class="num">40</td></tr>
+    </table>
+    <p class="end"><span class="hi">Billed 40</span>. The key is chosen once per logical operation and reused on every retry.</p>
+  </div>
+</div>
+<p class="cap">Output of <span class="mono">code/idempotency-retries.py</span>: balance 80 without the key, 40 with it. The 40 conversions and the 24 ms wait (one full-jitter draw, seed 3) are illustrative.</p>
+
+<h2>The server's key table</h2>
+<p>One row per key: what the request was, and the reply it got. Every incoming request with a key hits this table first.</p>
+<div class="wrap">
+<table class="keys">
+  <tr><th>Incoming</th><th>Table says</th><th>Server does</th><th class="hide">Reply</th></tr>
+  <tr><td class="m">k1, +40</td><td>k1 not present</td><td>Apply, then store (k1, +40, 201)<small>bill 0 → 40</small></td><td class="hide m">201</td></tr>
+  <tr><td class="m">k1, +40</td><td>k1 present, same request</td><td class="hi">Replay the stored reply<small>bill stays 40</small></td><td class="hide m">201 (stored)</td></tr>
+  <tr><td class="m">k1, +50</td><td>k1 present, different request</td><td class="lo">Refuse: a key reused by mistake<small>bill stays 40</small></td><td class="hide m">422</td></tr>
+  <tr><td class="m">k1, +40</td><td>k1 still in progress</td><td>Refuse for now; client retries later<small>stops two copies running at once</small></td><td class="hide m">409</td></tr>
+</table>
+</div>
+<p class="cap">This is how Stripe documents its keys: it stores the status and body of the first request, errors if a retry's parameters differ, doesn't save a result for a request that conflicts with one still running, and may prune keys once they are 24 hours old. The 422 and 409 codes are our choice (our code returns 422); Stripe's exact codes aren't quoted here.</p>
+
+<h2>How long to wait: capped exponential backoff with full jitter</h2>
+<div class="mathbox">
+<math display="block">
+  <msub><mi>sleep</mi><mi>n</mi></msub><mo>=</mo>
+  <munder class="t2"><mrow><mi>random</mi><mo stretchy="false">(</mo><mn>0</mn><mo>,</mo></mrow><mtext class="lab">jitter</mtext></munder>
+  <munder class="t1"><mrow><mi>min</mi><mo stretchy="false">(</mo><mi>cap</mi><mo>,</mo><mspace width="0.2em"/><mi>base</mi><mo>&#183;</mo><msup><mn>2</mn><mi>n</mi></msup><mo stretchy="false">)</mo></mrow><mtext class="lab">ceiling: doubles, then capped</mtext></munder>
+  <mo stretchy="false">)</mo>
+  <mspace width="1.2em"/>
+  <munder class="t3"><mrow><mi>E</mi><mo stretchy="false">[</mo><msub><mi>sleep</mi><mi>n</mi></msub><mo stretchy="false">]</mo><mo>=</mo><mfrac><mi>ceiling</mi><mn>2</mn></mfrac></mrow><mtext class="lab">uniform, so half on average</mtext></munder>
+</math>
+<div class="legend">
+  <span class="sym">n</span><span>retry number, starting at 0 for the first retry</span><span class="v">0, 1, 2 …</span>
+  <span class="sym">base</span><span>first ceiling</span><span class="v">100 ms</span>
+  <span class="sym">cap</span><span>longest a single wait may get</span><span class="v">10 s</span>
+  <span class="sym">random(a, b)</span><span>uniform draw: every client picks its own point in the window</span><span class="v">"full jitter"</span>
+</div>
+</div>
+<div class="formula">sleep = random.uniform(0, min(10.0, 0.100 * 2 ** n))</div>
+<div class="wrap">
+<table class="sched">
+  <tr><th>Retry</th><th class="num">Ceiling</th><th class="num">E[sleep]</th><th class="num">One draw</th><th class="hide">Window (linear, 0 to 3.2 s)</th><th class="num">E[total wait]</th></tr>
+  <tr><td>1</td><td class="num">100 ms</td><td class="num">50 ms</td><td class="num">13 ms</td><td class="hide"><div class="bk"><div class="c" style="width:3.13%"></div><div class="d" style="width:0.41%"></div></div></td><td class="num">50 ms</td></tr>
+  <tr><td>2</td><td class="num">200 ms</td><td class="num">100 ms</td><td class="num">169 ms</td><td class="hide"><div class="bk"><div class="c" style="width:6.25%"></div><div class="d" style="width:5.28%"></div></div></td><td class="num">150 ms</td></tr>
+  <tr><td>3</td><td class="num">400 ms</td><td class="num">200 ms</td><td class="num">306 ms</td><td class="hide"><div class="bk"><div class="c" style="width:12.5%"></div><div class="d" style="width:9.56%"></div></div></td><td class="num">350 ms</td></tr>
+  <tr><td>4</td><td class="num">800 ms</td><td class="num">400 ms</td><td class="num">204 ms</td><td class="hide"><div class="bk"><div class="c" style="width:25%"></div><div class="d" style="width:6.38%"></div></div></td><td class="num">750 ms</td></tr>
+  <tr><td>5</td><td class="num">1,600 ms</td><td class="num">800 ms</td><td class="num">793 ms</td><td class="hide"><div class="bk"><div class="c" style="width:50%"></div><div class="d" style="width:24.78%"></div></div></td><td class="num">1,550 ms</td></tr>
+  <tr><td>6</td><td class="num">3,200 ms</td><td class="num">1,600 ms</td><td class="num">1,438 ms</td><td class="hide"><div class="bk"><div class="c" style="width:100%"></div><div class="d" style="width:44.94%"></div></div></td><td class="num">3,150 ms</td></tr>
+</table>
+</div>
+<div class="key"><span><i class="kc"></i>window a client may pick from</span><span><i class="kd"></i>the one it picked</span></div>
+<div class="formula">E[total wait, 6 retries] = 50 + 100 + 200 + 400 + 800 + 1600
+                         = (2^6 − 1) × 50 ms = 3,150 ms
+cap reached at retry 8:    0.100 × 2^7 = 12.8 s  →  10 s</div>
+<p class="cap">"One draw" is a single seeded sample (seed 1), so it's illustrative; the ceilings and expectations are exact. Base 100 ms and cap 10 s are this course's choice, not the source's.</p>
+
+<h2>Why the randomness matters</h2>
+<p>If a blip fails 100 clients at the same moment and they all back off by exactly the ceiling, they all come back at the same moment too, and the server gets the same spike again, one ceiling later. Full jitter spreads each wave across its window.</p>
+<div class="formula">100 clients, first retry, window 100 ms, counted in 10 ms slots:
+  no jitter:   all 100 in one slot           → peak 100
+  full jitter: mean 100 / 10 = 10 per slot   → peak 16  (seed 1)
+fourth retry, window 800 ms (80 slots): mean 1.25 → peak 6</div>
+
+<h2>Retry at one layer: amplification</h2>
+<p>If every layer between the user and the database retries, attempts multiply. With <i>r</i> retries (<i>r</i> + 1 attempts) at each of <i>L</i> layers, one user action can reach the bottom layer (<i>r</i> + 1)<sup><i>L</i></sup> times, exactly when it is already failing.</p>
+<div class="wrap">
+<table class="amp">
+  <tr><th>Retries per layer</th><th class="num">1 layer</th><th class="num">2 layers</th><th class="num">3 layers</th><th class="num">4 layers</th></tr>
+  <tr><td>1 retry (2 attempts)</td><td class="num">2</td><td class="num">4</td><td class="num">8</td><td class="num">16</td></tr>
+  <tr><td>2 retries (3 attempts)</td><td class="num">3</td><td class="num">9</td><td class="num">27</td><td class="num">81</td></tr>
+  <tr><td>3 retries (4 attempts)</td><td class="num">4</td><td class="num">16</td><td class="num hot">64</td><td class="num">256</td></tr>
+</table>
+</div>
+<p class="cap">Google's SRE book gives the 64: JavaScript, frontend and backend each issuing 3 retries means 4<sup>3</sup> = 64 attempts on an overloaded database. Its fixes: retry only at the layer just above the one rejecting, cap attempts per request at 3, and keep retries under 10% of a client's requests. "3 layers × 3" is 27 only if 3 counts attempts, not retries.</p>
+
+<h2>Which requests are safe to retry</h2>
+<table class="parts">
+  <tr><th>Term</th><th class="what">What it means</th><th>Example A</th><th>Example B</th></tr>
+  <tr><td>Safe</td><td class="what">Only reads: asks for no change to server state.</td>
+    <td class="ex"><b class="ok">GET, HEAD, OPTIONS, TRACE</b><span>GET /images/42 twice returns the image twice</span></td>
+    <td class="ex"><b>A read that logs</b><span>still "safe": the client didn't ask for the log line</span></td></tr>
+  <tr><td>Idempotent</td><td class="what">The intended effect of N copies equals one. RFC 9110 lists PUT, DELETE and every safe method.</td>
+    <td class="ex"><b class="ok">PUT /quota/acme = 500</b><span>twice: quota is still 500</span></td>
+    <td class="ex"><b>DELETE /images/42</b><span>second call may say 404, but the state is the same: gone</span></td></tr>
+  <tr><td>Not idempotent</td><td class="what">Each copy does it again. Needs a key before it can be retried.</td>
+    <td class="ex"><b class="lo">POST /usage +40</b><span>twice without a key: billed 80</span></td>
+    <td class="ex"><b class="lo">PATCH "count += 1"</b><span>RFC 5789: PATCH isn't necessarily idempotent</span></td></tr>
+  <tr><td>Idempotency key</td><td class="what">A random ID the client picks once per logical operation and sends on every retry.</td>
+    <td class="ex"><b class="ok">Idempotency-Key: &lt;UUID4&gt;</b><span>Stripe: any POST, up to 255 characters</span></td>
+    <td class="ex"><b>Request ID in a message</b><span>a consumer skips IDs it already applied (see exactly-once transfer)</span></td></tr>
+</table>
+<p class="cap">RFC 9110 says idempotent requests "can be automatically retried by a client following an underlying connection failure"; that is why HTTP clients retry GET and PUT on their own but not POST.</p>
+
+<h2>In Python</h2>
+<pre class="code"><span class="k">import</span> random
+
+<span class="k">def</span> full_jitter(n, rng, base=0.100, cap=10.0):
+    <span class="k">return</span> rng.uniform(0, min(cap, base * 2 ** n))
+
+<span class="k">class</span> Server:
+    <span class="k">def</span> __init__(self):
+        self.balance, self.keys = 0, {}   <span class="c"># key -&gt; (request, reply)</span>
+
+    <span class="k">def</span> charge(self, amount, key=None):
+        req = ("charge", amount)
+        <span class="k">if</span> key <span class="k">in</span> self.keys:
+            seen, reply = self.keys[key]
+            <span class="k">if</span> seen != req:               <span class="c"># same key, other request</span>
+                <span class="k">return</span> ("422 key reused", None)
+            <span class="k">return</span> reply                  <span class="c"># replay, no new charge</span>
+        self.balance += amount            <span class="c"># the side effect</span>
+        reply = ("201 charged", self.balance)
+        <span class="k">if</span> key <span class="k">is not</span> None:
+            self.keys[key] = (req, reply)
+        <span class="k">return</span> reply
+
+<span class="c"># call(): first reply is lost, client sleeps full_jitter(0),</span>
+<span class="c"># then retries with the SAME key (full version in code/)</span>
+<span class="o"># → no key  : reply ('201 charged', 80), slept [24] ms, balance 80
+#   with key: reply ('201 charged', 40), slept [24] ms, balance 40
+#   same key, amount 50: 422 key reused</span></pre>
+<p class="cx"><b>Time O(1) · Space O(keys kept).</b> Each request costs one hash lookup; the table grows by one row per keyed request until rows expire. At the image service's 10K requests/s that's 10,000 × 86,400 = 864 million rows a day per region if every request carried a key.</p>
+<p class="cap">In a real service the check and the insert must be atomic (a unique constraint or a conditional write), and the side effect and the key row should commit in one transaction. Otherwise two concurrent copies can both miss the table and both apply. Our note, not the source's.</p>
+
+<h2>Why it beats the alternatives</h2>
+<div class="grid2">
+  <div class="cell"><h3><span class="x">&#10007;</span> Never retry</h3><p>Every dropped packet and every GC pause becomes a user-facing error, even though most such failures are brief (the source: loss is usually congestion, not a cut cable).</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Retry at once, no key</h3><p>Duplicates non-idempotent work (billed 80 for 40) and hits a struggling server again with no pause, turning a blip into overload.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Fixed backoff at every layer</h3><p>No jitter: all 100 clients return in the same 10 ms slot. Retries at 3 layers: up to 64 attempts on the database per user action.</p></div>
+  <div class="cell win"><h3><span class="ok">&#10003;</span> Key + jittered backoff, one layer</h3><p>The key makes copies harmless (billed 40). Full jitter cut the peak from 100 to 16. Retrying at one layer with a budget keeps it at 4 attempts, not 64.</p></div>
+</div>
+
+<h2>Should every failure be retried?</h2>
+<div class="note">
+  <p>No. Retry only failures that might go away: timeouts, dropped connections, 503. Don't retry a 400 or a 422; the same request will fail the same way. If the server says it's overloaded (429 or 503, maybe with <code>Retry-After</code>), wait at least that long, or give up. Google's SRE book uses an "overloaded; don't retry" error so upper layers stop. And don't retry where a late answer is useless: the source's VoIP example drops lost packets instead of resending them.</p>
+  <p>Idempotency keys make retries safe for a while, not forever. Once a key is pruned (Stripe: after at least 24 hours), a late retry runs as a new request. And a key only dedupes one hop: the service behind it needs its own keys or natural idempotency (a PUT of a final value, a unique request ID in a ledger). That's the end-to-end argument again.</p>
+</div>
+
+<footer class="foot">
+  <p><b>Source:</b> <a href="https://github.com/ljeng/cheat-sheet/blob/main/large-scale-design/system-design/networks.md">cheat-sheet › Networks</a> (commit 5cedb05): the six ways a request can fail, "the app should provide its own retries", VoIP vs TCP; and <a href="https://github.com/ljeng/cheat-sheet/blob/main/large-scale-design/system-design/distributed-systems.md#engineering">Distributed Systems › Engineering</a>: "Timeouts and exponential back-offs are essential." The source has no retry or idempotency section; this card is supplemented from Brooker, <a href="https://aws.amazon.com/blogs/architecture/exponential-backoff-and-jitter/">Exponential backoff and jitter</a> (AWS, 2015); Google SRE book, <a href="https://sre.google/sre-book/addressing-cascading-failures/">Addressing cascading failures</a> and <a href="https://sre.google/sre-book/handling-overload/">Handling overload</a>; <a href="https://www.rfc-editor.org/rfc/rfc9110.html#section-9.2">RFC 9110 §9.2</a> and <a href="https://www.rfc-editor.org/rfc/rfc5789.html">RFC 5789</a>; Stripe, <a href="https://docs.stripe.com/api/idempotent_requests">Idempotent requests</a>. The 40-conversion bill, base 100 ms and cap 10 s are illustrative; the random draws are seeded; every other number is computed.</p>
+  <p><b>Run it:</b> <a href="https://github.com/seyonv/explainers/blob/main/cs-5-distributed-systems/code/idempotency-retries.py">code/idempotency-retries.py</a> prints the backoff table, the herd peaks, the amplification table and the dedup demo (Python 3.10, standard library only).</p>
+  <p><b>Related:</b> <a href="end-to-end-argument.html">the end-to-end argument</a> · <a href="delay-timeouts-congestion.html">delay, timeouts and congestion control</a> · <a href="exactly-once-transfer.html">money transfer without distributed transactions</a> · <a href="backpressure-metrics.html">backpressure, percentiles, yield and harvest</a></p>
+</footer>
+</article>
+<!-- series-nav:bottom -->
+<div class="snx"><a class="nx" href="../cs-6-data-systems/index.html#_overview" target="_top">
+<span class="mini" aria-hidden="true"><span class="m1">Touching less data</span><span class="m2">The overview for course 6 of the cheat-sheet series. It ties together the 17 cards on the cheat-sheet's storage, caching, MapReduce, graph-query and case-study pages: how B-trees, LSM trees, caches,…</span><span class="m3">In one breath</span><span class="m4">Every system in this course is judged by one ratio: how much it reads, writes, copies or holds idle for each byte, fact or GPU-hour the user actually wanted. An index reads 1 page instead of 250,000. An LSM tree rewrites each byte about 20 times, but in sequential runs. A cleaner at 90% full copies 9 bytes to free 1. A…</span></span>
+<span class="tx"><span class="lab">Next course · 6 · Data systems &amp; infrastructure</span><span class="tt">Touching less data</span><span class="ds">The map of this course, what matters most, and the words people use</span><span class="nd">Needs cs-5 (partitioning, consistency). cs-2's sorting helps with MapReduce.</span><span class="go">Continue →</span></span></a><div class="aux"><span><a href="index.html#sharding-hot-keys" target="_top">← Sharding and hot keys</a></span><a href="index.html" target="_top">All cards in 5 · Distributed systems</a></div></div>
+<!-- /series-nav:bottom -->
+</body>
+</html>

@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Log-structured memory</title>
+<style>
+:root{
+  --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
+  --text:#1c1f23; --muted:#6b7068; --faint:#b9b9b3;
+  --accent:#4a9d77; --accent-bg:#dcefdf; --accent-border:#8cc79c;
+  --red:#c0492b; --red-bg:#fbeceb;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#15171a; --surface:#1d2024; --surface2:#24282d; --border:#32373d;
+    --text:#e6e8ea; --muted:#9aa1a9; --faint:#4a5057;
+    --accent:#5fb37f; --accent-bg:#1c2b22; --accent-border:#3f7a55;
+    --red:#e57368; --red-bg:#2e1f1e;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text)}
+.card{max-width:820px;margin:0 auto;padding:28px 32px;font-family:-apple-system,"Inter",system-ui,sans-serif;line-height:1.45}
+h1{font-size:26px;font-weight:600;margin:0 0 6px;letter-spacing:-0.01em}
+.sub{font-size:15px;color:var(--muted);margin:0 0 20px}
+h2{font-size:17px;font-weight:600;margin:26px 0 10px}
+p{font-size:15px;margin:0 0 10px}
+.cap{font-size:13px;color:var(--muted);margin:8px 0 0;text-align:center}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+
+/* Tables and formulas */
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border)}
+th{font-size:12px;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:none}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+.hi{color:var(--accent);font-weight:600} .lo{color:var(--red);font-weight:600}
+.formula{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin:10px 0;white-space:pre;overflow-x:auto;line-height:1.55}
+
+/* Code (series CSS, verbatim) */
+.code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;line-height:1.5;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin:10px 0;white-space:pre;overflow-x:auto;tab-size:4;color:var(--text)}
+.code .k{color:var(--accent);font-weight:600}.code .c{color:var(--muted)}.code .o{color:var(--muted)}
+
+/* MathML */
+.mathbox{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px 16px 12px;margin:10px 0;overflow-x:auto}
+.mathbox math{font-size:21px;color:var(--text);font-family:"STIX Two Math","Latin Modern Math","Cambria Math",math}
+.mathbox .t1{color:var(--text)} .mathbox .t2{color:var(--accent)} .mathbox .t3{color:var(--muted)}
+.mathbox .lab{font-size:12px;font-family:-apple-system,"Inter",system-ui,sans-serif;padding-top:3px;border-top:1.5px solid currentColor;margin-top:2px}
+.legend{display:grid;grid-template-columns:auto 1fr auto;column-gap:14px;row-gap:5px;font-size:13px;margin-top:12px;align-items:baseline}
+.legend .sym{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;text-align:right}
+.legend .v{color:var(--muted);text-align:right;font-variant-numeric:tabular-nums}
+
+/* Cost bars */
+.bars{display:grid;grid-template-columns:112px 1fr 64px;column-gap:12px;row-gap:6px;align-items:center;font-size:14px}
+.bars .lab{font-variant-numeric:tabular-nums;line-height:1.2}
+.bars .lab small{display:block;font-size:12px;color:var(--muted)}
+.bars .track{height:16px;background:var(--surface);border-radius:3px}
+.bars .bar{height:16px;border-radius:3px;background:var(--faint)}
+.bars .bar.bad{background:var(--red)}
+.bars .val{text-align:right;font-variant-numeric:tabular-nums}
+
+/* Log trace */
+.wrap{overflow-x:auto}
+.trace td{vertical-align:top;padding:6px 8px}
+.trace .step{white-space:nowrap;font-size:13px}
+.trace .step span{display:block;font-size:12px;color:var(--muted)}
+.trace .why{font-size:13px;color:var(--muted)}
+.seg{display:inline-flex;gap:3px;padding:3px;border:1px solid var(--border);border-radius:5px;margin-right:6px;align-items:center;white-space:nowrap}
+.seg b{font-size:11px;font-weight:600;color:var(--muted);padding:0 3px}
+.seg span{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;padding:1px 5px;border-radius:3px;border:1px solid var(--border);background:var(--surface)}
+.seg .t{font-style:italic}
+.seg .d{background:var(--surface2);color:var(--faint);text-decoration:line-through;border-color:var(--surface2)}
+.seg .a{background:var(--accent-bg);border-color:var(--accent-border);color:var(--accent)}
+.seg.free{border-style:dashed;color:var(--faint);font-size:12px;padding:3px 8px}
+.fix{font-size:13px;color:var(--muted);margin:0 0 10px}
+.cx{font-size:14px;margin:12px 0 0}
+
+/* Terms: two examples each */
+.parts td{vertical-align:top}
+.parts td:first-child{font-weight:600;white-space:nowrap}
+.parts .ex{font-size:13px}
+.parts .ex span{display:block;color:var(--muted)}
+
+/* 2x2 grid */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.cell{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.cell.win{background:var(--accent-bg);border-color:var(--accent-border)}
+.cell h3{font-size:16px;font-weight:600;margin:0 0 5px;display:flex;gap:8px;align-items:baseline}
+.cell p{font-size:14px;margin:0;color:var(--text)}
+.cell.win h3,.cell.win p{color:var(--accent)}
+.x{color:var(--red)} .ok{color:var(--accent)}
+
+/* Clarification box */
+.note{border:1px solid var(--border);border-radius:10px;padding:14px 18px;font-size:14px}
+.note p{font-size:14px} .note p:last-child{margin-bottom:0}
+
+.foot{margin-top:22px;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+.foot p{font-size:13px;margin:0 0 4px}
+.foot b{color:var(--text);font-weight:600}
+@media (max-width:560px){
+  .card{padding:22px 16px}
+  .grid2{grid-template-columns:1fr}
+  .bars{grid-template-columns:78px 1fr 48px}
+  .legend{grid-template-columns:auto 1fr}.legend .v{display:none}
+  .parts .what{display:none}
+}
+/* series-nav */
+.sn{max-width:820px;margin:0 auto;padding:16px 32px 0;font-family:-apple-system,"Inter",system-ui,sans-serif;font-size:13px;line-height:1.5;color:var(--muted)}
+.sn a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
+.sn .crumbs{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 7px}
+.sn .crumbs b{color:var(--text);font-weight:600}
+.sn .sep{color:var(--faint,var(--border))}
+.sn .step{margin-left:auto;white-space:nowrap}
+.sn .dep{margin-top:5px;padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface)}
+.sn .dep .ok{color:var(--accent);font-weight:600}
+.snx{max-width:820px;margin:0 auto;padding:6px 32px 44px;font-family:-apple-system,"Inter",system-ui,sans-serif}
+.snx .nx{display:grid;grid-template-columns:280px 1fr;text-decoration:none;color:var(--text);background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.snx .nx:hover,.snx .nx:focus-visible{border-color:var(--accent-border,var(--accent));outline:none}
+.snx .mini{position:relative;height:210px;overflow:hidden;background:var(--bg);border-right:1px solid var(--border);padding:14px 16px}
+.snx .mini span{display:block}
+.snx .mini .m1{font-size:12.5px;font-weight:600;margin:0 0 4px;line-height:1.3}
+.snx .mini .m2{font-size:9px;color:var(--muted);margin:0 0 8px;line-height:1.4}
+.snx .mini .m3{font-size:8.5px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;margin:0 0 3px}
+.snx .mini .m4{font-size:9.5px;margin:0;line-height:1.45}
+.snx .tx{padding:16px 20px}
+.snx .lab{font-size:12px;font-weight:600;color:var(--accent);letter-spacing:.04em;text-transform:uppercase}
+.snx .tt{display:block;font-size:20px;font-weight:600;margin:5px 0 4px;line-height:1.25}
+.snx .ds{display:block;font-size:14px;color:var(--muted)}
+.snx .nd{display:block;font-size:13px;color:var(--muted);margin-top:10px}
+.snx .go{display:block;margin-top:12px;font-size:14px;font-weight:600;color:var(--accent)}
+.snx .aux{display:flex;justify-content:space-between;gap:12px;margin-top:10px;font-size:13px;color:var(--muted)}
+.snx .aux a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
+@media (max-width:560px){.sn,.snx{padding-left:16px;padding-right:16px}.snx .nx{grid-template-columns:1fr}.snx .mini{display:none}.sn .step{margin-left:0}}
+/* /series-nav */
+</style>
+</head>
+<body>
+<!-- series-nav:top -->
+<nav class="sn" aria-label="Course navigation"><div class="crumbs"><a href="../cs-0-map/index.html" target="_top">CS interview cheat sheet</a><span class="sep">›</span><a href="index.html" target="_top">6 · Data systems &amp; infrastructure</a><span class="sep">›</span><b>08 / 18</b><span class="step"><a href="index.html#in-memory-db-anticaching" target="_top">← prev</a> · <a href="index.html#mapreduce-model" target="_top">next →</a></span></div>
+<div class="dep"><span class="ok">Stands alone.</span> You can jump in here without reading earlier cards.</div></nav>
+<!-- /series-nav:top -->
+<article class="card">
+<h1>Log-structured memory</h1>
+<p class="sub">Also called a log-structured allocator, or log cleaning / segment cleaning when people mean its garbage collector. The cheat-sheet uses it for RAMCloud, a key-value store that keeps every object in DRAM: 8 MB segments, tombstones, a cleaner, and two levels of cleaning.</p>
+
+<h2>In one breath</h2>
+<p>Treat memory like a log file: every write, including an overwrite or a delete, is appended at the end, and one hash table points each key at its newest record. Old copies just go dead in place. A cleaner later picks a mostly-dead segment, copies its few live records to the head, repoints the hash table and frees the whole segment.</p>
+
+<h2>Worked example: four writes, an overwrite, two deletes, two cleanings</h2>
+<div class="wrap">
+<table class="trace">
+  <tr><th>Step</th><th>The log (segments s0, s1, s2)</th><th>What happened</th></tr>
+  <tr><td class="step">put A B C D</td>
+    <td><span class="seg"><b>s0</b><span>A</span><span>B</span><span>C</span><span>D</span></span></td>
+    <td class="why">Appended in order. s0 is full, so the next write opens s1.</td></tr>
+  <tr><td class="step">put A again</td>
+    <td><span class="seg"><b>s0</b><span class="d">A</span><span>B</span><span>C</span><span>D</span></span><span class="seg"><b>s1</b><span>A</span><span class="t">tA0</span></span></td>
+    <td class="why">New A at the head; old A is dead but stays put. A tombstone notes "A's old copy is in s0".</td></tr>
+  <tr><td class="step">delete B, C</td>
+    <td><span class="seg"><b>s0</b><span class="d">A</span><span class="d">B</span><span class="d">C</span><span>D</span></span><span class="seg"><b>s1</b><span>A</span><span class="t">tA0</span><span class="t">tB0</span><span class="t">tC0</span></span></td>
+    <td class="why">s0 is 25% live (only D). s1 is 100% live: the tombstones count while s0 exists.</td></tr>
+  <tr><td class="step">clean s0<span>copied 1, freed 3</span></td>
+    <td><span class="seg free">s0 freed</span><span class="seg"><b>s1</b><span>A</span><span class="d">tA0</span><span class="d">tB0</span><span class="d">tC0</span></span><span class="seg"><b>s2</b><span class="a">D</span></span></td>
+    <td class="why">D copied to the head; hash table repointed to s2. With s0 gone, its three tombstones die: s1 drops to 25%.</td></tr>
+  <tr><td class="step">clean s1<span>copied 1, freed 3</span></td>
+    <td><span class="seg free">s0 freed</span><span class="seg free">s1 freed</span><span class="seg"><b>s2</b><span>D</span><span class="a">A</span></span></td>
+    <td class="why">Only A was live. Final hash table: A → (s2, 1), D → (s2, 0).</td></tr>
+</table>
+</div>
+<p class="cap">Grey struck-through = dead, italic = tombstone, green = just copied by the cleaner. 4 equal-size records per segment is illustrative (RAMCloud: 8 MB segments, records of any size). Printed by <span class="mono">code/log-structured-memory.py</span>.</p>
+<div class="formula">clean s0: copy 1 live record to free 3 dead ones → 1 / 3 per byte freed
+as a rule, at utilization u = 0.25:  u / (1 − u) = 0.25 / 0.75 = 1/3</div>
+
+<h2>What cleaning costs</h2>
+<p>Cleaning a segment whose live fraction is u copies u of it to free the other 1 − u. So each byte of space reclaimed costs:</p>
+<div class="mathbox">
+<math display="block">
+  <mtext>bytes copied per byte freed</mtext><mo>=</mo>
+  <munder class="t1"><mfrac><mi>u</mi><mrow><mn>1</mn><mo>&#8722;</mo><mi>u</mi></mrow></mfrac><mtext class="lab">live ÷ dead</mtext></munder>
+</math>
+<div class="legend">
+  <span class="sym">u</span><span>utilization: the live fraction of the segment being cleaned</span><span class="v">0.25 above · 0.9 in the source</span>
+  <span class="sym">1 − u</span><span>the dead fraction: what cleaning gives back</span><span class="v">0.75 · 0.1</span>
+</div>
+</div>
+<div class="bars">
+  <div class="lab">u = 50%</div><div class="track"><div class="bar" style="width:5.26%"></div></div><div class="val">1.00</div>
+  <div class="lab">60%</div><div class="track"><div class="bar" style="width:7.89%"></div></div><div class="val">1.50</div>
+  <div class="lab">70%</div><div class="track"><div class="bar" style="width:12.28%"></div></div><div class="val">2.33</div>
+  <div class="lab">75%</div><div class="track"><div class="bar" style="width:15.79%"></div></div><div class="val">3.00</div>
+  <div class="lab">80%</div><div class="track"><div class="bar" style="width:21.05%"></div></div><div class="val">4.00</div>
+  <div class="lab">85%</div><div class="track"><div class="bar" style="width:29.82%"></div></div><div class="val">5.67</div>
+  <div class="lab">90%<small>the source's case</small></div><div class="track"><div class="bar" style="width:47.37%"></div></div><div class="val"><b>9.00</b></div>
+  <div class="lab">95%</div><div class="track"><div class="bar bad" style="width:100%"></div></div><div class="val lo">19.00</div>
+</div>
+<p class="cap">Bytes copied per byte freed, linear scale (computed). Going from 90% to 95% full doubles the cost: the curve blows up as u → 1, which is why no copying allocator can run memory completely full.</p>
+
+<h2>Two levels of cleaning</h2>
+<p>Every segment also lives on backup disks, and a plain cleaner rewrites both, so disk bandwidth caps how full memory can be. RAMCloud splits the job:</p>
+<table class="parts">
+  <tr><th>Level</th><th class="what">What it does</th><th>Example A</th><th>Example B</th></tr>
+  <tr><td>1. Segment compaction</td><td class="what">Rewrites one segment into a smaller piece of memory. Memory only: no disk or network I/O. The disk copy stays full size.</td>
+    <td class="ex"><b>s0 above</b><span>4 slots → 1 slot (D) in memory</span></td>
+    <td class="ex"><b>At u = 90%: 9 bytes copied</b><span>per byte freed; DRAM bandwidth can afford it</span></td></tr>
+  <tr><td>2. Combined cleaning</td><td class="what">The full cleaner: frees segments in memory and on the backups. Runs later, when more objects have died.</td>
+    <td class="ex"><b class="ok">Disk at u = 50%: 1 byte</b><span>per byte freed (the paper's example)</span></td>
+    <td class="ex"><b>Forced early</b><span>when disk space runs low or tombstones pile up (compaction can't drop live tombstones)</span></td></tr>
+</table>
+<div class="formula">same byte freed:  memory at u = 0.9 → 0.9 / 0.1 = 9     disk at u = 0.5 → 0.5 / 0.5 = 1
+the disk log is allowed to be bigger than memory, so it runs emptier and cleans 9× cheaper</div>
+<p><b>In parallel.</b> Several cleaner threads run next to normal reads and writes. Because written segments never change, a cleaner can copy from one without locking it. Every lookup goes through the hash table, so relocating an object means one atomic pointer update (bucket locks settle races with writers). A cleaned segment is freed only after every RPC already in flight has finished, since one of them might still be reading it.</p>
+
+<h2>In Python</h2>
+<pre class="code"><span class="k">class</span> Log:  <span class="c"># segs: id -&gt; records; table: key -&gt; (seg, slot)</span>
+    <span class="k">def</span> put(self, key, val):
+        old = self.table.get(key)
+        self.table[key] = self._append(("obj", key, val))
+        <span class="k">if</span> old <span class="k">is not</span> None:          <span class="c"># overwrite: old copy is dead</span>
+            self._append(("tomb", key, old[0]))
+
+    <span class="k">def</span> live(self, sid, i):
+        kind, key, x = self.segs[sid][i]
+        <span class="k">if</span> kind == "obj":            <span class="c"># live iff the table points here</span>
+            <span class="k">return</span> self.table.get(key) == (sid, i)
+        <span class="k">return</span> x <span class="k">in</span> self.segs        <span class="c"># tombstone: target seg exists</span>
+
+    <span class="k">def</span> clean(self, sid):
+        keep = [r <span class="k">for</span> i, r <span class="k">in</span> enumerate(self.segs[sid])
+                <span class="k">if</span> self.live(sid, i)]
+        <span class="k">for</span> rec <span class="k">in</span> keep:                 <span class="c"># copy live records to the head</span>
+            where = self._append(rec)
+            <span class="k">if</span> rec[0] == "obj":
+                self.table[rec[1]] = where   <span class="c"># the one pointer to swap</span>
+        <span class="k">del</span> self.segs[sid]               <span class="c"># free the whole segment</span>
+        <span class="k">return</span> len(keep), SEG - len(keep)    <span class="c"># copied, freed</span>
+
+<span class="o"># delete B, C    s0[(A) (B) (C) D]  s1[A tA0 tB0 tC0]
+# utilization: s0 25%, s1 100%
+# clean s0: 1/3  s1[A (tA0) (tB0) (tC0)]  s2[D]
+# utilization: s1 25%  (tombstones died)
+# clean s1: 1/3  s2[D A]
+# u = 90%  copy  9.00 bytes per byte freed</span></pre>
+<p class="cap">Core methods only; <span class="mono">_append</span> (open a new head segment when full), <span class="mono">delete</span> and the printer are in the file. Output from <span class="mono">python3</span> 3.10, trimmed.</p>
+<p class="cx"><b>Time O(1) per write · O(s) to clean a segment of s records · Space: live data ÷ u.</b> A write is one append plus one hash-table update. Cleaning touches only the chosen segment, never the whole heap, because nothing but the hash table points at an object.</p>
+
+<h2>Why it beats the alternatives</h2>
+<div class="grid2">
+  <div class="cell"><h3><span class="x">&#10007;</span> malloc and free in place</h3><p>Can't move an object once placed, so memory fragments. In the paper's tests every allocator, glibc malloc included, could waste half of memory when the mix of object sizes changed (for example, small objects deleted and replaced by larger ones).</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> A copying garbage collector</h3><p>Moving objects fixes fragmentation, but a general GC must eventually walk all live data to fix every reference. So it waits for lots of garbage (1.5–5× the used space) and pauses threads; the paper saw 3–4 s pauses from stock Java collectors.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> One level of cleaning</h3><p>RAMCloud's first design cleaned memory and disk together. At 80–90% memory utilization the cleaner's disk traffic throttled writes; making disk emptier would have made memory emptier too.</p></div>
+  <div class="cell win"><h3><span class="ok">&#10003;</span> Log + two-level cleaning</h3><p>Allocation is an append, one pointer per object makes moves cheap, and the cleaner picks the emptiest segments. The paper reports 80–90% memory utilization, and up to 6× better performance at high utilization than one-level cleaning.</p></div>
+</div>
+
+<h2>Is a log always the right way to manage memory?</h2>
+<div class="note">
+  <p>No. It works because RAMCloud's objects are only ever reached through one hash table, so moving one means changing one pointer. A general program heap, where objects point at each other, has no such single reference, and needs malloc or a real GC. If objects rarely die or change size, plain malloc wastes little and never copies.</p>
+  <p>Keep headroom, too: past about 90% full the cost chart above explodes (19 bytes copied per byte freed at 95%), and the cleaner, not the clients, sets the write throughput. The same append-then-clean idea shows up on disk as log-structured file systems and LSM trees, where compaction plays the cleaner's role.</p>
+</div>
+
+<footer class="foot">
+  <p><b>Source:</b> <a href="https://github.com/ljeng/cheat-sheet/blob/main/large-scale-design/system-design/memory-cache.md#ramcloud">cheat-sheet › System Design › Memory Cache › RAMCloud</a> (commit 5cedb05). Supporting details (tombstones naming their target segment, the 50% disk example, allocator waste, GC space and pauses, freeing after in-flight RPCs, 80–90% and 6×) are from Rumble, Kejriwal and Ousterhout, <a href="https://www.usenix.org/conference/fast14/technical-sessions/presentation/rumble">Log-structured Memory for DRAM-based Storage</a>, FAST 2014, which the source summarizes.</p>
+  <p><b>Run it:</b> <a href="https://github.com/seyonv/explainers/blob/main/cs-6-data-systems/code/log-structured-memory.py">code/log-structured-memory.py</a> replays the trace above and prints the cost table (Python 3.10).</p>
+  <p><b>Related:</b> <a href="in-memory-db-anticaching.html">in-memory databases and anti-caching</a> · <a href="lsm-trees.html">LSM trees</a> · <a href="cache-conscious-structures.html">where in-memory speed comes from</a> · <a href="../cs-5-distributed-systems/compaction-xa.html">compaction</a>.</p>
+</footer>
+</article>
+<!-- series-nav:bottom -->
+<div class="snx"><a class="nx" href="index.html#mapreduce-model" target="_top">
+<span class="mini" aria-hidden="true"><span class="m1">The MapReduce programming model</span><span class="m2">Also called map / shuffle / reduce, or split-apply-combine. You write two small functions and the library runs them over a cluster. The cheat-sheet follows Google's 2004 paper: word count as the first…</span><span class="m3">In one breath</span><span class="m4">map turns each input record into some (key, value) pairs. The library then gathers every value that shares a key (the shuffle). reduce is called once per key with all of that key's values and boils them down to the answer. Neither function shares state with any other call, so the library can run thousands of them on different…</span></span>
+<span class="tx"><span class="lab">Next up · 09 / 18</span><span class="tt">The MapReduce programming model</span><span class="ds">map and reduce types, word count by hand, and the six classic examples</span><span class="nd">Stands alone.</span><span class="go">Continue →</span></span></a><div class="aux"><span><a href="index.html#in-memory-db-anticaching" target="_top">← In-memory databases and anti-caching</a></span><a href="index.html" target="_top">All cards in 6 · Data systems &amp; infrastructure</a></div></div>
+<!-- /series-nav:bottom -->
+</body>
+</html>

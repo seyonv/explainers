@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Counting during a merge</title>
+<style>
+:root{
+  --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
+  --text:#1c1f23; --muted:#6b7068; --faint:#b9b9b3;
+  --accent:#4a9d77; --accent-bg:#dcefdf; --accent-border:#8cc79c;
+  --red:#c0492b; --red-bg:#fbeceb;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#15171a; --surface:#1d2024; --surface2:#24282d; --border:#32373d;
+    --text:#e6e8ea; --muted:#9aa1a9; --faint:#4a5057;
+    --accent:#5fb37f; --accent-bg:#1c2b22; --accent-border:#3f7a55;
+    --red:#e57368; --red-bg:#2e1f1e;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text)}
+.card{max-width:820px;margin:0 auto;padding:28px 32px;font-family:-apple-system,"Inter",system-ui,sans-serif;line-height:1.45}
+h1{font-size:26px;font-weight:600;margin:0 0 6px;letter-spacing:-0.01em}
+.sub{font-size:15px;color:var(--muted);margin:0 0 20px}
+h2{font-size:17px;font-weight:600;margin:26px 0 10px}
+p{font-size:15px;margin:0 0 10px}
+.cap{font-size:13px;color:var(--muted);margin:8px 0 0;text-align:center}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+
+/* Tables and formulas */
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border)}
+th{font-size:12px;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:none}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+.hi{color:var(--accent);font-weight:600} .lo{color:var(--red)}
+.formula{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin:10px 0;white-space:pre;overflow-x:auto;line-height:1.55}
+
+/* 2x2 grid */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.cell{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.cell.win{background:var(--accent-bg);border-color:var(--accent-border)}
+.cell h3{font-size:16px;font-weight:600;margin:0 0 5px;display:flex;gap:8px;align-items:baseline}
+.cell p{font-size:14px;margin:0;color:var(--text)}
+.cell.win h3,.cell.win p{color:var(--accent)}
+.x{color:var(--red)} .ok{color:var(--accent)}
+
+/* Clarification box */
+.note{border:1px solid var(--border);border-radius:10px;padding:14px 18px;font-size:14px}
+.note p{font-size:14px} .note p:last-child{margin-bottom:0}
+
+.foot{margin-top:22px;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+svg{display:block;max-width:100%}
+.sl{font-size:12px;fill:var(--muted)} .st{font-size:13px;fill:var(--text)}
+a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+
+/* Code (series) */
+.code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;line-height:1.5;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin:10px 0;white-space:pre;overflow-x:auto;tab-size:4;color:var(--text)}
+.code .k{color:var(--accent);font-weight:600}.code .c{color:var(--muted)}.code .o{color:var(--muted)}
+
+/* Terms, two examples each */
+.parts td{vertical-align:top} .parts td:first-child{font-weight:600;white-space:nowrap}
+.parts .ex{font-size:13px} .parts .ex span{display:block;color:var(--muted)}
+
+/* Hand trace */
+.trace td{vertical-align:top;padding:6px 10px}
+.trace .step{white-space:nowrap;font-variant-numeric:tabular-nums}
+.trace .step span{display:block;font-size:12px;color:var(--muted)}
+.trace .pop{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;color:var(--muted);font-variant-numeric:tabular-nums}
+.trace .pop div{white-space:nowrap}
+.trace .pop .none{color:var(--faint)}
+.trace tr.end td{border-top:2px solid var(--border)}
+.stk{display:flex;flex-wrap:wrap;gap:4px}
+.stk span{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;padding:1px 6px;border-radius:4px;border:1px solid var(--border);background:var(--surface);font-variant-numeric:tabular-nums}
+.stk sub{font-size:10px;color:var(--muted);margin-left:1px}
+.stk .s{background:var(--surface2);color:var(--muted)}
+.stk .a{background:var(--accent-bg);border-color:var(--accent-border);color:var(--accent)}
+.stk .a sub{color:var(--accent)}
+.wrap{overflow-x:auto}
+.fix{font-size:13px;color:var(--muted);margin:0 0 10px}
+.cx{font-size:14px;margin:12px 0 0}
+.foot p{font-size:13px;margin:0 0 4px}
+.foot p:last-child{margin:0}
+.foot b{color:var(--text);font-weight:600}
+.stk .w{background:none;border-style:dashed;color:var(--faint)}
+.stk .bar{border:none;background:none;padding:1px 2px;color:var(--faint)}
+
+/* Formula (MathML) */
+.mathbox{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px 16px 12px;margin:10px 0;overflow-x:auto}
+.mathbox math{font-size:21px;color:var(--text);font-family:"STIX Two Math","Latin Modern Math","Cambria Math",math}
+.mathbox .t1{color:var(--text)} .mathbox .t2{color:var(--accent)} .mathbox .t3{color:var(--muted)}
+.mathbox .lab{font-size:12px;font-family:-apple-system,"Inter",system-ui,sans-serif;padding-top:3px;border-top:1.5px solid currentColor;margin-top:2px}
+.legend{display:grid;grid-template-columns:auto 1fr auto;column-gap:14px;row-gap:5px;font-size:13px;margin-top:12px;align-items:baseline}
+.legend .sym{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;text-align:right}
+.legend .v{color:var(--muted);text-align:right;font-variant-numeric:tabular-nums}
+
+@media (max-width:560px){
+  .card{padding:22px 16px}
+  .grid2{grid-template-columns:1fr}
+  .parts .what{display:none}
+  .trace td,.trace th{padding:6px 5px}
+  .trace .pop div{white-space:normal}
+  .legend{grid-template-columns:auto 1fr}.legend .v{display:none}
+}
+.stk .r{background:var(--surface2);color:var(--muted)}
+.stk .plus{border:none;background:none;padding:1px 2px;color:var(--muted)}
+/* series-nav */
+.sn{max-width:820px;margin:0 auto;padding:16px 32px 0;font-family:-apple-system,"Inter",system-ui,sans-serif;font-size:13px;line-height:1.5;color:var(--muted)}
+.sn a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
+.sn .crumbs{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 7px}
+.sn .crumbs b{color:var(--text);font-weight:600}
+.sn .sep{color:var(--faint,var(--border))}
+.sn .step{margin-left:auto;white-space:nowrap}
+.sn .dep{margin-top:5px;padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface)}
+.sn .dep .ok{color:var(--accent);font-weight:600}
+.snx{max-width:820px;margin:0 auto;padding:6px 32px 44px;font-family:-apple-system,"Inter",system-ui,sans-serif}
+.snx .nx{display:grid;grid-template-columns:280px 1fr;text-decoration:none;color:var(--text);background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.snx .nx:hover,.snx .nx:focus-visible{border-color:var(--accent-border,var(--accent));outline:none}
+.snx .mini{position:relative;height:210px;overflow:hidden;background:var(--bg);border-right:1px solid var(--border);padding:14px 16px}
+.snx .mini span{display:block}
+.snx .mini .m1{font-size:12.5px;font-weight:600;margin:0 0 4px;line-height:1.3}
+.snx .mini .m2{font-size:9px;color:var(--muted);margin:0 0 8px;line-height:1.4}
+.snx .mini .m3{font-size:8.5px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;margin:0 0 3px}
+.snx .mini .m4{font-size:9.5px;margin:0;line-height:1.45}
+.snx .tx{padding:16px 20px}
+.snx .lab{font-size:12px;font-weight:600;color:var(--accent);letter-spacing:.04em;text-transform:uppercase}
+.snx .tt{display:block;font-size:20px;font-weight:600;margin:5px 0 4px;line-height:1.25}
+.snx .ds{display:block;font-size:14px;color:var(--muted)}
+.snx .nd{display:block;font-size:13px;color:var(--muted);margin-top:10px}
+.snx .go{display:block;margin-top:12px;font-size:14px;font-weight:600;color:var(--accent)}
+.snx .aux{display:flex;justify-content:space-between;gap:12px;margin-top:10px;font-size:13px;color:var(--muted)}
+.snx .aux a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
+@media (max-width:560px){.sn,.snx{padding-left:16px;padding-right:16px}.snx .nx{grid-template-columns:1fr}.snx .mini{display:none}.sn .step{margin-left:0}}
+/* /series-nav */
+</style>
+</head>
+<body>
+<!-- series-nav:top -->
+<nav class="sn" aria-label="Course navigation"><div class="crumbs"><a href="../cs-0-map/index.html" target="_top">CS interview cheat sheet</a><span class="sep">›</span><a href="index.html" target="_top">2 · Algorithms, sorting &amp; strings</a><span class="sep">›</span><b>06 / 22</b><span class="step"><a href="index.html#merge-sort" target="_top">← prev</a> · <a href="index.html#heapsort" target="_top">next →</a></span></div>
+<div class="dep"><span class="ok">Stands alone.</span> You can jump in here without reading earlier cards.</div></nav>
+<!-- /series-nav:top -->
+<article class="card">
+<h1>Counting during a merge</h1>
+<p class="sub">Also called inversion counting by merge sort, or the "sort and count" trick. The cheat-sheet puts two problems under Merge Sort that use it: Count of Smaller Numbers after Self and Reverse Pairs, each as a bottom-up C++ merge plus a Python <code>SortedList</code> version.</p>
+
+<h2>In one breath</h2>
+<p>While merge sort merges a left block with a right block, every right element that goes out <em>before</em> a left element x is smaller than x and sat to its right in the original array. So when x is placed, the number of right elements already placed is exactly how many smaller numbers after x this merge has found. Every pair of positions meets in exactly one merge, so adding those numbers up counts each pair once, in O(n log n).</p>
+
+<h2>Worked example: Count Smaller, nums = [5, 2, 6, 1] → [2, 1, 1, 0]</h2>
+<div class="wrap">
+<table class="trace">
+  <tr><th>Merge</th><th>Left + right</th><th>Merged order (<span class="ok">left</span> x gets +j)</th><th>counts after</th></tr>
+  <tr><td class="step">width 1<span>positions 0–1</span></td><td class="pop"><div>[5] + [2]</div></td>
+    <td><div class="stk"><span>2</span><span class="a">5<sub>+1</sub></span></div></td><td class="pop"><div>[<span class="hi">1</span>, 0, 0, 0]</div></td></tr>
+  <tr><td class="step">width 1<span>positions 2–3</span></td><td class="pop"><div>[6] + [1]</div></td>
+    <td><div class="stk"><span>1</span><span class="a">6<sub>+1</sub></span></div></td><td class="pop"><div>[1, 0, <span class="hi">1</span>, 0]</div></td></tr>
+  <tr class="end"><td class="step">width 2<span>positions 0–3</span></td><td class="pop"><div>[2, 5] + [1, 6]</div></td>
+    <td><div class="stk"><span>1</span><span class="a">2<sub>+1</sub></span><span class="a">5<sub>+1</sub></span><span>6</span></div></td><td class="pop"><div>[<span class="hi">2</span>, <span class="hi">1</span>, 1, 0]</div></td></tr>
+</table>
+</div>
+<p class="cap">Neutral chip = a right-half element that jumped ahead. Green chip = a left-half element, with j = right elements already out when it was placed. 6 is left over and simply copied: nothing on the right is bigger than it. Counts belong to <em>original positions</em>, so the sort moves indices, not values.</p>
+<div class="formula">5 (index 0): +1 (the 2, width 1) +1 (the 1, width 2) = 2
+2 (index 1):                     +1 (the 1, width 2) = 1
+6 (index 2): +1 (the 1, width 1)                     = 1
+1 (index 3): never on a left half                    = 0
+sum = 2 + 1 + 1 + 0 = 4 = inversions of nums</div>
+
+<div class="mathbox">
+<math display="block">
+  <mtext>counts</mtext><mo stretchy="false">[</mo><mi>i</mi><mo stretchy="false">]</mo><mo>=</mo>
+  <munder><mo>&#8721;</mo><mtext>merges with i on the left</mtext></munder>
+  <munder class="t2"><mrow><mo stretchy="false">(</mo><mi>j</mi><mo>&#8722;</mo><mtext>mid</mtext><mo stretchy="false">)</mo></mrow><mtext class="lab">right elements out before i</mtext></munder>
+  <mspace width="1.2em"/>
+  <munder class="t3"><mrow><munder><mo>&#8721;</mo><mi>i</mi></munder><mtext>counts</mtext><mo stretchy="false">[</mo><mi>i</mi><mo stretchy="false">]</mo></mrow><mtext class="lab">= inversions</mtext></munder>
+</math>
+<div class="legend">
+  <span class="sym">j − mid</span><span>how far the right pointer has moved when i is placed</span><span class="v">1 each time above</span>
+  <span class="sym">Σ counts</span><span>total out-of-order pairs</span><span class="v">4 for nums · 11 for a</span>
+</div>
+</div>
+<p class="cap">On the course array a = [38, 27, 43, 3, 9, 82, 10] the counts are [4, 3, 3, 0, 0, 1, 0], summing to 11: the same 11 swaps insertion sort makes on a.</p>
+
+<h2>Second problem: Reverse Pairs, nums = [1, 3, 2, 3, 1] → 2</h2>
+<p>A reverse pair is i &lt; j with nums[i] &gt; 2·nums[j]. That test is not the merge's own comparison, so run a <b>separate count pass</b> first: both halves are already sorted, so as the left element grows, the right pointer only moves forward.</p>
+<div class="wrap">
+<table class="trace">
+  <tr><th>Merge</th><th>Left + right (both sorted)</th><th>Count pass: left x vs 2 × right</th><th class="num">Found</th></tr>
+  <tr><td class="step">width 1</td><td class="pop"><div>[1] + [3] · [2] + [3]</div></td><td class="pop"><div class="none">1 &gt; 6? 2 &gt; 6? no</div></td><td class="num">0</td></tr>
+  <tr><td class="step">width 2</td><td class="pop"><div>[1, 3] + [2, 3]</div></td><td class="pop"><div class="none">1 &gt; 4? 3 &gt; 4? no</div></td><td class="num">0</td></tr>
+  <tr><td class="step">width 4</td><td class="pop"><div>[1, 2, 3, 3] + [1]</div></td><td class="pop"><div>1 &gt; 2? no · 2 &gt; 2? no</div><div><span class="hi">3 &gt; 2</span>: j → 1, +1</div><div><span class="hi">3 &gt; 2</span>: j stays 1, +1</div></td><td class="num">2</td></tr>
+  <tr class="end"><td class="step">total</td><td class="pop"><div>pairs (3 at i = 1, 1 at 4) and (3 at 3, 1 at 4)</div></td><td></td><td class="num hi">2</td></tr>
+</table>
+</div>
+<p class="cap">The last element 1 sits alone until width 4. The pair (3, 2) at positions 1, 2 is an inversion but not a reverse pair: 3 &gt; 4 fails.</p>
+
+<h2>In Python</h2>
+<pre class="code"><span class="k">import</span> heapq
+
+<span class="k">def</span> count_smaller(nums):
+    n = len(nums)
+    idx = list(range(n))           <span class="c"># indices, sorted by value per block</span>
+    counts = [0] * n
+    width = 1
+    <span class="k">while</span> width &lt; n:
+        <span class="k">for</span> lo <span class="k">in</span> range(0, n, 2 * width):
+            mid, hi = min(lo + width, n), min(lo + 2 * width, n)
+            left, right = idx[lo:mid], idx[mid:hi]
+            out, j = [], 0
+            <span class="k">for</span> i <span class="k">in</span> left:
+                <span class="k">while</span> j &lt; len(right) <span class="k">and</span> nums[right[j]] &lt; nums[i]:
+                    out.append(right[j])   <span class="c"># smaller one jumps ahead</span>
+                    j += 1
+                counts[i] += j             <span class="c"># j smaller ones from right</span>
+                out.append(i)
+            idx[lo:hi] = out + right[j:]
+        width *= 2
+    <span class="k">return</span> counts
+
+<span class="k">def</span> reverse_pairs(nums):
+    a, n, total = list(nums), len(nums), 0
+    width = 1
+    <span class="k">while</span> width &lt; n:
+        <span class="k">for</span> lo <span class="k">in</span> range(0, n, 2 * width):
+            mid, hi = min(lo + width, n), min(lo + 2 * width, n)
+            j = mid
+            <span class="k">for</span> i <span class="k">in</span> range(lo, mid):       <span class="c"># count pass: both sorted</span>
+                <span class="k">while</span> j &lt; hi <span class="k">and</span> a[i] &gt; 2 * a[j]:
+                    j += 1
+                total += j - mid
+            a[lo:hi] = heapq.merge(a[lo:mid], a[mid:hi])
+        width *= 2
+    <span class="k">return</span> total
+
+print(count_smaller([5, 2, 6, 1]))       <span class="o"># → [2, 1, 1, 0]</span>
+print(reverse_pairs([1, 3, 2, 3, 1]))    <span class="o"># → 2</span></pre>
+<p class="fix">The source's Python versions use <code>sortedcontainers.SortedList</code>, a third-party package (<code>pip install sortedcontainers</code>), not the standard library. Its C++ merges are correct; this rewrite keeps their bottom-up widths and uses strict <code>&lt;</code> so equal values are not counted as smaller.</p>
+<p class="cx"><b>Time O(n log n) · Space O(n).</b> There are ⌈log₂ n⌉ widths and each moves every element once; the count pass adds one more forward sweep per merge, because j never moves back. The extra space is the merge buffer plus the counts.</p>
+
+<h2>The words, with two examples each</h2>
+<table class="parts">
+  <colgroup><col style="width:13%"><col class="what" style="width:35%"><col style="width:26%"><col style="width:26%"></colgroup>
+  <tr><th>Term</th><th class="what">What it means</th><th>Example A</th><th>Example B</th></tr>
+  <tr><td>Inversion</td><td class="what">A pair i &lt; j with nums[i] &gt; nums[j]. Count Smaller lists them per left element.</td>
+    <td class="ex"><b>(5, 2)</b><span>found in the first width-1 merge</span></td>
+    <td class="ex"><b>(5, 1)</b><span>far apart, found only at width 2</span></td></tr>
+  <tr><td>Reverse pair</td><td class="what">A stricter inversion: nums[i] &gt; 2·nums[j].</td>
+    <td class="ex"><b class="ok">(3, 1)</b><span>3 &gt; 2: counts</span></td>
+    <td class="ex"><b class="lo">(3, 2)</b><span>an inversion, but 3 &gt; 4 fails</span></td></tr>
+  <tr><td>j − mid</td><td class="what">How many right-half elements are already past the pointer when a left element is scored.</td>
+    <td class="ex"><b>+1 for 2</b><span>only the 1 jumped it at width 2</span></td>
+    <td class="ex"><b>+0 for 3 in [1, 3] + [2, 3]</b><span>3 &gt; 4 fails, so j stays at mid</span></td></tr>
+</table>
+
+<h2>Why it beats the alternatives</h2>
+<div class="grid2">
+  <div class="cell"><h3><span class="x">&#10007;</span> Check every pair</h3><p>n(n − 1)/2 tests: 6 for nums, 4,999,950,000 for n = 10⁵. Always O(n²), even on sorted input.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> <code>bisect.insort</code> from the right</h3><p>Standard library and short. The binary search is O(log n), but each insert shifts the list: about n(n − 1)/4 = 2,499,975,000 element moves on average for n = 10⁵ (O(n²)).</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> <code>SortedList</code> (the source's Python)</h3><p>O(log n)-ish inserts, so it scales, but it's a third-party package: not in the standard library, and not always allowed in an interview or on a judge.</p></div>
+  <div class="cell win"><h3><span class="ok">&#10003;</span> Count during the merge</h3><p>O(n log n), standard library only, and it gives per-element counts, totals and variants like 2× from one pass: 17 widths × 10⁵ ≈ 1,700,000 element moves for n = 10⁵.</p></div>
+</div>
+
+<h2>Is the merge always the way?</h2>
+<div class="note">
+  <p>It fits any "count pairs i &lt; j with a condition that is monotone in the values" problem: inversions, Count Smaller, Reverse Pairs, and count-of-range-sums on prefix sums (these uses beyond the two source problems are standard practice, not from the source). A condition like nums[i] &gt; 2·nums[j] needs its own count pass before the merge; a plain inversion can be counted inside the merge.</p>
+  <p>A <b>Fenwick tree</b> over value ranks is just as fast, O(n log n), and is the better choice when elements arrive one at a time or when you also need updates; scan from the right, query "how many ranks below mine", then add yourself. It needs the values compressed to ranks first (<span class="mono">code/</span> has both, checked against each other). For small n, or when <code>sortedcontainers</code> is allowed, the one-loop <code>SortedList</code> version is the quickest to write.</p>
+</div>
+
+<footer class="foot">
+  <p><b>Source:</b> <a href="https://github.com/ljeng/cheat-sheet/blob/main/coding-algorithms/sorting.md#merge-sort">cheat-sheet › Sorting › Merge Sort</a> › Reverse Pairs and Count of Smaller Numbers after Self (commit 5cedb05). <code>SortedList</code>: <a href="https://grantjenks.com/docs/sortedcontainers/">sortedcontainers docs</a>; <code>bisect.insort</code>: <a href="https://docs.python.org/3/library/bisect.html">Python docs</a>. Counting inversions by merge sort: CLRS, problem 2-4.</p>
+  <p><b>Run it:</b> <a href="https://github.com/seyonv/explainers/blob/main/cs-2-algorithms/code/merge-sort-counting.py">code/merge-sort-counting.py</a> prints both traces above and checks the merge, <code>bisect.insort</code> and Fenwick versions against brute force on 1,000 random lists (Python 3.10).</p>
+  <p><b>Related:</b> <a href="merge-sort.html">merge sort</a> · <a href="insertion-sort.html">insertion sort</a> · <a href="../cs-1-data-structures/fenwick-tree.html">Fenwick tree</a> · <a href="prefix-sum-ordered-set.html">prefix sums with an ordered set</a></p>
+</footer>
+</article>
+<!-- series-nav:bottom -->
+<div class="snx"><a class="nx" href="index.html#heapsort" target="_top">
+<span class="mini" aria-hidden="true"><span class="m1">Heapsort</span><span class="m2">Also called heap sort; introsort falls back to it. The cheat-sheet gives it last under Sorting, as an in-place C++ loop that first sifts the array into a max-heap and then repeatedly swaps the maximum…</span><span class="m3">In one breath</span><span class="m4">Read the array as a binary tree (the children of index i are 2i + 1 and 2i + 2) and rearrange it so every parent is at least as big as its children. Now the largest value sits at a[0]. Swap it to the last slot, treat the heap as one shorter, let the new root sink back into place, and repeat. The sorted tail grows from the right…</span></span>
+<span class="tx"><span class="lab">Next up · 07 / 22</span><span class="tt">Heapsort</span><span class="ds">Build a heap in O(n), then sift down n times</span><span class="nd">Stands alone.</span><span class="go">Continue →</span></span></a><div class="aux"><span><a href="index.html#merge-sort" target="_top">← Merge sort</a></span><a href="index.html" target="_top">All cards in 2 · Algorithms, sorting &amp; strings</a></div></div>
+<!-- /series-nav:bottom -->
+</body>
+</html>

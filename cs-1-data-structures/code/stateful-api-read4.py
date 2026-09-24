@@ -98,7 +98,8 @@ def check_random(trials=1000, seed=0):
     """Reader vs slicing the string, on random texts and call sizes."""
     rng, worst = random.Random(seed), 0
     for _ in range(trials):
-        text = "".join(rng.choice("xyz") for _ in range(rng.randint(0, 30)))
+        size = rng.randint(0, 30)
+        text = "".join(rng.choice("xyz") for _ in range(size))
         read4 = make_read4(text)
         r, pos, buf = Reader(read4), 0, [""] * 40
         for _ in range(rng.randint(1, 8)):

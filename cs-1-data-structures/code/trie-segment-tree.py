@@ -41,6 +41,11 @@ def find_words(board, words):
     rows, cols = len(board), len(board[0])
     found, calls = [], [0]
 
+    def neighbours(r, c):
+        for i, j in ((r + 1, c), (r - 1, c), (r, c + 1), (r, c - 1)):
+            if 0 <= i < rows and 0 <= j < cols:
+                yield i, j
+
     def dfs(r, c, node):
         calls[0] += 1
         ch = board[r][c]
@@ -50,9 +55,8 @@ def find_words(board, words):
         if "$" in nxt:
             found.append(nxt.pop("$"))   # pop: report each word once
         board[r][c] = "#"            # mark: used on this path
-        for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-            i, j = r + dr, c + dc
-            if 0 <= i < rows and 0 <= j < cols and board[i][j] != "#":
+        for i, j in neighbours(r, c):
+            if board[i][j] != "#":
                 dfs(i, j, nxt)
         board[r][c] = ch
 

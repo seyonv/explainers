@@ -1,0 +1,257 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>What triggers a context switch</title>
+<style>
+:root{
+  --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
+  --text:#1c1f23; --muted:#6b7068; --faint:#b9b9b3;
+  --accent:#4a9d77; --accent-bg:#dcefdf; --accent-border:#8cc79c;
+  --red:#c0492b; --red-bg:#fbeceb;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#15171a; --surface:#1d2024; --surface2:#24282d; --border:#32373d;
+    --text:#e6e8ea; --muted:#9aa1a9; --faint:#4a5057;
+    --accent:#5fb37f; --accent-bg:#1c2b22; --accent-border:#3f7a55;
+    --red:#e57368; --red-bg:#2e1f1e;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text)}
+.card{max-width:820px;margin:0 auto;padding:28px 32px;font-family:-apple-system,"Inter",system-ui,sans-serif;line-height:1.45}
+h1{font-size:26px;font-weight:600;margin:0 0 6px;letter-spacing:-0.01em}
+.sub{font-size:15px;color:var(--muted);margin:0 0 20px}
+h2{font-size:17px;font-weight:600;margin:26px 0 10px}
+p{font-size:15px;margin:0 0 10px}
+.cap{font-size:13px;color:var(--muted);margin:8px 0 0;text-align:center}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+
+/* Tables and formulas */
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border)}
+th{font-size:12px;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:none}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+.hi{color:var(--accent);font-weight:600} .lo{color:var(--red);font-weight:600}
+.formula{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin:10px 0;white-space:pre;overflow-x:auto;line-height:1.55}
+.meas td small{display:block;font-size:12px;color:var(--muted)}
+
+/* Code (series CSS, verbatim) */
+.code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;line-height:1.5;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin:10px 0;white-space:pre;overflow-x:auto;tab-size:4;color:var(--text)}
+.code .k{color:var(--accent);font-weight:600}.code .c{color:var(--muted)}.code .o{color:var(--muted)}
+
+/* Timeline diagram */
+svg{display:block;max-width:100%;height:auto}
+.sl{font-size:12px;fill:var(--muted)} .st{font-size:13px;fill:var(--text)} .sb{font-size:13px;fill:var(--text);font-weight:600}
+.run{fill:var(--accent)} .krn{fill:var(--text)} .wait{fill:var(--surface2);stroke:var(--faint)}
+.lane{stroke:var(--border)} .ev{stroke:var(--muted);stroke-dasharray:4 3}
+.rt{font-size:12px;fill:var(--bg)}
+
+/* Terms: two examples each */
+.parts td{vertical-align:top}
+.parts td:first-child{font-weight:600;white-space:nowrap}
+.parts .ex{font-size:13px}
+.parts .ex span{display:block;color:var(--muted)}
+
+/* 2x2 grid */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.cell{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.cell.win{background:var(--accent-bg);border-color:var(--accent-border)}
+.cell h3{font-size:16px;font-weight:600;margin:0 0 5px;display:flex;gap:8px;align-items:baseline}
+.cell p{font-size:14px;margin:0;color:var(--text)}
+.cell.win h3,.cell.win p{color:var(--accent)}
+.x{color:var(--red)} .ok{color:var(--accent)}
+
+/* Clarification box */
+.note{border:1px solid var(--border);border-radius:10px;padding:14px 18px;font-size:14px}
+.note p{font-size:14px} .note p:last-child{margin-bottom:0}
+
+.foot{margin-top:22px;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+.foot p{font-size:13px;margin:0 0 4px}
+.foot b{color:var(--text);font-weight:600}
+@media (max-width:560px){
+  .card{padding:22px 16px}
+  .grid2{grid-template-columns:1fr}
+  .parts .what{display:none}
+  .meas .how{display:none}
+}
+/* series-nav */
+.sn{max-width:820px;margin:0 auto;padding:16px 32px 0;font-family:-apple-system,"Inter",system-ui,sans-serif;font-size:13px;line-height:1.5;color:var(--muted)}
+.sn a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
+.sn .crumbs{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 7px}
+.sn .crumbs b{color:var(--text);font-weight:600}
+.sn .sep{color:var(--faint,var(--border))}
+.sn .step{margin-left:auto;white-space:nowrap}
+.sn .dep{margin-top:5px;padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface)}
+.sn .dep .ok{color:var(--accent);font-weight:600}
+.snx{max-width:820px;margin:0 auto;padding:6px 32px 44px;font-family:-apple-system,"Inter",system-ui,sans-serif}
+.snx .nx{display:grid;grid-template-columns:280px 1fr;text-decoration:none;color:var(--text);background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.snx .nx:hover,.snx .nx:focus-visible{border-color:var(--accent-border,var(--accent));outline:none}
+.snx .mini{position:relative;height:210px;overflow:hidden;background:var(--bg);border-right:1px solid var(--border);padding:14px 16px}
+.snx .mini span{display:block}
+.snx .mini .m1{font-size:12.5px;font-weight:600;margin:0 0 4px;line-height:1.3}
+.snx .mini .m2{font-size:9px;color:var(--muted);margin:0 0 8px;line-height:1.4}
+.snx .mini .m3{font-size:8.5px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;margin:0 0 3px}
+.snx .mini .m4{font-size:9.5px;margin:0;line-height:1.45}
+.snx .tx{padding:16px 20px}
+.snx .lab{font-size:12px;font-weight:600;color:var(--accent);letter-spacing:.04em;text-transform:uppercase}
+.snx .tt{display:block;font-size:20px;font-weight:600;margin:5px 0 4px;line-height:1.25}
+.snx .ds{display:block;font-size:14px;color:var(--muted)}
+.snx .nd{display:block;font-size:13px;color:var(--muted);margin-top:10px}
+.snx .go{display:block;margin-top:12px;font-size:14px;font-weight:600;color:var(--accent)}
+.snx .aux{display:flex;justify-content:space-between;gap:12px;margin-top:10px;font-size:13px;color:var(--muted)}
+.snx .aux a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
+@media (max-width:560px){.sn,.snx{padding-left:16px;padding-right:16px}.snx .nx{grid-template-columns:1fr}.snx .mini{display:none}.sn .step{margin-left:0}}
+/* /series-nav */
+</style>
+</head>
+<body>
+<!-- series-nav:top -->
+<nav class="sn" aria-label="Course navigation"><div class="crumbs"><a href="../cs-0-map/index.html" target="_top">CS interview cheat sheet</a><span class="sep">›</span><a href="index.html" target="_top">7 · Operating systems &amp; concurrency</a><span class="sep">›</span><b>11 / 14</b><span class="step"><a href="index.html#context-switch-how" target="_top">← prev</a> · <a href="index.html#context-switch-hardware" target="_top">next →</a></span></div>
+<div class="dep"><span class="ok">Stands alone.</span> You can jump in here without reading earlier cards.</div></nav>
+<!-- /series-nav:top -->
+<article class="card">
+<h1>What triggers a context switch</h1>
+<p class="sub">Also called voluntary vs involuntary switches, blocking vs preemption, or cooperative vs preemptive multitasking. The cheat-sheet's heading is empty, so this card follows OSTEP chapters 6 and 7 and a <code>getrusage</code> count on an Apple M3.</p>
+
+<h2>In one breath</h2>
+<p>The kernel only gets the CPU back from a running thread in two ways. Either the thread asks for something it has to wait for (a read, a sleep, a lock), and the kernel parks it and runs someone else: a <b>voluntary</b> switch. Or a hardware timer interrupt, or a more urgent thread waking up, hands control to the kernel, which decides the thread has had enough: an <b>involuntary</b> switch, also called preemption.</p>
+
+<h2>Worked example: one core, two threads</h2>
+<svg viewBox="0 0 760 196" role="img" aria-label="Timeline: thread A runs, blocks on read and B runs; a timer interrupt ends B's slice and A runs again">
+  <line class="lane" x1="96" y1="46" x2="756" y2="46"/>
+  <line class="lane" x1="96" y1="96" x2="756" y2="96"/>
+  <line class="lane" x1="96" y1="146" x2="756" y2="146"/>
+  <text class="sb" x="0" y="50">Thread A</text>
+  <text class="sb" x="0" y="100">Kernel</text>
+  <text class="sb" x="0" y="150">Thread B</text>
+
+  <!-- A runs, then blocks, then is ready, then runs -->
+  <rect class="run" x="100" y="34" width="200" height="24" rx="3"/>
+  <text class="rt" x="112" y="50">running</text>
+  <text class="sl" x="316" y="50">blocked on read()</text>
+  <rect class="wait" x="440" y="36" width="130" height="20" rx="3"/>
+  <text class="sl" x="448" y="50">ready, waiting</text>
+  <rect class="run" x="596" y="34" width="160" height="24" rx="3"/>
+  <text class="rt" x="608" y="50">running again</text>
+
+  <!-- kernel slices -->
+  <rect class="krn" x="302" y="86" width="26" height="20" rx="2"/>
+  <rect class="krn" x="570" y="86" width="26" height="20" rx="2"/>
+  <text class="sl" x="336" y="100">scheduler picks B</text>
+  <text class="sl" x="604" y="100">scheduler picks A</text>
+
+  <!-- B -->
+  <rect class="wait" x="100" y="136" width="200" height="20" rx="3"/>
+  <text class="sl" x="108" y="150">ready, waiting</text>
+  <rect class="run" x="328" y="134" width="242" height="24" rx="3"/>
+  <text class="rt" x="340" y="150">running</text>
+  <rect class="wait" x="596" y="136" width="160" height="20" rx="3"/>
+  <text class="sl" x="604" y="150">ready, waiting</text>
+
+  <!-- events -->
+  <line class="ev" x1="301" y1="16" x2="301" y2="170"/>
+  <line class="ev" x1="440" y1="24" x2="440" y2="62"/>
+  <line class="ev" x1="570" y1="16" x2="570" y2="170"/>
+  <text class="st" x="301" y="12" text-anchor="middle">&#9312; A calls read(): voluntary</text>
+  <text class="sl" x="440" y="76" text-anchor="middle">data arrives</text>
+  <text class="st" x="570" y="12" text-anchor="middle" dx="40">&#9313; timer interrupt: involuntary</text>
+  <text class="sl" x="100" y="188">time &#8594; (widths illustrative)</text>
+</svg>
+<p class="cap">&#9312; A traps into the kernel with a system call and can't continue, so it gives up the core. &#9313; B never asked to stop; the timer interrupt ends its slice. When A's data arrives it becomes ready, but it still waits for the next scheduling decision (OSTEP ch. 6).</p>
+
+<h2>Measured: count them with <code>getrusage</code></h2>
+<p>The kernel keeps both counters per process: <code>ru_nvcsw</code> (voluntary) and <code>ru_nivcsw</code> (involuntary). Take the difference around a piece of work.</p>
+<table class="meas">
+  <tr><th>Work</th><th class="num">Voluntary</th><th class="num">Involuntary</th><th class="how">What it means</th></tr>
+  <tr><td>200 &times; <code>sleep(1 ms)</code><small>blocks on a timer 200 times</small></td><td class="num hi">200</td><td class="num">not recorded</td><td class="how">exactly one switch per sleep</td></tr>
+  <tr><td><code>fib(30)</code>, 0.129 s<small>pure CPU, one thread, never blocks</small></td><td class="num">not recorded</td><td class="num lo">25</td><td class="how">taken off the core 25 times anyway</td></tr>
+</table>
+<div class="formula">voluntary per sleep     = 200 / 200             = 1.0
+CPU time per preemption = 0.129 s / 25 = 5.16 ms  (average over the run)</div>
+<p class="cap">Measured on an Apple M3, 2026-09-23 (series run <span class="mono">measure.py</span>). getrusage doesn't say why each involuntary switch happened, so the 25 mix slice expiries with higher-priority wakeups; 5.16 ms is an average gap, not macOS's time slice.</p>
+
+<h2>The code</h2>
+<pre class="code"><span class="k">import</span> resource, subprocess, sys, time
+<span class="c"># fib() and CHILD (a script that prints 50 bytes, 2 ms apart)</span>
+<span class="c"># are in code/context-switch-initiation.py</span>
+
+<span class="k">def</span> switches(work):
+    r0 = resource.getrusage(resource.RUSAGE_SELF)
+    work()
+    r1 = resource.getrusage(resource.RUSAGE_SELF)
+    <span class="k">return</span> (r1.ru_nvcsw - r0.ru_nvcsw,     <span class="c"># voluntary</span>
+            r1.ru_nivcsw - r0.ru_nivcsw)   <span class="c"># involuntary</span>
+
+<span class="k">def</span> sleeps():                    <span class="c"># block on a timer</span>
+    <span class="k">for</span> _ <span class="k">in</span> range(200):
+        time.sleep(0.001)
+
+<span class="k">def</span> pipe_reads():                <span class="c"># block on I/O</span>
+    p = subprocess.Popen([sys.executable, "-c", CHILD],
+                         stdout=subprocess.PIPE)
+    <span class="k">for</span> _ <span class="k">in</span> range(50):             <span class="c"># child writes 1 byte</span>
+        p.stdout.read(1)             <span class="c"># every 2 ms</span>
+    p.wait()
+
+<span class="k">def</span> cpu_bound():                 <span class="c"># never blocks</span>
+    fib(30)
+
+<span class="o">work                   voluntary  involuntary  seconds
+200 x sleep(1 ms)            200           12    0.382
+50 blocking reads             52           25    0.192
+fib(30), CPU only              0         1543    0.749</span></pre>
+<p class="cap">One run of <span class="mono">code/context-switch-initiation.py</span> (shortened here) under <span class="mono">python3</span> 3.10 on the author's M3, while about 80 other processes wanted a core (load average 81).</p>
+<div class="formula">series run (measure.py):   fib(30)    25 involuntary / 0.129 s → one per 5.16 ms
+this run, load average 81: fib(30) 1,543 involuntary / 0.749 s → one per 0.49 ms
+1,543 / 25 = 61.7× as many preemptions; 200 sleeps → 200 voluntary in both</div>
+<p>That's the whole story in two columns. <span class="hi">Voluntary switches are set by your code</span>: 200 sleeps give 200, however busy the machine is. The 50 reads gave 52, which we read as 50 blocking reads plus two waits for the child process to start and exit (our reading). <span class="lo">Involuntary switches are set by the competition</span>: the same <code>fib(30)</code> was preempted 62&times; as often on a crowded machine. (The series run's load wasn't recorded; we assume it was quieter.)</p>
+
+<h2>The triggers, with two examples each</h2>
+<table class="parts">
+  <tr><th>Trigger</th><th class="what">What actually happens</th><th>Example A</th><th>Example B</th></tr>
+  <tr><td>Blocking call</td><td class="what">A system call can't finish yet, so the kernel marks the thread blocked and switches. Voluntary.</td>
+    <td class="ex"><b class="ok"><code>read()</code> on an empty pipe</b><span>the 50 blocking reads above</span></td>
+    <td class="ex"><b><code>sleep(0.001)</code></b><span>blocked until a timer fires: 1 switch each</span></td></tr>
+  <tr><td>Wait or yield</td><td class="what">The thread waits for another thread, or explicitly offers the core. Voluntary.</td>
+    <td class="ex"><b>A contended lock</b><span>the waiter sleeps in the kernel instead of spinning</span></td>
+    <td class="ex"><b><code>os.sched_yield()</code></b><span>"let someone else run"; it may come straight back</span></td></tr>
+  <tr><td>Timer interrupt</td><td class="what">Hardware interrupts every few ms; the kernel's handler checks if the slice is used up. Involuntary.</td>
+    <td class="ex"><b class="lo"><code>fib(30)</code></b><span>25 preemptions in 0.129 s, never asked to stop</span></td>
+    <td class="ex"><b><code>while True: pass</code></b><span>without a timer, this would own the core forever</span></td></tr>
+  <tr><td>Higher-priority wakeup</td><td class="what">A thread the scheduler ranks higher becomes ready, so the running one is bumped early. Involuntary.</td>
+    <td class="ex"><b>A keystroke arrives</b><span>the editor waiting on input wakes and preempts a batch job</span></td>
+    <td class="ex"><b>A disk read completes</b><span>the device interrupt wakes the thread waiting on it</span></td></tr>
+</table>
+
+<h2>Why block-or-preempt beats the alternatives</h2>
+<div class="grid2">
+  <div class="cell"><h3><span class="x">&#10007;</span> Cooperative only</h3><p>Switch only when a program makes a system call or yields. One infinite loop and the OS never runs again; OSTEP notes the fix was a reboot (early Mac OS worked this way).</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Busy-wait instead of block</h3><p>Poll a flag in a loop while waiting. No voluntary switch ever happens, so the thread burns its whole slice doing nothing and gets preempted anyway.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> A tiny time slice</h3><p>Preempt constantly for snappier sharing. Each switch has a cost: OSTEP's example, a 10 ms slice with a 1 ms switch, wastes about 10% of the CPU (ch. 7).</p></div>
+  <div class="cell win"><h3><span class="ok">&#10003;</span> Block when waiting, timer for the rest</h3><p>Waiting threads leave the core at once (200 sleeps, 200 switches), and the timer guarantees the kernel gets control back even from <code>fib(30)</code>.</p></div>
+</div>
+
+<h2>Is CPython's 5 ms switch interval one of these?</h2>
+<div class="note">
+  <p>No. <code>sys.getswitchinterval()</code> returns 0.005 s, but that's CPython asking the thread holding the GIL to hand it over to another Python thread. The OS knows nothing about it: to the kernel, a thread waiting for the GIL is just blocked on a condition variable. It can't explain the 25 above either, since <code>fib(30)</code> ran in a single thread where the GIL never changes hands. The 5 ms and the 5.16 ms average are a coincidence.</p>
+  <p>Preemption isn't always welcome. Latency-critical code (trading engines, audio) tries to avoid involuntary switches by giving a thread its own core and keeping other work off it, and <code>asyncio</code> switches tasks in user space at each <code>await</code>, with no kernel switch at all.</p>
+</div>
+
+<div class="foot">
+  <p><b>Source:</b> <a href="https://github.com/ljeng/cheat-sheet/blob/main/large-scale-design/operating-systems.md#how-its-initiated-by-the-operating-system">cheat-sheet › Operating Systems › Context Switching › How It's Initiated by the Operating System</a>. The source heading is empty; this card is supplemented from OSTEP <a href="https://pages.cs.wisc.edu/~remzi/OSTEP/cpu-mechanisms.pdf">ch. 6, Limited direct execution</a> and <a href="https://pages.cs.wisc.edu/~remzi/OSTEP/cpu-sched.pdf">ch. 7, Scheduling: introduction</a>, and the Python docs on <a href="https://docs.python.org/3/library/resource.html#resource.getrusage">resource.getrusage</a> and <a href="https://docs.python.org/3/library/sys.html#sys.setswitchinterval">sys.setswitchinterval</a>.</p>
+  <p><b>Run it:</b> <a href="https://github.com/seyonv/explainers/blob/main/cs-7-operating-systems/code/context-switch-initiation.py">code/context-switch-initiation.py</a> (Python 3.10; prints the three-row table above; involuntary counts change with machine load).</p>
+  <p><b>Related:</b> <a href="context-switch-how.html">how a context switch works</a> · <a href="context-switch-hardware.html">the hardware underneath</a> · <a href="scheduling.html">CPU scheduling</a> · <a href="threads.html">threads and the GIL</a></p>
+</div>
+</article>
+<!-- series-nav:bottom -->
+<div class="snx"><a class="nx" href="index.html#context-switch-hardware" target="_top">
+<span class="mini" aria-hidden="true"><span class="m1">The hardware underneath</span><span class="m2">Also called privilege modes, protection rings (x86) or exception levels (Arm: EL0 for apps, EL1 for the kernel), plus traps, the vector table, the TLB and its ASIDs. The cheat-sheet's Underlying…</span><span class="m3">In one breath</span><span class="m4">A context switch is software, but it leans on four pieces of hardware: a mode bit that stops user code from touching the machine, a timer and a trap instruction that force the CPU into the kernel at a fixed address, a register that swaps the page table in one write, and a TLB that tags translations by address space so they…</span></span>
+<span class="tx"><span class="lab">Next up · 12 / 14</span><span class="tt">The hardware underneath</span><span class="ds">Privilege rings, interrupts, TLBs and cache pollution</span><span class="nd">Stands alone.</span><span class="go">Continue →</span></span></a><div class="aux"><span><a href="index.html#context-switch-how" target="_top">← How a context switch works</a></span><a href="index.html" target="_top">All cards in 7 · Operating systems &amp; concurrency</a></div></div>
+<!-- /series-nav:bottom -->
+</body>
+</html>

@@ -1,0 +1,319 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fair-share GPU scheduling</title>
+<style>
+:root{
+  --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
+  --text:#1c1f23; --muted:#6b7068; --faint:#b9b9b3;
+  --accent:#4a9d77; --accent-bg:#dcefdf; --accent-border:#8cc79c;
+  --red:#c0492b; --red-bg:#fbeceb;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#15171a; --surface:#1d2024; --surface2:#24282d; --border:#32373d;
+    --text:#e6e8ea; --muted:#9aa1a9; --faint:#4a5057;
+    --accent:#5fb37f; --accent-bg:#1c2b22; --accent-border:#3f7a55;
+    --red:#e57368; --red-bg:#2e1f1e;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text)}
+.card{max-width:820px;margin:0 auto;padding:28px 32px;font-family:-apple-system,"Inter",system-ui,sans-serif;line-height:1.45}
+h1{font-size:26px;font-weight:600;margin:0 0 6px;letter-spacing:-0.01em}
+.sub{font-size:15px;color:var(--muted);margin:0 0 20px}
+h2{font-size:17px;font-weight:600;margin:26px 0 10px}
+p{font-size:15px;margin:0 0 10px}
+.cap{font-size:13px;color:var(--muted);margin:8px 0 0;text-align:center}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+
+/* Tables and formulas */
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border)}
+th{font-size:12px;color:var(--muted);font-weight:600}
+th small{display:block;font-weight:400}
+tr:last-child td{border-bottom:none}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+.hi{color:var(--accent);font-weight:600} .lo{color:var(--red);font-weight:600}
+.formula{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin:10px 0;white-space:pre;overflow-x:auto;line-height:1.55}
+.wrap{overflow-x:auto}
+
+/* Share bars inside tables */
+.post{display:flex;align-items:center;gap:8px;font-variant-numeric:tabular-nums;white-space:nowrap}
+.post em{display:block;width:120px;flex:none;height:10px;border-radius:2px;background:var(--surface2)}
+.post i{display:block;height:10px;border-radius:2px;background:var(--accent)}
+.split .usr td{font-size:12px;font-weight:600;color:var(--muted);letter-spacing:.02em;padding-top:12px}
+
+/* Hand trace */
+.trace td{padding:6px 10px;font-variant-numeric:tabular-nums}
+.trace td.pick{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px}
+.trace td:first-child{white-space:nowrap}
+.trace .w{color:var(--muted)}
+.trace tr.stop td{border-top:2px solid var(--border);color:var(--muted)}
+
+/* Policy comparison: stacked GPU bars */
+.pol td{vertical-align:middle}
+.pol .what{font-weight:600}
+.pol .what small{display:block;font-weight:400;color:var(--muted);font-size:12px}
+.gbar{display:flex;height:16px;border-radius:3px;overflow:hidden;background:var(--surface2);min-width:160px}
+.gbar .a{background:var(--accent)} .gbar .b{background:var(--muted)} .gbar .idle{background:var(--red-bg)}
+.key{display:flex;gap:16px;justify-content:center;font-size:13px;color:var(--muted);margin-top:8px;flex-wrap:wrap}
+.key i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;vertical-align:-1px}
+.key .ka{background:var(--accent)} .key .kb{background:var(--muted)} .key .ki{background:var(--red-bg);border:1px solid var(--red)}
+
+/* MathML */
+.mathbox{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px 16px 12px;margin:10px 0;overflow-x:auto}
+.mathbox math{font-size:21px;color:var(--text);font-family:"STIX Two Math","Latin Modern Math","Cambria Math",math}
+.mathbox .t1{color:var(--text)} .mathbox .t2{color:var(--accent)} .mathbox .t3{color:var(--muted)}
+.mathbox .lab{font-size:12px;font-family:-apple-system,"Inter",system-ui,sans-serif;padding-top:3px;border-top:1.5px solid currentColor;margin-top:2px}
+.legend{display:grid;grid-template-columns:auto 1fr auto;column-gap:14px;row-gap:5px;font-size:13px;margin-top:12px;align-items:baseline}
+.legend .sym{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;text-align:right}
+.legend .v{color:var(--muted);text-align:right;font-variant-numeric:tabular-nums}
+
+/* Terms, two examples each */
+.parts td{vertical-align:top} .parts td:first-child{font-weight:600;white-space:nowrap}
+.parts .ex{font-size:13px} .parts .ex span{display:block;color:var(--muted)}
+
+/* 2x2 grid */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.cell{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.cell.win{background:var(--accent-bg);border-color:var(--accent-border)}
+.cell h3{font-size:16px;font-weight:600;margin:0 0 5px;display:flex;gap:8px;align-items:baseline}
+.cell p{font-size:14px;margin:0;color:var(--text)}
+.cell.win h3,.cell.win p{color:var(--accent)}
+.x{color:var(--red)} .ok{color:var(--accent)}
+
+/* Clarification box */
+.note{border:1px solid var(--border);border-radius:10px;padding:14px 18px;font-size:14px}
+.note p{font-size:14px} .note p:last-child{margin-bottom:0}
+
+/* Code (series) */
+.code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;line-height:1.5;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin:10px 0;white-space:pre;overflow-x:auto;tab-size:4;color:var(--text)}
+.code .k{color:var(--accent);font-weight:600}.code .c{color:var(--muted)}.code .o{color:var(--muted)}
+
+.fix{font-size:13px;color:var(--muted);margin:6px 0 10px}
+.cx{font-size:14px;margin:12px 0 0}
+.foot{margin-top:22px;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+.foot p{font-size:13px;margin:0 0 4px}
+.foot p:last-child{margin:0}
+.foot b{color:var(--text);font-weight:600}
+
+@media (max-width:560px){
+  .card{padding:22px 16px}
+  .grid2{grid-template-columns:1fr}
+  .parts .what{display:none}
+  .legend{grid-template-columns:auto 1fr}.legend .v{display:none}
+  .post em{width:60px}
+  .gbar{min-width:90px}
+  .trace td,.trace th{padding:6px 5px}
+}
+/* series-nav */
+.sn{max-width:820px;margin:0 auto;padding:16px 32px 0;font-family:-apple-system,"Inter",system-ui,sans-serif;font-size:13px;line-height:1.5;color:var(--muted)}
+.sn a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
+.sn .crumbs{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 7px}
+.sn .crumbs b{color:var(--text);font-weight:600}
+.sn .sep{color:var(--faint,var(--border))}
+.sn .step{margin-left:auto;white-space:nowrap}
+.sn .dep{margin-top:5px;padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface)}
+.sn .dep .ok{color:var(--accent);font-weight:600}
+.snx{max-width:820px;margin:0 auto;padding:6px 32px 44px;font-family:-apple-system,"Inter",system-ui,sans-serif}
+.snx .nx{display:grid;grid-template-columns:280px 1fr;text-decoration:none;color:var(--text);background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.snx .nx:hover,.snx .nx:focus-visible{border-color:var(--accent-border,var(--accent));outline:none}
+.snx .mini{position:relative;height:210px;overflow:hidden;background:var(--bg);border-right:1px solid var(--border);padding:14px 16px}
+.snx .mini span{display:block}
+.snx .mini .m1{font-size:12.5px;font-weight:600;margin:0 0 4px;line-height:1.3}
+.snx .mini .m2{font-size:9px;color:var(--muted);margin:0 0 8px;line-height:1.4}
+.snx .mini .m3{font-size:8.5px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;margin:0 0 3px}
+.snx .mini .m4{font-size:9.5px;margin:0;line-height:1.45}
+.snx .tx{padding:16px 20px}
+.snx .lab{font-size:12px;font-weight:600;color:var(--accent);letter-spacing:.04em;text-transform:uppercase}
+.snx .tt{display:block;font-size:20px;font-weight:600;margin:5px 0 4px;line-height:1.25}
+.snx .ds{display:block;font-size:14px;color:var(--muted)}
+.snx .nd{display:block;font-size:13px;color:var(--muted);margin-top:10px}
+.snx .go{display:block;margin-top:12px;font-size:14px;font-weight:600;color:var(--accent)}
+.snx .aux{display:flex;justify-content:space-between;gap:12px;margin-top:10px;font-size:13px;color:var(--muted)}
+.snx .aux a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
+@media (max-width:560px){.sn,.snx{padding-left:16px;padding-right:16px}.snx .nx{grid-template-columns:1fr}.snx .mini{display:none}.sn .step{margin-left:0}}
+/* /series-nav */
+</style>
+</head>
+<body>
+<!-- series-nav:top -->
+<nav class="sn" aria-label="Course navigation"><div class="crumbs"><a href="../cs-0-map/index.html" target="_top">CS interview cheat sheet</a><span class="sep">›</span><a href="index.html" target="_top">6 · Data systems &amp; infrastructure</a><span class="sep">›</span><b>14 / 18</b><span class="step"><a href="index.html#semi-naive-datalog" target="_top">← prev</a> · <a href="index.html#backfill-gang-scheduling" target="_top">next →</a></span></div>
+<div class="dep"><span class="ok">Stands alone.</span> You can jump in here without reading earlier cards.</div></nav>
+<!-- /series-nav:top -->
+<article class="card">
+<h1>Fair-share GPU scheduling</h1>
+<p class="sub">Also called fair-share scheduling, weighted max-min fairness, or hierarchical fair queueing; with several resource types, dominant resource fairness (DRF). The cheat-sheet designs a shared GPU cluster: equal shares per user, split among each user's jobs by priority, plus priority bands, preemption and DRF.</p>
+
+<h2>In one breath</h2>
+<p>Every user is promised a slice of the cluster. The slice is then divided among that user's jobs, and anything a user leaves idle goes to others until they want it back. When jobs need two scarce things at once (GPUs and CPU cores), DRF compares users by the resource each one uses the <i>most</i> of, and keeps those "dominant shares" equal.</p>
+
+<h2>Who wants what</h2>
+<table>
+  <tr><th>Who</th><th>Wants</th><th>Constraint, as the source states it</th></tr>
+  <tr><td>Researcher</td><td>Deep-learning training runs</td><td>~<b>0.5%</b> of jobs take more than a week</td></tr>
+  <tr><td>Platform</td><td>Fairness across users, measured by finish time</td><td><b>Zero</b> temporary deadlocks (GPU hoarding)</td></tr>
+  <tr><td>Finance</td><td>Return on expensive accelerators</td><td><b>&gt; 95%</b> utilization; little idle or wasted capacity</td></tr>
+</table>
+<p class="cap">These pull against each other: a week-long job holding GPUs hurts fairness, and reserving GPUs for fairness hurts utilization. The source gives these targets without a citation.</p>
+
+<h2>Worked example 1: the source's split, re-derived</h2>
+<p>Two users share the cluster equally. Within a user, each job gets a weight equal to its priority, divided by the sum of that user's priorities.</p>
+<div class="formula">share(job) = share(user) × priority(job) / Σ priorities of that user's jobs
+A1 = 50% × 3 / (3 + 1)     = 37.5%       B1 = 50% × 2 / (2 + 1 + 1) = 25.0%
+A2 = 50% × 1 / (3 + 1)     = 12.5%       B2 = B3 = 50% × 1 / 4      = 12.5%</div>
+<div class="wrap">
+<table class="split">
+  <tr><th>Job</th><th class="num">Priority</th><th class="num">Weight</th><th>Share of cluster</th><th class="num">GPUs of 16<small>illustrative</small></th></tr>
+  <tr class="usr"><td colspan="5">USER A · 50% · priorities sum to 4</td></tr>
+  <tr><td>A1</td><td class="num">3</td><td class="num">3/4</td><td><div class="post"><em><i style="width:37.5%"></i></em>37.5%</div></td><td class="num">6</td></tr>
+  <tr><td>A2</td><td class="num">1</td><td class="num">1/4</td><td><div class="post"><em><i style="width:12.5%"></i></em>12.5%</div></td><td class="num">2</td></tr>
+  <tr class="usr"><td colspan="5">USER B · 50% · priorities sum to 4</td></tr>
+  <tr><td>B1</td><td class="num">2</td><td class="num">2/4</td><td><div class="post"><em><i style="width:25%"></i></em>25.0%</div></td><td class="num">4</td></tr>
+  <tr><td>B2</td><td class="num">1</td><td class="num">1/4</td><td><div class="post"><em><i style="width:12.5%"></i></em>12.5%</div></td><td class="num">2</td></tr>
+  <tr><td>B3</td><td class="num">1</td><td class="num">1/4</td><td><div class="post"><em><i style="width:12.5%"></i></em>12.5%</div></td><td class="num">2</td></tr>
+</table>
+</div>
+<p class="cap">Matches the source's figure: 37.5 + 12.5 + 25 + 12.5 + 12.5 = 100%. The shares are guarantees, not caps: if B goes idle, A's jobs may use B's half until B returns, and then the scheduler preempts just enough of A to give B its 50% back.</p>
+<p class="fix">The source's figure splits a user's share in proportion to priority, but its text says a user's jobs run "in priority order", which would give A1 all of A's 50% first. They're two different policies; the table follows the figure.</p>
+
+<h2>Worked example 2: two resources, DRF</h2>
+<p>A single-resource share breaks when jobs also need CPU cores. DRF gives each user's share as the largest fraction it holds of any resource, and hands the next task to whoever's is smallest.</p>
+<div class="mathbox">
+<math display="block">
+  <munder class="t2"><msub><mi>s</mi><mi>i</mi></msub><mtext class="lab">dominant share</mtext></munder>
+  <mo>=</mo>
+  <munder><mo movablelimits="false">max</mo><mi>r</mi></munder>
+  <mfrac>
+    <munder class="t1"><msub><mi>u</mi><mrow><mi>i</mi><mo>,</mo><mi>r</mi></mrow></msub><mtext class="lab">held by user i</mtext></munder>
+    <munder class="t3"><msub><mi>C</mi><mi>r</mi></msub><mtext class="lab">cluster total</mtext></munder>
+  </mfrac>
+  <mspace width="1.2em"/>
+  <mtext>next task goes to</mtext><mspace width="0.4em"/>
+  <munder><mrow><mo>arg</mo><mo movablelimits="false">min</mo></mrow><mi>i</mi></munder><msub><mi>s</mi><mi>i</mi></msub>
+</math>
+<div class="legend">
+  <span class="sym">r</span><span>a resource type</span><span class="v">GPUs, CPU cores</span>
+  <span class="sym">C<sub>r</sub></span><span>how much of it the cluster has</span><span class="v">16 GPUs, 128 cores</span>
+  <span class="sym">u<sub>i,r</sub></span><span>how much user i's running tasks hold</span><span class="v">tasks × per-task need</span>
+  <span class="sym">s<sub>i</sub></span><span>user i's dominant share</span><span class="v">0 → 5/8 below</span>
+</div>
+</div>
+<p>Illustrative cluster: <b>16 GPUs, 128 CPU cores</b>. Team A trains models: each task needs <b>2 GPUs + 8 cores</b> (2/16 = 1/8 of GPUs, 8/128 = 1/16 of cores, so GPUs dominate). Team B runs data-heavy jobs: <b>1 GPU + 16 cores</b> (1/16 of GPUs, 16/128 = 1/8 of cores, so cores dominate). Both have more tasks queued than fit.</p>
+<div class="wrap">
+<table class="trace">
+  <tr><th>Step</th><th>Smallest s<sub>i</sub> before</th><th>Give a task to</th><th class="num">Tasks A · B</th><th class="num">GPUs used</th><th class="num">Cores used</th><th class="num">s<sub>A</sub> · s<sub>B</sub> after</th></tr>
+  <tr><td>1</td><td class="w">tie at 0</td><td class="pick">A</td><td class="num">1 · 0</td><td class="num">2</td><td class="num">8</td><td class="num">1/8 · 0</td></tr>
+  <tr><td>2</td><td>B (0)</td><td class="pick">B</td><td class="num">1 · 1</td><td class="num">3</td><td class="num">24</td><td class="num">1/8 · 1/8</td></tr>
+  <tr><td>3–4</td><td class="w">tie, then B</td><td class="pick">A, B</td><td class="num">2 · 2</td><td class="num">6</td><td class="num">48</td><td class="num">1/4 · 1/4</td></tr>
+  <tr><td>5–6</td><td class="w">tie, then B</td><td class="pick">A, B</td><td class="num">3 · 3</td><td class="num">9</td><td class="num">72</td><td class="num">3/8 · 3/8</td></tr>
+  <tr><td>7–8</td><td class="w">tie, then B</td><td class="pick">A, B</td><td class="num">4 · 4</td><td class="num">12</td><td class="num">96</td><td class="num">1/2 · 1/2</td></tr>
+  <tr><td>9–10</td><td class="w">tie, then B</td><td class="pick">A, B</td><td class="num">5 · 5</td><td class="num">15</td><td class="num">120</td><td class="num hi">5/8 · 5/8</td></tr>
+  <tr class="stop"><td>11</td><td>tie at 5/8</td><td class="pick">neither</td><td colspan="4">A needs 15 + 2 = 17 &gt; 16 GPUs; B needs 120 + 16 = 136 &gt; 128 cores. Stop.</td></tr>
+</table>
+</div>
+<div class="formula">s_A = max(10/16 GPUs, 40/128 cores) = max(0.625, 0.3125) = 5/8
+s_B = max( 5/16 GPUs, 80/128 cores) = max(0.3125, 0.625) = 5/8   → equal</div>
+
+<h3 style="font-size:15px;margin:18px 0 6px">The same cluster under four policies</h3>
+<div class="wrap">
+<table class="pol">
+  <tr><th>Policy</th><th class="num">Tasks A · B</th><th>16 GPUs</th><th class="num">s<sub>A</sub> · s<sub>B</sub></th></tr>
+  <tr><td class="what">First come, first served<small>A's queue arrived first</small></td><td class="num">8 · <span class="lo">0</span></td>
+    <td><div class="gbar"><div class="a" style="width:100%"></div></div></td><td class="num">1 · <span class="lo">0</span></td></tr>
+  <tr><td class="what">Static half of each resource<small>8 GPUs + 64 cores each</small></td><td class="num">4 · 4</td>
+    <td><div class="gbar"><div class="a" style="width:50%"></div><div class="b" style="width:25%"></div><div class="idle" style="width:25%"></div></div></td><td class="num">1/2 · 1/2</td></tr>
+  <tr><td class="what">Fair on GPUs only<small>cores ignored when choosing</small></td><td class="num">4 · 6</td>
+    <td><div class="gbar"><div class="a" style="width:50%"></div><div class="b" style="width:37.5%"></div><div class="idle" style="width:12.5%"></div></div></td><td class="num">1/2 · <span class="lo">3/4</span></td></tr>
+  <tr><td class="what">DRF<small>equalize dominant shares</small></td><td class="num hi">5 · 5</td>
+    <td><div class="gbar"><div class="a" style="width:62.5%"></div><div class="b" style="width:31.25%"></div><div class="idle" style="width:6.25%"></div></div></td><td class="num hi">5/8 · 5/8</td></tr>
+</table>
+</div>
+<div class="key"><span><i class="ka"></i>A's GPUs</span><span><i class="kb"></i>B's GPUs</span><span><i class="ki"></i>idle GPUs</span></div>
+<p class="cap">Static half: B fits only 64/16 = 4 tasks, so 4 GPUs sit idle. GPUs only: B's tasks look half as expensive (1/16 each), so B gets two for each of A's until B holds all 128 cores; 2 GPUs are stranded and B's real share is 96/128 = 3/4. DRF gives both teams more than the static half (5 &gt; 4) and leaves 1 GPU and 8 cores idle.</p>
+
+<h2>In Python</h2>
+<pre class="code"><span class="k">from</span> fractions <span class="k">import</span> Fraction <span class="k">as</span> F
+
+<span class="k">def</span> split(users, total=F(1)):
+    <span class="c">"""{user: {job: priority}} -&gt; {job: fraction of cluster}"""</span>
+    out = {}
+    <span class="k">for</span> jobs <span class="k">in</span> users.values():
+        share = total / len(users)          <span class="c"># equal share per user</span>
+        <span class="k">for</span> job, prio <span class="k">in</span> jobs.items():
+            out[job] = share * prio / sum(jobs.values())
+    <span class="k">return</span> out
+
+<span class="k">def</span> dominant(tasks, need, cap):
+    <span class="k">return</span> max(F(tasks * n, c) <span class="k">for</span> n, c <span class="k">in</span> zip(need, cap))
+
+<span class="k">def</span> drf(cap, need):
+    tasks = {u: 0 <span class="k">for</span> u <span class="k">in</span> need}
+    used, active = [0] * len(cap), set(need)
+    <span class="k">while</span> active:
+        u = min(sorted(active),              <span class="c"># smallest dominant share</span>
+                key=<span class="k">lambda</span> u: dominant(tasks[u], need[u], cap))
+        after = [x + n <span class="k">for</span> x, n <span class="k">in</span> zip(used, need[u])]
+        <span class="k">if</span> any(a &gt; c <span class="k">for</span> a, c <span class="k">in</span> zip(after, cap)):
+            active.discard(u)               <span class="c"># next task doesn't fit</span>
+            <span class="k">continue</span>
+        tasks[u] += 1
+        used = after
+    <span class="k">return</span> tasks, used
+
+shares = split({"A": {"A1": 3, "A2": 1},
+                "B": {"B1": 2, "B2": 1, "B3": 1}})
+print(*(f"{j} {float(s):.1%}" <span class="k">for</span> j, s <span class="k">in</span> shares.items()))
+<span class="o"># → A1 37.5% A2 12.5% B1 25.0% B2 12.5% B3 12.5%</span>
+print(drf((16, 128), {"A": (2, 8), "B": (1, 16)}))
+<span class="o"># → ({'A': 5, 'B': 5}, [15, 120])</span></pre>
+<p class="cx"><b>Time O(T · n · R) · Space O(n · R)</b> for T tasks placed, n users and R resource types: each placement scans every user's dominant share. A heap keyed on s<sub>i</sub> makes each pick O(log n), which is what the DRF paper suggests.</p>
+
+<h2>The words, two examples each</h2>
+<table class="parts">
+  <tr><th>Term</th><th class="what">What it means</th><th>Example A</th><th>Example B</th></tr>
+  <tr><td>Fair share</td><td class="what">The slice a user or job is guaranteed when everyone wants more.</td>
+    <td class="ex"><b class="ok">50% each</b><span>users A and B in the source's figure</span></td>
+    <td class="ex"><b>12.5%</b><span>A2: half of A's 50%, weighted 1 of 4</span></td></tr>
+  <tr><td>Priority band</td><td class="what">Coarse tiers, highest first: monitoring, production, batch, best effort (also called testing or free).</td>
+    <td class="ex"><b>Production</b><span>a serving job with a latency target</span></td>
+    <td class="ex"><b>Best effort</b><span>a hyperparameter sweep that can wait</span></td></tr>
+  <tr><td>Preemption</td><td class="what">Evicting a lower-priority task. It can ask for SIGTERM first, to save a checkpoint before the SIGKILL.</td>
+    <td class="ex"><b class="ok">Checkpoint, then resume</b><span>the user sees a short pause, not a restart</span></td>
+    <td class="ex"><b class="lo">No checkpoint</b><span>a week-long run restarts from zero</span></td></tr>
+  <tr><td>Dominant share</td><td class="what">A user's largest fraction of any one resource.</td>
+    <td class="ex"><b>5/8 of GPUs</b><span>team A: 10 of 16 GPUs, only 40 of 128 cores</span></td>
+    <td class="ex"><b>5/8 of cores</b><span>team B: 80 of 128 cores, only 5 of 16 GPUs</span></td></tr>
+</table>
+
+<h2>Why DRF beats the alternatives</h2>
+<div class="grid2">
+  <div class="cell"><h3><span class="x">&#10007;</span> First come, first served</h3><p>Whoever queues first takes everything: A's 8 tasks fill all 16 GPUs and B gets 0 until A finishes, which can be a week. Fair queueing exists to stop one heavy source from blocking the rest.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Static quotas</h3><p>Half of each resource per team is simple and can't be gamed, but it never lends idle capacity: 4 of 16 GPUs sit idle while A still has tasks queued. That misses the source's 95% target.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Count only GPUs</h3><p>Fair on paper (A 8 GPUs, B 6), but B's CPU-heavy tasks take all 128 cores, stranding 2 GPUs and giving B a 3/4 real share against A's 1/2.</p></div>
+  <div class="cell win"><h3><span class="ok">&#10003;</span> DRF</h3><p>Each team gets 5 tasks, more than its static half. Equal dominant shares of 5/8, 15 of 16 GPUs busy, and the DRF paper shows no user gains by lying about its needs.</p></div>
+</div>
+
+<h2>Is fair share always the right goal?</h2>
+<div class="note">
+  <p>No. DRF assumes a job is many small, independent tasks that can start one at a time. A distributed training job that needs 8 GPUs together is all-or-nothing, and handing it GPUs a few at a time makes it hoard them while it waits (see backfilling and gang scheduling). Production and monitoring work usually gets strict priority bands on top of fair share, because a latency target can't wait for the ratio to even out.</p>
+  <p>Fairness in shares at any instant also isn't fairness in outcome: a job whose GPUs are scattered across racks may run slower on the same share. Newer GPU schedulers such as Themis target finish-time fairness instead, which is the Platform row above. With only one resource, DRF reduces to plain max-min fairness.</p>
+</div>
+
+<footer class="foot">
+  <p><b>Source:</b> <a href="https://github.com/ljeng/cheat-sheet/blob/main/large-scale-design/system-design/big-product-design-picture.md">cheat-sheet › System Design › The Big Product Design Picture</a> (commit 5cedb05): the stakeholder table, Core principles of design and figure BGDP-1. DRF's definition, progressive filling and strategy-proofness are from Ghodsi et al., <a href="https://www.usenix.org/conference/nsdi11/dominant-resource-fairness-fair-allocation-multiple-resource-types">Dominant resource fairness</a> (NSDI 2011). Priority bands and SIGTERM-before-SIGKILL are from Verma et al., <a href="https://research.google/pubs/large-scale-cluster-management-at-google-with-borg/">Large-scale cluster management at Google with Borg</a> (EuroSys 2015); finish-time fairness from Mahajan et al., <a href="https://www.usenix.org/conference/nsdi20/presentation/mahajan">Themis</a> (NSDI 2020). Cluster sizes and task shapes are illustrative.</p>
+  <p><b>Run it:</b> <a href="https://github.com/seyonv/explainers/blob/main/cs-6-data-systems/code/gpu-fair-share.py">code/gpu-fair-share.py</a> prints the split, the full DRF trace and the other three policies (Python 3.10).</p>
+  <p><b>Related:</b> <a href="backfill-gang-scheduling.html">backfilling and gang scheduling</a> · <a href="scheduler-as-product.html">the scheduler as a product</a> · <a href="../cs-7-operating-systems/scheduling.html">CPU scheduling</a> (cs-7) · <a href="../cs-5-distributed-systems/load-balancing-consumers.html">load balancing</a> (cs-5).</p>
+</footer>
+</article>
+<!-- series-nav:bottom -->
+<div class="snx"><a class="nx" href="index.html#backfill-gang-scheduling" target="_top">
+<span class="mini" aria-hidden="true"><span class="m1">Backfilling and gang scheduling</span><span class="m2">Backfilling is also called out-of-order or EASY scheduling (conservative backfilling is the stricter variant); gang scheduling is also called co-scheduling or all-or-nothing placement. The…</span><span class="m3">In one breath</span><span class="m4">A big job at the head of the queue often has to wait for GPUs to free up, and those GPUs sit idle meanwhile. Backfilling reserves the big job's start time, then lets smaller jobs use the idle GPUs as long as they finish in time. Gang scheduling gives a distributed job all its GPUs at once or none, so half-placed jobs can't sit…</span></span>
+<span class="tx"><span class="lab">Next up · 15 / 18</span><span class="tt">Backfilling and gang scheduling</span><span class="ds">Filling holes without starving big jobs, and the deadlock of partial gangs</span><span class="nd">Stands alone.</span><span class="go">Continue →</span></span></a><div class="aux"><span><a href="index.html#semi-naive-datalog" target="_top">← Recursive queries: semi-naïve evaluation</a></span><a href="index.html" target="_top">All cards in 6 · Data systems &amp; infrastructure</a></div></div>
+<!-- /series-nav:bottom -->
+</body>
+</html>

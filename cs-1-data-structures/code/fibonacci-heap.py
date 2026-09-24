@@ -90,11 +90,8 @@ class FibHeap:
                     x, y = y, x
                 self._link(y, x)           # larger key goes under
             by_deg[x.degree] = x
-        self.min = None
-        for x in by_deg:
-            if x is not None and (self.min is None
-                                  or x.key < self.min.key):
-                self.min = x
+        roots = [x for x in by_deg if x is not None]
+        self.min = min(roots, key=lambda r: r.key)
 
     def _link(self, y, x):
         _unlink(y)
@@ -191,10 +188,12 @@ if __name__ == "__main__":
     print("after 9 inserts:", show(h), "min", h.find_min())
     print("extract_min ->", h.extract_min(), "links", h.links)
     print("after consolidate:", show(h))
-    print("source slots for n=9:", source_slots(9),
-          " needed:", int(math.log(8, PHI)) + 1)
+    print("source's slots for n=9:", source_slots(9),
+          "  slots needed:", int(math.log(9, PHI)) + 1,
+          "  degree used:", h.min.degree)
 
-    for i, new in [(7, 0), (6, 4)]:
+    # handles[6] is 8, handles[8] is 7, handles[5] is 6
+    for i, new in [(6, 4), (8, 1), (5, 0)]:
         print(f"decrease {keys[i]} -> {new}")
         h.decrease_key(handles[i], new)
         print("  ", show(h), "min", h.find_min(), "cuts", h.cuts)

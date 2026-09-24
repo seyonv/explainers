@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Where in-memory speed comes from</title>
+<style>
+:root{
+  --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
+  --text:#1c1f23; --muted:#6b7068; --faint:#b9b9b3;
+  --accent:#4a9d77; --accent-bg:#dcefdf; --accent-border:#8cc79c;
+  --red:#c0492b; --red-bg:#fbeceb;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#15171a; --surface:#1d2024; --surface2:#24282d; --border:#32373d;
+    --text:#e6e8ea; --muted:#9aa1a9; --faint:#4a5057;
+    --accent:#5fb37f; --accent-bg:#1c2b22; --accent-border:#3f7a55;
+    --red:#e57368; --red-bg:#2e1f1e;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text)}
+.card{max-width:820px;margin:0 auto;padding:28px 32px;font-family:-apple-system,"Inter",system-ui,sans-serif;line-height:1.45}
+h1{font-size:26px;font-weight:600;margin:0 0 6px;letter-spacing:-0.01em}
+.sub{font-size:15px;color:var(--muted);margin:0 0 20px}
+h2{font-size:17px;font-weight:600;margin:26px 0 10px}
+p{font-size:15px;margin:0 0 10px}
+.cap{font-size:13px;color:var(--muted);margin:8px 0 0;text-align:center}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+
+/* Tables and formulas */
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border)}
+th{font-size:12px;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:none}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+.hi{color:var(--accent);font-weight:600} .lo{color:var(--red);font-weight:600}
+.formula{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin:10px 0;white-space:pre;overflow-x:auto;line-height:1.55}
+
+/* Typeset formula (patterns §1) */
+.mathbox{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px 16px 12px;margin:10px 0;overflow-x:auto}
+.mathbox math{font-size:21px;color:var(--text);font-family:"STIX Two Math","Latin Modern Math","Cambria Math",math}
+.mathbox .t1{color:var(--text)} .mathbox .t2{color:var(--accent)} .mathbox .t3{color:var(--muted)}
+.mathbox .lab{font-size:12px;font-family:-apple-system,"Inter",system-ui,sans-serif;padding-top:3px;border-top:1.5px solid currentColor;margin-top:2px}
+.legend{display:grid;grid-template-columns:auto 1fr auto;column-gap:14px;row-gap:5px;font-size:13px;margin-top:12px;align-items:baseline}
+.legend .sym{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;text-align:right}
+.legend .v{color:var(--muted);text-align:right;font-variant-numeric:tabular-nums}
+
+/* Code (series CSS, verbatim) */
+.code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;line-height:1.5;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin:10px 0;white-space:pre;overflow-x:auto;tab-size:4;color:var(--text)}
+.code .k{color:var(--accent);font-weight:600}.code .c{color:var(--muted)}.code .o{color:var(--muted)}
+
+/* Bar rows: label | bar | value */
+.bars{display:grid;grid-template-columns:190px 1fr 132px;column-gap:14px;row-gap:9px;align-items:center;font-size:14px}
+.bars .hd{font-size:13px;color:var(--muted)}
+.bars .hd.r,.bars .val{text-align:right;font-variant-numeric:tabular-nums}
+.bars .lab{line-height:1.25}
+.bars .lab small{display:block;font-size:12px;color:var(--muted)}
+.bars .track{height:18px;border-radius:3px;background:var(--surface2);overflow:hidden}
+.bars .bar{height:18px;background:var(--faint)}
+.bars .bar.g{background:var(--accent)} .bars .bar.r{background:var(--red)}
+.bars .val small{display:block;font-size:12px;color:var(--muted)}
+.bars .val.g{color:var(--accent);font-weight:600} .bars .val.r{color:var(--red);font-weight:600}
+
+/* Terms, two examples each */
+.parts td{vertical-align:top} .parts td:first-child{font-weight:600;white-space:nowrap}
+.parts .ex{font-size:13px} .parts .ex span{display:block;color:var(--muted)}
+
+/* 2x2 grid */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.cell{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.cell.win{background:var(--accent-bg);border-color:var(--accent-border)}
+.cell h3{font-size:16px;font-weight:600;margin:0 0 5px;display:flex;gap:8px;align-items:baseline}
+.cell p{font-size:14px;margin:0;color:var(--text)}
+.cell.win h3,.cell.win p{color:var(--accent)}
+.x{color:var(--red)} .ok{color:var(--accent)}
+
+/* Clarification box */
+.note{border:1px solid var(--border);border-radius:10px;padding:14px 18px;font-size:14px}
+.note p{font-size:14px} .note p:last-child{margin-bottom:0}
+
+.fix{font-size:13px;color:var(--muted);margin:0 0 10px}
+.cx{font-size:14px;margin:12px 0 0}
+.foot{margin-top:22px;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+.foot p{font-size:13px;margin:0 0 4px}
+.foot b{color:var(--text);font-weight:600}
+@media (max-width:560px){
+  .card{padding:22px 16px}
+  .grid2{grid-template-columns:1fr}
+  .bars{grid-template-columns:1fr 104px;row-gap:4px}
+  .bars .lab{grid-column:1 / -1;margin-top:6px}
+  .bars .hd.mid{display:none}
+  .parts .what{display:none}
+  .legend{grid-template-columns:auto 1fr}.legend .v{display:none}
+}
+/* series-nav */
+.sn{max-width:820px;margin:0 auto;padding:16px 32px 0;font-family:-apple-system,"Inter",system-ui,sans-serif;font-size:13px;line-height:1.5;color:var(--muted)}
+.sn a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
+.sn .crumbs{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 7px}
+.sn .crumbs b{color:var(--text);font-weight:600}
+.sn .sep{color:var(--faint,var(--border))}
+.sn .step{margin-left:auto;white-space:nowrap}
+.sn .dep{margin-top:5px;padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface)}
+.sn .dep .ok{color:var(--accent);font-weight:600}
+.snx{max-width:820px;margin:0 auto;padding:6px 32px 44px;font-family:-apple-system,"Inter",system-ui,sans-serif}
+.snx .nx{display:grid;grid-template-columns:280px 1fr;text-decoration:none;color:var(--text);background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.snx .nx:hover,.snx .nx:focus-visible{border-color:var(--accent-border,var(--accent));outline:none}
+.snx .mini{position:relative;height:210px;overflow:hidden;background:var(--bg);border-right:1px solid var(--border);padding:14px 16px}
+.snx .mini span{display:block}
+.snx .mini .m1{font-size:12.5px;font-weight:600;margin:0 0 4px;line-height:1.3}
+.snx .mini .m2{font-size:9px;color:var(--muted);margin:0 0 8px;line-height:1.4}
+.snx .mini .m3{font-size:8.5px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;margin:0 0 3px}
+.snx .mini .m4{font-size:9.5px;margin:0;line-height:1.45}
+.snx .tx{padding:16px 20px}
+.snx .lab{font-size:12px;font-weight:600;color:var(--accent);letter-spacing:.04em;text-transform:uppercase}
+.snx .tt{display:block;font-size:20px;font-weight:600;margin:5px 0 4px;line-height:1.25}
+.snx .ds{display:block;font-size:14px;color:var(--muted)}
+.snx .nd{display:block;font-size:13px;color:var(--muted);margin-top:10px}
+.snx .go{display:block;margin-top:12px;font-size:14px;font-weight:600;color:var(--accent)}
+.snx .aux{display:flex;justify-content:space-between;gap:12px;margin-top:10px;font-size:13px;color:var(--muted)}
+.snx .aux a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
+@media (max-width:560px){.sn,.snx{padding-left:16px;padding-right:16px}.snx .nx{grid-template-columns:1fr}.snx .mini{display:none}.sn .step{margin-left:0}}
+/* /series-nav */
+</style>
+</head>
+<body>
+<!-- series-nav:top -->
+<nav class="sn" aria-label="Course navigation"><div class="crumbs"><a href="../cs-0-map/index.html" target="_top">CS interview cheat sheet</a><span class="sep">›</span><a href="index.html" target="_top">6 · Data systems &amp; infrastructure</a><span class="sep">›</span><b>05 / 18</b><span class="step"><a href="index.html#bigtable-column-families" target="_top">← prev</a> · <a href="index.html#cache-patterns" target="_top">next →</a></span></div>
+<div class="dep"><span class="ok">Stands alone.</span> You can jump in here without reading earlier cards.</div></nav>
+<!-- /series-nav:top -->
+<article class="card">
+<h1>Where in-memory speed comes from</h1>
+<p class="sub">Also called main-memory databases, cache-conscious (cache-aware) data structures, or locality of reference. The cheat-sheet's Cache page retells the Shore experiments from "OLTP through the looking glass" (Harizopoulos et al., SIGMOD 2008): overhead first, cache misses second.</p>
+
+<h2>In one breath</h2>
+<p>A disk database with enough RAM already serves reads from memory, because the OS caches disk blocks. So an in-memory database is fast mostly because it skips the machinery built for disk: pages, a buffer pool, locking, logging. Once that's gone, what's left is the CPU waiting on cache misses, and the layout of the index decides how many there are.</p>
+
+<h2>Step 1: strip the overhead (the source's Shore numbers)</h2>
+<div class="mathbox">
+<math display="block">
+  <msub><mi>T</mi><mtext>left</mtext></msub><mo>=</mo>
+  <munder class="t3"><mi>T</mi><mtext class="lab">B-tree op time</mtext></munder>
+  <mo>&#215;</mo>
+  <munder class="t1"><mrow><mo stretchy="false">(</mo><mn>1</mn><mo>&#8722;</mo><mi>f</mi><mo stretchy="false">)</mo></mrow><mtext class="lab">Shore optimizations</mtext></munder>
+  <mo>&#215;</mo>
+  <munder class="t2"><mrow><mo stretchy="false">(</mo><mn>1</mn><mo>&#8722;</mo><mfrac><mn>3</mn><mn>4</mn></mfrac><mo stretchy="false">)</mo></mrow><mtext class="lab">minimal kernel</mtext></munder>
+</math>
+<div class="legend">
+  <span class="sym">T</span><span>time spent in B-tree operations, before any change</span><span class="v">100 units</span>
+  <span class="sym">f</span><span>share removed by the Shore optimizations, same key access pattern</span><span class="v">0.80 – 0.88</span>
+  <span class="sym">3/4</span><span>share of the rest removed by a minimal kernel that reads the same data</span><span class="v">0.75</span>
+</div>
+</div>
+<div class="formula">f = 0.80:  100 × 0.20 = 20  →  20 × 0.25 = 5    so 100 / 5 = 20× less time
+f = 0.88:  100 × 0.12 = 12  →  12 × 0.25 = 3    so 100 / 3 ≈ 33× less time</div>
+<p class="cap">Only 3–5 of 100 units survive, and none of the cuts touched the B-tree's layout or which keys it reads. For the whole New Order transaction the paper reports the stripped-down Shore at about 1/15 of the original instruction count, and the real work at about 1/60.</p>
+
+<h2>Step 2: count the cache misses that remain</h2>
+<p>Each memory access pulls one 64-byte cache line. The ladder below is why a miss matters: DRAM is 200× slower than L1, but still 1,500× faster than a random SSD read.</p>
+<div class="bars">
+  <div class="hd">Where the data is</div><div class="hd mid">Latency, log scale</div><div class="hd r">ns · vs DRAM</div>
+  <div class="lab">L1 cache reference</div><div class="track"><div class="bar g" style="width:8.7%"></div></div><div class="val g">0.5<small>0.005×</small></div>
+  <div class="lab">L2 cache reference</div><div class="track"><div class="bar g" style="width:23.1%"></div></div><div class="val">7<small>0.07×</small></div>
+  <div class="lab">Main memory (DRAM)</div><div class="track"><div class="bar" style="width:37.5%"></div></div><div class="val">100<small>1×</small></div>
+  <div class="lab">Random 4 KB SSD read</div><div class="track"><div class="bar" style="width:77.2%"></div></div><div class="val">150,000<small>1,500×</small></div>
+  <div class="lab">Same-datacenter round trip</div><div class="track"><div class="bar" style="width:83.7%"></div></div><div class="val">500,000<small>5,000×</small></div>
+  <div class="lab">Disk seek</div><div class="track"><div class="bar r" style="width:100%"></div></div><div class="val r">10,000,000<small>100,000×</small></div>
+</div>
+<p class="cap">Approximate figures from "Latency numbers every programmer should know" (Dean / Norvig, as collected by J. Bonér). Real hardware varies by generation; the ratios are what to remember. Bar width = (log<sub>10</sub> ns + 1) / 8.</p>
+
+<h2>Worked example: find one of 10<sup>7</sup> keys</h2>
+<p>The course's orders table has 10<sup>7</sup> rows; index them by an 8-byte key, so 8 keys fit in one line. Cold cache, so every distinct line touched is one miss. Counts from <span class="mono">code/cache-conscious-structures.py</span>, averaged over 10,000 random lookups (seed 0).</p>
+<div class="bars">
+  <div class="hd">Layout</div><div class="hd mid">Cache lines touched per lookup</div><div class="hd r">lines · ~ns</div>
+  <div class="lab">Sorted array, binary search<small>23.33 probes, 8-byte keys</small></div><div class="track"><div class="bar r" style="width:100%"></div></div><div class="val r">20.19<small>~2,019 ns</small></div>
+  <div class="lab">B+tree, 4 KB nodes<small>fan-out 256, 3 levels</small></div><div class="track"><div class="bar" style="width:85.5%"></div></div><div class="val">17.26<small>~1,726 ns</small></div>
+  <div class="lab">Tree of 64-byte nodes<small>8 keys, 9 children, 8 levels</small></div><div class="track"><div class="bar g" style="width:39.6%"></div></div><div class="val g">8.00<small>~800 ns</small></div>
+  <div class="lab">Hash table, linear probing<small>load 0.5, no range scans</small></div><div class="track"><div class="bar g" style="width:5.3%"></div></div><div class="val g">1.06<small>~106 ns</small></div>
+</div>
+<div class="formula">binary search:  23 or 24 probes, 23.33 on average (log2 10^7 = 23.25);
+                23.33 − 20.19 ≈ 3 late probes share a line with the one before
+4 KB B+tree:    3 levels × (8–9 probes over ≤ 256 entries, 4 per line) ≈ 3 × 6
+64-byte nodes:  10^7 / 8 = 1,250,000 leaves → 138,889 → 15,433 → 1,715
+                → 191 → 22 → 3 → 1   = 8 levels, exactly 1 line each</div>
+<p class="cap">The ns column is illustrative: lines × 100 ns, as if every line were a DRAM miss. In practice the top levels stay cached, so all four are faster than shown, but the order holds. The 4 KB B+tree needs only 3 disk reads, which is what it was built for; inside each page it still does a binary search across ~6 lines.</p>
+
+<h2>In Python: count the lines</h2>
+<pre class="code">LINE, KEY, N = 64, 8, 10**7
+
+<span class="k">def</span> probes(n, p):
+    <span class="c">"""Indices bisect_right visits to find slot p in n keys."""</span>
+    lo, hi, seen = 0, n, []
+    <span class="k">while</span> lo &lt; hi:
+        mid = (lo + hi) // 2
+        seen.append(mid)
+        <span class="k">if</span> p &lt; mid: hi = mid          <span class="c"># key p sits at index p</span>
+        <span class="k">else</span>: lo = mid + 1
+    <span class="k">return</span> seen
+
+<span class="k">def</span> lines(idxs, width):            <span class="c"># distinct 64-byte lines</span>
+    <span class="k">return</span> len({i * width // LINE <span class="k">for</span> i <span class="k">in</span> idxs})
+
+<span class="k">def</span> line_tree_levels(keys=LINE // KEY):
+    n, levels = -(-N // keys), 1       <span class="c"># leaves: 8 keys per line</span>
+    <span class="k">while</span> n &gt; 1:                      <span class="c"># inner nodes: 9 children</span>
+        n, levels = -(-n // (keys + 1)), levels + 1
+    <span class="k">return</span> levels                      <span class="c"># one line per level</span>
+
+<span class="o"># cache lines per lookup, N = 10,000,000, cold cache
+#   sorted array + bisect  20.19 lines  ~ 2019 ns
+#   B+tree, 4 KB nodes     17.26 lines  ~ 1726 ns
+#   tree of 64-byte nodes   8.00 lines  ~  800 ns
+#   hash table, load 0.5    1.06 lines  ~  106 ns
+# binary search: 23.33 probes (log2 N = 23.25)
+# Shore B-tree time, 100 units:
+#   remove 80%: 100 -&gt; 20 -&gt; x 1/4 = 5   (20x)
+#   remove 88%: 100 -&gt; 12 -&gt; x 1/4 = 3   (33x)</span></pre>
+<p class="cap">Real output of <span class="mono">python3 code/cache-conscious-structures.py</span> (3.10); the B+tree and hash-table counters are in the file. It simulates addresses rather than timing anything, so the numbers are the same on every machine.</p>
+<p class="cx"><b>Time O(log<sub>B</sub> N) lines · Space O(N).</b> Every tree does O(log N) comparisons; what changes is how many keys B share a line, so a 64-byte node pays one miss per 8 keys' worth of fan-out instead of one per probe.</p>
+
+<h2>The words, with two examples each</h2>
+<table class="parts">
+  <tr><th>Term</th><th class="what">What it means</th><th>Example A</th><th>Example B</th></tr>
+  <tr><td>Cache line</td><td class="what">The unit the CPU moves between memory and cache.</td>
+    <td class="ex"><b>64 bytes</b><span>8 eight-byte keys arrive together</span></td>
+    <td class="ex"><b>4 B+tree entries</b><span>16-byte key + pointer pairs</span></td></tr>
+  <tr><td>Cache miss</td><td class="what">The needed line isn't in L1–L3, so the CPU stalls for RAM (or worse).</td>
+    <td class="ex"><b class="lo">~100 ns</b><span>a probe far from the last one in a binary search</span></td>
+    <td class="ex"><b class="ok">~0</b><span>the next key in the same line</span></td></tr>
+  <tr><td>Cache-conscious layout</td><td class="what">Arrange data so what's read together sits in the same or adjacent lines.</td>
+    <td class="ex"><b>Node = one line</b><span>CSS-tree style; 8 lines instead of 20</span></td>
+    <td class="ex"><b>Hash bucket in one line</b><span>1.06 lines per lookup at load 0.5</span></td></tr>
+  <tr><td>Disk-format overhead</td><td class="what">Work that exists only because data was laid out for disk.</td>
+    <td class="ex"><b>Buffer pool lookup</b><span>page id → frame, even when the page is in RAM</span></td>
+    <td class="ex"><b>Encoding to pages</b><span>serialising records into slotted pages to write them</span></td></tr>
+</table>
+
+<h2>Why it beats the alternatives</h2>
+<div class="grid2">
+  <div class="cell"><h3><span class="x">&#10007;</span> Just add RAM to a disk engine</h3><p>The OS page cache already stops the disk reads, yet every lookup still goes through pages, latches, locks and the log. That machinery, not the disk, is where Shore's time went.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Cache-tune the B-tree first</h3><p>The paper expects only a modest gain while the overhead remains: saving a dozen misses matters little in a transaction where the real work is about 1/60 of the instructions.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> A sorted array and binary search</h3><p>Compact and simple, but each probe halves the range and jumps far away: 20.19 lines for 10<sup>7</sup> keys, almost one miss per probe.</p></div>
+  <div class="cell win"><h3><span class="ok">&#10003;</span> Strip overhead, then fit lines</h3><p>First remove disk-era work (100 → 3–5 units of B-tree time). Then lay nodes out one line each (8 lines) or use a hash table (~1 line) for point lookups.</p></div>
+</div>
+
+<h2>So is a hash table always the answer in memory?</h2>
+<div class="note">
+  <p>No. The source, following the paper, only conjectures that hash tables may win once a system is stripped down, and says it should be tested. A hash table has no order, so range scans, prefix queries and "next key" still need a tree. A node-per-line tree built as a packed array (the CSS-tree idea from Rao and Ross's 1999 paper on decision-support indexing) is best for read-mostly data; its successor, the CSB<sup>+</sup>-tree, exists to make updates cheaper.</p>
+  <p>And when the data no longer fits in RAM, the ladder flips the priorities back: a disk seek costs 100,000 DRAM misses, so 4 KB nodes with 3 reads beat 64-byte nodes with 8. Our reading, not the source's: pick the node size to match the slowest level the data actually lives in.</p>
+</div>
+
+<div class="foot">
+  <p><b>Source:</b> <a href="https://github.com/ljeng/cheat-sheet/blob/main/large-scale-design/system-design/cache.md">cheat-sheet › System Design › Cache</a> (commit 5cedb05). Its Shore numbers and the hash-table conjecture come from Harizopoulos, Abadi, Madden and Stonebraker, <a href="https://hstore.cs.brown.edu/papers/hstore-lookingglass.pdf">OLTP through the looking glass, and what we found there</a> (SIGMOD 2008, §5.5 and Fig. 1); the in-memory paragraph follows Kleppmann, <a href="https://dataintensive.net/">Designing Data-Intensive Applications</a>, ch. 3. Latencies: <a href="https://gist.github.com/jboner/2841832">Latency numbers every programmer should know</a>.</p>
+  <p><b>Run it:</b> <a href="https://github.com/seyonv/explainers/blob/main/cs-6-data-systems/code/cache-conscious-structures.py">code/cache-conscious-structures.py</a> (Python 3.10, standard library only; about 1 s).</p>
+  <p><b>Related:</b> <a href="database-indexes.html">B-trees and database indexes</a> · <a href="in-memory-db-anticaching.html">in-memory databases and anti-caching</a> · <a href="cache-patterns.html">caching patterns</a> · <a href="../cs-4-design-foundations/back-of-envelope.html">back-of-envelope numbers</a></p>
+</div>
+</article>
+<!-- series-nav:bottom -->
+<div class="snx"><a class="nx" href="index.html#cache-patterns" target="_top">
+<span class="mini" aria-hidden="true"><span class="m1">Caching patterns</span><span class="m2">Also called cache-aside (lazy loading), write-through, write-back (write-behind) and write-around, plus the eviction policies LRU, LFU and TTL. The cheat-sheet's Memory Cache page mentions an…</span><span class="m3">In one breath</span><span class="m4">A cache is a small, fast copy of some of the database. A pattern answers two questions: who fills it on a read, and what happens to it on a write. An eviction policy decides what to throw out when it's full. The common default is cache-aside: the app checks the cache, reads the database on a miss, fills the cache, and deletes…</span></span>
+<span class="tx"><span class="lab">Next up · 06 / 18</span><span class="tt">Caching patterns</span><span class="ds">Cache-aside, write-through, write-back, eviction policies and stampedes</span><span class="nd">Stands alone.</span><span class="go">Continue →</span></span></a><div class="aux"><span><a href="index.html#bigtable-column-families" target="_top">← Bigtable's data model</a></span><a href="index.html" target="_top">All cards in 6 · Data systems &amp; infrastructure</a></div></div>
+<!-- /series-nav:bottom -->
+</body>
+</html>
