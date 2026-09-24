@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Locks and race conditions</title>
+<style>
+:root{
+  --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
+  --text:#1c1f23; --muted:#6b7068; --faint:#b9b9b3;
+  --accent:#4a9d77; --accent-bg:#dcefdf; --accent-border:#8cc79c;
+  --red:#c0492b; --red-bg:#fbeceb;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#15171a; --surface:#1d2024; --surface2:#24282d; --border:#32373d;
+    --text:#e6e8ea; --muted:#9aa1a9; --faint:#4a5057;
+    --accent:#5fb37f; --accent-bg:#1c2b22; --accent-border:#3f7a55;
+    --red:#e57368; --red-bg:#2e1f1e;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text)}
+.card{max-width:820px;margin:0 auto;padding:28px 32px;font-family:-apple-system,"Inter",system-ui,sans-serif;line-height:1.45}
+h1{font-size:26px;font-weight:600;margin:0 0 6px;letter-spacing:-0.01em}
+.sub{font-size:15px;color:var(--muted);margin:0 0 20px}
+h2{font-size:17px;font-weight:600;margin:26px 0 10px}
+p{font-size:15px;margin:0 0 10px}
+.cap{font-size:13px;color:var(--muted);margin:8px 0 0;text-align:center}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+
+/* Tables and formulas */
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border)}
+th{font-size:12px;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:none}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+.hi{color:var(--accent);font-weight:600} .lo{color:var(--red);font-weight:600}
+.formula{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin:10px 0;white-space:pre;overflow-x:auto;line-height:1.55}
+
+/* Code (series CSS, verbatim) */
+.code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;line-height:1.5;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin:10px 0;white-space:pre;overflow-x:auto;tab-size:4;color:var(--text)}
+.code .k{color:var(--accent);font-weight:600}.code .c{color:var(--muted)}.code .o{color:var(--muted)}
+
+/* Interleaving trace: two threads, one shared counter */
+.traces{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.trace{border:1px solid var(--border);border-radius:10px;padding:10px 12px 6px}
+.trace h3{font-size:14px;font-weight:600;margin:0 0 4px;display:flex;gap:8px;align-items:baseline}
+.trace table{font-size:13px}
+.trace th,.trace td{padding:5px 6px}
+.trace td{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px}
+.trace td.num{width:34px}
+.trace th.num{width:34px}
+.trace .w{color:var(--faint)}
+.trace .bad td{background:var(--red-bg)}
+.trace .bad .num{color:var(--red);font-weight:600}
+.trace .good .num{color:var(--accent);font-weight:600}
+.trace .end{font-size:13px;margin:6px 0 4px;font-family:-apple-system,"Inter",system-ui,sans-serif}
+
+/* Measured runs: stacked kept/lost bars */
+.race{display:grid;grid-template-columns:200px 1fr 118px;column-gap:14px;row-gap:9px;align-items:center;font-size:14px}
+.race .hd{font-size:13px;color:var(--muted)}
+.race .hd.r{text-align:right}
+.race .grp{grid-column:1 / -1;font-size:12px;font-weight:600;color:var(--muted);letter-spacing:.02em;margin-top:8px;padding-bottom:3px;border-bottom:1px solid var(--border)}
+.race .grp code{font-size:12px;font-weight:400}
+.race .lab{line-height:1.25}
+.race .lab small{display:block;font-size:12px;color:var(--muted)}
+.race .track{display:flex;height:20px;border-radius:3px;overflow:hidden;background:var(--surface2)}
+.race .keep{background:var(--accent)}
+.race .lost{background:var(--red)}
+.race .val{text-align:right;font-variant-numeric:tabular-nums;line-height:1.25}
+.race .val small{display:block;font-size:12px;color:var(--muted)}
+.race .val.bad small{color:var(--red);font-weight:600}
+.key{display:flex;gap:16px;justify-content:center;font-size:13px;color:var(--muted);margin-top:10px}
+.key i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;vertical-align:-1px}
+.key .kk{background:var(--accent)} .key .kl{background:var(--red)}
+
+/* Terms: two examples each */
+.parts td{vertical-align:top}
+.parts td:first-child{font-weight:600;white-space:nowrap}
+.parts .ex{font-size:13px}
+.parts .ex span{display:block;color:var(--muted)}
+
+/* 2x2 grid */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.cell{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.cell.win{background:var(--accent-bg);border-color:var(--accent-border)}
+.cell h3{font-size:16px;font-weight:600;margin:0 0 5px;display:flex;gap:8px;align-items:baseline}
+.cell p{font-size:14px;margin:0;color:var(--text)}
+.cell.win h3,.cell.win p{color:var(--accent)}
+.x{color:var(--red)} .ok{color:var(--accent)}
+
+/* Clarification box */
+.note{border:1px solid var(--border);border-radius:10px;padding:14px 18px;font-size:14px}
+.note p{font-size:14px} .note p:last-child{margin-bottom:0}
+
+.foot{margin-top:22px;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+.foot p{font-size:13px;margin:0 0 4px}
+.foot b{color:var(--text);font-weight:600}
+@media (max-width:560px){
+  .card{padding:22px 16px}
+  .grid2,.traces{grid-template-columns:1fr}
+  .race{grid-template-columns:1fr 96px;row-gap:4px}
+  .race .lab{grid-column:1 / -1;margin-top:6px}
+  .race .hd.mid{display:none}
+  .parts .what{display:none}
+}
+</style>
+</head>
+<body>
+<article class="card">
+<h1>Locks and race conditions</h1>
+<p class="sub">Also called a data race, a lost update, or a read-modify-write race; the fix is mutual exclusion around a critical section. The cheat-sheet's Locks heading is empty, so this card follows OSTEP chapters 26 and 28 and measured Python runs on an Apple M3.</p>
+
+<h2>In one breath</h2>
+<p>A race condition is a bug whose result depends on how threads happen to interleave. The classic one: two threads both read a counter, both add 1 and both write back, so one increment silently disappears. A lock makes the read-to-write stretch run one thread at a time.</p>
+
+<h2>Worked example: two threads, one counter, c starts at 0</h2>
+<div class="traces">
+  <div class="trace">
+    <h3><span class="x">&#10007;</span> No lock</h3>
+    <table>
+      <tr><th>Thread 1</th><th>Thread 2</th><th class="num">c</th></tr>
+      <tr><td>v = c  <span class="w"># 0</span></td><td></td><td class="num">0</td></tr>
+      <tr><td class="w">switched out</td><td>v = c  <span class="w"># 0</span></td><td class="num">0</td></tr>
+      <tr><td>c = v + 1</td><td></td><td class="num">1</td></tr>
+      <tr class="bad"><td></td><td>c = v + 1</td><td class="num">1</td></tr>
+    </table>
+    <p class="end"><span class="lo">c = 1</span>, but 2 increments ran. Thread 2 wrote a value computed from a stale read, overwriting thread 1's.</p>
+  </div>
+  <div class="trace">
+    <h3><span class="ok">&#10003;</span> With a lock</h3>
+    <table>
+      <tr><th>Thread 1</th><th>Thread 2</th><th class="num">c</th></tr>
+      <tr><td>acquire; v = c</td><td class="w">acquire: waits</td><td class="num">0</td></tr>
+      <tr><td>c = v + 1; release</td><td class="w">waits</td><td class="num">1</td></tr>
+      <tr><td></td><td>gets lock; v = c  <span class="w"># 1</span></td><td class="num">1</td></tr>
+      <tr class="good"><td></td><td>c = v + 1; release</td><td class="num">2</td></tr>
+    </table>
+    <p class="end"><span class="hi">c = 2</span>. The read and write of each thread can no longer be split by the other thread.</p>
+  </div>
+</div>
+<p class="cap">Interleaving is illustrative: the scheduler picks the order, so the bug shows up only sometimes. That's what makes races hard to test for.</p>
+
+<h2>Measured: how many increments survive</h2>
+<div class="race">
+  <div class="hd">Run</div><div class="hd mid">Kept vs lost, share of expected total</div><div class="hd r">Final count</div>
+
+  <div class="grp">4 threads &times; 10<sup>5</sup> of <code>v = c; sleep(0); c = v + 1</code></div>
+  <div class="lab">No lock<small>Python 3.10</small></div>
+  <div class="track"><div class="keep" style="width:25.02%"></div><div class="lost" style="width:74.98%"></div></div>
+  <div class="val bad">100,096<small>75.0% lost</small></div>
+
+  <div class="lab">With <code>threading.Lock</code><small>Python 3.10</small></div>
+  <div class="track"><div class="keep" style="width:100%"></div></div>
+  <div class="val">400,000<small>0 lost</small></div>
+
+  <div class="grp">4 threads &times; 10<sup>6</sup> of plain <code>c["n"] += 1</code>, no lock</div>
+  <div class="lab">3.10, with the GIL</div>
+  <div class="track"><div class="keep" style="width:100%"></div></div>
+  <div class="val">4,000,000<small>0 lost</small></div>
+
+  <div class="lab">3.14, with the GIL</div>
+  <div class="track"><div class="keep" style="width:100%"></div></div>
+  <div class="val">4,000,000<small>0 lost</small></div>
+
+  <div class="lab">3.14t, free-threaded<small>no GIL, threads run in parallel</small></div>
+  <div class="track"><div class="keep" style="width:27.06%"></div><div class="lost" style="width:72.94%"></div></div>
+  <div class="val bad">1,082,391<small>72.9% lost</small></div>
+</div>
+<div class="key"><span><i class="kk"></i>increments kept</span><span><i class="kl"></i>increments lost</span></div>
+<div class="formula">lost = expected − final
+no lock, 3.10:  400,000 −   100,096 =   299,904   → 299,904 / 400,000     = 75.0 %
+3.14t:        4,000,000 − 1,082,391 = 2,917,609   → 2,917,609 / 4,000,000 = 72.9 %</div>
+<p class="cap">Measured on an Apple M3, 2026-09-23 (series runs <span class="mono">race2.py</span>, <span class="mono">measure.py</span>). About 1 in 4 survived in the first row, as if all four threads usually read the same value before any wrote back (our reading, not measured).</p>
+
+<h2>The code</h2>
+<pre class="code"><span class="k">import</span> threading, time
+N, T = 100_000, 4
+lock = threading.Lock()
+
+<span class="k">def</span> unsafe(c):
+    <span class="k">for</span> _ <span class="k">in</span> range(N):
+        v = c["n"]          <span class="c"># read</span>
+        time.sleep(0)       <span class="c"># yield: another thread may run here</span>
+        c["n"] = v + 1      <span class="c"># write back, maybe over a newer value</span>
+
+<span class="k">def</span> safe(c):
+    <span class="k">for</span> _ <span class="k">in</span> range(N):
+        <span class="k">with</span> lock:          <span class="c"># one thread at a time in this block</span>
+            v = c["n"]
+            time.sleep(0)
+            c["n"] = v + 1
+
+<span class="k">def</span> run(body):
+    c = {"n": 0}
+    ts = [threading.Thread(target=body, args=(c,)) <span class="k">for</span> _ <span class="k">in</span> range(T)]
+    <span class="k">for</span> t <span class="k">in</span> ts: t.start()
+    <span class="k">for</span> t <span class="k">in</span> ts: t.join()
+    <span class="k">return</span> c["n"]
+
+<span class="o"># unsafe 100,009 of 400,000  lost 299,991 (75%)</span>
+<span class="o"># safe   400,000 of 400,000  lost 0 (0%)</span></pre>
+<p class="cap">Output from one run of <span class="mono">code/locks.py</span> under <span class="mono">python3</span> 3.10 on the author's M3; the unsafe count changes every run.</p>
+
+<h2>Why plain <code>+=</code> survived with the GIL, and why that's luck</h2>
+<p><code>c["n"] += 1</code> is not one step. It compiles to eight bytecodes, with the read (<code>BINARY_SUBSCR</code>) and the write (<code>STORE_SUBSCR</code>) three steps apart:</p>
+<pre class="code"><span class="o">LOAD_FAST c · LOAD_CONST 'n' · DUP_TOP_TWO · BINARY_SUBSCR
+LOAD_CONST 1 · INPLACE_ADD · ROT_THREE · STORE_SUBSCR</span></pre>
+<p>The GIL lets only one thread run bytecode at a time, and CPython 3.10+ hands it to another thread only at certain points, mainly loop back-edges and the start of a Python function call. None of these eight instructions is such a point, so each <code>+=</code> ran whole. <code>sleep(0)</code> releases the GIL on purpose, which is why the first row lost 75%. Put a Python function call between the read and the write and losses return even with the GIL: <b>263,642 of 800,000</b> kept (one run on the author's M3, switch interval 1 µs). The free-threaded build has no GIL at all, so threads really run at the same time on different cores and lose 72.9%.</p>
+<p class="cap">The hand-off points are our reading of CPython's eval loop, backed by that run. They're an implementation detail, not a language guarantee.</p>
+
+<h2>The words, with two examples each</h2>
+<table class="parts">
+  <tr><th>Term</th><th class="what">What it means</th><th>Example A</th><th>Example B</th></tr>
+  <tr><td>Race condition</td><td class="what">The result depends on the timing of threads or processes.</td>
+    <td class="ex"><b>Lost counter update</b><span>this card: read, switch, stale write</span></td>
+    <td class="ex"><b>Check-then-act</b><span><code>if not exists(p): create(p)</code> run by two processes; both see "missing"</span></td></tr>
+  <tr><td>Critical section</td><td class="what">Code that touches shared state and must not be interleaved with itself.</td>
+    <td class="ex"><b><code>v = c; c = v + 1</code></b><span>the read-to-write stretch</span></td>
+    <td class="ex"><b>A bank transfer</b><span>debit one account, credit the other; no one may see only half</span></td></tr>
+  <tr><td>Lock (mutex)</td><td class="what">An object at most one thread can hold. Others wait at <code>acquire</code> until it's released.</td>
+    <td class="ex"><b class="ok"><code>with lock:</code></b><span>58 ns acquire + release when no one else wants it (measured, M3)</span></td>
+    <td class="ex"><b>A database row lock</b><span>a second writer to the same row waits for the first to commit</span></td></tr>
+  <tr><td>Atomic operation</td><td class="what">Happens all at once: no other thread can see it half-done.</td>
+    <td class="ex"><b class="ok">Compare-and-swap</b><span>one CPU instruction; locks are built on it (OSTEP 28)</span></td>
+    <td class="ex"><b class="lo">Not atomic: <code>c["n"] += 1</code></b><span>eight bytecodes, shown above</span></td></tr>
+</table>
+
+<h2>Why a lock beats the alternatives</h2>
+<div class="grid2">
+  <div class="cell"><h3><span class="x">&#10007;</span> Trust the GIL</h3><p>Plain <code>+=</code> lost nothing on 3.10 and 3.14, then lost 72.9% on free-threaded 3.14t. The GIL never protected a read and write split by a call or I/O.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> A plain busy flag</h3><p><code>while busy: pass</code> then <code>busy = True</code>. The check and the set are two steps, so two threads can both see False and both enter. Same race, moved (OSTEP 28.6).</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Turn off interrupts</h3><p>Early single-CPU kernels did this so nothing could switch threads. It needs kernel privilege and does nothing about a thread running on another core (OSTEP 28.5).</p></div>
+  <div class="cell win"><h3><span class="ok">&#10003;</span> A real lock</h3><p>Built on an atomic instruction, so acquiring it can't itself race. Waiters sleep instead of spinning. It kept all 400,000 increments.</p></div>
+</div>
+
+<h2>Should every shared variable get a lock?</h2>
+<div class="note">
+  <p>No. You need one only when threads share mutable state and at least one of them writes. Often it's simpler to not share: give each thread its own counter and add them at the end, hand work through <code>queue.Queue</code> (it locks internally), use separate processes, or use <code>asyncio</code>, where one thread switches only at <code>await</code>. A read, then an <code>await</code>, then a write still races, though.</p>
+  <p>Locks aren't free either. Uncontended they cost 58 ns (87 ns with <code>with lock:</code>, measured on the M3). Under contention they make the critical section run one thread at a time, and taking two locks in different orders can deadlock.</p>
+</div>
+
+<div class="foot">
+  <p><b>Source:</b> <a href="https://github.com/ljeng/cheat-sheet/blob/main/large-scale-design/operating-systems.md#locks">cheat-sheet › Operating Systems › Locks</a>. The source heading is empty; this card is supplemented from OSTEP <a href="https://pages.cs.wisc.edu/~remzi/OSTEP/threads-intro.pdf">ch. 26, Concurrency: an introduction</a> and <a href="https://pages.cs.wisc.edu/~remzi/OSTEP/threads-locks.pdf">ch. 28, Locks</a>, the Python docs on <a href="https://docs.python.org/3/library/threading.html#lock-objects">Lock objects</a> and <a href="https://docs.python.org/3/howto/free-threading-python.html">free-threaded Python</a>, and <a href="https://peps.python.org/pep-0703/">PEP 703</a>.</p>
+  <p><b>Run it:</b> <a href="https://github.com/seyonv/explainers/blob/main/cs-7-operating-systems/code/locks.py">code/locks.py</a> (prints both counts and the bytecode of <code>+=</code>).</p>
+  <p><b>Related:</b> threads and the GIL, mutexes, semaphores, deadlock (cards in this course).</p>
+</div>
+</article>
+</body>
+</html>

@@ -1,0 +1,446 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Speculative decoding I: exact sampling with a draft</title>
+<style>
+:root{
+  --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
+  --text:#1c1f23; --muted:#6b7068; --faint:#b9b9b3;
+  --accent:#4a9d77; --accent-bg:#dcefdf; --accent-border:#8cc79c;
+  --red:#c0492b; --red-bg:#fbeceb;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#15171a; --surface:#1d2024; --surface2:#24282d; --border:#32373d;
+    --text:#e6e8ea; --muted:#9aa1a9; --faint:#4a5057;
+    --accent:#5fb37f; --accent-bg:#1c2b22; --accent-border:#3f7a55;
+    --red:#e57368; --red-bg:#2e1f1e;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text)}
+.card{max-width:820px;margin:0 auto;padding:28px 32px;font-family:-apple-system,"Inter",system-ui,sans-serif;line-height:1.45}
+h1{font-size:26px;font-weight:600;margin:0 0 6px;letter-spacing:-0.01em}
+.sub{font-size:15px;color:var(--muted);margin:0 0 20px}
+h2{font-size:17px;font-weight:600;margin:26px 0 10px}
+p{font-size:15px;margin:0 0 10px}
+ul,ol{font-size:15px;margin:0 0 10px;padding-left:22px} li{margin-bottom:4px}
+.cap{font-size:13px;color:var(--muted);margin:8px 0 14px;text-align:center}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+
+/* Tables and formulas */
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border)}
+th{font-size:12px;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:none}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+.hi{color:var(--accent);font-weight:600} .lo{color:var(--red)} .dim{color:var(--muted)}
+.formula{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin:10px 0;white-space:pre;overflow-x:auto;line-height:1.55}
+.tw{overflow-x:auto}
+tr.best td{background:var(--accent-bg)}
+
+/* MathML */
+.mathbox{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px 16px 12px;margin:10px 0;overflow-x:auto}
+.mathbox math{font-size:21px;color:var(--text);font-family:"STIX Two Math","Latin Modern Math","Cambria Math",math}
+.mathbox .t1{color:var(--text)} .mathbox .t2{color:var(--accent)} .mathbox .t3{color:var(--muted)}
+.mathbox .lab{font-size:12px;font-family:-apple-system,"Inter",system-ui,sans-serif;padding-top:3px;border-top:1.5px solid currentColor;margin-top:2px}
+.legend{display:grid;grid-template-columns:auto 1fr auto;column-gap:14px;row-gap:5px;font-size:13px;margin-top:12px;align-items:baseline}
+.legend .sym{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;text-align:right}
+.legend .v{color:var(--muted);text-align:right;font-variant-numeric:tabular-nums}
+
+/* Two examples per term */
+.parts td{vertical-align:top} .parts td:first-child{font-weight:600}
+.parts .ex{font-size:13px} .parts .ex span{display:block;color:var(--muted)}
+
+/* SVG of one step */
+.key{display:flex;flex-wrap:wrap;gap:6px 16px;font-size:13px;color:var(--muted);margin:6px 0 8px}
+.key span{display:inline-flex;align-items:center;gap:6px}
+.key i{display:inline-block;width:14px;height:12px;border-radius:2px;border:1px solid var(--border)}
+.key .k-acc{background:var(--accent-bg);border-color:var(--accent-border)}
+.key .k-tgt{background:var(--accent);border-color:var(--accent)}
+.key .k-rej{background:var(--red-bg);border-color:var(--red)}
+.key .k-off{background:var(--surface2)}
+.b-draft{fill:var(--surface);stroke:var(--border)}
+.b-acc{fill:var(--accent-bg);stroke:var(--accent-border)}
+.b-tgt{fill:var(--accent);stroke:var(--accent)}
+.b-rej{fill:var(--red-bg);stroke:var(--red)}
+.b-off{fill:var(--surface2);stroke:var(--border)}
+.b-run{fill:none;stroke:var(--accent-border);stroke-width:1.5;stroke-dasharray:5 4}
+.t-in{font-size:13px;fill:var(--bg);font-weight:600}
+.t-acc{font-size:13px;fill:var(--accent);font-weight:600}
+.t-rej{font-size:13px;fill:var(--red);font-weight:600}
+.t-off{font-size:12px;fill:var(--muted)}
+.ln{stroke:var(--faint);stroke-width:1.2}
+
+/* 2x2 grid */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.cell{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.cell.win{background:var(--accent-bg);border-color:var(--accent-border)}
+.cell h3{font-size:16px;font-weight:600;margin:0 0 5px;display:flex;gap:8px;align-items:baseline}
+.cell p{font-size:14px;margin:0;color:var(--text)}
+.cell.win h3,.cell.win p{color:var(--accent)}
+.x{color:var(--red)} .ok{color:var(--accent)}
+
+/* Clarification box and lab */
+.note{border:1px solid var(--border);border-radius:10px;padding:14px 18px;font-size:14px}
+.note p{font-size:14px} .note p:last-child{margin-bottom:0}
+.labbox{border:1px solid var(--border);background:var(--surface);border-radius:10px;padding:12px 16px;margin:10px 0;font-size:14px}
+.labbox p{font-size:14px} .labbox p:last-child{margin-bottom:0}
+
+.foot{margin-top:22px;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+.foot p{font-size:13px;margin:0 0 6px}
+svg{display:block;max-width:100%;height:auto;margin:6px 0}
+.sl{font-size:12px;fill:var(--muted)} .st{font-size:13px;fill:var(--text)}
+a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+@media (max-width:560px){
+  .card{padding:22px 16px}
+  .grid2{grid-template-columns:1fr}
+  .legend{grid-template-columns:auto 1fr}.legend .v{display:none}
+  .parts .what{display:none}
+  th,td{padding:6px 6px}
+  .mathbox math{font-size:17px}
+}
+/* series-nav */
+.sn{max-width:820px;margin:0 auto;padding:16px 32px 0;font-family:-apple-system,"Inter",system-ui,sans-serif;font-size:13px;line-height:1.5;color:var(--muted)}
+.sn a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
+.sn .crumbs{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 7px}
+.sn .crumbs b{color:var(--text);font-weight:600}
+.sn .sep{color:var(--faint,var(--border))}
+.sn .step{margin-left:auto;white-space:nowrap}
+.sn .dep{margin-top:5px;padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface)}
+.sn .dep .ok{color:var(--accent);font-weight:600}
+.snx{max-width:820px;margin:0 auto;padding:6px 32px 44px;font-family:-apple-system,"Inter",system-ui,sans-serif}
+.snx .nx{display:grid;grid-template-columns:280px 1fr;text-decoration:none;color:var(--text);background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.snx .nx:hover,.snx .nx:focus-visible{border-color:var(--accent-border,var(--accent));outline:none}
+.snx .mini{position:relative;height:210px;overflow:hidden;background:var(--bg);border-right:1px solid var(--border);padding:14px 16px}
+.snx .mini span{display:block}
+.snx .mini .m1{font-size:12.5px;font-weight:600;margin:0 0 4px;line-height:1.3}
+.snx .mini .m2{font-size:9px;color:var(--muted);margin:0 0 8px;line-height:1.4}
+.snx .mini .m3{font-size:8.5px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;margin:0 0 3px}
+.snx .mini .m4{font-size:9.5px;margin:0;line-height:1.45}
+.snx .tx{padding:16px 20px}
+.snx .lab{font-size:12px;font-weight:600;color:var(--accent);letter-spacing:.04em;text-transform:uppercase}
+.snx .tt{display:block;font-size:20px;font-weight:600;margin:5px 0 4px;line-height:1.25}
+.snx .ds{display:block;font-size:14px;color:var(--muted)}
+.snx .nd{display:block;font-size:13px;color:var(--muted);margin-top:10px}
+.snx .go{display:block;margin-top:12px;font-size:14px;font-weight:600;color:var(--accent)}
+.snx .aux{display:flex;justify-content:space-between;gap:12px;margin-top:10px;font-size:13px;color:var(--muted)}
+.snx .aux a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
+@media (max-width:560px){.sn,.snx{padding-left:16px;padding-right:16px}.snx .nx{grid-template-columns:1fr}.snx .mini{display:none}.sn .step{margin-left:0}}
+/* /series-nav */
+</style>
+</head>
+<body>
+<!-- series-nav:top -->
+<nav class="sn" aria-label="Course navigation"><div class="crumbs"><a href="../perf-0-map/index.html" target="_top">Fast LLM inference</a><span class="sep">›</span><a href="index.html" target="_top">5 · Inside inference engines</a><span class="sep">›</span><b>09 / 15</b><span class="step"><a href="index.html#quantization-serving" target="_top">← prev</a> · <a href="index.html#spec-decoding-practice" target="_top">next →</a></span></div>
+<div class="dep"><b>Before this:</b> <a href="../perf-2-scaling-book-inference/index.html#speculative-sampling" target="_top">Speculative sampling, and is batch &gt; 240 real?</a> (perf-2)</div></nav>
+<!-- /series-nav:top -->
+<article class="card">
+<h1>Speculative decoding I: exact sampling with a draft</h1>
+<p class="sub">Also called speculative sampling or draft-and-verify; the two knobs are the acceptance rate α and the draft length γ. This card walks Leviathan, Kalman &amp; Matias, "Fast Inference from Transformers via Speculative Decoding" (ICML 2023), §1–3 and Appendix A.1, in the paper's notation: <b>M<sub>p</sub></b> is the target model with next-token distribution <b>p</b>, <b>M<sub>q</sub></b> the draft with <b>q</b>. Chen et al. (arXiv 2302.01318), published independently, <b>swap the letters</b> (q = target, p = draft), so check which paper you are reading before you trust a formula. Part II, <a href="spec-decoding-practice.html">drafts, batch size and our Mac</a>, covers §4, Chen's Chinchilla results and our own measurement.</p>
+
+<h2>In one breath</h2>
+<p>A decode step at small batch spends its time reading weights, so the target can score several tokens in one run for about the price of one. A cheap draft proposes γ tokens. The target keeps each one with probability min(1, p/q), and at the first rejection it samples a replacement from the leftover mass max(0, p − q). The tokens that come out are distributed <em>exactly</em> as if the target had sampled them alone, with any sampling method. What you gain is 1 to γ + 1 tokens per target run instead of 1.</p>
+
+<p class="dim" style="font-size:14px">Already seen elsewhere, so this card doesn't repeat it: the draft-and-verify idea with a code example (<a href="../llm-latency/speculative-decoding.html">LLM latency: speculative decoding</a>), a one-step picture with an α table (<a href="../speculative-decoding/speculative-decoding.html">speculative decoding</a>), and the Scaling Book's greedy recipe, a numpy exactness check and Llama-3.1-8B on an H100 at batch 1 and large batch (<a href="../perf-2-scaling-book-inference/speculative-sampling.html">course 2: speculative sampling</a>). Here we go through the paper itself: why every sampling method fits, the algorithm line by line, the proof, and each theorem in §3 with its numbers.</p>
+
+<h2>§1 and §2.1: the idea</h2>
+<p>§1 makes two observations. Some tokens are easy enough for a much smaller model to guess, and large-model inference "is often not bottlenecked on arithmetic operations, but rather on memory bandwidth and communication, so additional computation resources might be available." Speculative decoding spends that spare compute the way a CPU spends it on branch prediction: it does the work before knowing whether it's needed. The paper's contribution is doing this for <em>random</em> choices ("stochastic speculative execution"). §2.1 has three steps: (1) M<sub>q</sub> generates γ guesses; (2) M<sub>p</sub> scores all of them in parallel; (3) accept every guess that <em>can</em> lead to the identical distribution, then sample one more token from an adjusted distribution. Every target run yields at least 1 token and at most γ + 1, so in the worst case it needs no more target runs than plain decoding. The paper's Fig 1 example: 38 tokens generated in 9 serial runs of a 97M target using a 6M draft.</p>
+
+<h2>§2.2: standardized sampling, so one rule covers all of them</h2>
+<p>Argmax, top-k, nucleus and temperature are usually coded differently at the logits level. But each one is just "sample from an adjusted distribution". Argmax, for example, zeroes every non-max entry and renormalizes. So the paper only handles plain sampling from p and q, <em>after</em> both have been adjusted by the same method (in its experiments the draft always used the same standardization as the target). One illustrative 4-token distribution under each method:</p>
+<div class="tw"><table>
+  <tr><th>Sampling method</th><th class="num">rug</th><th class="num">sofa</th><th class="num">mat</th><th class="num">floor</th><th>Adjustment</th></tr>
+  <tr><td>plain, T = 1</td><td class="num">0.450</td><td class="num">0.250</td><td class="num">0.200</td><td class="num">0.100</td><td class="dim">none</td></tr>
+  <tr><td>argmax (T = 0)</td><td class="num hi">1.000</td><td class="num dim">0</td><td class="num dim">0</td><td class="num dim">0</td><td class="dim">zero all but the max</td></tr>
+  <tr><td>top-k, k = 2</td><td class="num">0.643</td><td class="num">0.357</td><td class="num dim">0</td><td class="num dim">0</td><td class="dim">keep 2, divide by 0.70</td></tr>
+  <tr><td>nucleus, top-p = 0.9</td><td class="num">0.500</td><td class="num">0.278</td><td class="num">0.222</td><td class="num dim">0</td><td class="dim">keep until ≥ 0.9, divide by 0.90</td></tr>
+  <tr><td>temperature T = 0.5</td><td class="num">0.643</td><td class="num">0.198</td><td class="num">0.127</td><td class="num">0.032</td><td class="dim">p<sup>1/T</sup> = p², renormalize</td></tr>
+</table></div>
+<p class="cap">Illustrative probabilities; values from labs/spec-sim.py part (2b). One consequence: under argmax both p and q are one-hot, so min(1, p/q) is 1 when the draft's token equals the target's argmax and 0 otherwise. Speculative sampling then reduces to "accept if equal".</p>
+
+<h2>§2.3: speculative sampling, one token</h2>
+<div class="mathbox">
+<math display="block">
+  <munder class="t2"><mrow><mi>x</mi><mo>&#8764;</mo><mi>q</mi><mo>,</mo><mspace width="0.4em"/><mtext>keep with prob.&#160;</mtext><mo form="prefix">min</mo><mo stretchy="false">(</mo><mn>1</mn><mo>,</mo><mfrac><mrow><mi>p</mi><mo stretchy="false">(</mo><mi>x</mi><mo stretchy="false">)</mo></mrow><mrow><mi>q</mi><mo stretchy="false">(</mo><mi>x</mi><mo stretchy="false">)</mo></mrow></mfrac><mo stretchy="false">)</mo></mrow><mtext class="lab">draft proposes, target accepts</mtext></munder>
+  <mspace width="1em"/><mtext>else</mtext><mspace width="0.6em"/>
+  <munder class="t3"><mrow><mi>x</mi><mo>&#8764;</mo><msup><mi>p</mi><mo>&#8242;</mo></msup><mo>=</mo><mi>norm</mi><mo stretchy="false">(</mo><mo form="prefix">max</mo><mo stretchy="false">(</mo><mn>0</mn><mo>,</mo><mi>p</mi><mo>&#8722;</mo><mi>q</mi><mo stretchy="false">)</mo><mo stretchy="false">)</mo></mrow><mtext class="lab">resample the leftover mass</mtext></munder>
+</math>
+<div class="legend">
+  <span class="sym">p, q</span><span>target and draft next-token distributions, both already adjusted for the sampling method (§2.2)</span><span class="v">Chen et al.: q, p</span>
+  <span class="sym">q(x) ≤ p(x)</span><span>the draft under-proposes x: always keep it</span><span class="v">prob. 1</span>
+  <span class="sym">q(x) &gt; p(x)</span><span>the draft over-proposes x: keep it only p/q of the time</span><span class="v">prob. p/q &lt; 1</span>
+  <span class="sym">norm(·)</span><span>divide by the sum so it adds to 1; that sum is 1 − β</span><span class="v">App A.1</span>
+</div>
+</div>
+<p>One decision, with illustrative numbers for the next word after "the cat sat on the …". The draft has sampled <b>mat</b>:</p>
+<div class="tw"><table>
+  <tr><th>Token</th><th class="num">p (target)</th><th class="num">q (draft)</th><th class="num">min(p, q)</th><th class="num">max(0, p − q)</th><th class="num">p′ = residual ÷ 0.30</th></tr>
+  <tr><td class="mono">mat</td><td class="num">0.20</td><td class="num">0.50</td><td class="num">0.20</td><td class="num dim">0</td><td class="num dim">0</td></tr>
+  <tr><td class="mono">rug</td><td class="num">0.45</td><td class="num">0.25</td><td class="num">0.25</td><td class="num">0.20</td><td class="num hi">0.667</td></tr>
+  <tr><td class="mono">sofa</td><td class="num">0.25</td><td class="num">0.15</td><td class="num">0.15</td><td class="num">0.10</td><td class="num hi">0.333</td></tr>
+  <tr><td class="mono">floor</td><td class="num">0.10</td><td class="num">0.10</td><td class="num">0.10</td><td class="num dim">0</td><td class="num dim">0</td></tr>
+  <tr><td><b>sum</b></td><td class="num">1</td><td class="num">1</td><td class="num"><b>β = 0.70</b></td><td class="num"><b>0.30 = 1 − β</b></td><td class="num">1</td></tr>
+</table></div>
+<div class="formula">draft picked "mat": keep with prob. min(1, 0.20 / 0.50) = 0.40
+draw r = 0.71 &gt; 0.40  → reject, and sample again from p′ = rug 0.667, sofa 0.333
+(had r been ≤ 0.40, "mat" would stand; tokens with q ≤ p, like "rug", are never rejected)</div>
+<p class="cap">p and q are illustrative; every derived number is from labs/spec-sim.py part (0). The draft over-proposes "mat" (0.50 vs 0.20). Rejection trims that excess, and the residual hands the missing mass to exactly the tokens the draft under-proposed.</p>
+
+<h2>Algorithm 1: one step with γ = 4 draft tokens</h2>
+<div class="key"><span><i class="k-acc"></i>accepted draft token</span><span><i class="k-tgt"></i>token sampled by the target</span><span><i class="k-rej"></i>first rejection</span><span><i class="k-off"></i>discarded or unused</span></div>
+<svg viewBox="0 0 760 330" role="img" aria-label="One speculative decoding step with gamma 4: the draft proposes x1 to x4, the target scores all five positions in one run, x1 and x2 are accepted, x3 is rejected and replaced by t sampled from norm(max(0, p3 minus q3)), x4 is discarded; if all four had passed, the target's fifth distribution would give a bonus token.">
+  <text class="sl" x="0" y="20">position</text>
+  <text class="sl" x="283" y="20" text-anchor="middle">1</text><text class="sl" x="383" y="20" text-anchor="middle">2</text><text class="sl" x="483" y="20" text-anchor="middle">3</text><text class="sl" x="583" y="20" text-anchor="middle">4</text><text class="sl" x="683" y="20" text-anchor="middle">5</text>
+
+  <text class="st" x="0" y="52">Draft (q)</text>
+  <text class="sl" x="0" y="67">γ = 4 serial runs</text>
+  <rect class="b-draft" x="150" y="34" width="84" height="34" rx="4"/><text class="st" x="192" y="56" text-anchor="middle">prefix</text>
+  <rect class="b-draft" x="240" y="34" width="86" height="34" rx="4"/><text class="st" x="283" y="56" text-anchor="middle">x₁ ~ q₁</text>
+  <rect class="b-draft" x="340" y="34" width="86" height="34" rx="4"/><text class="st" x="383" y="56" text-anchor="middle">x₂ ~ q₂</text>
+  <rect class="b-draft" x="440" y="34" width="86" height="34" rx="4"/><text class="st" x="483" y="56" text-anchor="middle">x₃ ~ q₃</text>
+  <rect class="b-draft" x="540" y="34" width="86" height="34" rx="4"/><text class="st" x="583" y="56" text-anchor="middle">x₄ ~ q₄</text>
+
+  <text class="st" x="0" y="112">Target (p)</text>
+  <text class="sl" x="0" y="127">1 parallel run</text>
+  <rect class="b-run" x="234" y="90" width="498" height="46" rx="6"/>
+  <rect class="b-draft" x="240" y="96" width="86" height="34" rx="4"/><text class="st" x="283" y="118" text-anchor="middle">p₁</text>
+  <rect class="b-draft" x="340" y="96" width="86" height="34" rx="4"/><text class="st" x="383" y="118" text-anchor="middle">p₂</text>
+  <rect class="b-draft" x="440" y="96" width="86" height="34" rx="4"/><text class="st" x="483" y="118" text-anchor="middle">p₃</text>
+  <rect class="b-draft" x="540" y="96" width="86" height="34" rx="4"/><text class="st" x="583" y="118" text-anchor="middle">p₄</text>
+  <rect class="b-draft" x="640" y="96" width="86" height="34" rx="4"/><text class="st" x="683" y="118" text-anchor="middle">p₅</text>
+  <text class="sl" x="483" y="152" text-anchor="middle">M_p(prefix), M_p(prefix + x₁), …, M_p(prefix + x₁…x₄): all γ + 1 positions at once</text>
+
+  <text class="st" x="0" y="186">Accept test</text>
+  <text class="sl" x="0" y="201">rᵢ ~ U(0, 1)</text>
+  <rect class="b-acc" x="240" y="168" width="86" height="34" rx="4"/><text class="t-acc" x="283" y="190" text-anchor="middle">r₁ ≤ p₁/q₁ ✓</text>
+  <rect class="b-acc" x="340" y="168" width="86" height="34" rx="4"/><text class="t-acc" x="383" y="190" text-anchor="middle">r₂ ≤ p₂/q₂ ✓</text>
+  <rect class="b-rej" x="440" y="168" width="86" height="34" rx="4"/><text class="t-rej" x="483" y="190" text-anchor="middle">r₃ &gt; p₃/q₃ ✗</text>
+  <rect class="b-off" x="540" y="168" width="86" height="34" rx="4"/><text class="t-off" x="583" y="190" text-anchor="middle">not needed</text>
+  <rect class="b-off" x="640" y="168" width="86" height="34" rx="4"/><text class="t-off" x="683" y="190" text-anchor="middle">unused</text>
+
+  <text class="st" x="0" y="240">Output</text>
+  <text class="sl" x="0" y="255">n = 2, plus t</text>
+  <rect class="b-draft" x="150" y="222" width="84" height="34" rx="4"/><text class="st" x="192" y="244" text-anchor="middle">prefix</text>
+  <rect class="b-acc" x="240" y="222" width="86" height="34" rx="4"/><text class="t-acc" x="283" y="244" text-anchor="middle">x₁</text>
+  <rect class="b-acc" x="340" y="222" width="86" height="34" rx="4"/><text class="t-acc" x="383" y="244" text-anchor="middle">x₂</text>
+  <rect class="b-tgt" x="440" y="222" width="86" height="34" rx="4"/><text class="t-in" x="483" y="244" text-anchor="middle">t ~ p′</text>
+  <rect class="b-off" x="540" y="222" width="86" height="34" rx="4"/><text class="t-off" x="583" y="244" text-anchor="middle">x₄ dropped</text>
+  <text class="sl" x="483" y="274" text-anchor="middle">p′ = norm(max(0, p₃ − q₃))</text>
+
+  <line class="ln" x1="150" y1="292" x2="732" y2="292"/>
+  <text class="sl" x="0" y="316">If all 4 pass:</text>
+  <rect class="b-acc" x="240" y="300" width="386" height="26" rx="4"/><text class="t-acc" x="433" y="318" text-anchor="middle">x₁ x₂ x₃ x₄ all kept</text>
+  <rect class="b-tgt" x="640" y="300" width="86" height="26" rx="4"/><text class="t-in" x="683" y="318" text-anchor="middle">bonus t ~ p₅</text>
+</svg>
+<p class="cap">This step: 2 accepted drafts + 1 target token = 3 tokens for one target run. With all four accepted (probability α⁴ = 0.41 at α = 0.8), the target's fifth distribution, which the same run already computed, gives a 5th token. The position of the first rejection is illustrative.</p>
+<div class="formula">Algorithm 1  SpeculativeDecodingStep(M_p, M_q, prefix)    (§2.3)
+  for i = 1..γ:                                    # draft, serially
+      q_i = M_q(prefix + [x_1..x_{i-1}]);  x_i ~ q_i
+  p_1..p_{γ+1} = M_p(prefix), ..., M_p(prefix + [x_1..x_γ])
+                                                   # target: ONE parallel run
+  r_1..r_γ ~ U(0, 1)
+  n = min({ i-1 : r_i &gt; p_i(x_i)/q_i(x_i) } ∪ { γ })   # accepted drafts
+  p' = p_{n+1}                                     # all passed: bonus
+  if n &lt; γ:  p' = norm(max(0, p_{n+1} - q_{n+1}))  # else fix rejection
+  t ~ p'
+  return prefix + [x_1..x_n, t]                    # 1 to γ + 1 tokens</div>
+
+<h2>Appendix A.1: why the output is exactly p</h2>
+<p>A token x′ can come out in two ways: the draft proposes it and it's accepted, or some draft is rejected and the residual picks it.</p>
+<div class="mathbox">
+<math display="block">
+  <mi>P</mi><mo stretchy="false">(</mo><mi>x</mi><mo>=</mo><msup><mi>x</mi><mo>&#8242;</mo></msup><mo stretchy="false">)</mo><mo>=</mo>
+  <munder class="t2"><mrow><mi>q</mi><mo stretchy="false">(</mo><msup><mi>x</mi><mo>&#8242;</mo></msup><mo stretchy="false">)</mo><mo form="prefix">min</mo><mo stretchy="false">(</mo><mn>1</mn><mo>,</mo><mfrac><mrow><mi>p</mi><mo stretchy="false">(</mo><msup><mi>x</mi><mo>&#8242;</mo></msup><mo stretchy="false">)</mo></mrow><mrow><mi>q</mi><mo stretchy="false">(</mo><msup><mi>x</mi><mo>&#8242;</mo></msup><mo stretchy="false">)</mo></mrow></mfrac><mo stretchy="false">)</mo></mrow><mtext class="lab">proposed and accepted = min(p, q)</mtext></munder>
+  <mo>+</mo>
+  <munder class="t3"><mrow><mo stretchy="false">(</mo><mn>1</mn><mo>&#8722;</mo><mi>&#946;</mi><mo stretchy="false">)</mo><mfrac><mrow><mi>p</mi><mo stretchy="false">(</mo><msup><mi>x</mi><mo>&#8242;</mo></msup><mo stretchy="false">)</mo><mo>&#8722;</mo><mo form="prefix">min</mo><mo stretchy="false">(</mo><mi>p</mi><mo>,</mo><mi>q</mi><mo stretchy="false">)</mo></mrow><mrow><mn>1</mn><mo>&#8722;</mo><mi>&#946;</mi></mrow></mfrac></mrow><mtext class="lab">rejected, then residual = p − min(p, q)</mtext></munder>
+  <mo>=</mo><mi>p</mi><mo stretchy="false">(</mo><msup><mi>x</mi><mo>&#8242;</mo></msup><mo stretchy="false">)</mo>
+</math>
+<div class="legend">
+  <span class="sym">β</span><span>chance this draft token is accepted, Σ<sub>x</sub> min(p, q); the residual's normalizer is exactly 1 − β</span><span class="v">0.70 in the table</span>
+  <span class="sym">max(0, p − q)</span><span>equals p − min(p, q), which is why the two terms add back to p</span><span class="v">any p, q</span>
+</div>
+</div>
+<div class="formula">filled in for "rug":  min(0.45, 0.25) + 0.30 × 0.667 = 0.25 + 0.20 = 0.45 = p(rug)  ✓
+                     "mat":  min(0.20, 0.50) + 0.30 × 0     = 0.20        = p(mat)  ✓</div>
+<p>The proof uses nothing about what q is, so <em>any</em> draft is exact. The draft only affects speed (§3.6). Applied position by position in Algorithm 1 (each accepted token becomes the next position's prefix), every emitted token follows p. Checked in labs/spec-sim.py:</p>
+<div class="tw"><table>
+  <tr><th>Test (200,000 samples or tokens)</th><th class="num">TV(output, p)</th><th class="num">TV if you trust the draft</th></tr>
+  <tr><td>one token, random p and q over 10 tokens (α = 0.369)</td><td class="num hi">0.0010</td><td class="num lo">0.631</td></tr>
+  <tr><td>Algorithm 1, γ = 4, toy bigram model (p and q change with the previous token)</td><td class="num hi">0.0056</td><td class="num lo">0.208</td></tr>
+</table></div>
+<p class="cap">TV = total variation distance, ½ Σ |a − b|; 0 means identical. Sampling 200k tokens directly from p gives 0.0020 in the same run, so 0.001–0.006 is sampling noise. The bigram check compares each row of the transition matrix. Appendix A.2 adds why this isn't plain rejection sampling: a one-shot rejection sampler that falls back to p accepts with probability Σ p · min<sub>x′</sub>(q/p), which is at most α and often far lower.</p>
+
+<h2>§3.1: how often a guess is accepted (β and α)</h2>
+<div class="mathbox">
+<math display="block">
+  <munder class="t2"><mi>&#946;</mi><mtext class="lab">Def 3.1, one prefix</mtext></munder><mo>=</mo>
+  <munder><mrow><msub><mi>E</mi><mrow><mi>x</mi><mo>&#8764;</mo><mi>q</mi></mrow></msub><mo form="prefix">min</mo><mo stretchy="false">(</mo><mn>1</mn><mo>,</mo><mfrac><mi>p</mi><mi>q</mi></mfrac><mo stretchy="false">)</mo></mrow><mtext class="lab">Thm 3.5 proof</mtext></munder><mo>=</mo>
+  <munderover><mo>&#8721;</mo><mi>x</mi><mrow/></munderover><mo form="prefix">min</mo><mo stretchy="false">(</mo><mi>p</mi><mo>,</mo><mi>q</mi><mo stretchy="false">)</mo><mo>=</mo>
+  <munder class="t3"><mrow><mn>1</mn><mo>&#8722;</mo><msub><mi>D</mi><mtext>LK</mtext></msub><mo stretchy="false">(</mo><mi>p</mi><mo>,</mo><mi>q</mi><mo stretchy="false">)</mo></mrow><mtext class="lab">Lemma 3.3</mtext></munder>
+</math>
+<math display="block">
+  <munder class="t2"><mi>&#945;</mi><mtext class="lab">Cor 3.6</mtext></munder><mo>=</mo><mi>E</mi><mo stretchy="false">(</mo><mi>&#946;</mi><mo stretchy="false">)</mo><mo>=</mo><mn>1</mn><mo>&#8722;</mo><mi>E</mi><mo stretchy="false">(</mo><msub><mi>D</mi><mtext>LK</mtext></msub><mo stretchy="false">)</mo><mo>=</mo><mi>E</mi><mo stretchy="false">(</mo><mo form="prefix">min</mo><mo stretchy="false">(</mo><mi>p</mi><mo>,</mo><mi>q</mi><mo stretchy="false">)</mo><mo stretchy="false">)</mo>
+</math>
+<div class="legend">
+  <span class="sym">D_LK</span><span>Def 3.2: Σ|p − M| with M = (p + q)/2, i.e. total variation distance. Symmetric, 0 iff p = q, 1 iff disjoint supports (Cor 3.4)</span><span class="v">0.30 above</span>
+  <span class="sym">β</span><span>acceptance probability for one prefix: the overlap of the two histograms</span><span class="v">0.70 above</span>
+  <span class="sym">α</span><span>β averaged over the prefixes a real generation visits: how well M<sub>q</sub> approximates M<sub>p</sub> on this task</span><span class="v">Table 3: 0.03–0.89</span>
+</div>
+</div>
+<p>You can compute α from the two models' logits without running speculative decoding at all. The paper evaluates Σ min(p, q) over 10K tokens generated by M<sub>p</sub> (§4.2, Table 3). In the lab, measured acceptance matches Σ min(p, q) to three decimals: 0.3676 vs 0.3693, 0.6834 vs 0.6847, 0.9369 vs 0.9369 for three drafts of increasing quality.</p>
+<table class="parts">
+  <tr><th>Term</th><th class="what">What it means</th><th>Example A</th><th>Example B</th></tr>
+  <tr><td>β</td><td class="what">acceptance probability at one position (one prefix)</td><td class="ex"><b>0.70</b><span>the rug/mat table above</span></td><td class="ex"><b>0.71–0.95</b><span>range across contexts in the lab's bigram toy</span></td></tr>
+  <tr><td>α</td><td class="what">E(β): average acceptance for a model pair on a task</td><td class="ex"><b class="ok">0.88</b><span>97M GPT-like target, 6M draft, T = 0 (Table 3)</span></td><td class="ex"><b>0.05</b><span>same target, bigram draft (Table 3)</span></td></tr>
+  <tr><td>γ</td><td class="what">draft tokens proposed per target run (Chen et al. call it K)</td><td class="ex"><b>7</b><span>T5-XXL EnDe with T5-small, T = 0 (Table 2)</span></td><td class="ex"><b>3</b><span>T5-large drafts, T = 1 (Table 2)</span></td></tr>
+  <tr><td>c</td><td class="what">Def 3.7: time of one draft run ÷ time of one target run</td><td class="ex"><b class="ok">0.02</b><span>T5-small vs T5-XXL on TPU-v4 (App A.3)</span></td><td class="ex"><b class="lo">0.66</b><span>1B Q8 vs 3B Q4 on our M3 (measured)</span></td></tr>
+  <tr><td>ĉ</td><td class="what">Def 3.10: arithmetic ops per token, draft ÷ target</td><td class="ex"><b>≈ 0</b><span>Table 1's assumption</span></td><td class="ex"><b>0.125</b><span>1.0B draft for Llama-3.1-8B (params ratio, course 2)</span></td></tr>
+  <tr><td>D<sub>LK</sub></td><td class="what">the divergence: 1 − β</td><td class="ex"><b>0.30</b><span>rug/mat table</span></td><td class="ex"><b>0.631</b><span>random p, q over 10 tokens (lab part 1)</span></td></tr>
+</table>
+
+<h2>§3.2: expected tokens per target run (Eq 1)</h2>
+<div class="mathbox">
+<math display="block">
+  <mi>E</mi><mo stretchy="false">(</mo><mtext>#&#160;generated tokens</mtext><mo stretchy="false">)</mo><mo>=</mo>
+  <munder class="t2"><mfrac><mrow><mn>1</mn><mo>&#8722;</mo><msup><mi>&#945;</mi><mrow><mi>&#947;</mi><mo>+</mo><mn>1</mn></mrow></msup></mrow><mrow><mn>1</mn><mo>&#8722;</mo><mi>&#945;</mi></mrow></mfrac><mtext class="lab">capped geometric, cap γ + 1</mtext></munder>
+  <mspace width="1em"/><mo>&#8804;</mo><mspace width="0.6em"/>
+  <munder class="t3"><mfrac><mn>1</mn><mrow><mn>1</mn><mo>&#8722;</mo><mi>&#945;</mi></mrow></mfrac><mtext class="lab">γ → ∞</mtext></munder>
+</math>
+<div class="legend">
+  <span class="sym">α</span><span>per-token acceptance, <b>assumed i.i.d.</b> across positions (the paper's simplifying assumption)</span><span class="v">0.8</span>
+  <span class="sym">γ</span><span>drafts per run; the +1 is the target's own token (fix or bonus)</span><span class="v">4</span>
+</div>
+</div>
+<div class="formula">α = 0.8, γ = 4:  E = (1 − 0.8⁵) / (1 − 0.8) = 0.67232 / 0.2 = 3.36 tokens per target run
+tokens this run:   1       2       3       4       5 (all accepted + bonus)
+probability:     0.200   0.160   0.128   0.102   0.410        (1 − α)αᵏ, and α⁴ for 5</div>
+<div class="tw"><table>
+  <tr><th>α \ γ</th><th class="num">1</th><th class="num">2</th><th class="num">3</th><th class="num">4</th><th class="num">5</th><th class="num">6</th><th class="num">7</th><th class="num">8</th><th class="num">10</th><th class="num">limit 1/(1 − α)</th></tr>
+  <tr><td>0.5</td><td class="num">1.50</td><td class="num">1.75</td><td class="num">1.88</td><td class="num">1.94</td><td class="num">1.97</td><td class="num">1.98</td><td class="num">1.99</td><td class="num">2.00</td><td class="num">2.00</td><td class="num dim">2.00</td></tr>
+  <tr><td>0.6</td><td class="num">1.60</td><td class="num">1.96</td><td class="num">2.18</td><td class="num">2.31</td><td class="num">2.38</td><td class="num">2.43</td><td class="num">2.46</td><td class="num">2.47</td><td class="num">2.49</td><td class="num dim">2.50</td></tr>
+  <tr><td>0.7</td><td class="num">1.70</td><td class="num">2.19</td><td class="num">2.53</td><td class="num">2.77</td><td class="num">2.94</td><td class="num">3.06</td><td class="num">3.14</td><td class="num">3.20</td><td class="num">3.27</td><td class="num dim">3.33</td></tr>
+  <tr><td>0.8</td><td class="num">1.80</td><td class="num">2.44</td><td class="num">2.95</td><td class="num hi">3.36</td><td class="num">3.69</td><td class="num">3.95</td><td class="num">4.16</td><td class="num">4.33</td><td class="num">4.57</td><td class="num dim">5.00</td></tr>
+  <tr><td>0.9</td><td class="num">1.90</td><td class="num">2.71</td><td class="num">3.44</td><td class="num">4.10</td><td class="num">4.69</td><td class="num">5.22</td><td class="num">5.70</td><td class="num">6.13</td><td class="num">6.86</td><td class="num dim">10.00</td></tr>
+</table></div>
+<p class="cap">Our recomputation of Eq 1 (labs/spec-sim.py part 3a; the paper plots it as Fig 2). Low α saturates fast: at α = 0.5, going past γ = 4 adds almost nothing. The i.i.d. assumption is only approximate. In the lab's bigram toy, where β changes with context, the measured 3.287 tokens per run is a little below the 3.308 that Eq 1 predicts from the average α = 0.792.</p>
+
+<h2>§3.3: walltime (Theorem 3.8 and Corollary 3.9)</h2>
+<p>§3.3 assumes γ + 1 parallel target evaluations cost the same wall time as one. That is the memory-bound assumption, and §3.4 checks it. Then one iteration costs γ draft runs plus one target run, cγT + T, and yields Eq 1 tokens:</p>
+<div class="mathbox">
+<math display="block">
+  <mtext>speedup</mtext><mo>=</mo>
+  <mfrac><munder class="t2"><mrow><mn>1</mn><mo>&#8722;</mo><msup><mi>&#945;</mi><mrow><mi>&#947;</mi><mo>+</mo><mn>1</mn></mrow></msup></mrow><mtext class="lab">tokens per run × (1 − α)</mtext></munder>
+  <mrow><mo stretchy="false">(</mo><mn>1</mn><mo>&#8722;</mo><mi>&#945;</mi><mo stretchy="false">)</mo><munder class="t3"><mrow><mo stretchy="false">(</mo><mi>&#947;</mi><mi>c</mi><mo>+</mo><mn>1</mn><mo stretchy="false">)</mo></mrow><mtext class="lab">cost per run, in target steps</mtext></munder></mrow></mfrac>
+  <mspace width="1.4em"/>
+  <mtext>Cor 3.9: if&#160;</mtext><mi>&#945;</mi><mo>&gt;</mo><mi>c</mi><mo>,</mo><mspace width="0.3em"/><mtext>some γ gives&#160;</mtext><mo>&#8805;</mo><mfrac><mrow><mn>1</mn><mo>+</mo><mi>&#945;</mi></mrow><mrow><mn>1</mn><mo>+</mo><mi>c</mi></mrow></mfrac>
+</math>
+<div class="legend">
+  <span class="sym">c</span><span>draft run time ÷ target run time. Unlike α, it depends on hardware and software. In the paper it was "always less than 0.05 and often negligibly close to 0"</span><span class="v">0.05</span>
+  <span class="sym">γc + 1</span><span>γ draft runs plus 1 target run</span><span class="v">1.20</span>
+</div>
+</div>
+<div class="formula">worked example, α = 0.8, γ = 4, c = 0.05 (illustrative, in the paper's range):
+  tokens per run  E = 3.36                        (Eq 1, above)
+  cost per run      = 4 × 0.05 + 1 = 1.20 target steps
+  speedup           = 3.36 / 1.20 = 2.80×
+  Cor 3.9 (γ = 1)   = (1 + 0.8) / (1 + 0.05) = 1.71×   a guaranteed floor for the best γ</div>
+<p>Cor 3.9's proof uses a monotonicity fact: if some γ helps, every smaller γ helps too, so checking γ = 1 tells you whether speculation can help at all. The theorem assumes long generations. Since M<sub>p</sub> runs at least once, the speedup is capped by the number of tokens generated.</p>
+
+<h2>§3.4: arithmetic goes up, memory reads go down (Theorem 3.11)</h2>
+<div class="mathbox">
+<math display="block">
+  <mtext>ops factor</mtext><mo>=</mo>
+  <mfrac><mrow><mo stretchy="false">(</mo><mn>1</mn><mo>&#8722;</mo><mi>&#945;</mi><mo stretchy="false">)</mo><mo stretchy="false">(</mo><munder class="t3"><mrow><mi>&#947;</mi><mover><mi>c</mi><mo>^</mo></mover></mrow><mtext class="lab">draft</mtext></munder><mo>+</mo><munder class="t1"><mrow><mi>&#947;</mi><mo>+</mo><mn>1</mn></mrow><mtext class="lab">target positions</mtext></munder><mo stretchy="false">)</mo></mrow><mrow><mn>1</mn><mo>&#8722;</mo><msup><mi>&#945;</mi><mrow><mi>&#947;</mi><mo>+</mo><mn>1</mn></mrow></msup></mrow></mfrac>
+</math>
+<math display="block">
+  <munder class="t2"><mrow><mtext>target weight + KV reads per token</mtext><mo>&#247;</mo><mfrac><mrow><mn>1</mn><mo>&#8722;</mo><msup><mi>&#945;</mi><mrow><mi>&#947;</mi><mo>+</mo><mn>1</mn></mrow></msup></mrow><mrow><mn>1</mn><mo>&#8722;</mo><mi>&#945;</mi></mrow></mfrac></mrow><mtext class="lab">read once per iteration</mtext></munder>
+</math>
+</div>
+<div class="formula">α = 0.8, γ = 4, ĉ = 0.05 (assumed = c):
+  ops = 0.2 × (0.2 + 5) / 0.67232 = 1.55× more math
+target weight reads per token: ÷ 3.36, i.e. 0.297 of plain decoding
+on the running example (our arithmetic): 16.06 GB of Llama-3.1-8B weights per token
+  → 16.06 / 3.36 = 4.78 GB per token (plus the draft's own reads)</div>
+<p>This is the trade. Every rejected position wastes the math the target did on it, so total arithmetic rises (1.55× here). The target's weights and KV cache are read once per <em>iteration</em>, not once per token, so memory traffic per token falls by Eq 1's factor. That only speeds things up when the step is memory-bound, meaning the extra math fits in time the GPU would otherwise spend waiting on reads. At batch 1, Llama-3.1-8B on an H100 spends ≈ 4.8 ms reading weights, and scoring 5 tokens instead of 1 adds about 81 µs of math (course 2's recomputation). At large batch the step is already compute-bound, so the extra 1.55× of math costs real time (see <a href="../perf-2-scaling-book-inference/critical-batch-size.html">critical batch size</a> and Part II). The paper says so directly: "our method is not helpful for configurations where additional computation resources are not available." It also notes that for a decoder, the target's total verification math is bounded by one run of a same-size encoder.</p>
+
+<h2>§3.5: choosing γ</h2>
+<p>γ is an integer, so the paper just maximizes Theorem 3.8 numerically (Fig 3). Our recomputation:</p>
+<div class="tw"><table>
+  <tr><th>α</th><th class="num">c = 0 (limit)</th><th class="num">c = 0.01</th><th class="num">c = 0.02</th><th class="num">c = 0.05</th><th class="num">c = 0.1</th><th class="num">c = 0.2</th><th class="num">c = 0.66</th></tr>
+  <tr><td>0.5</td><td class="num dim">∞ → 2.00×</td><td class="num">5 · 1.88×</td><td class="num">4 · 1.79×</td><td class="num">3 · 1.63×</td><td class="num">2 · 1.46×</td><td class="num">1 · 1.25×</td><td class="num lo">1 · 0.90×</td></tr>
+  <tr><td>0.6</td><td class="num dim">∞ → 2.50×</td><td class="num">7 · 2.30×</td><td class="num">6 · 2.17×</td><td class="num">4 · 1.92×</td><td class="num">3 · 1.67×</td><td class="num">2 · 1.40×</td><td class="num lo">1 · 0.96×</td></tr>
+  <tr><td>0.7</td><td class="num dim">∞ → 3.33×</td><td class="num">9 · 2.97×</td><td class="num">8 · 2.76×</td><td class="num">6 · 2.35×</td><td class="num">4 · 1.98×</td><td class="num">3 · 1.58×</td><td class="num">1 · 1.02×</td></tr>
+  <tr><td>0.8</td><td class="num dim">∞ → 5.00×</td><td class="num">14 · 4.23×</td><td class="num">11 · 3.82×</td><td class="num hi">8 · 3.09×</td><td class="num">6 · 2.47×</td><td class="num">4 · 1.87×</td><td class="num">1 · 1.08×</td></tr>
+  <tr><td>0.9</td><td class="num dim">∞ → 10.00×</td><td class="num">24 · 7.49×</td><td class="num">19 · 6.37×</td><td class="num">13 · 4.67×</td><td class="num">10 · 3.43×</td><td class="num">7 · 2.37×</td><td class="num">2 · 1.17×</td></tr>
+</table></div>
+<p class="cap">Each cell: best γ · speedup at that γ, from Theorem 3.8 searched over γ = 1…50 (labs/spec-sim.py part 3c). With c = 0 the speedup keeps rising toward 1/(1 − α) and there is no finite best γ. At α = 0.8, c = 0.05 the best γ is 8 (3.09×), but γ = 4 already gets 2.80×: the curve is flat near its peak.</p>
+<p>The paper also bounds what an adaptive γ could add. An oracle that knew each β in advance would get E = 1/(1 − α) tokens per run, and "for typical values of c and α … up to ∼60% higher" speedup than a fixed γ. The paper leaves this for future work. The dynamic draft trees in <a href="eagle.html">EAGLE-2</a> go in this direction (our connection, not the paper's).</p>
+
+<h2>§3.6: what makes a good draft</h2>
+<p>Any M<sub>q</sub> keeps the output exact. The choice is only a trade between α (bigger drafts guess better) and c (bigger drafts cost more). With same-architecture off-the-shelf drafts, "around two orders of magnitude smaller than M<sub>p</sub> usually performed best". Negligible-cost drafts (c ≈ 0) cap the speedup at 1/(1 − α). Even a bigram lookup table gets α ≈ 0.2 on T5-XXL English→German, and at γ = 3 that gives (1 − 0.2⁴)/0.8 = <b>1.25×</b>. The paper also suggests copying tokens from the context when a prefix matches (the idea behind today's prompt-lookup and n-gram drafts), non-autoregressive drafts that propose all γ tokens in one call, and, "mostly from a theoretical perspective", a random draft, which still gives a tiny gain.</p>
+<p>c depends on the hardware and the implementation, not only on parameter counts, so here it is compared across setups:</p>
+<div class="tw"><table>
+  <tr><th>Setup</th><th>Target / draft</th><th class="num">Size ratio</th><th class="num">c</th><th>Source</th></tr>
+  <tr><td>TPU-v4, T5X, batch 1</td><td>T5-XXL 11B / T5-small 77M</td><td class="num">≈ 143×</td><td class="num hi">0.02</td><td class="dim">App A.3 (profiler traces)</td></tr>
+  <tr><td>TPU-v4, T5X, batch 1</td><td>T5-XXL 11B / T5-base 250M</td><td class="num">44×</td><td class="num">0.04</td><td class="dim">App A.3</td></tr>
+  <tr><td>TPU-v4, T5X, batch 1</td><td>T5-XXL 11B / T5-large 800M</td><td class="num">≈ 14×</td><td class="num">0.11</td><td class="dim">App A.3</td></tr>
+  <tr><td>H100 SXM, BF16, batch 1</td><td>Llama-3.1-8B / hypothetical 1.0B</td><td class="num">8×</td><td class="num">0.125</td><td class="dim">course 2, weight-read floor (our recomputation)</td></tr>
+  <tr><td>Apple M3, llama.cpp Metal</td><td>Llama-3.2-3B Q4_K_M / 1B Q8_0</td><td class="num">2.6×</td><td class="num lo">0.66</td><td class="dim">measured: 28.8 ÷ 43.3 tok/s (llama-bench)</td></tr>
+</table></div>
+<p class="cap">Size ratios are parameter ratios (our arithmetic: 11B ÷ 77M etc.; 3.21B ÷ 1.24B). On the Mac the 1B draft is stored at 8 bits and the 3B target at 4, so the draft's bytes are 1.22 ÷ 1.87 GiB = 0.65 of the target's, which is close to the measured c.</p>
+
+<h2>Table 1, in full: math spent vs speed gained (c = ĉ = 0)</h2>
+<div class="tw"><table>
+  <tr><th class="num">α</th><th class="num">γ</th><th class="num">Operations (paper)</th><th class="num">Speed (paper)</th><th class="num">Ours: ops · speed</th></tr>
+  <tr><td class="num">0.6</td><td class="num">2</td><td class="num">1.53×</td><td class="num">1.96×</td><td class="num dim">1.53× · 1.96×</td></tr>
+  <tr><td class="num">0.7</td><td class="num">3</td><td class="num">1.58×</td><td class="num">2.53×</td><td class="num dim">1.58× · 2.53×</td></tr>
+  <tr><td class="num">0.8</td><td class="num">2</td><td class="num">1.23×</td><td class="num">2.44×</td><td class="num dim">1.23× · 2.44×</td></tr>
+  <tr><td class="num">0.8</td><td class="num">5</td><td class="num">1.63×</td><td class="num hi">3.69×</td><td class="num dim">1.63× · 3.69×</td></tr>
+  <tr><td class="num">0.9</td><td class="num">2</td><td class="num">1.11×</td><td class="num">2.71×</td><td class="num dim">1.11× · 2.71×</td></tr>
+  <tr><td class="num">0.9</td><td class="num">10</td><td class="num">1.60×</td><td class="num hi">6.86×</td><td class="num dim">1.60× · 6.86×</td></tr>
+</table></div>
+<p class="cap">With c = ĉ = 0, speed is just Eq 1 and ops = (γ + 1)/Eq 1. Our recomputation matches every cell. Read across a row: α = 0.9 at γ = 2 costs only 11% more math for 2.71×, while γ = 10 buys 6.86× for 60% more math. How far down this table you can go depends on how much idle compute you have.</p>
+
+<h2>Our Mac pair: a teaser for Part II</h2>
+<div class="formula">measured: code prompt, draft length 4, accepted ÷ drafted = 0.867 (≈ 0.87);  c = 0.66
+  γ = 4:  E = (1 − 0.867⁵) / 0.133 = 3.84 tokens;  cost = 4 × 0.66 + 1 = 3.64  → 1.05×
+  γ = 2:  E = 2.62;  cost = 2.32  → 1.13×   (the best γ at this α and c)
+  Cor 3.9: α = 0.867 &gt; c = 0.66, so γ = 1 guarantees (1.867) / (1.66) = 1.125×</div>
+<p>Good acceptance, almost no gain. Our draft is only 2.6× smaller than our target, far from the paper's roughly 100×, so each draft token costs two-thirds of a target step. Part II, <a href="spec-decoding-practice.html">drafts, batch size and our Mac</a>, measures this, covers why llama.cpp's accepted ÷ drafted isn't exactly α, and explains why speculation fades at large batch.</p>
+
+<h2>Why it beats the alternatives</h2>
+<div class="grid2">
+  <div class="cell"><h3><span class="x">&#10007;</span> Plain autoregressive decoding</h3><p>Exact, but γ tokens cost γ serial target runs, each reading all the weights. At batch 1 almost all of the GPU's math sits idle.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Greedy "accept if equal"</h3><p>Keep a draft token only if it equals the target's argmax. That is exact for greedy decoding only. At T = 1 it always emits argmax p, which is off by TV = 0.55 on the rug/mat example. Matching a <em>sampled</em> target token instead is exact, but it accepts only Σ p·q = 0.26 vs 0.70 (lab part 2).</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Typical acceptance (Medusa)</h3><p>Accept any draft token the target finds "plausible enough" (above an entropy-scaled threshold). Acceptance is higher, but the output is no longer the target's distribution, so quality has to be re-checked. See <a href="medusa.html">Medusa</a>.</p></div>
+  <div class="cell win"><h3><span class="ok">&#10003;</span> Rejection-sampling speculative decoding</h3><p>min(1, p/q) plus the residual is exact for every sampling method and every draft (App A.1), and it accepts the most any exact single-draft rule can: Σ min(p, q) = 1 − TV.</p></div>
+</div>
+<p class="cap">"Accepts the most" is our inference from the proof: min(p(x), q(x)) is the largest probability of emitting x through the draft without exceeding p(x). The paper only compares against one-shot rejection sampling (App A.2).</p>
+
+<h2>Why is the bonus token free?</h2>
+<div class="note">
+  <p>Because the target's verify pass already computed it. To check draft x<sub>i</sub>, M<sub>p</sub> needs p<sub>i</sub>, the distribution at position i given prefix + x<sub>1</sub>…x<sub>i−1</sub>. A transformer run over prefix + x<sub>1</sub>…x<sub>γ</sub> produces logits at <em>every</em> position, including the one after x<sub>γ</sub>: that is p<sub>γ+1</sub>. When all γ drafts pass, Algorithm 1 samples t from p<sub>γ+1</sub>, so the run yields γ + 1 tokens for no extra target work. When a draft is rejected, the same slot goes to the fix token t ~ norm(max(0, p<sub>n+1</sub> − q<sub>n+1</sub>)) and the distributions after it are discarded. Either way, each target run produces exactly one token the draft didn't propose, which is where the "+1" in Eq 1 comes from.</p>
+  <p>That doesn't make speculation free. It only pays while the extra positions ride along with the weight read (§3.4). When a server already batches enough sequences to be compute-bound, scoring γ + 1 positions per sequence costs real time, and plain continuous batching wins. The same happens when c is large, as on our Mac, or when α is low (c = 0.05 and α = 0.5 top out at 1.63×). Those cases get cheaper drafts (<a href="eagle.html">EAGLE</a>, n-gram lookup) or no speculation at all.</p>
+</div>
+
+<h2>Run it yourself</h2>
+<div class="labbox">
+  <p><a href="https://github.com/seyonv/explainers/blob/main/perf-5-engines/labs/spec-sim.py">Run it: labs/spec-sim.py</a> <b>[L]</b> runs on your Mac in about 1 second with numpy. It prints the rug/mat decision and the A.1 check, the two 200k exactness tests (one token, and Algorithm 1 on a bigram toy), measured acceptance vs Σ min(p, q), the §2.2 table, Eq 1 and Theorem 3.8 over α 0.5–0.9, γ 1–10, c ∈ {0, 0.05, 0.66}, the best-γ grid, Table 1 recomputed and the worked examples. Try a worse draft in the bigram toy, c = 0.125, or lenience (App A.5): compare p with l·q and watch exactness break.</p>
+</div>
+
+<div class="foot">
+<p><b>Read next:</b> Leviathan, Kalman &amp; Matias, "Fast Inference from Transformers via Speculative Decoding", ICML 2023: §1–3 in full plus Appendix A.1 (the proof) and A.2 (vs rejection sampling), ~1 h. <a href="https://arxiv.org/abs/2211.17192">arxiv.org/abs/2211.17192</a>. Then Chen et al., "Accelerating Large Language Model Decoding with Speculative Sampling", §2 (the same algorithm with p and q swapped), ~15 min. <a href="https://arxiv.org/abs/2302.01318">arxiv.org/abs/2302.01318</a></p>
+<p><b>Related:</b> <a href="spec-decoding-practice.html">Speculative decoding II: drafts, batch size and our Mac</a> · <a href="medusa.html">Medusa</a> · <a href="eagle.html">EAGLE, MTP and n-gram drafts</a> · <a href="../perf-2-scaling-book-inference/speculative-sampling.html">course 2: speculative sampling</a> · <a href="../perf-2-scaling-book-inference/critical-batch-size.html">critical batch size</a> · <a href="../llm-latency/speculative-decoding.html">LLM latency: speculative decoding</a> · <a href="../speculative-decoding/speculative-decoding.html">speculative decoding (standalone card)</a></p>
+<p><b>Sources:</b> algorithm, proof, definitions, theorems, Table 1, Table 3 α values, App A.3 c values, "two orders of magnitude", bigram α ≈ 0.2 → 1.25×, "∼60%" oracle bound: arXiv 2211.17192v2. Chen's letter swap: arXiv 2302.01318 §2. The Mac's c = 0.66 and 0.867 acceptance: our llama-bench and llama-speculative runs (course facts, 2026-09-22/23). The 81 µs verify math, the 1.0B hypothetical draft and c = 0.125: course 2's speculative-sampling card. The 4-token distributions and α = 0.8 / c = 0.05 are illustrative. All tables marked "ours" come from labs/spec-sim.py.</p>
+</div>
+</article>
+<!-- series-nav:bottom -->
+<div class="snx"><a class="nx" href="index.html#spec-decoding-practice" target="_top">
+<span class="mini" aria-hidden="true"><span class="m1">Speculative decoding II: drafts, batch size and our Mac</span><span class="m2">Also called choosing the draft model, the cost ratio c, and speculation at batch 1 vs batch 64. Card 2 of 2 on Leviathan et al. It covers §4 (T5-XXL 11B on one TPU-v4 at batch 1, Tables 2 and 3) and…</span><span class="m3">In one breath</span><span class="m4">Theorem 3.8 has two inputs you control: how often the target accepts the draft's guesses (α) and how much one draft step costs compared with one target step (c). The papers got 2–3.4× because their drafts cost 2–13% of a target step. On a Mac, a 1B draft for a 3B target costs 66.5% of a step, so the same formula predicts about…</span></span>
+<span class="tx"><span class="lab">Next up · 10 / 15</span><span class="tt">Speculative decoding II: drafts, batch size and our Mac</span><span class="ds">Why a 1B draft barely helps a 3B model</span><span class="nd">Builds directly on this card.</span><span class="go">Continue →</span></span></a><div class="aux"><span><a href="index.html#quantization-serving" target="_top">← Quantization for serving</a></span><a href="index.html" target="_top">All cards in 5 · Inside inference engines</a></div></div>
+<!-- /series-nav:bottom -->
+</body>
+</html>

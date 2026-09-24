@@ -1,0 +1,430 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Orca I: iteration-level scheduling and selective batching</title>
+<style>
+:root{
+  --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
+  --text:#1c1f23; --muted:#6b7068; --faint:#b9b9b3;
+  --accent:#4a9d77; --accent-bg:#dcefdf; --accent-border:#8cc79c;
+  --red:#c0492b; --red-bg:#fbeceb;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#15171a; --surface:#1d2024; --surface2:#24282d; --border:#32373d;
+    --text:#e6e8ea; --muted:#9aa1a9; --faint:#4a5057;
+    --accent:#5fb37f; --accent-bg:#1c2b22; --accent-border:#3f7a55;
+    --red:#e57368; --red-bg:#2e1f1e;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text)}
+.card{max-width:820px;margin:0 auto;padding:28px 32px;font-family:-apple-system,"Inter",system-ui,sans-serif;line-height:1.45}
+h1{font-size:26px;font-weight:600;margin:0 0 6px;letter-spacing:-0.01em}
+.sub{font-size:15px;color:var(--muted);margin:0 0 20px}
+h2{font-size:17px;font-weight:600;margin:26px 0 10px}
+p{font-size:15px;margin:0 0 10px}
+ul{font-size:15px;margin:0 0 10px;padding-left:20px} li{margin-bottom:4px}
+.cap{font-size:13px;color:var(--muted);margin:8px 0 14px;text-align:center}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+blockquote{margin:10px 0;padding:8px 14px;border-left:3px solid var(--accent-border);font-size:14px;color:var(--text);background:var(--surface)}
+
+/* Tables and formulas */
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border)}
+th{font-size:12px;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:none}
+.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.nw{white-space:nowrap}
+.hi{color:var(--accent);font-weight:600} .lo{color:var(--red)}
+.formula{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin:10px 0;white-space:pre;overflow-x:auto;line-height:1.55}
+.tw{overflow-x:auto}
+
+/* MathML */
+.mathbox{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px 16px 12px;margin:10px 0;overflow-x:auto}
+.mathbox math{font-size:21px;color:var(--text);font-family:"STIX Two Math","Latin Modern Math","Cambria Math",math}
+.mathbox .t1{color:var(--text)} .mathbox .t2{color:var(--accent)} .mathbox .t3{color:var(--muted)}
+.mathbox .lab{font-size:12px;font-family:-apple-system,"Inter",system-ui,sans-serif;padding-top:3px;border-top:1.5px solid currentColor;margin-top:2px}
+.legend{display:grid;grid-template-columns:auto 1fr auto;column-gap:14px;row-gap:5px;font-size:13px;margin-top:12px;align-items:baseline}
+.legend .sym{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;text-align:right}
+.legend .v{color:var(--muted);text-align:right;font-variant-numeric:tabular-nums}
+
+/* Two examples per term */
+.parts td{vertical-align:top} .parts td:first-child{font-weight:600}
+.parts .ex{font-size:13px} .parts .ex span{display:block;color:var(--muted)}
+
+/* Token chips */
+.stream{display:grid;grid-template-columns:96px 1fr;column-gap:12px;row-gap:10px;align-items:center;font-size:13px}
+.stream .lb{color:var(--muted)}
+.chips{display:flex;flex-wrap:wrap;gap:4px;align-items:center}
+.chips span{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;padding:3px 6px;border-radius:4px;border:1px solid var(--border);background:var(--surface)}
+.chips .t{background:var(--surface2);color:var(--muted)}
+.chips .a{background:var(--accent-bg);border-color:var(--accent-border);color:var(--accent)}
+.chips .gap{border:none;background:none;color:var(--muted);font-family:inherit}
+
+/* Legend chips for the SVG colours */
+.key{display:flex;flex-wrap:wrap;gap:6px 16px;font-size:13px;color:var(--muted);margin:6px 0 8px}
+.key span{display:inline-flex;align-items:center;gap:6px}
+.key i{display:inline-block;width:14px;height:12px;border-radius:2px;border:1px solid var(--border)}
+.key .k-tok{background:var(--accent-bg);border-color:var(--accent-border)}
+.key .k-in{background:var(--surface2)}
+.key .k-waste{background:var(--faint);border-color:var(--faint)}
+.key .k-wait{background:var(--bg);border:1.5px dashed var(--faint)}
+.key .k-bat{background:var(--accent-bg);border-color:var(--accent-border)}
+.key .k-req{background:var(--surface)}
+
+/* Throughput bars */
+.bars{display:grid;grid-template-columns:170px 1fr 90px;column-gap:14px;row-gap:10px;align-items:center;font-size:14px}
+.bars .bar{height:20px;border-radius:3px;background:var(--accent)}
+.bars .bar.g{background:var(--faint)}
+.bars .v{text-align:right;font-variant-numeric:tabular-nums}
+
+/* 2x2 grid */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.cell{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.cell.win{background:var(--accent-bg);border-color:var(--accent-border)}
+.cell h3{font-size:16px;font-weight:600;margin:0 0 5px;display:flex;gap:8px;align-items:baseline}
+.cell p{font-size:14px;margin:0;color:var(--text)}
+.cell.win h3,.cell.win p{color:var(--accent)}
+.x{color:var(--red)} .ok{color:var(--accent)}
+
+/* Clarification box and lab */
+.note{border:1px solid var(--border);border-radius:10px;padding:14px 18px;font-size:14px}
+.note p{font-size:14px} .note p:last-child{margin-bottom:0}
+.labbox{border:1px solid var(--border);background:var(--surface);border-radius:10px;padding:12px 16px;margin:10px 0;font-size:14px}
+.labbox p{font-size:14px} .labbox p:last-child{margin-bottom:0}
+
+.foot{margin-top:22px;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+.foot p{font-size:13px;margin:0 0 6px}
+svg{display:block;max-width:100%;height:auto;margin:6px 0}
+.sl{font-size:12px;fill:var(--muted)} .st{font-size:13px;fill:var(--text)}
+a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+@media (max-width:560px){
+  .card{padding:22px 16px}
+  .grid2{grid-template-columns:1fr}
+  .legend{grid-template-columns:auto 1fr}.legend .v{display:none}
+  .parts .what{display:none}
+  .stream{grid-template-columns:70px 1fr}
+  .bars{grid-template-columns:96px 1fr 64px}
+  th,td{padding:6px 6px}
+}
+/* series-nav */
+.sn{max-width:820px;margin:0 auto;padding:16px 32px 0;font-family:-apple-system,"Inter",system-ui,sans-serif;font-size:13px;line-height:1.5;color:var(--muted)}
+.sn a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
+.sn .crumbs{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 7px}
+.sn .crumbs b{color:var(--text);font-weight:600}
+.sn .sep{color:var(--faint,var(--border))}
+.sn .step{margin-left:auto;white-space:nowrap}
+.sn .dep{margin-top:5px;padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface)}
+.sn .dep .ok{color:var(--accent);font-weight:600}
+.snx{max-width:820px;margin:0 auto;padding:6px 32px 44px;font-family:-apple-system,"Inter",system-ui,sans-serif}
+.snx .nx{display:grid;grid-template-columns:280px 1fr;text-decoration:none;color:var(--text);background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.snx .nx:hover,.snx .nx:focus-visible{border-color:var(--accent-border,var(--accent));outline:none}
+.snx .mini{position:relative;height:210px;overflow:hidden;background:var(--bg);border-right:1px solid var(--border);padding:14px 16px}
+.snx .mini span{display:block}
+.snx .mini .m1{font-size:12.5px;font-weight:600;margin:0 0 4px;line-height:1.3}
+.snx .mini .m2{font-size:9px;color:var(--muted);margin:0 0 8px;line-height:1.4}
+.snx .mini .m3{font-size:8.5px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;margin:0 0 3px}
+.snx .mini .m4{font-size:9.5px;margin:0;line-height:1.45}
+.snx .tx{padding:16px 20px}
+.snx .lab{font-size:12px;font-weight:600;color:var(--accent);letter-spacing:.04em;text-transform:uppercase}
+.snx .tt{display:block;font-size:20px;font-weight:600;margin:5px 0 4px;line-height:1.25}
+.snx .ds{display:block;font-size:14px;color:var(--muted)}
+.snx .nd{display:block;font-size:13px;color:var(--muted);margin-top:10px}
+.snx .go{display:block;margin-top:12px;font-size:14px;font-weight:600;color:var(--accent)}
+.snx .aux{display:flex;justify-content:space-between;gap:12px;margin-top:10px;font-size:13px;color:var(--muted)}
+.snx .aux a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
+@media (max-width:560px){.sn,.snx{padding-left:16px;padding-right:16px}.snx .nx{grid-template-columns:1fr}.snx .mini{display:none}.sn .step{margin-left:0}}
+/* /series-nav */
+</style>
+</head>
+<body>
+<!-- series-nav:top -->
+<nav class="sn" aria-label="Course navigation"><div class="crumbs"><a href="../perf-0-map/index.html" target="_top">Fast LLM inference</a><span class="sep">›</span><a href="index.html" target="_top">5 · Inside inference engines</a><span class="sep">›</span><b>02 / 15</b><span class="step"><a href="index.html#_overview" target="_top">← prev</a> · <a href="index.html#orca-system" target="_top">next →</a></span></div>
+<div class="dep"><b>Before this:</b> <a href="../perf-2-scaling-book-inference/index.html#inference-engine-design" target="_top">Designing an inference engine</a> (perf-2)</div></nav>
+<!-- /series-nav:top -->
+<article class="card">
+<h1>Orca I: iteration-level scheduling and selective batching</h1>
+<p class="sub">Also called continuous batching, in-flight batching (TensorRT-LLM's name) or token-level batching. This card walks the Orca paper (Yu et al., OSDI '22) §1–3 in order: the problem, the background, and its two ideas, each answering a challenge (C1 → S1, C2 → S2). Orca's own experiments (GPT-3 on A100s) are on <a href="orca-system.html">Orca II</a>; the Llama-3.1-8B on H100 numbers here are our simulation.</p>
+
+<h2>In one breath</h2>
+<p>A language model answers a request by running many times, one token per run, and different requests need different numbers of runs. So instead of handing the GPU a fixed batch and waiting for all of it to finish, Orca's scheduler hands it one run ("iteration") at a time: finished requests leave after any iteration and new ones join at the next. To make such a mixed batch runnable, it batches every operation except attention over one flat list of tokens, and runs attention separately for each request.</p>
+
+<h2>The problem (§1)</h2>
+<p>At the time, you served a model with two layers of software. A <b>serving system</b> such as Triton Inference Server takes requests and groups them into batches; an <b>execution engine</b> such as FasterTransformer runs the model on a batch. That split was built for models like ResNet or BERT, where a request is one run of the model. A generative model like GPT must run once per output token, and "the serving system schedules the execution of the engine at the granularity of request". So a request that finishes early can't return, and a request that arrives mid-batch waits for the whole batch.</p>
+
+<h2>Background (§2)</h2>
+<p><b>An iteration is one run of all the layers.</b> The paper's Fig 1a, a three-iteration request:</p>
+<div class="stream">
+  <span class="lb">iter 1</span><div class="chips"><span class="t">I</span><span class="t">think</span><span class="t">this</span><span class="gap">→</span><span class="a">is</span><span class="gap">all input tokens at once, first output token</span></div>
+  <span class="lb">iter 2</span><div class="chips"><span>is</span><span class="gap">→</span><span class="a">great</span><span class="gap">previous output goes back in</span></div>
+  <span class="lb">iter 3</span><div class="chips"><span>great</span><span class="gap">→</span><span class="a">&lt;EOS&gt;</span><span class="gap">end-of-sequence: last iteration</span></div>
+</div>
+<p class="cap">Grey = the client's input tokens, green = generated tokens. The words are the paper's own example.</p>
+<table class="parts">
+<tr><th>Phase (paper's word)</th><th class="what">What happens</th><th>Example A: Fig 1a</th><th>Example B: our running example, Llama-3.1-8B on H100</th></tr>
+<tr><td>Initiation phase<br><span class="mono">= prefill</span></td><td class="what">Processes all input tokens in parallel and produces the first output token. "Typically implemented as a single iteration."</td><td class="ex"><b>iter 1: 3 tokens in, "is" out</b><span>"I think this"</span></td><td class="ex"><b>512 tokens in one iteration: 8.31 ms</b><span>floor: 2 × 8.03e9 × 512 ÷ 989e12, compute-bound</span></td></tr>
+<tr><td>Increment phase<br><span class="mono">= decode</span></td><td class="what">One token in, one token out, per iteration, until &lt;EOS&gt; or the length limit.</td><td class="ex"><b>iter 2, 3: "great", "&lt;EOS&gt;"</b><span>2 iterations</span></td><td class="ex"><b>one token: 4.87 ms at batch 1</b><span>floor, memory-bound: all 16.06 GB of weights read per step</span></td></tr>
+</table>
+<p><b>The state grows.</b> Attention needs the keys and values of every earlier token. Instead of recomputing them each iteration, systems since fairseq's "incremental decoding" keep them (the KV cache). Unlike an LSTM, whose state stays the same size, the Transformer's k and v at layer <i>l</i> grow from k<sub>l,1:t−1</sub> to k<sub>l,1:t</sub> each iteration, so attention works on tensors whose shape depends on how many tokens that request has processed. For Llama-3.1-8B that's +128 KiB per token.</p>
+<p><b>The order of operations in one GPT layer</b> (Fig 1b). Note that the paper's "Attention" means only the part between the two linear layers:</p>
+<svg viewBox="0 0 760 92" role="img" aria-label="Operation order inside one GPT Transformer layer">
+<defs><marker id="ah4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker></defs>
+<rect x="0" y="6" width="82" height="50" rx="6" fill="var(--surface2)" stroke="var(--faint)"/><text x="41.0" y="35.0" text-anchor="middle" font-size="13" fill="var(--text)">LayerNorm</text>
+<line x1="82" y1="31" x2="94" y2="31" stroke="var(--muted)" stroke-width="1.2" marker-end="url(#ah4)"/>
+<rect x="95" y="6" width="82" height="50" rx="6" fill="var(--accent-bg)" stroke="var(--accent-border)"/><text x="136.0" y="28.0" text-anchor="middle" font-size="13" fill="var(--accent)">QKV Linear</text><text x="136.0" y="44.0" text-anchor="middle" font-size="11" fill="var(--muted)">weights</text>
+<line x1="177" y1="31" x2="189" y2="31" stroke="var(--muted)" stroke-width="1.2" marker-end="url(#ah4)"/>
+<rect x="190" y="6" width="82" height="50" rx="6" fill="var(--surface)" stroke="var(--border)"/><text x="231.0" y="28.0" text-anchor="middle" font-size="13" fill="var(--text)">Attention</text><text x="231.0" y="44.0" text-anchor="middle" font-size="11" fill="var(--muted)">no weights</text>
+<line x1="272" y1="31" x2="284" y2="31" stroke="var(--muted)" stroke-width="1.2" marker-end="url(#ah4)"/>
+<rect x="285" y="6" width="82" height="50" rx="6" fill="var(--accent-bg)" stroke="var(--accent-border)"/><text x="326.0" y="28.0" text-anchor="middle" font-size="13" fill="var(--accent)">Attn Out</text><text x="326.0" y="44.0" text-anchor="middle" font-size="11" fill="var(--muted)">Linear, weights</text>
+<line x1="367" y1="31" x2="379" y2="31" stroke="var(--muted)" stroke-width="1.2" marker-end="url(#ah4)"/>
+<rect x="380" y="6" width="82" height="50" rx="6" fill="var(--surface2)" stroke="var(--faint)"/><text x="421.0" y="35.0" text-anchor="middle" font-size="13" fill="var(--text)">Add</text>
+<line x1="462" y1="31" x2="474" y2="31" stroke="var(--muted)" stroke-width="1.2" marker-end="url(#ah4)"/>
+<rect x="475" y="6" width="82" height="50" rx="6" fill="var(--surface2)" stroke="var(--faint)"/><text x="516.0" y="35.0" text-anchor="middle" font-size="13" fill="var(--text)">LayerNorm</text>
+<line x1="557" y1="31" x2="569" y2="31" stroke="var(--muted)" stroke-width="1.2" marker-end="url(#ah4)"/>
+<rect x="570" y="6" width="82" height="50" rx="6" fill="var(--accent-bg)" stroke="var(--accent-border)"/><text x="611.0" y="28.0" text-anchor="middle" font-size="13" fill="var(--accent)">MLP</text><text x="611.0" y="44.0" text-anchor="middle" font-size="11" fill="var(--muted)">Linear·GeLU·Linear</text>
+<line x1="652" y1="31" x2="664" y2="31" stroke="var(--muted)" stroke-width="1.2" marker-end="url(#ah4)"/>
+<rect x="665" y="6" width="82" height="50" rx="6" fill="var(--surface2)" stroke="var(--faint)"/><text x="706.0" y="35.0" text-anchor="middle" font-size="13" fill="var(--text)">Add</text>
+<text x="190" y="80" text-anchor="middle" font-size="12" fill="var(--muted)">reads k, v of all earlier tokens (grows every iteration)</text>
+</svg>
+<p class="cap">Green boxes multiply by weight matrices; grey ones are cheap elementwise or normalisation ops; attention alone touches per-request state. The paper's footnote: some literature includes the two linear layers in "attention"; Orca doesn't.</p>
+<p><b>Serving system and engine</b> (Fig 2). The scheduler ① builds a batch from the queue and ② hands it to the engine, which ③ runs iterations until every request in it is done and ④ returns the whole batch:</p>
+<svg viewBox="0 0 760 150" role="img" aria-label="Serving system and execution engine (Fig 2)">
+<defs><marker id="ah2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker></defs>
+<rect x="120" y="4" width="360" height="120" rx="8" fill="none" stroke="var(--border)" stroke-dasharray="5 3"/>
+<text x="130" y="20" class="sl">serving system (e.g. Triton)</text>
+<rect x="0" y="44" width="96" height="44" rx="6" fill="var(--surface)" stroke="var(--border)"/><text x="48.0" y="70.0" text-anchor="middle" font-size="13" fill="var(--text)">clients</text>
+<rect x="134" y="44" width="96" height="44" rx="6" fill="var(--surface)" stroke="var(--border)"/><text x="182.0" y="70.0" text-anchor="middle" font-size="13" fill="var(--text)">endpoint</text>
+<rect x="250" y="30" width="100" height="36" rx="6" fill="var(--surface2)" stroke="var(--faint)"/><text x="300.0" y="52.0" text-anchor="middle" font-size="13" fill="var(--text)">request queue</text>
+<rect x="250" y="76" width="100" height="36" rx="6" fill="var(--surface)" stroke="var(--border)"/><text x="300.0" y="98.0" text-anchor="middle" font-size="13" fill="var(--text)">scheduler</text>
+<rect x="540" y="30" width="220" height="82" rx="6" fill="var(--surface)" stroke="var(--border)"/><text x="650.0" y="68.0" text-anchor="middle" font-size="13" fill="var(--text)">execution engine</text><text x="650.0" y="84.0" text-anchor="middle" font-size="11" fill="var(--muted)">e.g. FasterTransformer</text>
+<line x1="96" y1="66" x2="132" y2="66" stroke="var(--muted)" stroke-width="1.3" marker-end="url(#ah2)"/>
+<line x1="230" y1="58" x2="248" y2="50" stroke="var(--muted)" stroke-width="1.3" marker-end="url(#ah2)"/>
+<line x1="300" y1="66" x2="300" y2="74" stroke="var(--muted)" stroke-width="1.3" marker-end="url(#ah2)"/>
+<line x1="350" y1="88" x2="538" y2="60" stroke="var(--muted)" stroke-width="1.3" marker-end="url(#ah2)"/>
+<text x="376" y="50" font-size="12" fill="var(--text)">① batch x1, x2  ② run it</text>
+<line x1="538" y1="100" x2="352" y2="100" stroke="var(--red)" stroke-width="1.3" marker-end="url(#ah2)"/>
+<text x="444" y="118" text-anchor="middle" font-size="12" fill="var(--red)">④ whole batch returns at once</text>
+<text x="650" y="128" text-anchor="middle" font-size="12" fill="var(--muted)">③ runs iter 1, 2, 3 … until all done</text>
+<text x="0" y="146" class="sl">x1: "I think" → "this is great"   ·   x2: "I love" → "you"   (the paper's example)</text>
+</svg>
+<p class="cap">Fig 2, redrawn. Batching matters because GPUs "prefer large input tensors", and because a batch reuses each weight "loaded from off-chip memory" across all its requests.</p>
+
+<h2>C1: early-finished and late-joining requests (§3)</h2>
+<p>The serving system and engine talk only when a batch starts and when it ends. In Fig 3, x2 finishes after 2 iterations but keeps being computed for iterations 3 and 4 ("extra computation for inactive requests"), and can't return until x1 finishes. A request that arrives mid-batch waits for the whole batch. (Training doesn't have this problem: teacher forcing processes a whole batch in one iteration.)</p>
+<div class="key"><span><i class="k-in"></i>input tokens</span><span><i class="k-tok"></i>generated token</span><span><i class="k-waste"></i>wasted slot (finished request still computed)</span><span><i class="k-wait"></i>waiting in the queue</span></div>
+<svg viewBox="0 0 760 330" role="img" aria-label="Request-level vs iteration-level timeline for three requests">
+<text x="0" y="14" font-size="13" font-weight="600" fill="var(--text)">Request-level batching (Fig 3, plus a late joiner x3)</text>
+<text x="248.0" y="34" text-anchor="middle" class="sl">iter 1</text><text x="358.0" y="34" text-anchor="middle" class="sl">iter 2</text><text x="468.0" y="34" text-anchor="middle" class="sl">iter 3</text><text x="578.0" y="34" text-anchor="middle" class="sl">iter 4</text><text x="688.0" y="34" text-anchor="middle" class="sl">iter 5</text>
+<text x="0" y="61.0" class="st">x1</text><rect x="34" y="44" width="150" height="26" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="109.0" y="61.0" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" fill="var(--text)">"I think"</text>
+<rect x="196" y="44" width="104" height="26" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/><text x="248.0" y="61.0" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" fill="var(--accent)">this</text>
+<rect x="306" y="44" width="104" height="26" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/><text x="358.0" y="61.0" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" fill="var(--accent)">is</text>
+<rect x="416" y="44" width="104" height="26" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/><text x="468.0" y="61.0" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" fill="var(--accent)">great</text>
+<rect x="526" y="44" width="104" height="26" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/><text x="578.0" y="61.0" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" fill="var(--accent)">&lt;EOS&gt;</text>
+<text x="0" y="91.0" class="st">x2</text><rect x="34" y="74" width="150" height="26" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="109.0" y="91.0" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" fill="var(--text)">"I love"</text>
+<rect x="196" y="74" width="104" height="26" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/><text x="248.0" y="91.0" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" fill="var(--accent)">you</text>
+<rect x="306" y="74" width="104" height="26" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/><text x="358.0" y="91.0" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" fill="var(--accent)">&lt;EOS&gt;</text>
+<rect x="416" y="74" width="104" height="26" rx="3" fill="var(--faint)" stroke="var(--faint)"/><text x="468.0" y="91.0" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" fill="var(--text)">–  wasted</text>
+<rect x="526" y="74" width="104" height="26" rx="3" fill="var(--faint)" stroke="var(--faint)"/><text x="578.0" y="91.0" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" fill="var(--text)">–  wasted</text>
+<text x="0" y="121.0" class="st">x3</text><rect x="34" y="104" width="150" height="26" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="109.0" y="121.0" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" fill="var(--text)">"Hello" (arrives)</text>
+<rect x="306" y="104" width="104" height="26" rx="3" fill="var(--bg)" stroke="var(--faint)" stroke-dasharray="3 2"/><text x="358.0" y="121.0" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" fill="var(--muted)">queued</text>
+<rect x="416" y="104" width="104" height="26" rx="3" fill="var(--bg)" stroke="var(--faint)" stroke-dasharray="3 2"/><text x="468.0" y="121.0" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" fill="var(--muted)">queued</text>
+<rect x="526" y="104" width="104" height="26" rx="3" fill="var(--bg)" stroke="var(--faint)" stroke-dasharray="3 2"/><text x="578.0" y="121.0" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" fill="var(--muted)">queued</text>
+<rect x="636" y="104" width="104" height="26" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/><text x="688.0" y="121.0" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" fill="var(--accent)">world</text>
+<text x="630" y="147" text-anchor="end" font-size="12" fill="var(--red)">x2 gets its answer only here, with x1; x3 starts only at iter 5</text>
+<text x="0" y="178" font-size="13" font-weight="600" fill="var(--text)">Iteration-level scheduling (S1): the batch is re-chosen before every iteration</text>
+<text x="248.0" y="198" text-anchor="middle" class="sl">iter 1</text><text x="358.0" y="198" text-anchor="middle" class="sl">iter 2</text><text x="468.0" y="198" text-anchor="middle" class="sl">iter 3</text><text x="578.0" y="198" text-anchor="middle" class="sl">iter 4</text><text x="688.0" y="198" text-anchor="middle" class="sl">iter 5</text>
+<text x="0" y="225.0" class="st">x1</text><rect x="34" y="208" width="150" height="26" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="109.0" y="225.0" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" fill="var(--text)">"I think"</text>
+<rect x="196" y="208" width="104" height="26" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/><text x="248.0" y="225.0" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" fill="var(--accent)">this</text>
+<rect x="306" y="208" width="104" height="26" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/><text x="358.0" y="225.0" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" fill="var(--accent)">is</text>
+<rect x="416" y="208" width="104" height="26" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/><text x="468.0" y="225.0" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" fill="var(--accent)">great</text>
+<rect x="526" y="208" width="104" height="26" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/><text x="578.0" y="225.0" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" fill="var(--accent)">&lt;EOS&gt;</text>
+<text x="0" y="255.0" class="st">x2</text><rect x="34" y="238" width="150" height="26" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="109.0" y="255.0" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" fill="var(--text)">"I love"</text>
+<rect x="196" y="238" width="104" height="26" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/><text x="248.0" y="255.0" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" fill="var(--accent)">you</text>
+<rect x="306" y="238" width="104" height="26" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/><text x="358.0" y="255.0" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" fill="var(--accent)">&lt;EOS&gt;</text>
+<text x="422" y="255.0" font-size="12" fill="var(--accent)">← returned after iter 2</text>
+<text x="0" y="285.0" class="st">x3</text><rect x="34" y="268" width="150" height="26" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="109.0" y="285.0" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" fill="var(--text)">"Hello" (arrives)</text>
+<rect x="306" y="268" width="104" height="26" rx="3" fill="var(--bg)" stroke="var(--faint)" stroke-dasharray="3 2"/><text x="358.0" y="285.0" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" fill="var(--muted)">queued</text>
+<rect x="416" y="268" width="104" height="26" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/><text x="468.0" y="285.0" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" fill="var(--accent)">world</text>
+<rect x="526" y="268" width="104" height="26" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/><text x="578.0" y="285.0" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" fill="var(--accent)">&lt;EOS&gt;</text>
+<text x="740" y="311" text-anchor="end" font-size="12" fill="var(--accent)">x3 takes x2's freed slot at iter 3: prefill and first token</text>
+</svg>
+<p class="cap">Top: the paper's Fig 3 (x1, x2 and their words are the paper's); we added x3, an illustrative request arriving during iteration 2. Bottom: the same requests under S1. Nothing is wasted, x2 returns 2 iterations earlier, and x3 starts 2 iterations earlier.</p>
+
+<h2>S1: iteration-level scheduling</h2>
+<p>The scheduler repeats three steps: (1) select requests to run next, (2) invoke the engine to execute <b>one</b> iteration for them, (3) receive the results. Because it hears back every iteration, it can return a finished request immediately, and a new request waits at most for the iteration in flight. The scheduler "has a full control on how many and which requests are processed in each iteration".</p>
+<svg viewBox="0 0 760 196" role="img" aria-label="Orca iteration-level scheduling loop (Fig 4)">
+<defs><marker id="ah3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker></defs>
+<rect x="0" y="70" width="90" height="44" rx="6" fill="var(--surface)" stroke="var(--border)"/><text x="45.0" y="96.0" text-anchor="middle" font-size="13" fill="var(--text)">endpoint</text>
+<rect x="120" y="4" width="290" height="186" rx="8" fill="var(--surface)" stroke="var(--border)"/>
+<text x="132" y="22" font-size="13" fill="var(--text)">request pool</text>
+<text x="132" y="53" class="st">x1</text>
+<rect x="160" y="36" width="44" height="24" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="182.0" y="52.0" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" fill="var(--text)">x11</text>
+<rect x="208" y="36" width="44" height="24" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="230.0" y="52.0" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" fill="var(--text)">x12</text>
+<rect x="256" y="36" width="44" height="24" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/><text x="278.0" y="52.0" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" fill="var(--accent)">x13</text>
+<rect x="304" y="36" width="44" height="24" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/><text x="326.0" y="52.0" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" fill="var(--accent)">x14</text>
+<text x="132" y="89" class="st">x2</text>
+<rect x="160" y="72" width="44" height="24" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="182.0" y="88.0" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" fill="var(--text)">x21</text>
+<rect x="208" y="72" width="44" height="24" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/><text x="230.0" y="88.0" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" fill="var(--accent)">x22</text>
+<text x="132" y="125" class="st">x3</text>
+<rect x="160" y="108" width="44" height="24" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="182.0" y="124.0" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" fill="var(--text)">x31</text>
+<rect x="208" y="108" width="44" height="24" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="230.0" y="124.0" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" fill="var(--text)">x32</text>
+<text x="132" y="161" class="st">x4</text>
+<rect x="160" y="144" width="44" height="24" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="182.0" y="160.0" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" fill="var(--text)">x41</text>
+<rect x="208" y="144" width="44" height="24" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="230.0" y="160.0" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" fill="var(--text)">x42</text>
+<rect x="256" y="144" width="44" height="24" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="278.0" y="160.0" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" fill="var(--text)">x43</text>
+<rect x="460" y="20" width="120" height="44" rx="6" fill="var(--surface)" stroke="var(--border)"/><text x="520.0" y="46.0" text-anchor="middle" font-size="13" fill="var(--text)">scheduler</text>
+<rect x="460" y="120" width="120" height="56" rx="6" fill="var(--surface)" stroke="var(--border)"/><text x="520.0" y="145.0" text-anchor="middle" font-size="13" fill="var(--text)">execution engine</text><text x="520.0" y="161.0" text-anchor="middle" font-size="11" fill="var(--muted)">ONE iteration</text>
+<line x1="90" y1="92" x2="118" y2="92" stroke="var(--muted)" stroke-width="1.3" marker-end="url(#ah3)"/>
+<line x1="412" y1="40" x2="458" y2="40" stroke="var(--muted)" stroke-width="1.3" marker-end="url(#ah3)"/>
+<text x="594" y="30" font-size="12" fill="var(--text)">① select x1…x4</text>
+<line x1="505" y1="64" x2="505" y2="118" stroke="var(--muted)" stroke-width="1.3" marker-end="url(#ah3)"/>
+<text x="594" y="86" font-size="12" fill="var(--text)">② run one iteration</text>
+<text x="594" y="102" font-size="11" fill="var(--muted)">+ prompts of x3, x4</text>
+<line x1="535" y1="118" x2="535" y2="66" stroke="var(--accent)" stroke-width="1.3" marker-end="url(#ah3)"/>
+<text x="594" y="140" font-size="12" fill="var(--accent)">③ x15, x23, x33, x44</text>
+<text x="594" y="156" font-size="12" fill="var(--accent)">④ finished → response</text>
+<line x1="458" y1="52" x2="412" y2="52" stroke="var(--accent)" stroke-width="1.3" marker-end="url(#ah3)"/>
+</svg>
+<p class="cap">Fig 4, redrawn with the paper's tokens: x<sub>ij</sub> is token j of request i. Grey tokens came from the client, green ones were generated. x1 has run 2 iterations; x3 and x4 haven't started, so the scheduler hands the engine their prompts. One iteration returns exactly one new token per request. Which requests to pick (FCFS, a max batch size, KV memory reservation) is Algorithm 1 on <a href="orca-system.html">Orca II</a>.</p>
+
+<h2>Why it matters on an H100: the batch must stay full</h2>
+<p>From <a href="../perf-2-scaling-book-inference/step-time.html">the step-time card</a>: one decode step reads every weight once, however many requests share it, plus each request's own KV cache.</p>
+<div class="mathbox">
+<math display="block">
+  <msub><mi>t</mi><mtext>step</mtext></msub><mo>&#8776;</mo>
+  <munder class="t3"><mfrac><mrow><mi>B</mi><mo>&#183;</mo><mi>S</mi><mo>&#183;</mo><msub><mi>kv</mi><mtext>tok</mtext></msub></mrow><mtext>BW</mtext></mfrac><mtext class="lab">each request's KV read</mtext></munder>
+  <mo>+</mo><mi>max</mi>
+  <mo stretchy="true" form="prefix" minsize="2.4em">(</mo>
+  <munder class="t1"><mfrac><mrow><mn>2</mn><mo>&#183;</mo><mi>B</mi><mo>&#183;</mo><mi>N</mi></mrow><mi>C</mi></mfrac><mtext class="lab">math</mtext></munder>
+  <mo>,</mo>
+  <munder class="t2"><mfrac><mi>W</mi><mtext>BW</mtext></mfrac><mtext class="lab">weight read, shared by all B</mtext></munder>
+  <mo stretchy="true" form="postfix" minsize="2.4em">)</mo>
+</math>
+<div class="legend">
+  <span class="sym">B</span><span>requests in the iteration (batch size)</span><span class="v">1 … 64 here</span>
+  <span class="sym">S</span><span>context length per request (fixed here)</span><span class="v">2,048 tokens</span>
+  <span class="sym">kv<sub>tok</sub></span><span>KV cache bytes per token</span><span class="v">131,072 B</span>
+  <span class="sym">N, W</span><span>parameters and their bytes</span><span class="v">8.03e9 · 16.06 GB</span>
+  <span class="sym">C, BW</span><span>H100 BF16 FLOP/s and HBM bandwidth</span><span class="v">989e12 · 3.35e12 B/s</span>
+</div>
+</div>
+<div class="formula">KV per request   2,048 × 131,072 B = 268.4 MB      weights 16.06e9 ÷ 3.35e12 = 4.79 ms
+B = 1:   0.08 ms KV + max(0.02 ms math, 4.79 ms)  = 4.87 ms →   205 tok/s
+B = 64:  5.13 ms KV + max(1.04 ms math, 4.79 ms)  = 9.92 ms → 6,450 tok/s
+64× the tokens for 2.0× the time. At B = 1, 16.06 GB of weights buy ONE token.</div>
+<p>So every slot left empty, or spent on a request that's already finished, throws away most of a token's worth of the weight read. Request-level batching does both: slots go idle as requests finish, and new work can't fill them.</p>
+
+<h2>Worked example: static vs iteration-level on one H100</h2>
+<p>Our simulation (<a href="https://github.com/seyonv/explainers/blob/main/perf-5-engines/labs/continuous-batching.py">labs/continuous-batching.py</a>): 3,000 synthetic requests, Poisson arrivals, every prompt 512 tokens, outputs uniform on 1–1,024 tokens (mean 513), max batch B = 64 for both schedulers, iteration times from the formula above with every slot charged a 2,048-token context. Static = FasterTransformer-style: take up to 64 waiting requests, run until the longest finishes. Iteration-level = Orca: fill free slots before every iteration; a new request's prefill rides in the same iteration (that needs S2, below).</p>
+<div class="tw"><table>
+<tr><th>Load</th><th>Scheduler</th><th class="num">Mean TTFT</th><th class="num">P99 TTFT</th><th class="num">Answer returned, mean / P99</th><th class="num">Total tok/s</th><th class="num">Decode slots wasted</th></tr>
+<tr><td rowspan="2">5 req/s<br><span class="mono">2,565 tok/s offered</span></td><td class="nw">request-level</td><td class="num lo">4,654 ms</td><td class="num lo">9,357 ms</td><td class="num">12.78 / 18.02 s</td><td class="num">2,484</td><td class="num lo">48.6%</td></tr>
+<tr><td class="nw">iteration-level</td><td class="num hi">13 ms</td><td class="num hi">23 ms</td><td class="num">3.22 / 6.51 s</td><td class="num">2,511</td><td class="num hi">0%</td></tr>
+<tr><td rowspan="2">8 req/s<br><span class="mono">4,104 tok/s offered</span></td><td class="nw">request-level</td><td class="num lo">57,518 ms</td><td class="num lo">113,084 ms</td><td class="num">67.44 / 123.03 s</td><td class="num lo">3,071</td><td class="num lo">49.0%</td></tr>
+<tr><td class="nw">iteration-level</td><td class="num hi">16 ms</td><td class="num hi">27 ms</td><td class="num">3.87 / 7.93 s</td><td class="num hi">3,987</td><td class="num hi">0%</td></tr>
+</table></div>
+<p class="cap">Our simulation at ideal peaks (floors, not measurements); request lengths are synthetic, seed 0. TTFT for request-level assumes the first token could be streamed after the prefill iteration; in the Fig 2 world nothing reaches the client until "answer returned". At 5 req/s both schedulers keep up, so total tok/s is just the offered load. At 8 req/s request-level can't (it tops out near 3,120 tok/s, below), so its queue grows for the whole run and its TTFT depends on how long we run it.</p>
+<p><b>Peak throughput</b>, all 3,000 requests waiting at t = 0 (same lab):</p>
+<div class="bars">
+  <span>request-level, B = 64</span><div class="bar g" style="width:51.8%"></div><span class="v">3,120 tok/s</span>
+  <span>iteration-level, B = 64</span><div class="bar" style="width:100%"></div><span class="v hi">6,020 tok/s</span>
+</div>
+<div class="formula">request-level:   49.1% of decode slots compute requests that already hit &lt;EOS&gt;;
+                 a batch runs to its longest output (≈ 1,000 tokens), the mean is 513
+iteration-level: 6,020 ÷ 3,120 = 1.93× the tok/s, same GPU, same B = 64</div>
+<p class="cap">Why about 2×: with outputs uniform on 1–1,024, a batch lives as long as its longest request, about twice the mean, so about half of its slot-iterations are wasted (our explanation of our simulation). Longer-tailed real traffic wastes more.</p>
+
+<h2>C2: batching an arbitrary set of requests</h2>
+<p>Iteration-level scheduling creates a new problem. To batch, every request must run "identical operations, each consuming identically-shaped input tensors". The scheduler now picks requests at different points in their life, and for a pair of requests there are three cases where the next iteration can't be batched:</p>
+<table class="parts">
+<tr><th>Case (§3, C2)</th><th class="what">Why the shapes differ</th><th>Example A: Fig 4</th><th>Example B: our H100 simulation (illustrative moment)</th></tr>
+<tr><td>Both initiation, different input lengths</td><td class="what">The "length" dimension of the input tensor differs.</td><td class="ex"><b>x3 (2 tokens) and x4 (3 tokens)</b><span>[2, H] vs [3, H]</span></td><td class="ex"><b>a 512-token and a 90-token prompt</b><span>real prompts vary; ours are all 512 only to keep static batching padding-free</span></td></tr>
+<tr><td>Both increment, different token index</td><td class="what">Each attends to a different number of cached keys and values.</td><td class="ex"><b>x1 (index 4) and x2 (index 2)</b><span>K/V of 3 vs 1 earlier tokens</span></td><td class="ex"><b>token 7 and token 900</b><span>K/V of 518 vs 1,411 tokens (512-token prompts)</span></td></tr>
+<tr><td>Different phases</td><td class="what">Initiation takes all input tokens at once; increment takes one.</td><td class="ex"><b>x1 (increment) and x3 (initiation)</b><span>1 token vs 2</span></td><td class="ex"><b>63 decodes + 1 new prompt</b><span>happens every time a slot frees up</span></td></tr>
+</table>
+<p>Batching then needs requests in the same phase with the same length or index. The paper: "The likelihood further decreases exponentially as the batch size increases", so an engine without a fix would be stuck at tiny batches, exactly where the step-time formula says the H100 is wasted.</p>
+
+<h2>S2: selective batching</h2>
+<p>Most operations don't care which request a token belongs to. Instead of a [B, L, H] tensor (batch × tokens × hidden), selective batching flattens every token in the iteration into one 2-D tensor of shape <b>[ΣL, H]</b> and runs Linear, LayerNorm, Add and GeLU on it directly. Only attention needs the notion of a request, so the batch is <b>split</b> just before attention, each request runs its own attention, and the outputs are <b>merged</b> back to [ΣL, H]. Requests in the increment phase fetch their earlier keys and values from the <b>Attention K/V manager</b>, which keeps them per request until the scheduler says the request is finished.</p>
+<div class="key"><span><i class="k-bat"></i>batched over all 7 tokens (weights read once)</span><span><i class="k-req"></i>per request</span><span><i class="k-in"></i>prompt tokens (initiation)</span><span><i class="k-tok"></i>last generated token (increment)</span></div>
+<svg viewBox="0 0 760 300" role="img" aria-label="Selective batching of 7 tokens from 4 requests (Fig 5)">
+<defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker></defs>
+<text x="0" y="14" class="sl">layer input [7, H]</text>
+<rect x="0" y="24" width="64" height="24" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/><text x="32.0" y="40.0" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" fill="var(--accent)">x14</text>
+<rect x="0" y="54" width="64" height="24" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/><text x="32.0" y="70.0" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" fill="var(--accent)">x22</text>
+<rect x="0" y="84" width="64" height="24" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="32.0" y="100.0" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" fill="var(--text)">x31</text>
+<rect x="0" y="114" width="64" height="24" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="32.0" y="130.0" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" fill="var(--text)">x32</text>
+<rect x="0" y="144" width="64" height="24" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="32.0" y="160.0" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" fill="var(--text)">x41</text>
+<rect x="0" y="174" width="64" height="24" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="32.0" y="190.0" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" fill="var(--text)">x42</text>
+<rect x="0" y="204" width="64" height="24" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="32.0" y="220.0" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" fill="var(--text)">x43</text>
+<rect x="96" y="88" width="104" height="72" rx="6" fill="var(--accent-bg)" stroke="var(--accent-border)"/><text x="148.0" y="121.0" text-anchor="middle" font-size="13" fill="var(--accent)">QKV Linear</text><text x="148.0" y="137.0" text-anchor="middle" font-size="11" fill="var(--muted)">batched</text>
+<line x1="68" y1="124" x2="94" y2="124" stroke="var(--muted)" stroke-width="1.3" marker-end="url(#ah)"/>
+<line x1="200" y1="124" x2="238" y2="124" stroke="var(--muted)" stroke-width="1.3" marker-end="url(#ah)"/><text x="219" y="116" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="11" fill="var(--muted)">[7, 3H]</text>
+<rect x="240" y="30" width="16" height="190" rx="3" fill="var(--surface2)" stroke="var(--faint)"/>
+<text x="248" y="236" text-anchor="middle" class="sl">Split</text>
+<line x1="256" y1="50" x2="318" y2="50" stroke="var(--muted)" stroke-width="1.3" marker-end="url(#ah)"/><text x="287" y="44" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="11" fill="var(--muted)">[1, 3H]</text>
+<rect x="320" y="30" width="110" height="40" rx="6" fill="var(--surface)" stroke="var(--border)"/><text x="375.0" y="47.0" text-anchor="middle" font-size="13" fill="var(--text)">Attn x1</text><text x="375.0" y="63.0" text-anchor="middle" font-size="11" fill="var(--muted)">+ cached K/V of 3</text>
+<line x1="430" y1="50" x2="488" y2="50" stroke="var(--muted)" stroke-width="1.3" marker-end="url(#ah)"/><text x="459" y="44" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="11" fill="var(--muted)">[1, H]</text>
+<line x1="256" y1="100" x2="318" y2="100" stroke="var(--muted)" stroke-width="1.3" marker-end="url(#ah)"/><text x="287" y="94" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="11" fill="var(--muted)">[1, 3H]</text>
+<rect x="320" y="80" width="110" height="40" rx="6" fill="var(--surface)" stroke="var(--border)"/><text x="375.0" y="97.0" text-anchor="middle" font-size="13" fill="var(--text)">Attn x2</text><text x="375.0" y="113.0" text-anchor="middle" font-size="11" fill="var(--muted)">+ cached K/V of 1</text>
+<line x1="430" y1="100" x2="488" y2="100" stroke="var(--muted)" stroke-width="1.3" marker-end="url(#ah)"/><text x="459" y="94" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="11" fill="var(--muted)">[1, H]</text>
+<line x1="256" y1="150" x2="318" y2="150" stroke="var(--muted)" stroke-width="1.3" marker-end="url(#ah)"/><text x="287" y="144" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="11" fill="var(--muted)">[2, 3H]</text>
+<rect x="320" y="130" width="110" height="40" rx="6" fill="var(--surface)" stroke="var(--border)"/><text x="375.0" y="147.0" text-anchor="middle" font-size="13" fill="var(--text)">Attn x3</text><text x="375.0" y="163.0" text-anchor="middle" font-size="11" fill="var(--muted)">no cache yet</text>
+<line x1="430" y1="150" x2="488" y2="150" stroke="var(--muted)" stroke-width="1.3" marker-end="url(#ah)"/><text x="459" y="144" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="11" fill="var(--muted)">[2, H]</text>
+<line x1="256" y1="200" x2="318" y2="200" stroke="var(--muted)" stroke-width="1.3" marker-end="url(#ah)"/><text x="287" y="194" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="11" fill="var(--muted)">[3, 3H]</text>
+<rect x="320" y="180" width="110" height="40" rx="6" fill="var(--surface)" stroke="var(--border)"/><text x="375.0" y="197.0" text-anchor="middle" font-size="13" fill="var(--text)">Attn x4</text><text x="375.0" y="213.0" text-anchor="middle" font-size="11" fill="var(--muted)">no cache yet</text>
+<line x1="430" y1="200" x2="488" y2="200" stroke="var(--muted)" stroke-width="1.3" marker-end="url(#ah)"/><text x="459" y="194" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="11" fill="var(--muted)">[3, H]</text>
+<rect x="490" y="30" width="16" height="190" rx="3" fill="var(--surface2)" stroke="var(--faint)"/>
+<text x="498" y="236" text-anchor="middle" class="sl">Merge</text>
+<line x1="506" y1="124" x2="552" y2="124" stroke="var(--muted)" stroke-width="1.3" marker-end="url(#ah)"/><text x="529" y="116" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="11" fill="var(--muted)">[7, H]</text>
+<rect x="554" y="88" width="116" height="72" rx="6" fill="var(--accent-bg)" stroke="var(--accent-border)"/><text x="612.0" y="121.0" text-anchor="middle" font-size="13" fill="var(--accent)">Attn Out Linear</text><text x="612.0" y="137.0" text-anchor="middle" font-size="11" fill="var(--muted)">batched</text>
+<line x1="670" y1="124" x2="716" y2="124" stroke="var(--muted)" stroke-width="1.3" marker-end="url(#ah)"/><text x="693" y="116" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="11" fill="var(--muted)">[7, H]</text>
+<text x="720" y="128" font-size="12" fill="var(--muted)">MLP…</text>
+<rect x="282" y="252" width="186" height="42" rx="6" fill="var(--surface2)" stroke="var(--faint)"/><text x="375.0" y="270.0" text-anchor="middle" font-size="13" fill="var(--text)">Attention K/V manager</text><text x="375.0" y="286.0" text-anchor="middle" font-size="11" fill="var(--muted)">x1: (x11, x12, x13) · x2: (x21)</text>
+<line x1="375" y1="250" x2="375" y2="222" stroke="var(--muted)" stroke-width="1.1" stroke-dasharray="4 3" marker-start="url(#ah)" marker-end="url(#ah)"/>
+<text x="367" y="241" text-anchor="end" font-size="11" fill="var(--muted)">per-request K, V in and out</text>
+</svg>
+<p class="cap">Fig 5, redrawn from its labels: x1 and x2 are decoding (x14, x22), x3 and x4 are prefilling, 1 + 1 + 2 + 3 = 7 tokens. For GPT-3, QKV Linear's output is [7, 3H]. For Llama-3.1-8B with GQA it would be [7, 6,144]: 32 query heads + 2 × 8 KV heads, × 128 (our arithmetic).</p>
+<p>Why is leaving attention unbatched acceptable? The paper's answer (§1):</p>
+<blockquote>"Since the Attention operation is not associated with any model parameters, applying batching to Attention has no benefit of reducing the amount of GPU memory reads by reusing the loaded parameters across multiple requests."</blockquote>
+<div class="formula">Llama-3.1-8B, B = 64, 2,048-token contexts (our arithmetic):
+weights  16.06 GB, read once, shared by all 64     → batching saves 63 × 16.06 GB
+KV       64 × 2,048 × 131,072 B = 17.18 GB,
+         each request reads only its own           → batching attention saves nothing</div>
+<p><b>Our framing, not the paper's:</b> modern engines do batch attention too, for other reasons (launch overhead and GPU occupancy with many small requests). They keep the flat [ΣL, H] layout and run one attention kernel over the whole ragged batch, reading each request's KV through a <a href="../perf-4-attention-kv/paged-memory.html">block table</a>. FlashInfer stores queries and outputs "as ragged tensors … without padding, which facilitates the compact packing of queries and outputs from diverse requests into a single tensor" (see <a href="../perf-4-attention-kv/flashattention-3-4-flashinfer.html">FlashAttention-3, -4 and FlashInfer</a>). Split-then-merge became one varlen kernel; the flat token batch is Orca's.</p>
+
+<h2>Why it beats the alternatives</h2>
+<div class="grid2">
+  <div class="cell"><h3><span class="x">&#10007;</span> Request-level batching</h3><p>FasterTransformer behind Triton: the batch is fixed until its longest request ends. In our run 49% of decode slots compute finished requests, peak throughput is 3,120 tok/s, and mean TTFT is 4.7 s at a load iteration-level serves in 13 ms.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Padding to the max length</h3><p>Make shapes equal by padding every request to the longest prompt, or treating finished rows as padding. This batches, but pad tokens cost real FLOPs and KV slots, and it's still one batch at a time: nobody joins or leaves.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Iteration-level without selective batching</h3><p>S1 alone. The scheduler may only batch requests in the same phase with the same length or token index, which gets exponentially less likely as the batch grows, so a new prompt can't join 63 decodes. Batches stay tiny, where an H100 makes 205 tok/s.</p></div>
+  <div class="cell win"><h3><span class="ok">&#10003;</span> Iteration-level + selective batching</h3><p>Re-pick the batch every iteration and flatten all tokens to [ΣL, H], splitting only for attention. Any mix of prefills and decodes runs together, so slots refill as soon as they free: 0% waste, 1.93× peak throughput, TTFT ≈ one iteration.</p></div>
+</div>
+
+<h2>Is "continuous batching" the same as Orca's iteration-level scheduling?</h2>
+<div class="note">
+  <p><b>Yes, in spirit.</b> "Continuous batching" and "in-flight batching" are the industry's names; the paper never uses either. The FlashInfer paper (§5.4) says "Orca … introduces continuous batching". Kiely's <i>Inference Engineering</i> (pp. 186–187) defines it as "swapping in requests as slots become available", with requests "batched at the token level", and says vLLM, SGLang and TensorRT-LLM ("in-flight batching") implement it. The vLLM V1 blog calls vLLM "a full-fledged continuous batching engine". What those engines run differs from 2022 Orca in details: paged KV instead of Orca's per-request slot reservation, attention batched as above, and chunked prefill (next point).</p>
+  <p><b>It isn't free, and not always the best choice.</b> Putting a whole prompt into the same iteration as 63 decodes makes that iteration long: every decoding user waits for it. That "generation stall" is what <a href="sarathi-stalls.html">Sarathi-Serve</a> fixes by chunking prefills. For offline jobs where every request has the same, known length (say, scoring a fixed set of equal-length prompts), static batching wastes nothing and is simpler. And iteration-level scheduling doesn't decide <i>which</i> requests fit: KV memory does, which is the job of the <a href="scheduler.html">scheduler</a> and <a href="../perf-4-attention-kv/paged-memory.html">paged memory</a>.</p>
+</div>
+
+<h2>Run it yourself</h2>
+<div class="labbox">
+  <p><a href="https://github.com/seyonv/explainers/blob/main/perf-5-engines/labs/continuous-batching.py">Run it: labs/continuous-batching.py</a> <b>[L]</b> runs on your Mac in about a second with numpy. It prints the step-time table (B = 1 … 238), both loads in the table above, the saturated 3,120 vs 6,020 tok/s, and the Fig 5 split for 7 tokens. Try <code>RATES = (6.0,)</code> (request-level's limit is about 6.1 req/s), <code>OUT_MAX = 128</code> (Orca's own output range, less waste) or <code>B_MAX = 8</code>.</p>
+</div>
+
+<div class="foot">
+<p><b>Read next:</b> Yu et al., <a href="https://www.usenix.org/conference/osdi22/presentation/yu">"Orca: A Distributed Serving System for Transformer-Based Generative Models" (OSDI '22)</a>: §1–3 in full, including Figs 1–5, ~45 min.</p>
+<p><b>Related:</b> <a href="orca-system.html">Orca II: the distributed engine and its results</a> · <a href="sarathi-stalls.html">Sarathi-Serve I: why prefill stalls decode</a> · <a href="scheduler.html">The scheduler: KV budget, admission and preemption</a> · <a href="../perf-2-scaling-book-inference/inference-engine-design.html">Designing an inference engine</a> · <a href="../perf-2-scaling-book-inference/step-time.html">Step time</a> · <a href="../perf-4-attention-kv/paged-memory.html">PagedAttention I</a> · <a href="../perf-4-attention-kv/flashattention-3-4-flashinfer.html">FlashAttention-3, -4 and FlashInfer</a> · <a href="../llm-latency/ttft.html">Time to first token</a></p>
+<p><b>Sources:</b> every Orca quote, figure and example (Figs 1–5, the three C2 cases, the attention quote, the K/V manager) is from the OSDI '22 paper, §1–3 (<a href="https://www.usenix.org/system/files/osdi22-yu.pdf">PDF</a>). "Continuous batching" attribution: FlashInfer, Ye et al., MLSys 2025, §3.1 (ragged tensors) and §5.4 (<a href="https://arxiv.org/abs/2501.01005">arXiv 2501.01005</a>); P. Kiely, <i>Inference Engineering</i> (Baseten Books, 2026), pp. 186–187; <a href="https://vllm.ai/blog/2025-01-27-v1-alpha-release">vLLM V1 alpha blog</a> (Jan 2025). Llama-3.1-8B shapes, 16.06 GB, 128 KiB/token, 989 TFLOPS, 3.35 TB/s and the step formula are the course facts. Everything else (the timeline's x3, all H100 timings, TTFTs, tok/s, 48.6–49.1% waste and 1.93×) is our recomputation from labs/continuous-batching.py with synthetic requests.</p>
+</div>
+</article>
+<!-- series-nav:bottom -->
+<div class="snx"><a class="nx" href="index.html#orca-system" target="_top">
+<span class="mini" aria-hidden="true"><span class="m1">Orca II: the distributed engine and its results</span><span class="m2">Also called the engine master and workers, control plane vs data plane, KV slot reservation, or max_tokens. Card 2 of 2 on Orca (Yu et al., OSDI '22): §4–8 in order, meaning how the engine is spread…</span><span class="m3">In one breath</span><span class="m4">Orca splits a big model over GPUs, sends the "what to run next" messages on a CPU channel (gRPC) and the tensors on a GPU channel (NCCL), and schedules one iteration at a time, first come first served. Each new request reserves KV memory for its longest possible length, so a request can never get stuck halfway. Kernel for…</span></span>
+<span class="tx"><span class="lab">Next up · 03 / 15</span><span class="tt">Orca II: the distributed engine and its results</span><span class="ds">Control plane vs data plane, KV reservation, 36.9×</span><span class="nd">Builds directly on this card.</span><span class="go">Continue →</span></span></a><div class="aux"><span><a href="index.html#_overview" target="_top">← The throughput–latency frontier</a></span><a href="index.html" target="_top">All cards in 5 · Inside inference engines</a></div></div>
+<!-- /series-nav:bottom -->
+</body>
+</html>

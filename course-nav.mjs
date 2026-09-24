@@ -2,14 +2,15 @@
 // Adds navigation to every course folder (any folder whose index.html has a GROUPS list):
 // - every card: breadcrumbs + prev/next at the top, a big "next up" preview at the bottom
 // - every course index: a contents sidebar in the reader
-// The perf-* courses form one series (perf-series.json), which adds a course strip, cross-course
-// next-up and "before this" prerequisites. Every other course is navigated on its own.
+// Each <prefix>-series.json (perf-series.json, cs-series.json, …) makes its courses one series, which adds a
+// course strip, cross-course next-up and "before this" prerequisites. Every other course is navigated on its own.
 // Card order comes from each course's index.html GROUPS. Re-run after adding or reordering cards; it is idempotent.
 import { readFileSync, writeFileSync, existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
 const root = new URL(".", import.meta.url).pathname;
-const series = JSON.parse(readFileSync(join(root, "perf-series.json"), "utf8"));
+const allSeries = readdirSync(root).filter((f) => f.endsWith("-series.json")).sort().reverse()
+  .map((f) => ({ prefix: f.replace(/-series\.json$/, ""), ...JSON.parse(readFileSync(join(root, f), "utf8")) }));
 const esc = (s) => s.replace(/&(?!amp;|lt;|gt;|quot;|#)/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 const strip = (s) => s.replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim();
 const clip = (s, n) => (s.length > n ? s.slice(0, s.lastIndexOf(" ", n)) + "…" : s);
@@ -27,19 +28,19 @@ function loadCourse(slug) {
   return { cards: groups.flatMap((g) => g[2].map(([file, title, desc]) => ({ file, title, desc: desc || "" }))), title: strip(html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/)?.[1] || slug) };
 }
 
-// A track is a run of courses whose cards page into each other: the perf series, or one standalone course.
-const seriesSlugs = new Set(series.courses.map((c) => c.slug));
-const seriesCourses = series.courses.map((c) => {
+// A track is a run of courses whose cards page into each other: one series, or one standalone course.
+const seriesSlugs = new Set(allSeries.flatMap((s) => s.courses.map((c) => c.slug)));
+const seriesTracks = allSeries.map((series) => ({ series, title: series.title, home: `../${series.map}/index.html`, courses: series.courses.map((c) => {
   const got = loadCourse(c.slug);
   return got ? { ...c, ...got, label: `${c.n} · ${c.short}`, built: true } : { ...c, label: `${c.n} · ${c.short}`, built: false, cards: [] };
-});
+}) }));
 const standalone = readdirSync(root, { withFileTypes: true })
   .filter((e) => e.isDirectory() && !e.name.startsWith(".") && !seriesSlugs.has(e.name))
   .map((e) => { const got = loadCourse(e.name); return got && got.cards.length ? { slug: e.name, ...got, label: got.title, built: true } : null; })
   .filter(Boolean);
 const tracks = [
-  { series: true, title: series.title, home: `../${series.map}/index.html`, courses: seriesCourses },
-  ...standalone.map((c) => ({ series: false, title: "All explainers", home: "../index.html", courses: [c] })),
+  ...seriesTracks,
+  ...standalone.map((c) => ({ series: null, title: "All explainers", home: "../index.html", courses: [c] })),
 ];
 for (const t of tracks) {
   t.built = t.courses.filter((c) => c.built);
@@ -64,7 +65,7 @@ function preview(card) {
 }
 
 function depsOf(card) {
-  const list = (card.course.track.series && series.deps[`${card.course.slug}/${card.file}`]) || [];
+  const list = card.course.track.series?.deps?.[`${card.course.slug}/${card.file}`] || [];
   return list.map((d) => {
     const m = d.match(/^\.\.\/([^/]+)\/(.+)$/);
     return m ? find(m[1], m[2]) : find(card.course.slug, d);
@@ -102,13 +103,13 @@ const CARD_CSS = `/* series-nav */
 /* /series-nav */`;
 
 function topBlock(card, pos) {
-  const c = card.course, t = c.track, flat = t.flat;
+  const c = card.course, t = c.track, flat = t.flat, px = t.series?.prefix;
   const deps = depsOf(card);
   let dep;
   if (!t.series) dep = "";
-  else if (card.file === "_overview.html") dep = `<span class="ok">Overview.</span> Read it first as the map, or last as a recap.${c.needs.length ? ` This course needs ${c.needs.map((n) => `perf-${n}`).join(" and ")}.` : ""}`;
+  else if (card.file === "_overview.html") dep = `<span class="ok">Overview.</span> Read it first as the map, or last as a recap.${c.needs.length ? ` This course needs ${c.needs.map((n) => `${px}-${n}`).join(" and ")}.` : ""}`;
   else if (!deps.length) dep = `<span class="ok">Stands alone.</span> You can jump in here without reading earlier cards.`;
-  else dep = `<b>Before this:</b> ${deps.map((d) => `<a href="${href(card, d)}" target="_top">${esc(d.title)}</a>${d.course.slug !== c.slug ? ` (perf-${d.course.n})` : ""}`).join(" · ")}`;
+  else dep = `<b>Before this:</b> ${deps.map((d) => `<a href="${href(card, d)}" target="_top">${esc(d.title)}</a>${d.course.slug !== c.slug ? ` (${px}-${d.course.n})` : ""}`).join(" · ")}`;
   const prev = pos > 0 ? flat[pos - 1] : null, next = flat[pos + 1];
   const step = [prev && `<a href="${href(card, prev)}" target="_top">← prev</a>`, next && `<a href="${href(card, next)}" target="_top">next →</a>`].filter(Boolean).join(" · ");
   return `<!-- series-nav:top -->
@@ -135,7 +136,7 @@ function bottomBlock(card, pos) {
 <span class="tx"><span class="lab">End of the course</span><span class="tt">Back to all explainers</span><span class="ds">Every course and card on one page.</span><span class="go">Open all explainers →</span></span></a>`;
   } else {
     const soon = t.courses.find((c) => !c.built);
-    box = `<a class="nx" href="../${series.map}/index.html" target="_top"><span class="mini" aria-hidden="true"><span class="m1">You've reached the end of the published courses</span></span>
+    box = `<a class="nx" href="${t.home}" target="_top"><span class="mini" aria-hidden="true"><span class="m1">You've reached the end of the published courses</span></span>
 <span class="tx"><span class="lab">End of the series so far</span><span class="tt">Back to the map</span><span class="ds">${soon ? `Next to be built: ${esc(courseLabel(soon))}.` : ""}</span><span class="go">Open the map →</span></span></a>`;
   }
   const aux = `<div class="aux"><span>${prev ? `<a href="${href(card, prev)}" target="_top">← ${esc(prev.title)}</a>` : ""}</span><a href="index.html" target="_top">All cards in ${esc(courseLabel(card.course))}</a></div>`;
@@ -196,7 +197,7 @@ function patchIndex(c) {
     html = html.replace(/<iframe id="rframe" title="Card"><\/iframe>/, `<div class="rbody"><aside class="side" id="side" aria-label="Contents"></aside><iframe id="rframe" title="Card"></iframe></div>`);
     html = html.replace(/(<span class="t" id="rtitle">)/, `<button id="tog" aria-label="Toggle contents">☰</button>\n    $1`);
   }
-  const others = t.series ? t.courses : [{ slug: series.map, label: series.title, built: true }, ...standalone];
+  const others = t.series ? t.courses : [...allSeries.map((s) => ({ slug: s.map, label: s.title, built: true })), ...standalone];
   const data = JSON.stringify(others.map((x) => ({ slug: x.slug, label: courseLabel(x), built: x.built }))).replace(/</g, "\\u003c");
   const js = `// series-nav
 const SERIES = ${data}, HERE = ${JSON.stringify(c.slug)};

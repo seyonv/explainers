@@ -1,0 +1,302 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The scheduler: KV budget, admission and preemption</title>
+<style>
+:root{
+  --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
+  --text:#1c1f23; --muted:#6b7068; --faint:#b9b9b3;
+  --accent:#4a9d77; --accent-bg:#dcefdf; --accent-border:#8cc79c;
+  --red:#c0492b; --red-bg:#fbeceb;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#15171a; --surface:#1d2024; --surface2:#24282d; --border:#32373d;
+    --text:#e6e8ea; --muted:#9aa1a9; --faint:#4a5057;
+    --accent:#5fb37f; --accent-bg:#1c2b22; --accent-border:#3f7a55;
+    --red:#e57368; --red-bg:#2e1f1e;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text)}
+.card{max-width:820px;margin:0 auto;padding:28px 32px;font-family:-apple-system,"Inter",system-ui,sans-serif;line-height:1.45}
+h1{font-size:26px;font-weight:600;margin:0 0 6px;letter-spacing:-0.01em}
+.sub{font-size:15px;color:var(--muted);margin:0 0 20px}
+h2{font-size:17px;font-weight:600;margin:26px 0 10px}
+h3.s{font-size:15px;font-weight:600;margin:16px 0 6px}
+p{font-size:15px;margin:0 0 10px}
+ul,ol{font-size:15px;margin:0 0 10px;padding-left:20px} li{margin-bottom:4px}
+.cap{font-size:13px;color:var(--muted);margin:8px 0 14px;text-align:center}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+
+/* Tables and formulas */
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border)}
+th{font-size:12px;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:none}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+.hi{color:var(--accent);font-weight:600} .lo{color:var(--red)}
+.formula{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin:10px 0;white-space:pre;overflow-x:auto;line-height:1.55}
+.tw{overflow-x:auto}
+
+/* MathML */
+.mathbox{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px 16px 12px;margin:10px 0;overflow-x:auto}
+.mathbox math{font-size:21px;color:var(--text);font-family:"STIX Two Math","Latin Modern Math","Cambria Math",math}
+.mathbox .t1{color:var(--text)} .mathbox .t2{color:var(--accent)} .mathbox .t3{color:var(--muted)}
+.mathbox .lab{font-size:12px;font-family:-apple-system,"Inter",system-ui,sans-serif;padding-top:3px;border-top:1.5px solid currentColor;margin-top:2px}
+.legend{display:grid;grid-template-columns:auto 1fr auto;column-gap:14px;row-gap:5px;font-size:13px;margin-top:12px;align-items:baseline}
+.legend .sym{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;text-align:right}
+.legend .v{color:var(--muted);text-align:right;font-variant-numeric:tabular-nums}
+
+/* Two examples per term */
+.parts td{vertical-align:top} .parts td:first-child{font-weight:600}
+.parts .ex{font-size:13px} .parts .ex span{display:block;color:var(--muted)}
+
+/* 2x2 grid */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.cell{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.cell.win{background:var(--accent-bg);border-color:var(--accent-border)}
+.cell h3{font-size:16px;font-weight:600;margin:0 0 5px;display:flex;gap:8px;align-items:baseline}
+.cell p{font-size:14px;margin:0;color:var(--text)}
+.cell.win h3,.cell.win p{color:var(--accent)}
+.x{color:var(--red)} .ok{color:var(--accent)}
+
+/* Clarification box */
+.note{border:1px solid var(--border);border-radius:10px;padding:14px 18px;font-size:14px}
+.note p{font-size:14px} .note p:last-child{margin-bottom:0}
+.ours{border-left:3px solid var(--accent-border);padding:2px 0 2px 14px;margin:10px 0}
+
+.foot{margin-top:22px;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+.foot p{font-size:13px;margin:0 0 6px}
+svg{display:block;max-width:100%;height:auto;margin:6px 0}
+.sl{font-size:12px;fill:var(--muted)} .st{font-size:13px;fill:var(--text)}
+a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+@media (max-width:560px){
+  .card{padding:22px 16px}
+  .grid2{grid-template-columns:1fr}
+  .legend{grid-template-columns:auto 1fr}.legend .v{display:none}
+  .parts .what{display:none}
+  th,td{padding:6px 6px}
+}
+/* series-nav */
+.sn{max-width:820px;margin:0 auto;padding:16px 32px 0;font-family:-apple-system,"Inter",system-ui,sans-serif;font-size:13px;line-height:1.5;color:var(--muted)}
+.sn a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
+.sn .crumbs{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 7px}
+.sn .crumbs b{color:var(--text);font-weight:600}
+.sn .sep{color:var(--faint,var(--border))}
+.sn .step{margin-left:auto;white-space:nowrap}
+.sn .dep{margin-top:5px;padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface)}
+.sn .dep .ok{color:var(--accent);font-weight:600}
+.snx{max-width:820px;margin:0 auto;padding:6px 32px 44px;font-family:-apple-system,"Inter",system-ui,sans-serif}
+.snx .nx{display:grid;grid-template-columns:280px 1fr;text-decoration:none;color:var(--text);background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.snx .nx:hover,.snx .nx:focus-visible{border-color:var(--accent-border,var(--accent));outline:none}
+.snx .mini{position:relative;height:210px;overflow:hidden;background:var(--bg);border-right:1px solid var(--border);padding:14px 16px}
+.snx .mini span{display:block}
+.snx .mini .m1{font-size:12.5px;font-weight:600;margin:0 0 4px;line-height:1.3}
+.snx .mini .m2{font-size:9px;color:var(--muted);margin:0 0 8px;line-height:1.4}
+.snx .mini .m3{font-size:8.5px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;margin:0 0 3px}
+.snx .mini .m4{font-size:9.5px;margin:0;line-height:1.45}
+.snx .tx{padding:16px 20px}
+.snx .lab{font-size:12px;font-weight:600;color:var(--accent);letter-spacing:.04em;text-transform:uppercase}
+.snx .tt{display:block;font-size:20px;font-weight:600;margin:5px 0 4px;line-height:1.25}
+.snx .ds{display:block;font-size:14px;color:var(--muted)}
+.snx .nd{display:block;font-size:13px;color:var(--muted);margin-top:10px}
+.snx .go{display:block;margin-top:12px;font-size:14px;font-weight:600;color:var(--accent)}
+.snx .aux{display:flex;justify-content:space-between;gap:12px;margin-top:10px;font-size:13px;color:var(--muted)}
+.snx .aux a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
+@media (max-width:560px){.sn,.snx{padding-left:16px;padding-right:16px}.snx .nx{grid-template-columns:1fr}.snx .mini{display:none}.sn .step{margin-left:0}}
+/* /series-nav */
+</style>
+<body>
+<!-- series-nav:top -->
+<nav class="sn" aria-label="Course navigation"><div class="crumbs"><a href="../perf-0-map/index.html" target="_top">Fast LLM inference</a><span class="sep">›</span><a href="index.html" target="_top">5 · Inside inference engines</a><span class="sep">›</span><b>06 / 15</b><span class="step"><a href="index.html#sarathi-chunked-prefill" target="_top">← prev</a> · <a href="index.html#engine-anatomy" target="_top">next →</a></span></div>
+<div class="dep"><b>Before this:</b> <a href="index.html#sarathi-chunked-prefill" target="_top">Sarathi-Serve II: chunked prefill and stall-free batching</a> · <a href="../perf-4-attention-kv/index.html#paged-sharing" target="_top">PagedAttention II: sharing, copy-on-write and preemption</a> (perf-4)</div></nav>
+<!-- /series-nav:top -->
+<article class="card">
+<h1>The scheduler: KV budget, admission and preemption</h1>
+<p class="sub">Also called the vLLM scheduler, or by its knobs: <code>max_num_batched_tokens</code> (the token budget), <code>max_num_seqs</code>, <code>gpu_memory_utilization</code>, and preemption (recompute or swap). This card is about vLLM V1's scheduler, as its blog, docs and source describe it, and connects it to PagedAttention §4.5. Every time and count for Llama-3.1-8B on an H100 is our recomputation with <code>labs/kv-admission.py</code>, a simulator; none of it is measured.</p>
+
+<h2>In one breath</h2>
+<p>Before every step, the scheduler picks which requests run and how many tokens each one gets. It has two budgets. The token budget limits how much compute (and so how much latency) one step can take. The KV block pool limits how many tokens of history can sit in memory. A waiting request starts only if its blocks fit. If a running request needs a block and none are free, the scheduler evicts the most recently arrived request, which later rebuilds its KV from scratch.</p>
+
+<h2>What vLLM V1 says it does</h2>
+<ul>
+  <li><b>One dictionary per step.</b> V1 "removes the traditional distinction between 'prefill' and 'decode' phases by treating user-given prompt tokens and model-generated output tokens uniformly. Scheduling decisions are represented as a simple dictionary, e.g., {request_id: num_tokens}." With "a fixed token budget, the scheduler dynamically decides how many tokens to allocate to each request" (V1 blog).</li>
+  <li><b>Decodes first, then chunks.</b> "In V1, chunked prefill is enabled by default whenever possible … It batches all pending decode requests before scheduling any prefill operations. When there are available tokens in the max_num_batched_tokens budget, it schedules pending prefills. If a pending prefill request cannot fit into max_num_batched_tokens, it automatically chunks it" (tuning docs). Where this came from is on <a href="sarathi-chunked-prefill.html">Sarathi-Serve II</a>.</li>
+  <li><b>Prefix caching is on.</b> V1's prefix caching causes "less than 1% decrease in throughput even when the cache hit rate is 0%", so "we now enable prefix caching by default" (V1 blog).</li>
+  <li><b>Preemption recomputes.</b> "In vLLM V1, the default preemption mode is RECOMPUTE rather than SWAP, as recomputation has lower overhead in the V1 architecture" (tuning docs). We found no swap path in the current V1 scheduler source: a preempted request frees its blocks, resets its computed tokens to 0 and goes back to the front of the waiting queue.</li>
+  <li><b>FCFS or priority.</b> "First-Come, First-Served (FCFS) and priority-based scheduling (where requests are processed based on assigned priority, with FCFS as a tie-breaker)", chosen with <code>--scheduling-policy</code> (V1 guide). A lower priority value means earlier handling.</li>
+</ul>
+
+<h2>One step, drawn from the lab</h2>
+<p>This is step 30 of the burst below: 200 requests with 2,048-token prompts, budget 8,192, pool 27,437 blocks. The scheduler's output is literally <code>{0: 1, 1: 1, …, 114: 1, 115: 1597, 116: 2048, 117: 2048, 118: 2048, 119: 336}</code>.</p>
+<svg viewBox="0 0 760 200" role="img" aria-label="Step 30: token budget split into 115 decode tokens and five prefill chunks; KV pool with 15,419 blocks held and 12,018 free">
+  <text x="60" y="16" class="st" font-weight="600">Token budget: max_num_batched_tokens = 8,192 tokens this step</text>
+  <rect x="60" y="26" width="9.5" height="30" fill="var(--accent)"/>
+  <rect x="69.5" y="26" width="132.6" height="30" fill="var(--accent-bg)" stroke="var(--accent-border)"/>
+  <rect x="202.1" y="26" width="170" height="30" fill="var(--accent-bg)" stroke="var(--accent-border)"/>
+  <rect x="372.1" y="26" width="170" height="30" fill="var(--accent-bg)" stroke="var(--accent-border)"/>
+  <rect x="542.1" y="26" width="170" height="30" fill="var(--accent-bg)" stroke="var(--accent-border)"/>
+  <rect x="712.1" y="26" width="27.9" height="30" fill="var(--accent-bg)" stroke="var(--accent-border)"/>
+  <text x="62" y="72" class="sl">115 decodes</text><text x="62" y="86" class="sl">× 1 token</text>
+  <text x="135.8" y="46" class="st" text-anchor="middle">115: rest, 1,597</text>
+  <text x="287.1" y="46" class="st" text-anchor="middle">req 116: 2,048</text>
+  <text x="457.1" y="46" class="st" text-anchor="middle">req 117: 2,048</text>
+  <text x="627.1" y="46" class="st" text-anchor="middle">req 118: 2,048</text>
+  <text x="740" y="72" class="sl" text-anchor="end">req 119: first 336</text>
+  <text x="457.1" y="72" class="sl" text-anchor="middle">whole prompts</text>
+  <text x="60" y="118" class="st" font-weight="600">KV pool: 27,437 blocks of 16 tokens (2 MiB each), after this step's allocation</text>
+  <rect x="60" y="128" width="382.1" height="30" fill="var(--muted)"/>
+  <rect x="442.1" y="128" width="297.9" height="30" fill="var(--surface2)" stroke="var(--border)"/>
+  <text x="251" y="148" class="st" text-anchor="middle" style="fill:var(--bg)">15,419 blocks held</text>
+  <text x="591" y="148" class="st" text-anchor="middle">12,018 free</text>
+  <text x="60" y="176" class="sl">prompts of requests 0–119 plus the tokens the first 115 have generated</text>
+  <text x="740" y="192" class="sl" text-anchor="end">admission of request 120 waits for the next step: no budget left</text>
+</svg>
+<p class="cap">Green solid: decode tokens. Light green: prefill chunks. Both are useful compute. Our step-time model prices this step at 142.6 ms, almost all of it the 8,192 tokens of matmul (133 ms at 100% of 989 TFLOPS). A pure decode step for the same 115 requests would be about 14 ms (at 2,048 context), and that gap is the TBT cost of a big budget.</p>
+
+<h2>The memory budget, as one equation</h2>
+<div class="mathbox">
+<math display="block">
+  <msub><mi>N</mi><mtext>blocks</mtext></msub><mo>=</mo>
+  <mo stretchy="true" form="prefix" minsize="2.4em">&#8970;</mo>
+  <mfrac>
+    <mrow><munder class="t2"><mrow><mi>u</mi><mo>&#183;</mo><mi>M</mi></mrow><mtext class="lab">instance budget</mtext></munder><mo>&#8722;</mo><munder class="t3"><mi>W</mi><mtext class="lab">weights</mtext></munder></mrow>
+    <mrow><mi>B</mi><mo>&#183;</mo><msub><mi>b</mi><mtext>tok</mtext></msub></mrow>
+  </mfrac>
+  <mo stretchy="true" form="postfix" minsize="2.4em">&#8971;</mo>
+  <mspace width="1.2em"/>
+  <mtext>admit if</mtext><mspace width="0.4em"/>
+  <mo>&#8968;</mo><mfrac><mrow><mi>c</mi><mo>+</mo><mi>n</mi></mrow><mi>B</mi></mfrac><mo>&#8969;</mo><mo>&#8722;</mo><mi>h</mi><mo>&#8804;</mo><mi>F</mi>
+</math>
+<div class="legend">
+  <span class="sym">u</span><span>gpu_memory_utilization: share of GPU memory this vLLM instance may use</span><span class="v">0.92 default</span>
+  <span class="sym">M</span><span>GPU memory</span><span class="v">80 GB (H100 SXM)</span>
+  <span class="sym">W</span><span>model weights (vLLM also subtracts activations and CUDA graphs, which we leave out)</span><span class="v">16.06 GB</span>
+  <span class="sym">B</span><span>block size in tokens</span><span class="v">16</span>
+  <span class="sym">b<sub>tok</sub></span><span>KV bytes per token</span><span class="v">131,072 B</span>
+  <span class="sym">c, n</span><span>tokens already computed for this request, and tokens scheduled for it this step</span><span class="v">0 and 2,048 for a new prompt</span>
+  <span class="sym">h, F</span><span>blocks the request already holds, and free blocks in the pool</span><span class="v">F = 26,925 after step 1</span>
+</div>
+</div>
+<div class="formula">N_blocks = floor((0.92 × 80 − 16.06) GB ÷ (16 × 131,072 B))
+         = floor(57.54e9 ÷ 2,097,152) = 27,437 blocks = 438,995 tokens
+2k: 27,437 // 128 = 214 sequences      8k: 27,437 // 512 = 53 sequences</div>
+<p class="cap">Our recomputation. It matches course 4's <a href="../perf-4-attention-kv/paged-results.html">PagedAttention III</a> table for 0.92 (57.54 GB, 438,995 tokens). The utilisation multiplies all 80 GB, not the 63.9 GB left after the weights, so 0.92 leaves 6.4 GB for activations, CUDA graphs and anything else. vLLM measures those at start-up, so it will report somewhat fewer blocks than this.</p>
+
+<h2>The knobs, each at 2k and 8k context</h2>
+<p>An analogy: a restaurant with a fixed number of seats (KV blocks) and a kitchen that can cook a fixed number of plates per round (the token budget). The host seats a group only if there are chairs for it now. Diners keep ordering, and if the chairs run out, the group that came in last has to get up and start its meal over later.</p>
+<div class="tw"><table class="parts">
+<tr><th>Knob</th><th class="what">What it controls</th><th>Example A: 2,048-token requests</th><th>Example B: 8,192-token requests</th></tr>
+<tr><td><code>gpu_memory_utilization</code></td><td class="what">The share of GPU memory the instance may use. Everything left after weights and activations becomes KV blocks, which caps how many sequences can be resident.</td>
+  <td class="ex"><b class="ok">214 sequences</b><span>27,437 blocks ÷ 128 at 0.92</span></td>
+  <td class="ex"><b>53 sequences</b><span>27,437 ÷ 512 at 0.92; 22 at 0.5 (11,415 ÷ 512)</span></td></tr>
+<tr><td><code>max_num_batched_tokens</code></td><td class="what">The token budget per step: decodes plus prefill chunks. Bigger means faster admission and a better TTFT, but longer steps and a worse TBT for everyone decoding.</td>
+  <td class="ex"><b>4 prompts per step at 8,192</b><span>step 30: 142.6 ms; at 2,048 the worst step is 50.4 ms</span></td>
+  <td class="ex"><b>1 prompt per step at 8,192</b><span>4 steps per prompt at 2,048; ≥ 133 ms of matmul per full 8k step</span></td></tr>
+<tr><td><code>max_num_seqs</code></td><td class="what">A hard cap on running requests, whatever memory says. It binds only when the KV pool would allow more.</td>
+  <td class="ex"><b>the pool binds first</b><span>default 1,024 on an H100, but only 214 fit; 64 is below that, so it binds and nothing is preempted</span></td>
+  <td class="ex"><b>the pool binds first</b><span>53 fit; any cap above ~53 adds preemptions, not batch</span></td></tr>
+<tr><td>Preemption (recompute)</td><td class="what">When a running request needs a block and none are free, evict the latest-arrived request whole. It re-prefills its prompt plus its output so far.</td>
+  <td class="ex"><b class="lo">≥ 35.5 ms</b><span>to rebuild 2,048 + 140 tokens (100% MFU floor)</span></td>
+  <td class="ex"><b class="lo">≥ 135.3 ms</b><span>to rebuild 8,192 + 140 tokens, 4× the work</span></td></tr>
+<tr><td><code>--scheduling-policy</code></td><td class="what">Order of admission and choice of victim. FCFS: arrival order, latest arrival is evicted first. Priority: lowest priority first (the highest value), arrival time breaks ties.</td>
+  <td class="ex"><b>FCFS (default)</b><span>first victim in the burst: request 199, the last admitted</span></td>
+  <td class="ex"><b>priority</b><span>a batch job with priority 10 is evicted before chat traffic at 0</span></td></tr>
+</table></div>
+<p class="cap">All numbers from <code>labs/kv-admission.py</code> or its arithmetic. The recompute floors are 2 × 8.03e9 × tokens ÷ 989e12 (our arithmetic); real re-prefill is slower. With prefix caching on, a recompute can hit blocks that are still cached; the lab ignores that. The priority example is illustrative.</p>
+
+<h2>Worked example: a burst of 200 requests</h2>
+<p>200 requests arrive at once. Each has a 2,048-token prompt and wants between 512 and 1,024 output tokens (uniform, seed 0, mean 760.4, so 152,080 in total). Settings: vLLM's H100 <code>vllm serve</code> default budget of 8,192, <code>max_num_seqs</code> 256 (above 200, so like the 1,024 default here), utilisation 0.92, FCFS, recompute. The outputs are made up; the scheduling rules follow vLLM V1; the times come from the course-2 step model.</p>
+<svg viewBox="0 0 760 240" role="img" aria-label="Running, waiting and finished requests over 29.4 seconds; first preemption at 9.61 seconds">
+  <line x1="60" y1="180" x2="740" y2="180" stroke="var(--border)"/>
+  <line x1="60" y1="100" x2="740" y2="100" stroke="var(--border)" stroke-dasharray="2 4"/>
+  <line x1="60" y1="20" x2="740" y2="20" stroke="var(--border)" stroke-dasharray="2 4"/>
+  <text x="52" y="184" class="sl" text-anchor="end">0</text><text x="52" y="104" class="sl" text-anchor="end">100</text><text x="52" y="24" class="sl" text-anchor="end">200</text>
+  <text x="60" y="198" class="sl" text-anchor="middle">0 s</text><text x="173.3" y="198" class="sl" text-anchor="middle">5</text><text x="286.7" y="198" class="sl" text-anchor="middle">10</text><text x="400" y="198" class="sl" text-anchor="middle">15</text><text x="513.3" y="198" class="sl" text-anchor="middle">20</text><text x="626.7" y="198" class="sl" text-anchor="middle">25</text><text x="740" y="198" class="sl" text-anchor="middle">30 s</text>
+  <line x1="222.2" y1="14" x2="222.2" y2="180" stroke="var(--faint)" stroke-dasharray="4 3"/>
+  <text x="218" y="12" class="sl" text-anchor="end">all admitted 7.16 s</text>
+  <line x1="277.7" y1="14" x2="277.7" y2="180" stroke="var(--red)" stroke-width="1.5" stroke-dasharray="4 3"/>
+  <text x="282" y="12" class="sl" style="fill:var(--red)">first preemption 9.61 s</text>
+  <polyline fill="none" stroke="var(--faint)" stroke-width="2" points="63,23 100,62 138,100 177,138 217,175 227,180 274,180 280,179 286,178 292,178 298,177 303,176 309,175 315,174 321,174 327,173 333,172 339,171 345,170 351,170 357,169 363,168 369,167 375,166 381,166 387,165 393,164 399,163 405,162 417,162 422,161 428,160 434,159 440,158 473,158 483,162 492,163 502,167 511,170 523,176 533,180 726,180"/>
+  <polyline fill="none" stroke="var(--text)" stroke-width="1.5" stroke-dasharray="5 3" points="63,180 452,180 459,179 466,178 473,177 483,172 492,170 502,167 511,164 523,158 533,151 539,149 545,146 550,140 556,135 561,134 566,132 572,130 577,124 582,118 586,117 591,113 596,110 600,106 605,104 609,101 613,96 617,92 621,89 625,84 629,80 632,77 635,74 639,72 642,70 645,65 648,62 651,58 653,54 656,51 658,49 661,47 663,43 665,40 667,33 669,32 671,31 677,30 684,30 686,29 689,29 691,28 692,27 694,26 705,26 706,25 707,23 713,23 715,22 719,22 720,22 724,22 726,21 726,20"/>
+  <polyline fill="none" stroke="var(--accent)" stroke-width="2.5" points="63,177 100,138 138,100 177,62 217,25 227,20 274,20 280,21 286,22 292,22 298,23 303,24 309,25 315,26 321,26 327,27 333,28 339,29 345,30 351,30 357,31 363,32 369,33 375,34 381,34 387,35 393,36 399,37 405,38 417,38 422,39 428,40 434,41 440,42 452,42 459,43 466,44 473,46 523,46 533,49 539,51 545,54 550,60 556,65 561,66 566,68 572,70 577,76 582,82 586,83 591,87 596,90 600,94 605,96 609,99 613,104 617,108 621,111 625,116 629,120 632,123 635,126 639,128 642,130 645,135 648,138 651,142 653,146 656,149 658,151 661,153 663,157 665,160 667,167 669,168 671,169 674,170 686,171 691,172 692,173 694,174 705,174 706,175 707,177 713,177 715,178 724,178 726,179 726,180"/>
+  <line x1="60" y1="222" x2="84" y2="222" stroke="var(--accent)" stroke-width="2.5"/><text x="90" y="226" class="sl">running</text>
+  <line x1="160" y1="222" x2="184" y2="222" stroke="var(--faint)" stroke-width="2"/><text x="190" y="226" class="sl">waiting (new, then preempted)</text>
+  <line x1="370" y1="222" x2="394" y2="222" stroke="var(--text)" stroke-width="1.5" stroke-dasharray="5 3"/><text x="400" y="226" class="sl">finished</text>
+</svg>
+<p class="cap">Output of <code>labs/kv-admission.py</code>, sampled every 12 steps. The whole burst takes 1,491 steps and 29.38 s.</p>
+<div class="formula">admission    8,192 − decodes → ~4 prompts per step; all 200 running at step 51 (7.16 s)
+headroom     prompts: 200 × 128 = 25,600 of 27,437 blocks → 1,837 left = 29,392 tokens
+             = 147 output tokens per request before the pool is dry
+steady       decode, 200 × 2,048 context: 20.8 ms/step (KV 16.0 + weights 4.8)
+1st preempt  step 166, 9.61 s, mean 140 tokens out → victim: request 199 (115 so far)
+thrash       33 preemptions of 29 requests; waiting peaks at 29 (17.37 s);
+             last one at 19.65 s, just after the first request finishes (17.39 s)
+recompute    77,487 tokens re-prefilled ≈ 1.26 s at 100% MFU = 4.3% of the run
+result       152,080 tokens ÷ 29.38 s = 5,177 tok/s; TTFT p50 3.57 s</div>
+<p class="cap">Our recomputation. The first preemption lands almost exactly where the arithmetic says the pool runs dry: 140 generated tokens against 147 of headroom per request. PagedAttention §4.5 describes the same situation: "As the number of requests and their outputs grow, vLLM can run out of the GPU's physical blocks."</p>
+
+<h3 class="s">Turning the two knobs (same burst)</h3>
+<div class="tw"><table>
+<tr><th>max_num_seqs, budget</th><th class="num">Peak running</th><th class="num">Preemptions (requests)</th><th class="num">Recomputed tokens</th><th class="num">TTFT p50</th><th class="num">p50 / max step</th><th class="num">Total</th><th class="num">tok/s</th></tr>
+<tr><td>64, 2,048</td><td class="num">64</td><td class="num">0</td><td class="num">0</td><td class="num lo">12.04 s</td><td class="num">10.7 / 39.7 ms</td><td class="num">34.83 s</td><td class="num">4,367</td></tr>
+<tr><td>64, 8,192</td><td class="num">64</td><td class="num">0</td><td class="num">0</td><td class="num lo">11.99 s</td><td class="num">10.7 / 138.2 ms</td><td class="num">35.04 s</td><td class="num">4,340</td></tr>
+<tr><td>256, 2,048</td><td class="num">200</td><td class="num lo">65 (27)</td><td class="num lo">130,256</td><td class="num">3.90 s</td><td class="num">17.7 / 50.4 ms</td><td class="num">30.34 s</td><td class="num">5,012</td></tr>
+<tr><td>256, 8,192</td><td class="num">200</td><td class="num">33 (29)</td><td class="num">77,487</td><td class="num hi">3.57 s</td><td class="num">17.6 / 150.1 ms</td><td class="num">29.38 s</td><td class="num hi">5,177</td></tr>
+</table></div>
+<p class="cap">Our recomputation. Capping at 64 never preempts, but 136 requests start out waiting: half of all requests wait 12 s or more for their first token, the last one 27.9 s, and throughput drops 16%. The small budget cuts the worst step to a third (better TBT) but doubles preemptions, because it admits all 200 over more steps while early requests are already growing, and recomputing a request takes several chunked steps.</p>
+
+<h3 class="s">Where the defaults change: other GPUs</h3>
+<div class="tw"><table>
+<tr><th>GPU (vLLM's class)</th><th class="num">vllm serve budget / LLM() budget</th><th class="num">max_num_seqs</th><th class="num">KV at 0.92, Llama-3.1-8B</th><th class="num">2k / 8k sequences</th></tr>
+<tr><td>A100 40 GB (other)</td><td class="num">2,048 / 8,192</td><td class="num">256</td><td class="num">20.74 GB · 9,889 blocks</td><td class="num">77 / 19</td></tr>
+<tr><td>A100 80 GB (other: A100 excluded by name)</td><td class="num">2,048 / 8,192</td><td class="num">256</td><td class="num">57.54 GB · 27,437</td><td class="num">214 / 53</td></tr>
+<tr><td>H100 80 GB (≥ 70 GiB)</td><td class="num">8,192 / 16,384</td><td class="num">1,024</td><td class="num">57.54 GB · 27,437</td><td class="num">214 / 53</td></tr>
+<tr><td>H200 141 GB (≥ 70 GiB)</td><td class="num">8,192 / 16,384</td><td class="num">1,024</td><td class="num">113.66 GB · 54,197</td><td class="num">423 / 105</td></tr>
+<tr><td>B200 192 GB (≥ 160 GiB)</td><td class="num">16,384 / 16,384</td><td class="num">1,024</td><td class="num">160.58 GB · 76,570</td><td class="num">598 / 149</td></tr>
+</table></div>
+<div class="formula">same memory, other defaults:  A100 80 GB vs H100 → budget 2,048 vs 8,192, seqs 256 vs 1,024
+more memory, same defaults:   H200 vs H100 → 1.98× the blocks (54,197 ÷ 27,437)</div>
+<p class="cap">Defaults from <code>get_batch_defaults</code> in vLLM's <code>vllm/engine/arg_utils.py</code> (main branch, read 2026-09-23); the A100 is special-cased because a larger budget "reduces throughput" there (PR #17885, per the code comment). Blocks are our arithmetic, with the same weights-only simplification. Memory sizes for H200 and B200 are the ones course 2 uses.</p>
+
+<h2>Why it beats the alternatives</h2>
+<div class="grid2">
+  <div class="cell"><h3><span class="x">&#10007;</span> Reserve for max length (Orca)</h3><p>Never preempts, but it holds blocks for tokens that may never exist. Reserving a max length of 8,192 fits 53 requests and gives 4,097 tok/s with a TTFT p50 of 12.85 s. A tight 3,072-token cap (142 requests) matches vLLM in this burst, but only because every output here is known to stop by 1,024.</p></div>
+  <div class="cell win"><h3><span class="ok">&#10003;</span> Admit greedily, preempt when out (vLLM)</h3><p>Admit while the next chunk's blocks fit, grow on demand, and evict whole requests, latest first, only when the pool is truly empty. All 200 run by 7.16 s: 5,177 tok/s, a TTFT p50 of 3.57 s, at a cost of 33 preemptions.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Swap to CPU on preemption</h3><p>PagedAttention's other option copies the victim's blocks over PCIe and back. It keeps the work done, but small blocks make for inefficient transfers, and the paper admits no new requests while any sequence is swapped out. V1 dropped it: "recomputation has lower overhead in the V1 architecture."</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Recompute, taken alone</h3><p>This is the default and the right recovery, but it is not free: 77,487 re-prefilled tokens here (4.3% of the run at 100% MFU), and each victim's tokens stop until it gets back in. Frequent preemption is a sign that the knobs are wrong, not that it's working.</p></div>
+</div>
+<p class="cap">Numbers from the lab. The bottom row compares the two ways to recover KV (see <a href="../perf-4-attention-kv/paged-sharing.html">PagedAttention II</a> for a swap-vs-recompute cost estimate and <a href="../perf-4-attention-kv/paged-results.html">III</a> for §7.3's measurements). Neither is a way to avoid preemption.</p>
+
+<h2>Why does raising max_num_seqs sometimes lower throughput?</h2>
+<div class="note">
+  <p>Because past the point where the KV pool binds, more admitted sequences don't make a bigger batch. They just make more requests that grow into the same blocks and evict each other. Every eviction throws away KV and spends compute rebuilding it, and bigger batches also mean longer steps and a worse TBT for everyone. In the lab, long outputs (512-token prompts, 2,048–4,096 outputs) at utilisation 0.5 give:</p>
+  <div class="tw"><table>
+  <tr><th>max_num_seqs</th><th class="num">Peak running</th><th class="num">Preemptions</th><th class="num">Recomputed tokens</th><th class="num">p50 step</th><th class="num">tok/s</th></tr>
+  <tr><td>64</td><td class="num">64</td><td class="num">0</td><td class="num">0</td><td class="num">9.5 ms</td><td class="num">5,615</td></tr>
+  <tr><td>128</td><td class="num">128</td><td class="num">250</td><td class="num">331,634</td><td class="num">11.7 ms</td><td class="num hi">6,100</td></tr>
+  <tr><td>256</td><td class="num">200</td><td class="num lo">299</td><td class="num lo">422,276</td><td class="num">11.9 ms</td><td class="num lo">6,038</td></tr>
+  </table></div>
+  <p>Going from 128 to 256 adds 49 preemptions and lowers throughput by 1%. The dip in our model is small because recompute is cheap for an 8B model at these lengths. It grows with longer contexts, larger models and real overheads, like scheduler CPU time and re-prefill slower than 100% MFU, which the model leaves out. This framing is ours; the vLLM docs simply say that if preemptions are frequent, "Decrease max_num_seqs or max_num_batched_tokens" or "Increase gpu_memory_utilization".</p>
+  <p>The right cap depends on context length. At 2k the pool holds 214 full sequences and at 8k only 53, so one value can't suit both. Chat traffic with short outputs rarely preempts, and there a high cap is simply better (the first table: 256 beats 64 by 19%). When you need guaranteed latency, cap lower, or look at <a href="../perf-4-attention-kv/cache-aware-scheduling.html">cache-aware scheduling</a> and disaggregation instead.</p>
+</div>
+
+<h2>Run it yourself</h2>
+<p><a href="https://github.com/seyonv/explainers/blob/main/perf-5-engines/labs/kv-admission.py">Run it: labs/kv-admission.py</a> <b>[L]</b> runs on your Mac in about 3 seconds using only the Python standard library. It prints the KV pool at 1.0 / 0.92 / 0.9 / 0.5, the per-GPU table, step 30's <code>{request_id: num_tokens}</code>, the burst timeline and first preemption, the knob table with the two Orca-style reservations, and the long-output table above. Try <code>prompt=8192</code> (only 53 fit, 30 preemptions, 1,555 tok/s, and a cap of 53 doesn't prevent them, because outputs keep growing), <code>out_lo=1</code> (early finishers free blocks and nothing is preempted) or <code>budget=16384</code> (TTFT p50 3.52 s, but a worst step of 282 ms).</p>
+
+<div class="foot">
+<p><b>Read next:</b> vLLM docs, <a href="https://docs.vllm.ai/en/latest/configuration/optimization.html">"Optimization and Tuning"</a>: the Preemption and Chunked Prefill sections, including "Performance Tuning with Chunked Prefill", ~20 min. Then Kwon et al., <a href="https://arxiv.org/abs/2309.06180">"Efficient Memory Management for Large Language Model Serving with PagedAttention" (SOSP '23)</a>: §4.5 "Scheduling and Preemption", all of it, ~10 min.</p>
+<p><b>Related:</b> <a href="engine-anatomy.html">Anatomy of vLLM and SGLang</a> · <a href="sarathi-chunked-prefill.html">Sarathi-Serve II: chunked prefill and stall-free batching</a> · <a href="orca-system.html">Orca II: the distributed engine and its results</a> · <a href="../perf-4-attention-kv/paged-sharing.html">PagedAttention II: sharing, copy-on-write and preemption</a> · <a href="../perf-4-attention-kv/paged-results.html">PagedAttention III: implementation and results</a> · <a href="../perf-4-attention-kv/cache-aware-scheduling.html">RadixAttention II: cache-aware scheduling</a> · <a href="../perf-2-scaling-book-inference/step-time.html">step time</a></p>
+<p><b>Sources:</b> V1 scheduler, prefix caching and "&lt;1%": vLLM blog, <a href="https://vllm.ai/blog/2025-01-27-v1-alpha-release">"vLLM V1: A Major Upgrade to vLLM's Core Architecture"</a> (2025-01-27). Chunked prefill, decodes first, RECOMPUTE default and the tuning advice: <a href="https://docs.vllm.ai/en/latest/configuration/optimization.html">docs.vllm.ai … configuration/optimization</a>. FCFS and priority: <a href="https://docs.vllm.ai/en/latest/usage/v1_guide.html">docs.vllm.ai … usage/v1_guide</a>. Victim choice (<code>self.running[-1]</code>, or the max of (priority, arrival_time)), no waiting admissions in a step that preempted, and computed tokens reset to 0: <a href="https://github.com/vllm-project/vllm/blob/main/vllm/v1/core/sched/scheduler.py">vllm/v1/core/sched/scheduler.py</a>. Per-GPU defaults: <a href="https://github.com/vllm-project/vllm/blob/main/vllm/engine/arg_utils.py">vllm/engine/arg_utils.py</a>. 0.92 default: <a href="https://github.com/vllm-project/vllm/blob/main/vllm/config/cache.py">vllm/config/cache.py</a>. "Lower value means earlier handling": <a href="https://github.com/vllm-project/vllm/blob/main/vllm/config/scheduler.py">vllm/config/scheduler.py</a> (all source read 2026-09-23). FCFS, latest-first preemption, swap and recompute: PagedAttention §4.5. Llama-3.1-8B shapes, 16.06 GB, 128 KiB/token, 3.35 TB/s and 989 TFLOPS are the course facts. Every other number is our recomputation with <code>labs/kv-admission.py</code>.</p>
+</div>
+</article>
+<!-- series-nav:bottom -->
+<div class="snx"><a class="nx" href="index.html#engine-anatomy" target="_top">
+<span class="mini" aria-hidden="true"><span class="m1">Anatomy of vLLM and SGLang</span><span class="m2">Also called: engine core, model runner, busy loop, detokenizer, overlap scheduling. This card follows one request through vLLM V1's processes (vLLM architecture docs and the January 2025 V1 blog) and…</span><span class="m3">In one breath</span><span class="m4">An inference engine is a small distributed system on one machine. A front-end process speaks HTTP, tokenizes, and later detokenizes and streams. A separate engine process runs a tight loop that asks the scheduler for the next batch and hands it to one worker process per GPU, which builds tensors, replays a CUDA graph and…</span></span>
+<span class="tx"><span class="lab">Next up · 07 / 15</span><span class="tt">Anatomy of vLLM and SGLang</span><span class="ds">From HTTP request to sampled token</span><span class="nd">Builds directly on this card.</span><span class="go">Continue →</span></span></a><div class="aux"><span><a href="index.html#sarathi-chunked-prefill" target="_top">← Sarathi-Serve II: chunked prefill and stall-free batching</a></span><a href="index.html" target="_top">All cards in 5 · Inside inference engines</a></div></div>
+<!-- /series-nav:bottom -->
+</body>
+</html>

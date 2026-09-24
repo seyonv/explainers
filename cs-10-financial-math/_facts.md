@@ -1,0 +1,95 @@
+# Shared facts: Financial mathematics (cs-10-financial-math)
+
+Every card writer reads this file before writing. Reuse these values exactly.
+
+## This course
+The cheat-sheet lists Financial Mathematics under Research Engineering but has no page for it. This course writes one from scratch: interest and returns, portfolios, random walks, option pricing and bet sizing, each with Python you can run.
+- 12 concept cards plus `_overview.html` (written last by the main agent).
+- **Running example / conventions for this course:** Option cards share one contract: S₀ = 100, K = 100, r = 5% (continuous), σ = 20%, T = 1 year (Black–Scholes call ≈ 10.45, put ≈ 5.57: compute and use these exactly across cards). Every card is supplemented [S]: cite Hull (Options, Futures and Other Derivatives), Shreve, or other standard references; no scipy (norm_cdf via math.erf).
+
+## Series facts (shared by every cs-* course)
+
+### The source
+- **ljeng/cheat-sheet**, commit `5cedb05` (2026-09-16), https://github.com/ljeng/cheat-sheet. Local copy (read your section in full before writing): `~/Desktop/repos/explainers/tasks/cs-kit/source/`.
+- In the card footer, cite the exact source section, e.g. `Source: <a href="https://github.com/ljeng/cheat-sheet/blob/main/coding-algorithms/sorting.md#quicksort">cheat-sheet › Sorting › Quicksort</a>`. For supplemented cards (`[S]`), say "The source heading is empty; this card is supplemented" and cite the references you used instead (CLRS, OSTEP, Hull, DDIA, the paper, the Python docs…).
+- The source is terse: mostly problem statements plus one-line solutions, or dense paper notes. **Your job is to teach the idea**, not transcribe. Keep the source's own example or problem as the worked example wherever there is one, so the card is faithful to it.
+- When the source is wrong, show the correct thing and add one muted line: "The source's version has X; corrected here." Never silently copy a bug.
+
+### The series (link siblings only as `../<slug>/index.html#<card>` for cards that exist when you write; otherwise plain text)
+cs-0-map · cs-1-data-structures · cs-2-algorithms · cs-3-graphs-dp-math · cs-4-design-foundations · cs-5-distributed-systems · cs-6-data-systems · cs-7-operating-systems · cs-8-probability-discrete · cs-9-probability-continuous · cs-10-financial-math
+
+### The reader
+- Preparing for software-engineering, systems-design and research-engineering (quant-adjacent) interviews. Comfortable programming; wants the **why** and a trace they can redo on paper, then a Python snippet they can run.
+- Machine: Apple M3 (4 performance + 4 efficiency cores), 24 GB, macOS 15.3. Python **3.10.20** is `python3`; also installed: 3.14.7 (`python3.14`) and free-threaded 3.14.6 (`~/.local/share/uv/python/cpython-3.14.6+freethreaded-macos-aarch64-none/bin/python3.14t`). numpy 2.2.6 under 3.10. **No scipy.**
+
+### Code: Python only
+- **Every code example on every card is Python**, including where the source used Java or C++. Rewrite it idiomatically; don't transliterate. Use the standard library first (`heapq`, `collections`, `bisect`, `itertools`, `functools`, `math`, `random`, `threading`, `asyncio`). numpy is OK where it teaches something. No scipy (write `math.erf`-based `norm_cdf` when you need it).
+- The snippet must **run under `python3` (3.10)**. Run it, put its real output on the card (a `# →` comment or a small output block), and save the exact snippet to `DIR/code/<card-slug>.py`. The saved file ends with a `if __name__ == "__main__":` demo that prints what the card shows. Link it in the footer: `Run it: <a href="https://github.com/seyonv/explainers/blob/main/<course>/code/<card-slug>.py">code/<card-slug>.py</a>`.
+- Keep code short: aim for 8–30 lines on the card. Lines **≤ 72 characters**. Show the core, and leave the full version in `code/`.
+- Code block markup (add this CSS to the card's `<style>`, verbatim, and use it for all code):
+```css
+.code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;line-height:1.5;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin:10px 0;white-space:pre;overflow-x:auto;tab-size:4;color:var(--text)}
+.code .k{color:var(--accent);font-weight:600}.code .c{color:var(--muted)}.code .o{color:var(--muted)}
+```
+  `<pre class="code">` with HTML-escaped content. `.k` = keywords (def, return, for, while, if, class…), `.c` = comments, `.o` = printed output lines. No other highlighting.
+- Complexity line on every algorithm or data-structure card: `Time O(…) · Space O(…)` plus one sentence on *why*.
+
+### Colour meanings (same on every card)
+- green `--accent`: the answer, the current or active element (pointer, pivot, frontier), the winner/faster option, what's kept
+- grey `--faint` / `--surface2`: already processed, visited or discarded; overhead; waiting
+- neutral `--text`/`--muted`: data at rest (array cells, nodes, rows)
+- red `--red`: ✗, a bug, a violation (overflow, deadlock, lost update), the worst value, a cutoff
+
+### Local measurements (Apple M3, 2026-09-23; `tasks/cs-kit/measure.py`, `race2.py`, `gil.py`; best of 3 unless noted)
+Only measurements in this table may be shown as "measured on an M3". Label anything else you time yourself "one run on the author's M3" and keep it light (< 5 s of CPU, no parallel benchmarks).
+| What | Result |
+|---|---|
+| `sorted()` 10⁶ random floats (Timsort), 3.10 | 0.130 s |
+| `sorted()` on already-sorted 10⁶ | 0.157 s (includes the inner sort; Timsort on sorted input alone is O(n)) |
+| `np.sort` 10⁶, kind="quicksort" (introsort) / "stable" (radix/timsort) | 0.031 s / 0.072 s |
+| pure-Python insertion sort, n = 5,000 random | 0.828 s (vs `sorted()` 0.00026 s) |
+| 1,000 membership tests, n = 10⁵: list / set / dict | 0.232 s / 24.6 µs / 26.5 µs (≈ 9,400× list→set) |
+| `for i in range(len(L)): L[i] += 17`, 10⁷ items / numpy `a += 17` | 0.582 s / 0.00286 s (≈ 203×) (the source's 10⁸ numbers: 9.64 s vs 0.188 s) |
+| `s = s + str(i) + " "` × 10⁵ / `" ".join(...)` | 0.468 s / 0.0073 s |
+| 4 × fib(27), CPU-bound, 3.10: serial / 4 threads / 4 processes | 0.121 s / 0.121 s / 0.032 s |
+| same, 3.14.7 (GIL) | 0.086 / 0.082 / 0.022 s |
+| same, 3.14.6 free-threaded (no GIL) | 0.045 / 0.017 / 0.013 s |
+| 8 × `sleep(0.1)`: serial / 8 threads | 0.835 s / 0.105 s |
+| `multiprocessing.Process` start+join (spawn) | 72 ms (median of 5) |
+| pipe ping-pong round trip between 2 processes | 13.6 µs |
+| `threading.Event` ping-pong round trip between 2 threads | 8.2 µs |
+| uncontended `Lock.acquire()+release()` / `with lock:` | 58 ns / 87 ns |
+| lost updates, 4 threads × 10⁵ of `v=c; sleep(0); c=v+1`, no lock | 100,096 of 400,000 (3.10); with Lock: 400,000 |
+| 4 threads × 10⁶ of `c["n"] += 1`: 3.10 / 3.14 GIL / 3.14t free-threaded | 4,000,000 / 4,000,000 / **1,082,391** |
+| 10,000 concurrent `asyncio.sleep(0.1)` | 0.25 s total |
+| `getrusage`: 200 × `sleep(1 ms)` voluntary switches / fib(30) (0.129 s) involuntary switches | 200 / 25 |
+| `sys.getswitchinterval()` default | 0.005 s |
+
+### Every card in the series (use these exact paths for Related links)
+- **cs-1-data-structures**: big-o-amortized, python-toolkit, hash-buckets, sliding-window-counts, sliding-window-median, monotonic-deque, deque-rolling-dp, stack-parsing, monotonic-stack, linked-bucket-list, binary-tree-traversal, fenwick-tree, trie-segment-tree, heaps, fibonacci-heap, lfu-cache, random-pick-structures, stateful-api-read4, edge-case-parsing, testing-your-code
+- **cs-2-algorithms**: insertion-sort, quicksort, quickselect, merge-sort, merge-sort-counting, heapsort, radix-sort, sort-lower-bound-stability, index-as-hash, binary-search-on-answer, binary-search-partition, lis-patience, prefix-sum-ordered-set, two-pointers-intervals, kmp, rolling-hash, manacher, suffix-automaton, divide-and-conquer, greedy-wildcard-justify, greedy-candy-patching
+- **cs-3-graphs-dp-math**: graph-representations, dfs-flood-fill, bfs-layers, bidirectional-bfs, union-find, toposort, bipartite, eulerian-path, dijkstra, a-star-potentials, bellman-ford-floyd, mst-kruskal-prim, recursion-to-dp, dp-string-matching, dp-palindrome-cuts, dp-grid, dp-state-machine, dp-decode-ways, dp-path-reconstruction, backtracking, bit-arithmetic, newton-sqrt, gcd-number-theory, discrete-math-modular, fibonacci-counting, alias-method, factorial-number-system
+- **cs-4-design-foundations**: requirements-scoping, tradeoffs, simplicity, robustness, api-layers, interfaces-vs-abstract, classes-encapsulation, inheritance-polymorphism, ood-practice, back-of-envelope, averages-and-expected-value, slo-arithmetic, algorithm-beats-hardware, compiler-optimizations, for-loop-vectorization, binary-tree-pattern
+- **cs-5-distributed-systems**: correlated-failure, image-resize-sizing, image-resize-architecture, partial-failure-cap, backpressure-metrics, network-unreliability, end-to-end-argument, delay-timeouts-congestion, request-path, service-discovery, load-balancing-consumers, eventual-consistency-limits, i-confluence, exactly-once-transfer, quorums-staleness, compaction-xa, consensus-raft, consistent-hashing, sharding-hot-keys, idempotency-retries
+- **cs-6-data-systems**: database-indexes, lsm-trees, bigtable-column-families, cache-conscious-structures, cache-patterns, in-memory-db-anticaching, log-structured-memory, mapreduce-model, mapreduce-execution, graph-navigation, query-complexity-classes, semi-naive-datalog, gpu-fair-share, backfill-gang-scheduling, scheduler-as-product, order-book-to-system, aad-tape
+- **cs-7-operating-systems**: processes, threads, locks, mutexes, semaphores, monitors, deadlock, livelock, context-switch-how, context-switch-initiation, context-switch-hardware, scheduling, modern-concurrency
+- **cs-8-probability-discrete**: counting-inclusion-exclusion, stars-and-bars, rook-placements-bridge, conditional-independence, bayes-table, convolution-discrete, first-step-analysis, markov-chains-martingales, mgf-identify, sigma-coverage-zoo, binomial-beta-binomial, geometric-memoryless, hypergeometric-capture-recapture, negative-binomial, poisson-sum-and-moments, uniform-discrete-continuous
+- **cs-9-probability-continuous**: mixed-cdf, pareto-conditional, beta-quantiles, exponential-memoryless, weibull-gamma-function, normal-and-chebyshev, expected-revenue-overbooking, deductibles-and-limits, gini-lorenz, hierarchical-models, joint-table-conditional, order-statistics-min-max, sample-range-uniform, clt-sums, mgf-of-product, coupon-collector, normal-approx-binomial, conditional-on-sum, sample-size
+- **cs-10-financial-math**: time-value-of-money, returns-log-returns, bonds-duration, portfolio-mean-variance, sharpe-and-capm, kelly-criterion, random-walks, brownian-motion-gbm, binomial-pricing, black-scholes-greeks, monte-carlo-pricing, ev-games-market-making
+
+
+## Card list (cs-10-financial-math)
+| # | File | Title | Group | Source section | Brief |
+|---|---|---|---|---|---|
+| 1 | time-value-of-money.html | Time value of money | Money and returns | [README.md](https://github.com/ljeng/cheat-sheet/blob/main/README.md) | [S] $1,000 at 5% for 10 years: annual 1,628.89 vs continuous 1,648.72 (compute); PV of a 30-year $1,000/month annuity at 6%; NPV/IRR with bisection in Python for cash flows [−1000, 300, 400, 500]. |
+| 2 | returns-log-returns.html | Simple vs log returns | Money and returns | [README.md](https://github.com/ljeng/cheat-sheet/blob/main/README.md) | [S] +50%/−50% → −25% simple, log returns sum to ln 0.75; arithmetic mean ≈ geometric + σ²/2 checked on a simulated path (fixed seed); annualizing with √252. |
+| 3 | bonds-duration.html | Bond pricing and duration | Money and returns | [README.md](https://github.com/ljeng/cheat-sheet/blob/main/README.md) | [S] 5-year 4% annual coupon bond at 5% yield ≈ 95.67 (compute); Macaulay and modified duration; predicted vs actual price change for +1 bp and +100 bp (convexity shows up). |
+| 4 | portfolio-mean-variance.html | Portfolio mean and variance | Portfolios and risk | [README.md](https://github.com/ljeng/cheat-sheet/blob/main/README.md) | [S] Two assets σ = 20%, 30%, ρ = 0.2 (expected returns 8%, 12%: illustrative): minimum-variance weights and σ (compute), the frontier as an SVG chart. |
+| 5 | sharpe-and-capm.html | Sharpe ratio, beta and CAPM | Portfolios and risk | [README.md](https://github.com/ljeng/cheat-sheet/blob/main/README.md) | [S] Daily μ = 0.05%, σ = 1% → annual Sharpe ≈ 0.79 (compute with r_f = 0: 0.0005·252/(0.01·√252)); beta by least squares on a synthetic series (fixed seed); CAPM line. |
+| 6 | kelly-criterion.html | The Kelly criterion | Portfolios and risk | [README.md](https://github.com/ljeng/cheat-sheet/blob/main/README.md) | [S] 60/40 even-money bet: f* = 0.2, growth ≈ 2.0% per bet (compute g(f) = 0.6 ln(1+f) + 0.4 ln(1−f)); simulate f = 0.1, 0.2, 0.4 for 1,000 bets (fixed seed, median wealth); half-Kelly trade-off. |
+| 7 | random-walks.html | Random walks | Random processes | [README.md](https://github.com/ljeng/cheat-sheet/blob/main/README.md) | [S] Ruin with p = 0.49 from 10 to target 20 (formula, compute) vs p = 0.5 (0.5); Monte Carlo check; distance after n steps ~ √n. Link cs-8 markov-chains-martingales. |
+| 8 | brownian-motion-gbm.html | Brownian motion and geometric Brownian motion | Random processes | [README.md](https://github.com/ljeng/cheat-sheet/blob/main/README.md) | [S] GBM with S₀ = 100, μ = 8%, σ = 20%, T = 1: median 100·e^(0.08−0.02) ≈ 106.18 and mean 100·e^0.08 ≈ 108.33 (compute; check these, since the mapping plan's '102' was wrong), simulate 10k paths; Itô correction σ²/2 intuition. |
+| 9 | binomial-pricing.html | Binomial option pricing | Pricing | [README.md](https://github.com/ljeng/cheat-sheet/blob/main/README.md) | [S] One step: S = 100 → 110/90, r = 0, K = 100 → q = 0.5, C = 5, replicating portfolio Δ = 0.5 (compute). CRR tree with N steps converging to the Black–Scholes 10.45 (table N = 1, 10, 100, 1000). |
+| 10 | black-scholes-greeks.html | Black–Scholes and the Greeks | Pricing | [README.md](https://github.com/ljeng/cheat-sheet/blob/main/README.md) | [S] C ≈ 10.45, P ≈ 5.57 for the shared contract (compute); parity check C − P = S − K e^(−rT); delta, gamma, vega analytically and by finite differences. |
+| 11 | monte-carlo-pricing.html | Monte Carlo pricing | Pricing | [README.md](https://github.com/ljeng/cheat-sheet/blob/main/README.md) | [S] Price the shared call with 10⁴, 10⁵, 10⁶ paths (fixed seed, numpy): estimate ± standard error; antithetic variates halve variance (compute ratio); an Asian option as the case where MC is the natural tool. |
+| 12 | ev-games-market-making.html | Expected-value games and market making | Pricing | [README.md](https://github.com/ljeng/cheat-sheet/blob/main/README.md) | [S] Roll a die, paid the face, one reroll allowed → 4.25 (compute); with two rerolls → 14/3 ≈ 4.67; quote bid/ask around EV; adverse selection in one example. |

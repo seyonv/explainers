@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Queues as rolling state</title>
+<style>
+:root{
+  --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
+  --text:#1c1f23; --muted:#6b7068; --faint:#b9b9b3;
+  --accent:#4a9d77; --accent-bg:#dcefdf; --accent-border:#8cc79c;
+  --red:#c0492b; --red-bg:#fbeceb;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#15171a; --surface:#1d2024; --surface2:#24282d; --border:#32373d;
+    --text:#e6e8ea; --muted:#9aa1a9; --faint:#4a5057;
+    --accent:#5fb37f; --accent-bg:#1c2b22; --accent-border:#3f7a55;
+    --red:#e57368; --red-bg:#2e1f1e;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text)}
+.card{max-width:820px;margin:0 auto;padding:28px 32px;font-family:-apple-system,"Inter",system-ui,sans-serif;line-height:1.45}
+h1{font-size:26px;font-weight:600;margin:0 0 6px;letter-spacing:-0.01em}
+.sub{font-size:15px;color:var(--muted);margin:0 0 20px}
+h2{font-size:17px;font-weight:600;margin:26px 0 10px}
+p{font-size:15px;margin:0 0 10px}
+.cap{font-size:13px;color:var(--muted);margin:8px 0 0;text-align:center}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+
+/* Tables and formulas */
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border)}
+th{font-size:12px;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:none}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+.hi{color:var(--accent);font-weight:600} .lo{color:var(--red)}
+.formula{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin:10px 0;white-space:pre;overflow-x:auto;line-height:1.55}
+
+/* 2x2 grid */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.cell{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.cell.win{background:var(--accent-bg);border-color:var(--accent-border)}
+.cell h3{font-size:16px;font-weight:600;margin:0 0 5px;display:flex;gap:8px;align-items:baseline}
+.cell p{font-size:14px;margin:0;color:var(--text)}
+.cell.win h3,.cell.win p{color:var(--accent)}
+.x{color:var(--red)} .ok{color:var(--accent)}
+
+/* Clarification box */
+.note{border:1px solid var(--border);border-radius:10px;padding:14px 18px;font-size:14px}
+.note p{font-size:14px} .note p:last-child{margin-bottom:0}
+
+.foot{margin-top:22px;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+svg{display:block;max-width:100%}
+.sl{font-size:12px;fill:var(--muted)} .st{font-size:13px;fill:var(--text)}
+a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+
+/* Code (series) */
+.code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;line-height:1.5;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin:10px 0;white-space:pre;overflow-x:auto;tab-size:4;color:var(--text)}
+.code .k{color:var(--accent);font-weight:600}.code .c{color:var(--muted)}.code .o{color:var(--muted)}
+
+/* Terms, two examples each */
+.parts td{vertical-align:top} .parts td:first-child{font-weight:600;white-space:nowrap}
+.parts .ex{font-size:13px} .parts .ex span{display:block;color:var(--muted)}
+
+/* Hand trace */
+.trace td{vertical-align:top;padding:6px 10px}
+.trace .step{white-space:nowrap;font-variant-numeric:tabular-nums}
+.trace .step span{display:block;font-size:12px;color:var(--muted)}
+.trace .pop{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;color:var(--muted);font-variant-numeric:tabular-nums}
+.trace .pop div{white-space:nowrap}
+.trace .pop .none{color:var(--faint)}
+.trace tr.end td{border-top:2px solid var(--border)}
+.stk{display:flex;flex-wrap:wrap;gap:4px}
+.stk span{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;padding:1px 6px;border-radius:4px;border:1px solid var(--border);background:var(--surface);font-variant-numeric:tabular-nums}
+.stk sub{font-size:10px;color:var(--muted);margin-left:1px}
+.stk .s{background:var(--surface2);color:var(--muted)}
+.stk .a{background:var(--accent-bg);border-color:var(--accent-border);color:var(--accent)}
+.stk .a sub{color:var(--accent)}
+.wrap{overflow-x:auto}
+.fix{font-size:13px;color:var(--muted);margin:0 0 10px}
+.cx{font-size:14px;margin:12px 0 0}
+.foot p{font-size:13px;margin:0 0 4px}
+.foot p:last-child{margin:0}
+.foot b{color:var(--text);font-weight:600}
+
+/* Typeset formula */
+.mathbox{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px 16px 12px;margin:10px 0;overflow-x:auto}
+.mathbox math{font-size:21px;color:var(--text);font-family:"STIX Two Math","Latin Modern Math","Cambria Math",math}
+.mathbox .t1{color:var(--text)} .mathbox .t2{color:var(--accent)} .mathbox .t3{color:var(--muted)}
+.mathbox .lab{font-size:12px;font-family:-apple-system,"Inter",system-ui,sans-serif;padding-top:3px;border-top:1.5px solid currentColor;margin-top:2px}
+.legend{display:grid;grid-template-columns:auto 1fr auto;column-gap:14px;row-gap:5px;font-size:13px;margin-top:12px;align-items:baseline}
+.legend .sym{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;text-align:right}
+.legend .v{color:var(--muted);text-align:right;font-variant-numeric:tabular-nums}
+.trace .mono{font-variant-numeric:tabular-nums;white-space:nowrap}
+.stk .gone{background:none;border-style:dashed;color:var(--faint)}
+.lead{font-size:14px;color:var(--muted);margin:0 0 8px}
+
+@media (max-width:560px){
+  .card{padding:22px 16px}
+  .grid2{grid-template-columns:1fr}
+  .parts .what{display:none}
+  .trace td,.trace th{padding:6px 5px}
+  .trace .pop div{white-space:normal}
+  .legend{grid-template-columns:auto 1fr}.legend .v{display:none}
+}
+</style>
+</head>
+<body>
+<article class="card">
+<h1>Queues as rolling state</h1>
+<p class="sub">Also called a sliding DP window, or a rolling array kept in a <code>collections.deque</code>. The cheat-sheet's Queues section uses a deque twice in Python: as a moving window of DP values (Number of People Aware of a Secret) and as a list you build from the right end back (Integer to English Words).</p>
+
+<h2>In one breath</h2>
+<p>When today's answer depends only on the last k days, you don't need a table of all n days. Keep those k values in a deque: append today on the right, pop the day that just fell out of range on the left. Both ends are O(1), so the window slides for free and memory stays at k.</p>
+
+<h2>The recurrence</h2>
+<div class="mathbox">
+<math display="block">
+  <munder class="t2"><msub><mi>s</mi><mi>t</mi></msub><mtext class="lab">sharing today = new today</mtext></munder>
+  <mo>=</mo>
+  <msub><mi>s</mi><mrow><mi>t</mi><mo>&#8722;</mo><mn>1</mn></mrow></msub>
+  <mo>+</mo>
+  <munder class="t1"><msub><mi>new</mi><mrow><mi>t</mi><mo>&#8722;</mo><mi>delay</mi></mrow></msub><mtext class="lab">start sharing</mtext></munder>
+  <mo>&#8722;</mo>
+  <munder class="t3"><msub><mi>new</mi><mrow><mi>t</mi><mo>&#8722;</mo><mi>forget</mi></mrow></msub><mtext class="lab">forget today</mtext></munder>
+  <mspace width="1.4em"/>
+  <mi>aware</mi><mo>=</mo>
+  <munderover><mo>&#8721;</mo><mrow><mi>t</mi><mo>=</mo><mi>n</mi><mo>&#8722;</mo><mi>forget</mi><mo>+</mo><mn>1</mn></mrow><mi>n</mi></munderover>
+  <msub><mi>new</mi><mi>t</mi></msub>
+</math>
+<div class="legend">
+  <span class="sym">new<sub>t</sub></span><span>people who learn the secret on day t</span><span class="v">new<sub>1</sub> = 1</span>
+  <span class="sym">s<sub>t</sub></span><span>people sharing on day t; each tells exactly one new person, so new<sub>t</sub> = s<sub>t</sub></span><span class="v">s<sub>1</sub> = 0</span>
+  <span class="sym">delay</span><span>days after learning before you start sharing</span><span class="v">2 here</span>
+  <span class="sym">forget</span><span>days after learning when you forget, and stop sharing that same day</span><span class="v">4 here</span>
+</div>
+</div>
+<div class="formula">window = deque of new[t-forget .. t-1]      (always forget = 4 values)
+new[t-delay]  = window[-delay]             (read before popping)
+new[t-forget] = window.popleft()
+day 6:  s = 1 + new[4] - new[2] = 1 + 1 - 0 = 2
+aware  = new[3] + new[4] + new[5] + new[6] = 1 + 1 + 1 + 2 = 5</div>
+<p class="cap">Only new values from the last forget days are ever read again, so only they are kept. Whoever learned it earlier has forgotten.</p>
+
+<h2>Hand trace: n = 6, delay = 2, forget = 4 → 5</h2>
+<div class="wrap">
+<table class="trace">
+  <tr><th>Day t</th><th>+ new[t−2]<br>− popleft</th><th class="num">s = new[t]</th><th>Deque after (value<sub>day</sub>)</th><th class="num">Aware</th></tr>
+  <tr><td class="step">1<span>start</span></td><td class="pop"><div class="none">seed</div></td><td class="num">0</td>
+    <td><div class="stk"><span class="s">0<sub>−2</sub></span><span class="s">0<sub>−1</sub></span><span class="s">0<sub>0</sub></span><span class="a">1<sub>1</sub></span></div></td><td class="num">1</td></tr>
+  <tr><td class="step">2</td><td class="pop"><div>+0 −0</div></td><td class="num">0</td>
+    <td><div class="stk"><span class="s">0<sub>−1</sub></span><span class="s">0<sub>0</sub></span><span>1<sub>1</sub></span><span class="a">0<sub>2</sub></span></div></td><td class="num">1</td></tr>
+  <tr><td class="step">3</td><td class="pop"><div>+1 −0</div></td><td class="num">1</td>
+    <td><div class="stk"><span class="s">0<sub>0</sub></span><span>1<sub>1</sub></span><span>0<sub>2</sub></span><span class="a">1<sub>3</sub></span></div></td><td class="num">2</td></tr>
+  <tr><td class="step">4</td><td class="pop"><div>+0 −0</div></td><td class="num">1</td>
+    <td><div class="stk"><span>1<sub>1</sub></span><span>0<sub>2</sub></span><span>1<sub>3</sub></span><span class="a">1<sub>4</sub></span></div></td><td class="num">3</td></tr>
+  <tr><td class="step">5</td><td class="pop"><div>+1 −1</div></td><td class="num">1</td>
+    <td><div class="stk"><span class="gone">1<sub>1</sub></span><span>0<sub>2</sub></span><span>1<sub>3</sub></span><span>1<sub>4</sub></span><span class="a">1<sub>5</sub></span></div></td><td class="num">3</td></tr>
+  <tr class="end"><td class="step">6</td><td class="pop"><div>+1 −0</div></td><td class="num">2</td>
+    <td><div class="stk"><span>1<sub>3</sub></span><span>1<sub>4</sub></span><span>1<sub>5</sub></span><span class="a">2<sub>6</sub></span></div></td><td class="num hi">5</td></tr>
+</table>
+</div>
+<p class="cap">Green = appended today; grey = padding days before day 1; dashed = the value <code>popleft</code> just removed (drawn only when it was non-zero). Aware = sum of the deque. In people (letters illustrative): A learns on day 1, tells B on day 3 and C on day 4, forgets on day 5 while B tells D; on day 6 B and C tell E and F. B, C, D, E, F = 5.</p>
+
+<h2>The three moving parts, two examples each</h2>
+<table class="parts">
+  <colgroup><col style="width:15%"><col class="what" style="width:35%"><col style="width:25%"><col style="width:25%"></colgroup>
+  <tr><th>Part</th><th class="what">What it is</th><th>Example A: day 5</th><th>Example B: day 6</th></tr>
+  <tr><td>Right end</td><td class="what"><code>append(s)</code>: today's newcomers join the window.</td>
+    <td class="ex"><b class="ok">1</b> appended<span>B tells D</span></td>
+    <td class="ex"><b class="ok">2</b> appended<span>B and C tell E and F</span></td></tr>
+  <tr><td><code>window[-delay]</code></td><td class="what">Those who learned delay days ago: from today they share too.</td>
+    <td class="ex"><b>+1</b> (day 3)<span>B starts sharing</span></td>
+    <td class="ex"><b>+1</b> (day 4)<span>C starts sharing</span></td></tr>
+  <tr><td>Left end</td><td class="what"><code>popleft()</code>: those who learned forget days ago stop sharing and stop counting.</td>
+    <td class="ex"><b class="lo">−1</b> (day 1)<span>A forgets</span></td>
+    <td class="ex"><b>−0</b> (day 2)<span>nobody learned on day 2</span></td></tr>
+</table>
+
+<h2>In Python</h2>
+<pre class="code"><span class="k">from</span> collections <span class="k">import</span> deque
+
+<span class="k">def</span> people_aware(n, delay, forget):
+    new = deque([0] * (forget - 1) + [1])  <span class="c"># learned on days 2-f .. 1</span>
+    share = 0                              <span class="c"># people sharing today</span>
+    <span class="k">for</span> day <span class="k">in</span> range(2, n + 1):
+        share += new[-delay]     <span class="c"># learned on day - delay: starts now</span>
+        share -= new.popleft()   <span class="c"># learned on day - forget: forgets</span>
+        new.append(share)        <span class="c"># each sharer tells one new person</span>
+    <span class="k">return</span> sum(new)              <span class="c"># learned in the last `forget` days</span>
+
+print(people_aware(6, 2, 4))    <span class="o"># → 5</span>
+<span class="o"># all 455 cases with n &lt; 15 match a person-by-person simulation</span></pre>
+<p class="fix">The source seeds the deque with <code>[0] * forget</code>, pops one and appends 1; same window, same answer. No bug. LeetCode's version of this problem asks for the count modulo 10⁹+7; the source's statement leaves that out, and Python's big integers keep it exact (a 301-digit count at n = 1,000, delay = 1, forget = 1,000).</p>
+<p class="cx"><b>Time O(n) · Space O(forget).</b> Each day does one read near the right end, one <code>popleft</code> and one <code>append</code>, all O(1), and the deque never holds more than forget values.</p>
+
+<h2>Why it beats the alternatives</h2>
+<p class="lead">Scale for the counts below: n = 1,000, delay = 1, forget = 1,000 (computed).</p>
+<div class="grid2">
+  <div class="cell"><h3><span class="x">&#10007;</span> Simulate every person</h3><p>Store each person's learning day and step them all. The count doubles fast: the answer has 301 digits, so the list could never be built.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Re-sum the window daily</h3><p>Keep all new[t] and add up the sharers each day. Right answer, but 499,500 additions, O(n · forget), where two per day will do.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> A list with <code>pop(0)</code></h3><p>Same idea, wrong container: <code>pop(0)</code> shifts every remaining item left. 999 × 999 = 998,001 element moves.</p></div>
+  <div class="cell win"><h3><span class="ok">&#10003;</span> Deque window</h3><p>Add who starts, subtract who forgets, append, pop. 999 days × 3 O(1) steps = 2,997 operations, and 1,000 stored values.</p></div>
+</div>
+
+<h2>The other use: building from the right, Integer to English Words</h2>
+<p>Here the deque is not a window. <code>divmod(num, 1000)</code> hands you the lowest three digits first, but they are read last, so each chunk goes on the <b>left</b> with <code>appendleft</code>, O(1).</p>
+<div class="wrap">
+<table class="trace">
+  <tr><th>Step</th><th>divmod(num, 1000)</th><th>Chunk in words</th><th>Deque after appendleft</th></tr>
+  <tr><td class="step">1<span>units</span></td><td class="mono">1234567 → (1234, <b>567</b>)</td><td>Five Hundred Sixty Seven</td>
+    <td><div class="stk"><span class="a">Five Hundred Sixty Seven</span></div></td></tr>
+  <tr><td class="step">2<span>Thousand</span></td><td class="mono">1234 → (1, <b>234</b>)</td><td>Two Hundred Thirty Four Thousand</td>
+    <td><div class="stk"><span class="a">Two … Thousand</span><span>Five … Seven</span></div></td></tr>
+  <tr class="end"><td class="step">3<span>Million</span></td><td class="mono">1 → (0, <b>1</b>)</td><td>One Million</td>
+    <td><div class="stk"><span class="a">One Million</span><span>Two … Thousand</span><span>Five … Seven</span></div></td></tr>
+</table>
+</div>
+<p class="cap">Inside a chunk: 567 → divmod(567, 100) = (5, 67) → "Five Hundred"; 67 ≥ 20 → divmod(67, 10) = (6, 7) → "Sixty", "Seven". Numbers 1–19 are one table lookup.</p>
+<pre class="code"><span class="c"># below_1000(567) -&gt; ["Five", "Hundred", "Sixty", "Seven"]</span>
+<span class="c"># (11 lines, in code/)</span>
+<span class="k">def</span> number_to_words(num):
+    <span class="k">if</span> num == 0:
+        <span class="k">return</span> "Zero"
+    parts = deque()
+    <span class="k">for</span> scale <span class="k">in</span> ["", "Thousand", "Million", "Billion"]:
+        num, chunk = divmod(num, 1000)   <span class="c"># lowest chunk first ...</span>
+        <span class="k">if</span> chunk:
+            words = below_1000(chunk) + ([scale] <span class="k">if</span> scale <span class="k">else</span> [])
+            parts.appendleft(" ".join(words))  <span class="c"># ... reads last</span>
+    <span class="k">return</span> " ".join(parts)
+
+print(number_to_words(1234567))
+<span class="o"># → One Million Two Hundred Thirty Four Thousand Five Hundred
+#   Sixty Seven</span></pre>
+<p class="fix">The source builds each chunk word by word with <code>extendleft</code>, which reverses what it adds (<code>extendleft(["One", "Hundred"])</code> gives <code>['Hundred', 'One']</code>), then <code>extendleft</code>s the chunk again so the two reversals cancel. It is correct; this version appends whole chunk strings instead, and matches the source on 102,000 inputs.</p>
+
+<h2>Is a deque always the right tool?</h2>
+<div class="note">
+  <p>Use it when the state you need is a <b>fixed-length run of recent values</b>, or when you must add at the front. <code>deque(maxlen=k)</code> even drops the left end for you, though here you need the dropped value, so pop it yourself.</p>
+  <p>It is not a random-access array: the Python docs say indexing is O(1) at the ends but slows to O(n) in the middle, so <code>window[-delay]</code> with delay near forget / 2 on a huge window is not free. Then a plain list of size forget used as a ring buffer (<code>new[t % forget]</code>) is O(1) everywhere. And for Integer to English Words, with at most four chunks, a list plus <code>reversed()</code> is just as good; the deque there is for clarity, not speed.</p>
+</div>
+
+<footer class="foot">
+  <p><b>Source:</b> <a href="https://github.com/ljeng/cheat-sheet/blob/main/coding-algorithms/data-structures.md#number-of-people-aware-of-a-secret">cheat-sheet › Data Structures › Queues › Number of People Aware of a Secret</a> and <a href="https://github.com/ljeng/cheat-sheet/blob/main/coding-algorithms/data-structures.md#integer-to-english-words">› Integer to English Words</a> (commit 5cedb05). Deque costs and <code>extendleft</code> order: <a href="https://docs.python.org/3/library/collections.html#collections.deque">Python docs, collections.deque</a>.</p>
+  <p><b>Run it:</b> <a href="https://github.com/seyonv/explainers/blob/main/cs-1-data-structures/code/deque-rolling-dp.py">code/deque-rolling-dp.py</a> prints both traces, checks the secret count against a person-by-person simulation and the words against the source's version (Python 3.10).</p>
+  <p><b>Related:</b> <a href="monotonic-deque.html">Monotonic deque</a> · <a href="sliding-window-counts.html">Sliding window with counts</a> · <a href="../cs-3-graphs-dp-math/recursion-to-dp.html">From recursion to dynamic programming</a> · <a href="../cs-3-graphs-dp-math/fibonacci-counting.html">Fibonacci counting</a></p>
+</footer>
+</article>
+</body>
+</html>

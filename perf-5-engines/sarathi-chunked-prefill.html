@@ -1,0 +1,404 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sarathi-Serve II: chunked prefill and stall-free batching</title>
+<style>
+:root{
+  --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
+  --text:#1c1f23; --muted:#6b7068; --faint:#b9b9b3;
+  --accent:#4a9d77; --accent-bg:#dcefdf; --accent-border:#8cc79c;
+  --red:#c0492b; --red-bg:#fbeceb;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#15171a; --surface:#1d2024; --surface2:#24282d; --border:#32373d;
+    --text:#e6e8ea; --muted:#9aa1a9; --faint:#4a5057;
+    --accent:#5fb37f; --accent-bg:#1c2b22; --accent-border:#3f7a55;
+    --red:#e57368; --red-bg:#2e1f1e;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text)}
+.card{max-width:820px;margin:0 auto;padding:28px 32px;font-family:-apple-system,"Inter",system-ui,sans-serif;line-height:1.45}
+h1{font-size:26px;font-weight:600;margin:0 0 6px;letter-spacing:-0.01em}
+.sub{font-size:15px;color:var(--muted);margin:0 0 20px}
+h2{font-size:17px;font-weight:600;margin:26px 0 10px}
+h2 small{font-size:13px;font-weight:400;color:var(--muted)}
+h3.sm{font-size:15px;font-weight:600;margin:18px 0 8px}
+h3.sm small{font-size:13px;font-weight:400;color:var(--muted)}
+p{font-size:15px;margin:0 0 10px}
+ul{font-size:15px;margin:0 0 10px;padding-left:20px}
+li{margin-bottom:4px}
+.cap{font-size:13px;color:var(--muted);margin:8px 0 0;text-align:center}
+.cap + p{margin-top:14px}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+
+/* Tables and formulas */
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border)}
+th{font-size:12px;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:none}
+.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.hi{color:var(--accent);font-weight:600} .lo{color:var(--red)} .mu{color:var(--muted)}
+tr.pick td{background:var(--accent-bg)}
+.formula{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin:10px 0;white-space:pre;overflow-x:auto;line-height:1.55}
+.formula .c{color:var(--muted)}
+.formula .g{color:var(--accent);font-weight:600}
+.formula .r{color:var(--red);font-weight:600}
+.tw{overflow-x:auto}
+.tw table{min-width:600px}
+
+/* MathML */
+.mathbox{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px 16px 12px;margin:10px 0;overflow-x:auto}
+.mathbox math{font-size:21px;color:var(--text);font-family:"STIX Two Math","Latin Modern Math","Cambria Math",math}
+.mathbox .t1{color:var(--text)} .mathbox .t2{color:var(--accent)} .mathbox .t3{color:var(--muted)}
+.mathbox .lab{font-size:12px;font-family:-apple-system,"Inter",system-ui,sans-serif;padding-top:3px;border-top:1.5px solid currentColor;margin-top:2px}
+.mathbox math + math{margin-top:14px}
+.legend{display:grid;grid-template-columns:auto 1fr auto;column-gap:14px;row-gap:5px;font-size:13px;margin-top:12px;align-items:baseline}
+.legend .sym{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;text-align:right}
+.legend .v{color:var(--muted);text-align:right;font-variant-numeric:tabular-nums}
+@media (max-width:560px){.legend{grid-template-columns:auto 1fr}.legend .v{display:none}}
+
+/* Two examples per term */
+.parts td{vertical-align:top} .parts td:first-child{font-weight:600}
+.parts .ex{font-size:13px} .parts .ex span{display:block;color:var(--muted)}
+.parts .what{font-size:13px}
+@media (max-width:560px){.parts .what{display:none}}
+
+/* Bar charts */
+.bars{display:grid;grid-template-columns:150px 1fr 110px;column-gap:10px;row-gap:9px;align-items:center;font-size:13px}
+.bars .nm{font-size:13px}
+.bars .track{display:flex;align-items:center}
+.bars .bar{height:18px;border-radius:3px;background:var(--faint)}
+.bars .bar.w{background:var(--accent)}
+.bars .bar.l{background:var(--red)}
+.bars .v{text-align:right;font-variant-numeric:tabular-nums}
+.bars .v.w{color:var(--accent);font-weight:600}
+.bars .v.l{color:var(--red)}
+
+/* 2x2 grid */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.cell{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.cell.win{background:var(--accent-bg);border-color:var(--accent-border)}
+.cell h3{font-size:16px;font-weight:600;margin:0 0 5px;display:flex;gap:8px;align-items:baseline}
+.cell p{font-size:14px;margin:0;color:var(--text)}
+.cell.win h3,.cell.win p{color:var(--accent)}
+.x{color:var(--red)} .ok{color:var(--accent)}
+
+/* Clarification box */
+.note{border:1px solid var(--border);border-radius:10px;padding:14px 18px;font-size:14px}
+.note p,.note li{font-size:14px} .note p:last-child{margin-bottom:0}
+
+.foot{margin-top:22px;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+.foot p{font-size:13px}
+.lab-link{display:inline-block;font-size:13px;border:1px solid var(--accent-border);background:var(--accent-bg);color:var(--accent);border-radius:6px;padding:4px 10px;margin:2px 0 10px;text-decoration:none}
+
+/* SVG */
+svg{display:block;max-width:100%;height:auto;margin-top:6px}
+.sl{font-size:12px;fill:var(--muted)} .st{font-size:13px;fill:var(--text)} .sh{font-size:13px;font-weight:600;fill:var(--text)}
+.slr{font-size:12px;fill:var(--red)}
+.bx{fill:var(--surface2);stroke:var(--faint);stroke-width:1}
+.bxa{fill:var(--accent-bg);stroke:var(--accent);stroke-width:1.2}
+.band{fill:var(--accent)}
+.dv{stroke:var(--border);stroke-width:1}
+@media (max-width:560px){.grid2{grid-template-columns:1fr}.card{padding:20px 16px}.bars{grid-template-columns:96px 1fr 80px}}
+a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+/* series-nav */
+.sn{max-width:820px;margin:0 auto;padding:16px 32px 0;font-family:-apple-system,"Inter",system-ui,sans-serif;font-size:13px;line-height:1.5;color:var(--muted)}
+.sn a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
+.sn .crumbs{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 7px}
+.sn .crumbs b{color:var(--text);font-weight:600}
+.sn .sep{color:var(--faint,var(--border))}
+.sn .step{margin-left:auto;white-space:nowrap}
+.sn .dep{margin-top:5px;padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface)}
+.sn .dep .ok{color:var(--accent);font-weight:600}
+.snx{max-width:820px;margin:0 auto;padding:6px 32px 44px;font-family:-apple-system,"Inter",system-ui,sans-serif}
+.snx .nx{display:grid;grid-template-columns:280px 1fr;text-decoration:none;color:var(--text);background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.snx .nx:hover,.snx .nx:focus-visible{border-color:var(--accent-border,var(--accent));outline:none}
+.snx .mini{position:relative;height:210px;overflow:hidden;background:var(--bg);border-right:1px solid var(--border);padding:14px 16px}
+.snx .mini span{display:block}
+.snx .mini .m1{font-size:12.5px;font-weight:600;margin:0 0 4px;line-height:1.3}
+.snx .mini .m2{font-size:9px;color:var(--muted);margin:0 0 8px;line-height:1.4}
+.snx .mini .m3{font-size:8.5px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;margin:0 0 3px}
+.snx .mini .m4{font-size:9.5px;margin:0;line-height:1.45}
+.snx .tx{padding:16px 20px}
+.snx .lab{font-size:12px;font-weight:600;color:var(--accent);letter-spacing:.04em;text-transform:uppercase}
+.snx .tt{display:block;font-size:20px;font-weight:600;margin:5px 0 4px;line-height:1.25}
+.snx .ds{display:block;font-size:14px;color:var(--muted)}
+.snx .nd{display:block;font-size:13px;color:var(--muted);margin-top:10px}
+.snx .go{display:block;margin-top:12px;font-size:14px;font-weight:600;color:var(--accent)}
+.snx .aux{display:flex;justify-content:space-between;gap:12px;margin-top:10px;font-size:13px;color:var(--muted)}
+.snx .aux a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
+@media (max-width:560px){.sn,.snx{padding-left:16px;padding-right:16px}.snx .nx{grid-template-columns:1fr}.snx .mini{display:none}.sn .step{margin-left:0}}
+/* /series-nav */
+</style>
+</head>
+<body>
+<!-- series-nav:top -->
+<nav class="sn" aria-label="Course navigation"><div class="crumbs"><a href="../perf-0-map/index.html" target="_top">Fast LLM inference</a><span class="sep">›</span><a href="index.html" target="_top">5 · Inside inference engines</a><span class="sep">›</span><b>05 / 15</b><span class="step"><a href="index.html#sarathi-stalls" target="_top">← prev</a> · <a href="index.html#scheduler" target="_top">next →</a></span></div>
+<div class="dep"><b>Before this:</b> <a href="index.html#sarathi-stalls" target="_top">Sarathi-Serve I: why prefill stalls decode</a></div></nav>
+<!-- /series-nav:top -->
+<article class="card">
+<h1>Sarathi-Serve II: chunked prefill and stall-free batching</h1>
+<p class="sub">Also called chunked prefill, token budget (<code>max_num_batched_tokens</code> in vLLM) or hybrid batching. Card 2 of 2 on Sarathi-Serve (Agrawal et al., OSDI '24). It walks §4 (design), §5 (evaluation) and §6 (related work) in order. <a href="sarathi-stalls.html">Card 1</a> covers §1–3: why a prefill stalls every running decode.</p>
+
+<h2>In one breath</h2>
+<p>A decode iteration leaves most of the GPU's math idle, so the scheduler can fill it with prompt work. To do that without making running requests wait, it cuts each long prompt into chunks. Every iteration gets a fixed token budget τ: all running decodes go in first (one token each), then as much of one prompt as still fits. No iteration is ever much slower than a decode step, so no running request stalls. Prompts still get processed, a few hundred tokens at a time.</p>
+
+<h2>Where this sits</h2>
+<p>The dilemma from §1–3 (card 1): Prefill-prioritising schedulers (vLLM, Orca) get throughput but cause <b>generation stalls</b>: every running request freezes while a new prompt is processed. Decode-prioritising ones (FasterTransformer) avoid stalls but keep batches small. Sarathi-Serve's answer has two parts, and §5.4 shows you need both: <b>chunked prefills</b> (§4.1) and <b>stall-free batching</b> (§4.2), plus a rule for choosing the budget (§4.3).</p>
+
+<h2>§4.1 Chunked prefills: small enough to hide, big enough to saturate</h2>
+<p>The paper gives two reasons chunking works. First, "a prefill request with modest sequence length can effectively saturate GPU compute": in its Fig 4, prefill throughput starts to saturate at about <b>512 tokens</b>. Second, real prompts are much longer than that. The median prompt is <b>1,730 tokens</b> in openchat_sharegpt4 and <b>7,059</b> in arxiv_summarization (Table 2). So a prompt can be split into pieces that are each still large enough to use the GPU well.</p>
+<p>Here is the running example, with the course's step-time model (our recomputation, <code>labs/chunked-prefill-sim.py</code>). A decode batch of 64 requests at 2k context takes 9.92 ms. Add prefill tokens to that same iteration and see what it costs:</p>
+<div class="bars" role="img" aria-label="Iteration time for 64 decodes plus increasing numbers of prefill tokens">
+  <span class="nm">64 decodes only</span><span class="track"><span class="bar w" style="width:9.2%"></span></span><span class="v w">9.92 ms</span>
+  <span class="nm">+ 256 prompt tokens</span><span class="track"><span class="bar" style="width:9.7%"></span></span><span class="v">10.42 ms · 1.05×</span>
+  <span class="nm">+ 512</span><span class="track"><span class="bar" style="width:13.6%"></span></span><span class="v">14.64 ms · 1.48×</span>
+  <span class="nm">+ 1,024</span><span class="track"><span class="bar" style="width:21.6%"></span></span><span class="v">23.19 ms · 2.34×</span>
+  <span class="nm">+ 2,048</span><span class="track"><span class="bar" style="width:37.8%"></span></span><span class="v">40.69 ms · 4.10×</span>
+  <span class="nm">+ 5,696 (P90 prompt)</span><span class="track"><span class="bar l" style="width:100%"></span></span><span class="v l">107.56 ms · 10.84×</span>
+</div>
+<p class="cap">Llama-3.1-8B BF16 on one H100, 100% of peak, our model. The first 256 prompt tokens cost almost nothing (+0.5 ms): the iteration is still waiting on the 16.06 GB weight read, and 2·8.03e9·256 FLOPs fit under it. A whole P90 prompt makes this one iteration 10.8× longer, so every one of the 64 users gets a ~108 ms gap. The paper's Fig 9 measures the same effect on real GPUs: naive hybrid batching raises TBT "up to 28.3×" over a decode-only batch (Mistral-7B on one A100, budget 256; LLaMA2-70B on four A100s, budget 512).</p>
+
+<h2>§4.2 Stall-free batching (Algorithm 3)</h2>
+<p>Each iteration's batch is built in a fixed order under a token budget τ, which comes from the TBT SLO (§4.3). Shortened from the paper:</p>
+<div class="formula">τ ← compute_token_budget(TBT SLO)          <span class="c"># once, offline</span>
+loop every iteration:
+    n ← 0;  B ← running requests
+    for each running request R that is decoding:   <span class="c"># lines 6–8</span>
+        n ← n + 1                                   <span class="c"># 1 token each, always included</span>
+    for each running R whose prompt is unfinished: <span class="c"># lines 9–12</span>
+        c ← next chunk of R that fits in τ − n;  n ← n + c
+    while a new request fits in memory and n &lt; τ:   <span class="c"># lines 13–20</span>
+        c ← its first chunk that fits in τ − n
+        if c = 0: break
+        n ← n + c;  add it to B
+    run B as ONE hybrid iteration                   <span class="c"># line 22</span>
+    drop finished requests from B</div>
+<p class="cap">Decodes are never delayed for a prefill. New requests only get what is left after running work is packed. The paper: "By restricting the computational load in every iteration, stall-free batching ensures that decodes never experience a generation stall due to a co-running prefill chunk."</p>
+
+<p>The same moment under four schedulers. 64 requests are decoding at 2k context, and request C (1,730 tokens, the openchat median) arrives at 0 ms. Durations come from our step-time model:</p>
+<svg viewBox="0 0 800 268" role="img" aria-label="Timeline of four schedulers handling a 1,730-token prompt while 64 requests decode">
+  <line class="dv" x1="190" y1="30" x2="190" y2="248"/><text class="sl" x="190" y="24" text-anchor="middle">0 ms</text>
+  <line class="dv" x1="270" y1="30" x2="270" y2="248"/><text class="sl" x="270" y="24" text-anchor="middle">10</text>
+  <line class="dv" x1="350" y1="30" x2="350" y2="248"/><text class="sl" x="350" y="24" text-anchor="middle">20</text>
+  <line class="dv" x1="430" y1="30" x2="430" y2="248"/><text class="sl" x="430" y="24" text-anchor="middle">30</text>
+  <line class="dv" x1="510" y1="30" x2="510" y2="248"/><text class="sl" x="510" y="24" text-anchor="middle">40</text>
+  <line class="dv" x1="590" y1="30" x2="590" y2="248"/><text class="sl" x="590" y="24" text-anchor="middle">50</text>
+  <line class="dv" x1="670" y1="30" x2="670" y2="248"/><text class="sl" x="670" y="24" text-anchor="middle">60</text>
+  <line class="dv" x1="750" y1="30" x2="750" y2="248"/><text class="sl" x="750" y="24" text-anchor="middle">70 ms</text>
+
+  <text class="st" x="0" y="55">vLLM V0: prefill first</text><text class="sl" x="0" y="71">TTFT 29.0 · <tspan class="slr">worst gap 38.9 ms</tspan></text>
+  <rect class="bx" x="190.0" y="40" width="229.6" height="30" rx="3"/><text class="sl" x="304.8" y="59" text-anchor="middle">C whole, 1,730 · decodes wait</text>
+  <rect class="bxa" x="421.6" y="40" width="77.4" height="30" rx="3"/>
+  <rect class="bxa" x="501.0" y="40" width="77.4" height="30" rx="3"/>
+  <rect class="bxa" x="580.4" y="40" width="77.4" height="30" rx="3"/>
+  <rect class="bxa" x="659.8" y="40" width="77.4" height="30" rx="3"/>
+
+  <text class="st" x="0" y="107">Orca: hybrid, whole prompt</text><text class="sl" x="0" y="123">TTFT 35.2 · <tspan class="slr">worst gap 35.2 ms</tspan></text>
+  <rect class="bx" x="190.0" y="92" width="279.6" height="30" rx="3"/><rect class="band" x="190.0" y="116" width="279.6" height="6"/><text class="sl" x="329.8" y="110" text-anchor="middle">64 decodes + C whole</text>
+  <rect class="bxa" x="471.6" y="92" width="77.4" height="30" rx="3"/>
+  <rect class="bxa" x="551.0" y="92" width="77.4" height="30" rx="3"/>
+  <rect class="bxa" x="630.4" y="92" width="77.4" height="30" rx="3"/>
+
+  <text class="st" x="0" y="159">Chunked only, 512</text><text class="sl" x="0" y="175"><tspan class="slr">TTFT 60.3</tspan> · worst gap 18.6 ms</text>
+  <rect class="bx" x="190.0" y="144" width="65.2" height="30" rx="3"/><text class="sl" x="222.6" y="163" text-anchor="middle">512</text>
+  <rect class="bxa" x="257.2" y="144" width="77.4" height="30" rx="3"/>
+  <rect class="bx" x="336.6" y="144" width="66.5" height="30" rx="3"/><text class="sl" x="369.9" y="163" text-anchor="middle">512</text>
+  <rect class="bxa" x="405.1" y="144" width="77.4" height="30" rx="3"/>
+  <rect class="bx" x="484.5" y="144" width="67.8" height="30" rx="3"/><text class="sl" x="518.4" y="163" text-anchor="middle">512</text>
+  <rect class="bxa" x="554.3" y="144" width="77.4" height="30" rx="3"/>
+  <rect class="bx" x="633.7" y="144" width="36.9" height="30" rx="3"/><text class="sl" x="652.2" y="163" text-anchor="middle">194</text>
+  <rect class="bxa" x="672.6" y="144" width="77.4" height="30" rx="3"/>
+
+  <text class="st" x="0" y="211">Sarathi-Serve, τ = 512</text><text class="sl" x="0" y="227">TTFT 54.0 · worst gap 13.8 ms</text>
+  <rect class="bx" x="190.0" y="196" width="106.7" height="30" rx="3"/><rect class="band" x="190.0" y="220" width="106.7" height="6"/><text class="sl" x="243.3" y="214" text-anchor="middle">64 + 448</text>
+  <rect class="bx" x="298.7" y="196" width="107.7" height="30" rx="3"/><rect class="band" x="298.7" y="220" width="107.7" height="6"/><text class="sl" x="352.5" y="214" text-anchor="middle">64 + 448</text>
+  <rect class="bx" x="408.4" y="196" width="108.7" height="30" rx="3"/><rect class="band" x="408.4" y="220" width="108.7" height="6"/><text class="sl" x="462.7" y="214" text-anchor="middle">64 + 448</text>
+  <rect class="bx" x="519.0" y="196" width="101.1" height="30" rx="3"/><rect class="band" x="519.0" y="220" width="101.1" height="6"/><text class="sl" x="569.6" y="214" text-anchor="middle">64 + 386</text>
+  <rect class="bxa" x="622.1" y="196" width="77.4" height="30" rx="3"/>
+
+  <rect class="bxa" x="190" y="252" width="14" height="12" rx="2"/><text class="sl" x="210" y="262">decode-only iteration, 9.9 ms</text>
+  <rect class="bx" x="390" y="252" width="14" height="12" rx="2"/><text class="sl" x="410" y="262">prompt tokens</text>
+  <rect class="bx" x="520" y="252" width="14" height="12" rx="2"/><rect class="band" x="520" y="260" width="14" height="4"/><text class="sl" x="540" y="262">prompt + all 64 decodes in one iteration</text>
+</svg>
+<p class="cap">Our step-time model, not a measurement. "Worst gap" is the longest wait between two tokens for any of the 64 decoding users. The fourth row mirrors the paper's Fig 7: every iteration carries decodes, so none of them waits more than one 13.8 ms iteration. Chunking costs C some TTFT (54.0 vs 29.0 ms). The clarification box below returns to that.</p>
+
+<h2>§4.3 Choosing the token budget</h2>
+<p>A smaller τ means shorter iterations, so TBT is lower. It also means more chunks and more overhead. The paper names two overheads: lower GPU use per iteration and attention re-reading earlier chunks' KV (the first chunk's KV is "loaded N − 1 times" for N chunks). It says attention prefill stays compute-bound even at small chunks, and that "fixed overheads of kernel launch, etc." add a little more. Its rule: profile once and set τ to "the maximum number of tokens that can be packed in a batch without violating TBT SLO". In our model, one iteration costs:</p>
+<div class="mathbox">
+<math display="block">
+  <msub><mi>t</mi><mtext>iter</mtext></msub><mo>&#8776;</mo>
+  <munder class="t3"><mfrac><mrow><mo>(</mo><munder><mo>&#8721;</mo><mi>i</mi></munder><msub><mi>ctx</mi><mi>i</mi></msub><mo>+</mo><mi>p</mi><mo>+</mo><mi>c</mi><mo>)</mo><mo>&#8901;</mo><msub><mi>b</mi><mtext>KV</mtext></msub></mrow><mtext>BW</mtext></mfrac><mtext class="lab">KV reads, always memory-bound</mtext></munder>
+  <mo>+</mo><mo>max</mo><mo stretchy="true" form="prefix" minsize="2.4em">(</mo>
+  <munder class="t2"><mfrac><mrow><mn>2</mn><mi>P</mi><mo>(</mo><mi>B</mi><mo>+</mo><mi>c</mi><mo>)</mo></mrow><mi>C</mi></mfrac><mtext class="lab">math: decodes + chunk</mtext></munder>
+  <mo>,</mo>
+  <munder class="t1"><mfrac><mi>W</mi><mtext>BW</mtext></mfrac><mtext class="lab">weight read</mtext></munder>
+  <mo stretchy="true" form="postfix" minsize="2.4em">)</mo>
+</math>
+<math display="block">
+  <mi>&#964;</mi><mo>=</mo><mi>B</mi><mo>+</mo><mi>c</mi><mo>,</mo><mspace width="1em"/>
+  <msup><mi>&#964;</mi><mo>*</mo></msup><mo>=</mo><mo>max</mo><mo>{</mo><mi>&#964;</mi><mo>:</mo><msub><mi>t</mi><mtext>iter</mtext></msub><mo>&#8804;</mo><mtext>TBT SLO</mtext><mo>}</mo>
+</math>
+<div class="legend">
+  <span class="sym">B</span><span>running decodes, one token each</span><span class="v">64 below</span>
+  <span class="sym">c</span><span>prompt tokens in this iteration's chunk</span><span class="v">448 below</span>
+  <span class="sym">ctx_i, p</span><span>each decode's context; the chunk's earlier prompt tokens (re-read)</span><span class="v">2,048 · 0</span>
+  <span class="sym">b_KV</span><span>KV bytes per token (Llama-3.1-8B)</span><span class="v">131,072 B</span>
+  <span class="sym">P, W</span><span>parameters, weight bytes</span><span class="v">8.03e9 · 16.06 GB</span>
+  <span class="sym">C, BW</span><span>H100 dense BF16, HBM bandwidth</span><span class="v">989 TF · 3.35 TB/s</span>
+</div>
+</div>
+<div class="formula">KV    (64 × 2,049 + 448) × 131,072 B = 17.25 GB ÷ 3.35 TB/s  =  5.15 ms
+math  2 × 8.03e9 × 512 ÷ 989e12 = 8.31 ms, + 0.12 ms scores  =  8.44 ms
+      max(8.44, weights 16.06 GB ÷ 3.35 TB/s = 4.79)       =  8.44 ms
+t_iter                                                     = <span class="g">13.59 ms</span>
+<span class="c"># 64 decodes at 2k, t_iter ≤ 50 ms:  chunk ≤ 2,576 (τ = 2,640)</span>
+<span class="c"># 64 decodes at 2k, t_iter ≤ 100 ms: chunk ≤ 5,296 (τ = 5,360)</span></div>
+<p class="cap">The lab's "one-time profiling" (our model). The catch: P99 TBT is set by the worst iterations, which have bigger batches and longer contexts than this one. In the full simulation below, τ = 2,048 misses a 50 ms P99 above 10.8 req/s, and τ = 512 is the better choice there. That is why the paper profiles whole deployments with its simulator, Vidur, instead of one batch.</p>
+
+<p>Each term in §4.3, with the paper's example and the running example's:</p>
+<div class="tw">
+<table class="parts">
+  <tr><th>Term</th><th class="what">What it means</th><th>Example A: the paper</th><th>Example B: Llama-3.1-8B on H100 (our model)</th></tr>
+  <tr><td>Chunk</td><td class="what">A slice of one prompt processed in one iteration. Its KV is kept, and the next chunk continues from it</td>
+      <td class="ex"><b>≈ 512 tokens</b><span>where prefill throughput saturates (Fig 4, A100)</span></td>
+      <td class="ex"><b>295 tokens</b><span>where 2·P·n/C reaches the 4.79 ms weight read; 512 tokens alone take 8.4 ms</span></td></tr>
+  <tr><td>Token budget τ</td><td class="what">Most tokens (decodes + chunks) allowed in one iteration. Set from the TBT SLO</td>
+      <td class="ex"><b>512 strict · 2,048 relaxed</b><span>1,536 for LLaMA2-70B relaxed, to limit pipeline bubbles (§5.1)</span></td>
+      <td class="ex"><b>512 at 50 ms · 2,048 at 100 ms</b><span>the best of the two in our simulation, at each of our SLOs</span></td></tr>
+  <tr><td>Decodes first</td><td class="what">Every running decode takes 1 token of τ before any prompt gets a chunk</td>
+      <td class="ex"><b>Alg 3 lines 6–8</b><span>then the ongoing prompt, then new requests</span></td>
+      <td class="ex"><b>64 of 512</b><span>448 tokens left for C's chunk</span></td></tr>
+  <tr><td>KV re-reads</td><td class="what">Each chunk's attention reads the KV of all earlier chunks of the same prompt</td>
+      <td class="ex"><b>first chunk read N − 1 times</b><span>"even at small chunk sizes attention prefill … is compute bound"</span></td>
+      <td class="ex"><b>4.43 GB = 1.32 ms</b><span>5,696 tokens in 12 chunks of 512: 33,792 tokens re-read</span></td></tr>
+  <tr><td>Chunking overhead</td><td class="what">Total prefill time chunked ÷ unchunked, minus 1</td>
+      <td class="ex"><b>≤ ~25% at 512 · ~0 at 2,048</b><span>measured, Yi-34B TP2, Fig 14 (§5.4.1)</span></td>
+      <td class="ex"><b>+4.8% at 512 · +0.2% at 2,048</b><span>5,696 tokens. Most of it is the 64-token tail chunk, which still pays the 4.79 ms weight read. No launch costs are modelled</span></td></tr>
+  <tr><td>Tile quantization</td><td class="what">Matmuls run in fixed-size tiles, so a size just past a multiple wastes a whole extra tile</td>
+      <td class="ex"><b>257 → +32%</b><span>prefill time vs a 256-token chunk, "in some cases"</span></td>
+      <td class="ex"><b>3 tiles vs 2</b><span>with 128-row tiles (illustrative): ⌈257/128⌉ = 3, so pick budgets that are multiples of the tile</span></td></tr>
+  <tr><td>Pipeline bubbles</td><td class="what">With pipeline parallelism, uneven iterations leave stages idle</td>
+      <td class="ex"><b>bigger chunks → more variation</b><span>too small → low arithmetic intensity</span></td>
+      <td class="ex"><b>not applicable</b><span>one GPU, no pipeline</span></td></tr>
+</table>
+</div>
+<p>The saturation point depends on the GPU, so the right budget does too:</p>
+<table>
+  <tr><th>Setup</th><th>Where prefill tokens saturate compute</th><th>Budgets used</th><th>Source</th></tr>
+  <tr><td>A100, the paper's models</td><td>theory "∼200 tokens"; in practice "∼500–600 tokens for higher tensor parallel dimensions due to fixed overheads"</td><td class="num">512 / 2,048</td><td>Sarathi-Serve §3.1 footnote 2, §5.1</td></tr>
+  <tr><td>H100 SXM, Llama-3.1-8B</td><td>ops:byte ≈ 295 → 295 tokens per iteration in theory</td><td class="num">512 / 2,048</td><td>our model; course facts</td></tr>
+  <tr><td>vLLM V1 docs, any GPU</td><td>not stated</td><td class="num">2,048 for ITL; &gt; 8,192 for throughput</td><td>vLLM optimization docs</td></tr>
+</table>
+<div class="formula">A100 theory → practice: ~200 → ~500–600 tokens (≈ 2.5–3×)
+H100 theory: 16.06 GB / 3.35 TB/s × 989e12 / (2 × 8.03e9) = 295</div>
+
+<h2>§4.4 Implementation, and where it lives today</h2>
+<p>Sarathi-Serve is built on vLLM. It added paged chunked prefill using FlashAttention v2 and FlashInfer kernels, and used the FlashAttention backend for all its experiments. It also added pipeline parallelism and telemetry. The idea has since become the default: in vLLM V1, "chunked prefill is enabled by default whenever possible", and "the scheduling policy prioritizes decode requests. It batches all pending decode requests before scheduling any prefill operations". <code>max_num_batched_tokens</code> plays the role of τ. The docs say smaller values such as 2,048 give better inter-token latency and larger ones give better TTFT. Setting it equal to <code>max_model_len</code> is "almost the equivalent to the V0 default scheduling policy (except that it still prioritizes decodes)". <a href="scheduler.html">The scheduler card</a> covers the rest of V1's unified token-budget scheduler.</p>
+
+<h2>§5 Evaluation: setup <small>Tables 1–3</small></h2>
+<div class="tw">
+<table>
+  <tr><th>Model</th><th>Attention</th><th>GPUs</th><th class="num">Strict P99 TBT</th><th class="num">Relaxed P99 TBT</th></tr>
+  <tr><td>Mistral-7B</td><td>GQA, sliding window</td><td>1 A100 80 GB</td><td class="num">0.1 s</td><td class="num">0.5 s</td></tr>
+  <tr><td>Yi-34B</td><td>GQA</td><td>2 A100 (TP2)</td><td class="num">0.2 s</td><td class="num">1 s</td></tr>
+  <tr><td>LLaMA2-70B</td><td>GQA</td><td>8 A40 48 GB (TP4-PP2)</td><td class="num">1 s</td><td class="num">5 s</td></tr>
+  <tr><td>Falcon-180B</td><td>GQA</td><td>2 nodes × 4 A100 (TP4-PP2), 100 Gbps Ethernet</td><td class="num">1 s</td><td class="num">5 s</td></tr>
+</table>
+</div>
+<table style="margin-top:10px">
+  <tr><th>Dataset (Table 2)</th><th class="num">Prompt median / P90 / std</th><th class="num">Output median / P90 / std</th><th>Filtered out</th></tr>
+  <tr><td>openchat_sharegpt4 (multi-turn chat)</td><td class="num">1,730 / 5,696 / 2,088</td><td class="num">415 / 834 / 101</td><td>total &gt; 8,192</td></tr>
+  <tr><td>arxiv_summarization (long docs)</td><td class="num">7,059 / 12,985 / 3,638</td><td class="num">208 / 371 / 265</td><td>total &gt; 16,384</td></tr>
+</table>
+<p class="cap">Strict and relaxed SLOs are 5× and 25× the time of a decode iteration (batch 32, 4k prefill) run without any prefill interference. Arrivals are Poisson. Metrics are median TTFT and P99 TBT. Capacity is the highest load at which the SLO holds and the median scheduling delay stays ≤ 2 s. Budgets are 512 (strict) and 2,048 (relaxed). Baselines are vLLM and Orca.</p>
+
+<h3 class="sm">§5.1 Capacity <small>Figs 10–11</small></h3>
+<p>The abstract's headline numbers: <b>2.6×</b> higher capacity for Mistral-7B on one A100 and up to <b>3.7×</b> for Yi-34B on two A100s, both compared with vLLM. With pipeline parallelism, Falcon-180B gains up to <b>5.6×</b>. The text adds strict-SLO gains of up to <b>4.0×</b> over Orca and 3.7× over vLLM (Yi-34B, openchat). With PP it gets <b>6.3×</b> over Orca and <b>4.3×</b> over vLLM (LLaMA2-70B, openchat), "due to few pipeline bubbles". The figures print one multiplier over each Sarathi-Serve bar:</p>
+<div class="tw">
+<table>
+  <tr><th>Dataset</th><th>Model</th><th class="num">Strict</th><th class="num">Relaxed</th></tr>
+  <tr><td rowspan="4">openchat_sharegpt4</td><td>Mistral-7B</td><td class="num">2.78×</td><td class="num">2.15×</td></tr>
+  <tr><td>Yi-34B</td><td class="num hi">4.00×</td><td class="num">2.44×</td></tr>
+  <tr><td>LLaMA2-70B (PP)</td><td class="num">5.54×</td><td class="num hi">6.31×</td></tr>
+  <tr><td>Falcon-180B (PP)</td><td class="num">4.69×</td><td class="num">5.62×</td></tr>
+  <tr><td rowspan="4">arxiv_summarization</td><td>Mistral-7B</td><td class="num">1.82×</td><td class="num">1.97×</td></tr>
+  <tr><td>Yi-34B</td><td class="num">1.69×</td><td class="num">1.94×</td></tr>
+  <tr><td>LLaMA2-70B (PP)</td><td class="num">4.60×</td><td class="num">3.00×</td></tr>
+  <tr><td>Falcon-180B (PP)</td><td class="num">4.20×</td><td class="num">2.75×</td></tr>
+</table>
+</div>
+<p class="cap">Caveat: we matched these labels to bars by their position in the PDF's extracted text, and the captions don't say which baseline they're relative to. Two labels equal the text's vs-Orca figures (4.00 ↔ 4.0×, 6.31 ↔ 6.3×), so our guess is Orca. Treat any single cell as approximate. Gains are smaller on arxiv, but so is everyone's capacity, because 7,059-token median prompts make stalls longer.</p>
+<p>Two more findings. First, Orca and vLLM usually break the P99 TBT SLO before they reach their maximum throughput, so relaxing the SLO helps them a lot. Second, vLLM beats Orca under the relaxed SLO. Orca batches several whole prompts together, which can mean an even longer stall, and without PagedAttention it can't run batches as large as vLLM's.</p>
+
+<h3 class="sm">§5.2 The throughput–latency trade-off <small>Fig 12</small></h3>
+<p>The authors sweep five P99 TBT SLOs for Mistral-7B and Yi-34B on openchat. They run vLLM at max batch 32, 64 and 128, and Sarathi-Serve at budgets 512 and 2,048. The key result: <b>vLLM's capacity is "largely identical" for all three batch sizes</b>. PagedAttention makes room for big batches, but with a latency target the stalls, not memory, set the limit. Sarathi-Serve reaches <b>3.5×</b> vLLM's capacity at the strict SLO with τ = 512, and <b>1.65×</b> at a relaxed 1 s with τ = 2,048 (Yi-34B).</p>
+<p class="cap" style="text-align:left">Source inconsistency: the text attributes the 3.5× to "(100ms, Mistral-7B)" and the Fig 12 caption to Yi-34B. 100 ms is Mistral-7B's strict SLO in Table 3, which fits the text.</p>
+
+<h3 class="sm">§5.3 Pipeline parallelism becomes viable <small>Fig 13</small></h3>
+<p>Falcon-180B runs on two 4×A100 nodes linked by 100 Gbps Ethernet. Tensor parallelism across both nodes (TP8) gives about 2× the median decode latency of TP4 within a node plus PP2 across nodes, because of cross-node all-reduces. But vLLM with PP collapses under the strict SLO because of pipeline bubbles. Sarathi-Serve's evenly sized hybrid batches keep the stages busy: <b>4.3×</b> vLLM TP8's capacity and <b>3.6×</b> vLLM TP4-PP2's under strict SLOs, and 1.48× vLLM TP4-PP2's under relaxed ones.</p>
+
+<h3 class="sm">§5.4 Ablations <small>Fig 14, Table 4</small></h3>
+<p>Chunking overhead (Yi-34B, TP2) is at most ~25% at chunk 512 and "almost negligible" at 2,048. Table 4 separates the two ideas (Yi-34B on two A100s, τ = 1,024, 128 requests, seconds):</p>
+<table>
+  <tr><th>Scheduler</th><th class="num">openchat P50 TTFT</th><th class="num">openchat P99 TBT</th><th class="num">arxiv P50 TTFT</th><th class="num">arxiv P99 TBT</th></tr>
+  <tr><td>hybrid batching only</td><td class="num hi">0.53</td><td class="num lo">0.68</td><td class="num hi">3.78</td><td class="num lo">1.38</td></tr>
+  <tr><td>chunked prefills only</td><td class="num lo">1.04</td><td class="num">0.17</td><td class="num lo">5.38</td><td class="num">0.20</td></tr>
+  <tr class="pick"><td>Sarathi-Serve (both)</td><td class="num">0.76</td><td class="num hi">0.14</td><td class="num">3.90</td><td class="num hi">0.17</td></tr>
+</table>
+<p class="cap">Hybrid batching alone still stalls on long prompts. Chunking alone is slower to first token because chunks are "slightly inefficient". Together, TBT is best, and TTFT is within 0.23 s (openchat) and 0.12 s (arxiv) of the fastest.</p>
+
+<h2>Our simulation: the same shape on an H100 <small>labs/chunked-prefill-sim.py</small></h2>
+<p>The lab runs all five schedulers on one Llama-3.1-8B BF16 H100 using the step-time model above. It uses 500 synthetic Poisson requests. Prompt and output lengths come from lognormal fits to Table 2's openchat median and P90 (prompt σ = 0.930, output σ = 0.545, seed 0). After dropping requests over 8,192 tokens, as the paper does, the sample has a prompt median of 1,484 and P90 of 4,514, and an output median of 411 and P90 of 829. The 50 ms and 100 ms SLOs are our choice.</p>
+<div class="tw">
+<table>
+  <tr><th>Scheduler</th><th class="num">P50 TTFT at 6 req/s</th><th class="num">P99 TBT at 6 req/s</th><th class="num">Capacity, no TBT SLO</th><th class="num">Capacity, P99 ≤ 100 ms</th><th class="num">Capacity, P99 ≤ 50 ms</th></tr>
+  <tr><td>vLLM V0 (prefill-prioritised)</td><td class="num hi">36 ms</td><td class="num lo">72.7 ms</td><td class="num">14.20</td><td class="num lo">7.22</td><td class="num lo">4.56</td></tr>
+  <tr><td>Orca-style hybrid, whole prompts</td><td class="num">39 ms</td><td class="num">65.2 ms</td><td class="num">14.99</td><td class="num">8.49</td><td class="num">4.81</td></tr>
+  <tr><td>Chunked only, 512</td><td class="num lo">78 ms</td><td class="num">18.0 ms</td><td class="num">10.83</td><td class="num">10.83</td><td class="num">10.83</td></tr>
+  <tr class="pick"><td>Stall-free, τ = 512</td><td class="num">51 ms</td><td class="num hi">12.4 ms</td><td class="num">12.75</td><td class="num">12.75</td><td class="num hi">12.75</td></tr>
+  <tr><td>Stall-free, τ = 2,048</td><td class="num">38 ms</td><td class="num">38.5 ms</td><td class="num hi">14.99</td><td class="num hi">14.99</td><td class="num">10.83</td></tr>
+</table>
+</div>
+<div class="formula"><span class="c"># capacity: P99 TBT ≤ SLO, median scheduling delay ≤ 2 s</span>
+stall-free vs vLLM V0, 100 ms:  14.99 / 7.22 = <span class="g">2.1×</span>
+stall-free vs vLLM V0,  50 ms:  12.75 / 4.56 = <span class="g">2.8×</span>
+  12.75 req/s × 475 mean output tokens = 6,049 output tok/s
+no latency target:  14.20 → 14.99 req/s (+6%)</div>
+<p class="cap">Our model, no measurement. Throughput at 6 req/s is 2,728–2,734 output tok/s for every scheduler: the load is the same, and only who waits changes. The pattern matches Table 4 (TTFT hybrid &lt; stall-free &lt; chunked-only; TBT the reverse) and the paper's budget choice (512 for strict, 2,048 for relaxed). The ratios are close to the paper's 2.6× (Mistral-7B, A100), but that is partly coincidence. The model has no kernel-launch or CPU cost, which favours small chunks. Bisection resolution is 2.7%, which is why several capacities tie at 10.83 and 14.99.</p>
+
+<h2>§6 Related work: disaggregation instead</h2>
+<p>The other way to stop prefills disturbing decodes is to run them on different GPUs. The paper names Splitwise, DistServe and TetriInfer. These "can entirely eliminate the interference", and prefills run at full efficiency, so TTFT is better. The costs are that every request's KV cache has to be migrated after its prefill, which is "challenging in the absence of high-bandwidth interconnects", and that the prefill replicas' memory is under-used because only decode replicas hold KV. The paper leaves a quantitative comparison for future work. It also notes that APIServe has adopted Sarathi's chunked prefills. Course 4's <a href="../perf-4-attention-kv/mooncake-scheduling.html">Mooncake II</a> shows a disaggregated system that still chunks its prefills, pipelining them across nodes.</p>
+
+<h2>Why it beats the alternatives</h2>
+<div class="grid2">
+  <div class="cell"><h3><span class="x">&#10007;</span> Prefill-only iterations (vLLM V0)</h3><p>Whole prompts get an iteration to themselves, which is good for TTFT. Every running user freezes for it: in our sim P99 TBT is 72.7 ms at 6 req/s, and capacity drops to 4.56 req/s at a 50 ms SLO.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Hybrid with whole prompts (Orca)</h3><p>Decodes ride along, but the iteration is as long as the whole prompt. Up to 28.3× a decode step in Fig 9, and 0.68 s P99 TBT in Table 4.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Chunked only</h3><p>Stalls become short, but chunks still take turns with decodes instead of sharing iterations. TTFT gets worst: 1.04 s vs 0.53 s in Table 4, and 78 vs 39 ms in our sim.</p></div>
+  <div class="cell win"><h3><span class="ok">&#10003;</span> Chunked + stall-free hybrid</h3><p>Every iteration carries every decode plus a budget-sized chunk. P99 TBT is 0.14 s in Table 4 and capacity is 2.6–3.7× vLLM's in the paper. In our sim it's 12.75 req/s at 50 ms, 2.8× vLLM V0.</p></div>
+</div>
+
+<h2>Doesn't chunking a prompt make its TTFT worse?</h2>
+<div class="note">
+  <p>Somewhat. Each chunk re-reads earlier KV and pays fixed costs, and a chunk only gets the budget left after decodes. In Table 4, chunking on its own nearly doubles median TTFT on openchat: <b>1.04 s</b> against <b>0.53 s</b> for hybrid batching only. The combined scheduler gets back most of that (<b>0.76 s</b>) and has about <b>5× better P99 TBT</b> than hybrid-only (0.14 vs 0.68 s). A bigger budget shrinks the cost: in our sim at 6 req/s, τ = 2,048 gives 38 ms median TTFT against vLLM V0's 36 ms, while τ = 512 gives 51 ms.</p>
+  <p>When it's not the right choice: if you serve one request at a time, or batch offline jobs with no TBT target, chunking only adds overhead. Use a large budget (vLLM's docs suggest &gt; 8,192 for throughput) or turn chunking off. If TTFT matters more than smooth streaming and you have a fast interconnect, disaggregating prefill and decode removes the interference altogether, at the cost of moving KV between GPUs. And for very long prompts, a small τ means many iterations per prompt. The budget is a dial, not a fixed setting.</p>
+</div>
+
+<div class="foot">
+<p><a class="lab-link" href="https://github.com/seyonv/explainers/blob/main/perf-5-engines/labs/chunked-prefill-sim.py">Run it: labs/chunked-prefill-sim.py</a> <b>[L]</b> numpy only, about 10 s on the M3. It prints the step-time table, the 64-decode iteration costs, the budget profiling, the chunking overhead and KV re-reads, all five schedulers at 6 req/s, and capacity at no SLO, 100 ms and 50 ms. Every simulated number on this card comes from its output. Try this: set <code>FIXED_MS = 2.0</code>, or switch the workload to arxiv (7,059 / 12,985 prompts).</p>
+<p><b>Read next:</b> Agrawal et al., <a href="https://www.usenix.org/system/files/osdi24-agrawal.pdf">"Taming Throughput-Latency Tradeoff in LLM Inference with Sarathi-Serve"</a> (OSDI '24): §4 all of it with Algorithm 3 (15 min), §5 with Tables 1–4 and Figs 10–14 (25 min), §6 the disaggregation paragraph (5 min). About 45 min. Then the <a href="https://docs.vllm.ai/en/latest/configuration/optimization.html">vLLM optimization docs, "Chunked Prefill"</a> (5 min).</p>
+<p><b>Related:</b> <a href="sarathi-stalls.html">Sarathi-Serve I: why prefill stalls decode</a> · <a href="scheduler.html">The scheduler: KV budget, admission and preemption</a> · <a href="benchmarking.html">Benchmarking a server</a> · <a href="orca-iteration-scheduling.html">Orca I: iteration-level scheduling</a> · <a href="../perf-4-attention-kv/mooncake-scheduling.html">Mooncake II (chunked pipeline parallelism)</a> · <a href="../perf-3-kernels/matmul-naive.html">course 3: the naive matmul (tiles and tile quantization)</a> · <a href="../perf-2-scaling-book-inference/step-time.html">course 2: the step-time formula</a> · <a href="../perf-1-foundations/serving-metrics.html">course 1: serving metrics (TTFT, TBT)</a> · <a href="../llm-latency/tail-latency.html">tail latency</a></p>
+<p><b>Sources:</b> §4.1 medians and the ~512-token saturation, the 28.3× Fig 9 result, Algorithm 3, the §4.3 overheads, the 257 → +32% tile quantization, Vidur, the §4.4 implementation, Tables 1–4, the 5×/25× SLO definition, the 2 s scheduling-delay rule, the 2.6×/3.7×/5.6× headline, 4.0×/6.3×/4.3×, the Fig 10–11 labels, 3.5× and 1.65×, the Falcon 4.3×/3.6×/1.48×, ≤ ~25% overhead, and §6: <a href="https://www.usenix.org/system/files/osdi24-agrawal.pdf">Sarathi-Serve, OSDI '24</a> (<a href="https://arxiv.org/abs/2403.02310">arXiv 2403.02310</a>). vLLM V1 chunked prefill defaults and <code>max_num_batched_tokens</code> guidance: <a href="https://docs.vllm.ai/en/latest/configuration/optimization.html">vLLM docs, Optimization and Tuning</a>. Llama-3.1-8B shapes, H100 specs, 16.06 GB, 128 KiB/token and ops:byte 295: the course's shared facts. Everything labelled "our model" or "our sim" is our recomputation. The 128-row tile is illustrative.</p>
+</div>
+</article>
+<!-- series-nav:bottom -->
+<div class="snx"><a class="nx" href="index.html#scheduler" target="_top">
+<span class="mini" aria-hidden="true"><span class="m1">The scheduler: KV budget, admission and preemption</span><span class="m2">Also called the vLLM scheduler, or by its knobs: max_num_batched_tokens (the token budget), max_num_seqs, gpu_memory_utilization, and preemption (recompute or swap). This card is about vLLM V1's…</span><span class="m3">In one breath</span><span class="m4">Before every step, the scheduler picks which requests run and how many tokens each one gets. It has two budgets. The token budget limits how much compute (and so how much latency) one step can take. The KV block pool limits how many tokens of history can sit in memory. A waiting request starts only if its blocks fit. If a…</span></span>
+<span class="tx"><span class="lab">Next up · 06 / 15</span><span class="tt">The scheduler: KV budget, admission and preemption</span><span class="ds">What vLLM decides every step</span><span class="nd">Builds directly on this card.</span><span class="go">Continue →</span></span></a><div class="aux"><span><a href="index.html#sarathi-stalls" target="_top">← Sarathi-Serve I: why prefill stalls decode</a></span><a href="index.html" target="_top">All cards in 5 · Inside inference engines</a></div></div>
+<!-- /series-nav:bottom -->
+</body>
+</html>
