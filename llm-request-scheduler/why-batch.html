@@ -1,0 +1,347 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Why batching works: one weight read, many tokens</title>
+<style>
+:root{
+  --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
+  --text:#1c1f23; --muted:#6b7068; --faint:#b9b9b3;
+  --accent:#4a9d77; --accent-bg:#dcefdf; --accent-border:#8cc79c;
+  --red:#c0492b; --red-bg:#fbeceb;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#15171a; --surface:#1d2024; --surface2:#24282d; --border:#32373d;
+    --text:#e6e8ea; --muted:#9aa1a9; --faint:#4a5057;
+    --accent:#5fb37f; --accent-bg:#1c2b22; --accent-border:#3f7a55;
+    --red:#e57368; --red-bg:#2e1f1e;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text)}
+.card{max-width:820px;margin:0 auto;padding:28px 32px;font-family:-apple-system,"Inter",system-ui,sans-serif;line-height:1.45}
+h1{font-size:26px;font-weight:600;margin:0 0 6px;letter-spacing:-0.01em}
+.sub{font-size:15px;color:var(--muted);margin:0 0 20px}
+h2{font-size:17px;font-weight:600;margin:26px 0 10px}
+h2 small{font-size:13px;font-weight:400;color:var(--muted)}
+h3.sm{font-size:15px;font-weight:600;margin:18px 0 8px}
+h3.sm small{font-size:13px;font-weight:400;color:var(--muted)}
+p{font-size:15px;margin:0 0 10px}
+ul{font-size:15px;margin:0 0 10px;padding-left:20px}
+li{margin-bottom:4px}
+.cap{font-size:13px;color:var(--muted);margin:8px 0 0;text-align:center}
+.cap + p{margin-top:14px}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+
+/* Tables and formulas */
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border)}
+th{font-size:12px;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:none}
+.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.hi{color:var(--accent);font-weight:600} .lo{color:var(--red)} .mu{color:var(--muted)}
+tr.pick td{background:var(--accent-bg)}
+.formula{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin:10px 0;white-space:pre;overflow-x:auto;line-height:1.55}
+.formula .c{color:var(--muted)}
+.formula .g{color:var(--accent);font-weight:600}
+.formula .r{color:var(--red);font-weight:600}
+.tw{overflow-x:auto}
+.tw table{min-width:600px}
+
+/* MathML */
+.mathbox{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px 16px 12px;margin:10px 0;overflow-x:auto}
+.mathbox math{font-size:21px;color:var(--text);font-family:"STIX Two Math","Latin Modern Math","Cambria Math",math}
+.mathbox .t1{color:var(--text)} .mathbox .t2{color:var(--accent)} .mathbox .t3{color:var(--muted)}
+.mathbox .lab{font-size:12px;font-family:-apple-system,"Inter",system-ui,sans-serif;padding-top:3px;border-top:1.5px solid currentColor;margin-top:2px}
+.mathbox math + math{margin-top:14px}
+.legend{display:grid;grid-template-columns:auto 1fr auto;column-gap:14px;row-gap:5px;font-size:13px;margin-top:12px;align-items:baseline}
+.legend .sym{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;text-align:right}
+.legend .v{color:var(--muted);text-align:right;font-variant-numeric:tabular-nums}
+@media (max-width:560px){.legend{grid-template-columns:auto 1fr}.legend .v{display:none}}
+
+/* Two examples per term */
+.parts td{vertical-align:top} .parts td:first-child{font-weight:600}
+.parts .ex{font-size:13px} .parts .ex span{display:block;color:var(--muted)}
+.parts .what{font-size:13px}
+@media (max-width:560px){.parts .what{display:none}}
+
+/* Bar charts */
+.bars{display:grid;grid-template-columns:150px 1fr 110px;column-gap:10px;row-gap:9px;align-items:center;font-size:13px}
+.bars .nm{font-size:13px}
+.bars .track{display:flex;align-items:center}
+.bars .bar{height:18px;border-radius:3px;background:var(--faint)}
+.bars .bar.w{background:var(--accent)}
+.bars .bar.l{background:var(--red)}
+.bars .v{text-align:right;font-variant-numeric:tabular-nums}
+.bars .v.w{color:var(--accent);font-weight:600}
+.bars .v.l{color:var(--red)}
+
+/* 2x2 grid */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.cell{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.cell.win{background:var(--accent-bg);border-color:var(--accent-border)}
+.cell h3{font-size:16px;font-weight:600;margin:0 0 5px;display:flex;gap:8px;align-items:baseline}
+.cell p{font-size:14px;margin:0;color:var(--text)}
+.cell.win h3,.cell.win p{color:var(--accent)}
+.x{color:var(--red)} .ok{color:var(--accent)}
+
+/* Clarification box */
+.note{border:1px solid var(--border);border-radius:10px;padding:14px 18px;font-size:14px}
+.note p,.note li{font-size:14px} .note p:last-child{margin-bottom:0}
+
+.foot{margin-top:22px;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+.foot p{font-size:13px}
+.lab-link{display:inline-block;font-size:13px;border:1px solid var(--accent-border);background:var(--accent-bg);color:var(--accent);border-radius:6px;padding:4px 10px;margin:2px 0 10px;text-decoration:none}
+
+/* SVG */
+svg{display:block;max-width:100%;height:auto;margin-top:6px}
+.sl{font-size:12px;fill:var(--muted)} .st{font-size:13px;fill:var(--text)} .sh{font-size:13px;font-weight:600;fill:var(--text)}
+.slr{font-size:12px;fill:var(--red)}
+.bx{fill:var(--surface2);stroke:var(--faint);stroke-width:1}
+.bxa{fill:var(--accent-bg);stroke:var(--accent);stroke-width:1.2}
+.band{fill:var(--accent)}
+.dv{stroke:var(--border);stroke-width:1}
+@media (max-width:560px){.grid2{grid-template-columns:1fr}.card{padding:20px 16px}.bars{grid-template-columns:96px 1fr 80px}}
+a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+
+/* E1 bars: one row per batch size, three measures */
+.e1{display:grid;grid-template-columns:52px 1fr 1fr 1fr;column-gap:14px;row-gap:10px;align-items:end;font-size:13px}
+.e1 .hd{font-size:12px;color:var(--muted);font-weight:600}
+.e1 .b{font-variant-numeric:tabular-nums;font-weight:600;align-self:center}
+.e1 .b small{display:block;font-weight:400;color:var(--muted);font-size:11px}
+.e1 .m .val{display:block;font-variant-numeric:tabular-nums;margin-bottom:3px}
+.e1 .tr{display:flex;height:12px;background:var(--surface);border-radius:2px;overflow:hidden}
+.e1 .tr i{display:block;height:12px}
+.e1 .wt{background:var(--muted)} .e1 .kv{background:var(--faint)} .e1 .ok{background:var(--accent)} .e1 .rd{background:var(--red)}
+.key{display:flex;flex-wrap:wrap;gap:6px 16px;font-size:12px;color:var(--muted);margin-top:10px;justify-content:center}
+.key i{display:inline-block;width:12px;height:10px;border-radius:2px;margin-right:5px;vertical-align:-1px}
+.key .wt{background:var(--muted)} .key .kv{background:var(--faint)} .key .ok{background:var(--accent)}
+@media (max-width:560px){.e1{grid-template-columns:40px 1fr 1fr 1fr;column-gap:8px}.e1 .m .val{font-size:12px}}
+/* knee chart */
+.ax{stroke:var(--faint);stroke-width:1}
+.grd{stroke:var(--border);stroke-width:1}
+.c2{fill:none;stroke:var(--accent);stroke-width:2.5}
+.c8{fill:none;stroke:var(--text);stroke-width:2}
+.cd{fill:none;stroke:var(--faint);stroke-width:1.5;stroke-dasharray:4 4}
+.mk{stroke:var(--red);stroke-width:1;stroke-dasharray:3 3}
+.mk2{stroke:var(--muted);stroke-width:1;stroke-dasharray:3 3}
+.dotr{fill:var(--red)}
+.sa{font-size:12px;fill:var(--accent);font-weight:600}
+/* series-nav */
+.sn{max-width:820px;margin:0 auto;padding:16px 32px 0;font-family:-apple-system,"Inter",system-ui,sans-serif;font-size:13px;line-height:1.5;color:var(--muted)}
+.sn a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
+.sn .crumbs{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 7px}
+.sn .crumbs b{color:var(--text);font-weight:600}
+.sn .sep{color:var(--faint,var(--border))}
+.sn .step{margin-left:auto;white-space:nowrap}
+.sn .dep{margin-top:5px;padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface)}
+.sn .dep .ok{color:var(--accent);font-weight:600}
+.snx{max-width:820px;margin:0 auto;padding:6px 32px 44px;font-family:-apple-system,"Inter",system-ui,sans-serif}
+.snx .nx{display:grid;grid-template-columns:280px 1fr;text-decoration:none;color:var(--text);background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.snx .nx:hover,.snx .nx:focus-visible{border-color:var(--accent-border,var(--accent));outline:none}
+.snx .mini{position:relative;height:210px;overflow:hidden;background:var(--bg);border-right:1px solid var(--border);padding:14px 16px}
+.snx .mini span{display:block}
+.snx .mini .m1{font-size:12.5px;font-weight:600;margin:0 0 4px;line-height:1.3}
+.snx .mini .m2{font-size:9px;color:var(--muted);margin:0 0 8px;line-height:1.4}
+.snx .mini .m3{font-size:8.5px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;margin:0 0 3px}
+.snx .mini .m4{font-size:9.5px;margin:0;line-height:1.45}
+.snx .tx{padding:16px 20px}
+.snx .lab{font-size:12px;font-weight:600;color:var(--accent);letter-spacing:.04em;text-transform:uppercase}
+.snx .tt{display:block;font-size:20px;font-weight:600;margin:5px 0 4px;line-height:1.25}
+.snx .ds{display:block;font-size:14px;color:var(--muted)}
+.snx .nd{display:block;font-size:13px;color:var(--muted);margin-top:10px}
+.snx .go{display:block;margin-top:12px;font-size:14px;font-weight:600;color:var(--accent)}
+.snx .aux{display:flex;justify-content:space-between;gap:12px;margin-top:10px;font-size:13px;color:var(--muted)}
+.snx .aux a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
+@media (max-width:560px){.sn,.snx{padding-left:16px;padding-right:16px}.snx .nx{grid-template-columns:1fr}.snx .mini{display:none}.sn .step{margin-left:0}}
+/* /series-nav */
+</style>
+</head>
+<body>
+<!-- series-nav:top -->
+<nav class="sn" aria-label="Course navigation"><div class="crumbs"><a href="../index.html" target="_top">All explainers</a><span class="sep">›</span><a href="index.html" target="_top">Build an LLM request scheduler</a><span class="sep">›</span><b>06 / 25</b><span class="step"><a href="index.html#metrics-slos" target="_top">← prev</a> · <a href="index.html#static-batching" target="_top">next →</a></span></div>
+</nav>
+<!-- /series-nav:top -->
+<article class="card">
+<h1>Why batching works: one weight read, many tokens</h1>
+<p class="sub">Also called batch size, arithmetic intensity or the critical batch size. In this course it is the mechanism under everything else: every batching strategy and every scheduler decision later on exists to put more tokens into each read of the weights. Numbers are for the running example, Llama-3.1-8B in BF16 on one H100, from our simulator's step-time model.</p>
+
+<h2>In one breath</h2>
+<p>Producing one token means reading all 16.06 GB of weights from memory, and that read takes about 4.8 ms whether the step computes 1 token or 200. So if you run many requests in the same step, they share that one read: total throughput goes up almost in proportion to the batch, and each user's speed drops only a little. Two things stop this from going on forever. Every request also has to read its own KV cache, and there is only so much memory to keep that cache in.</p>
+
+<p><b>Everyday version:</b> a bus trip costs about the same fuel and driver time with 1 passenger or 50. The fuel and the driver are the weight read. Each passenger adds a few seconds to load their luggage (their KV cache), and people on long trips bring more luggage. The bus fills up with luggage long before it runs out of seats.</p>
+
+<h2>The step-time formula</h2>
+<p>This is the cost model our simulator uses for one forward step (<code>CostModel.step_time</code> in <code>labs/scheduler.py</code>). It is a floor at 100% of peak; real engines are slower by their kernel efficiency and CPU overhead.</p>
+<div class="mathbox">
+<math display="block">
+  <msub><mi>t</mi><mtext>step</mtext></msub><mo>=</mo><mo>max</mo><mo stretchy="true" form="prefix" minsize="2.4em">(</mo>
+  <munder class="t2"><mfrac><mrow><mn>2</mn><mi>P</mi><mi>T</mi></mrow><mi>C</mi></mfrac><mtext class="lab">math</mtext></munder>
+  <mo>,</mo>
+  <munder class="t1"><mfrac><mi>W</mi><mtext>BW</mtext></mfrac><mtext class="lab">weight read, shared</mtext></munder>
+  <mo stretchy="true" form="postfix" minsize="2.4em">)</mo>
+  <mo>+</mo>
+  <munder class="t3"><mfrac><mtext>KV</mtext><mtext>BW</mtext></mfrac><mtext class="lab">KV read, per request</mtext></munder>
+</math>
+<div class="legend">
+  <span class="sym">P</span><span>model parameters; 2 FLOPs per parameter per token</span><span class="v">8.03e9</span>
+  <span class="sym">T</span><span>tokens in the step; in decode, one per running request, so T = B</span><span class="v">1 to 238</span>
+  <span class="sym">C</span><span>peak math, H100 dense BF16</span><span class="v">989 TFLOPS</span>
+  <span class="sym">W</span><span>weight bytes, read once per step no matter how big T is</span><span class="v">16.06 GB</span>
+  <span class="sym">BW</span><span>HBM bandwidth</span><span class="v">3.35 TB/s</span>
+  <span class="sym">KV</span><span>KV bytes read: every scheduled request's context × 128 KiB per token</span><span class="v">B × 2,048 × 131,072 B</span>
+</div>
+</div>
+<pre class="formula">B = 64 decodes at 2k context:
+math    2 × 8.03e9 × 64 ÷ 989e12                 =  1.04 ms
+weights 16.06 GB ÷ 3.35 TB/s                     =  4.79 ms
+max(1.04, 4.79)                                  =  4.79 ms  <span class="c"># weights win</span>
+KV      64 × 2,048 × 131,072 B = 17.2 GB ÷ BW     =  5.13 ms
+t_step                                           = <span class="g"> 9.92 ms</span>
+64 tokens ÷ 9.92 ms                              = <span class="g">6,450 tok/s</span></pre>
+<p class="cap">The first two terms sit inside a max, so extra tokens are free until the math takes longer than the weight read. The third term is added on top and grows with every request and every token of its context.</p>
+
+<h2>What batching buys: E1 in our simulation</h2>
+<p>Decode only, every request at 2,048 tokens of context. Step time barely moves at first, then rises as the KV read grows. Total throughput climbs 49× while each user's speed falls about 5×.</p>
+<div class="e1" role="img" aria-label="Step time, total throughput and per-user throughput for batch sizes 1 to 238">
+  <span class="hd">B</span><span class="hd">Step time (ms)</span><span class="hd">Total tok/s</span><span class="hd">Per-user tok/s</span>
+
+  <span class="b">1</span>
+  <span class="m"><span class="val">4.9</span><span class="tr"><i class="wt" style="width:20%"></i><i class="kv" style="width:0.3%"></i></span></span>
+  <span class="m"><span class="val">205</span><span class="tr"><i class="ok" style="width:2.1%"></i></span></span>
+  <span class="m"><span class="val">205</span><span class="tr"><i class="ok" style="width:100%"></i></span></span>
+
+  <span class="b">8</span>
+  <span class="m"><span class="val">5.4</span><span class="tr"><i class="wt" style="width:20%"></i><i class="kv" style="width:2.7%"></i></span></span>
+  <span class="m"><span class="val">1,472</span><span class="tr"><i class="ok" style="width:14.7%"></i></span></span>
+  <span class="m"><span class="val">184</span><span class="tr"><i class="ok" style="width:89.8%"></i></span></span>
+
+  <span class="b">32</span>
+  <span class="m"><span class="val">7.4</span><span class="tr"><i class="wt" style="width:20%"></i><i class="kv" style="width:10.7%"></i></span></span>
+  <span class="m"><span class="val">4,349</span><span class="tr"><i class="ok" style="width:43.5%"></i></span></span>
+  <span class="m"><span class="val">136</span><span class="tr"><i class="ok" style="width:66.3%"></i></span></span>
+
+  <span class="b">64</span>
+  <span class="m"><span class="val">9.9</span><span class="tr"><i class="wt" style="width:20%"></i><i class="kv" style="width:21.4%"></i></span></span>
+  <span class="m"><span class="val">6,450</span><span class="tr"><i class="ok" style="width:64.5%"></i></span></span>
+  <span class="m"><span class="val">101</span><span class="tr"><i class="ok" style="width:49.3%"></i></span></span>
+
+  <span class="b">128</span>
+  <span class="m"><span class="val">15.1</span><span class="tr"><i class="wt" style="width:20%"></i><i class="kv" style="width:42.8%"></i></span></span>
+  <span class="m"><span class="val">8,505</span><span class="tr"><i class="ok" style="width:85.1%"></i></span></span>
+  <span class="m"><span class="val">66</span><span class="tr"><i class="ok" style="width:32.2%"></i></span></span>
+
+  <span class="b">238<small>memory max</small></span>
+  <span class="m"><span class="val">23.9</span><span class="tr"><i class="wt" style="width:20%"></i><i class="kv" style="width:79.5%"></i></span></span>
+  <span class="m"><span class="val hi">9,973</span><span class="tr"><i class="ok" style="width:99.7%"></i></span></span>
+  <span class="m"><span class="val lo">42</span><span class="tr"><i class="rd" style="width:20.5%"></i></span></span>
+</div>
+<div class="key"><span><i class="wt"></i>weight read, 4.79 ms every step</span><span><i class="kv"></i>KV read, grows with B</span><span><i class="ok"></i>tokens per second</span></div>
+<p class="cap">Our simulation (<code>experiments.py</code>, E1), 100%-of-peak floor. Bars are to scale: step time out of 24 ms, total out of 10,000 tok/s, per-user out of 205. The math term (3.9 ms at B = 238) never passes the weight read, so it never shows up in the bar.</p>
+
+<h2>Where the knee is</h2>
+<p>If the weights were the only thing read, extra tokens would be free up to the point where the math takes as long as the weight read: 2PB/C = W/BW, so B = C/BW × W/2P ≈ 989e12 / 3.35e12 ≈ <b>295</b>. That is the critical batch size B<sub>crit</sub>. At B = 295 the step would still be 4.79 ms and throughput would be about 61,500 tok/s. In practice you never get there, for two reasons:</p>
+<ul>
+<li><b>The KV read grows first.</b> Each 2k-context request adds 2,048 × 128 KiB = 0.27 GB of reads per step. The KV read matches the 16.06 GB weight read at B ≈ <b>60</b> at 2k context, and at B ≈ <b>15</b> at 8k (16.06 GB ÷ 128 KiB = 122,528 tokens of context). Past that point, most of each step is KV reading, not weight reading.</li>
+<li><b>Memory runs out.</b> 63.9 GB of free HBM holds 487,504 tokens of KV: <b>238</b> sequences at 2k, <b>59</b> at 8k. Both caps are well below 295, so decode on this setup is memory-capacity-bound before it is ever compute-bound.</li>
+</ul>
+<svg viewBox="0 0 800 300" role="img" aria-label="Total throughput against batch size at 2k and 8k context, with the memory caps and the critical batch size marked">
+  <line class="grd" x1="60" y1="210" x2="760" y2="210"/><line class="grd" x1="60" y1="170" x2="760" y2="170"/><line class="grd" x1="60" y1="130" x2="760" y2="130"/><line class="grd" x1="60" y1="90" x2="760" y2="90"/><line class="grd" x1="60" y1="50" x2="760" y2="50"/>
+  <line class="ax" x1="60" y1="250" x2="760" y2="250"/><line class="ax" x1="60" y1="30" x2="60" y2="250"/>
+  <text class="sl" x="52" y="254" text-anchor="end">0</text><text class="sl" x="52" y="174" text-anchor="end">4k</text><text class="sl" x="52" y="94" text-anchor="end">8k</text><text class="sl" x="52" y="54" text-anchor="end">10k</text>
+  <text class="sl" x="60" y="268" text-anchor="middle">0</text><text class="sl" x="176.7" y="268" text-anchor="middle">50</text><text class="sl" x="293.3" y="268" text-anchor="middle">100</text><text class="sl" x="410" y="268" text-anchor="middle">150</text><text class="sl" x="526.7" y="268" text-anchor="middle">200</text><text class="sl" x="643.3" y="268" text-anchor="middle">250</text><text class="sl" x="760" y="268" text-anchor="middle">300</text>
+  <text class="sl" x="410" y="290" text-anchor="middle">batch size B (decodes per step)</text>
+  <text class="sl" x="66" y="24">total tok/s</text>
+
+  <line class="mk2" x1="200" y1="40" x2="200" y2="250"/><text class="sl" x="206" y="44">B ≈ 60: KV read = weight read (2k)</text>
+  <line class="mk2" x1="748.3" y1="60" x2="748.3" y2="250"/><text class="sl" x="742" y="140" text-anchor="end">B_crit ≈ 295: math = weight read</text>
+
+  <path class="cd" d="M615.3,50.5 L624.7,49.9 L634.0,49.2 L643.3,48.6 L652.7,48.0 L662.0,47.4 L671.3,46.8 L680.7,46.2 L690.0,45.7 L699.3,45.1 L708.7,44.6 L718.0,44.1 L727.3,43.6 L736.7,43.1 L746.0,42.6 L760.0,42.5"/>
+  <path class="cd" d="M197.7,200.2 L216.3,199.0 L235.0,198.0 L253.7,197.1 L272.3,196.4 L291.0,195.8 L309.7,195.3 L328.3,194.8 L347.0,194.4 L365.7,194.0 L384.3,193.7 L403.0,193.4 L421.7,193.1 L440.3,192.8 L459.0,192.6 L477.7,192.4 L496.3,192.2 L515.0,192.0 L533.7,191.9 L552.3,191.7 L571.0,191.6 L589.7,191.5 L608.3,191.3 L627.0,191.2 L645.7,191.1 L664.3,191.0 L683.0,190.9 L701.7,190.8 L720.3,190.7 L739.0,190.7 L760.0,190.6"/>
+  <path class="c2" d="M62.3,245.9 L69.3,234.4 L76.3,223.9 L83.3,214.3 L90.3,205.4 L97.3,197.3 L104.3,189.8 L111.3,182.9 L118.3,176.4 L125.3,170.4 L132.3,164.8 L139.3,159.6 L146.3,154.6 L153.3,150.0 L160.3,145.6 L167.3,141.5 L174.3,137.6 L181.3,133.9 L188.3,130.5 L195.3,127.1 L202.3,124.0 L209.3,121.0 L216.3,118.1 L223.3,115.4 L230.3,112.8 L237.3,110.3 L244.3,108.0 L251.3,105.7 L258.3,103.5 L265.3,101.4 L272.3,99.4 L279.3,97.5 L286.3,95.6 L293.3,93.8 L300.3,92.1 L307.3,90.5 L314.3,88.9 L321.3,87.3 L328.3,85.8 L335.3,84.4 L342.3,83.0 L349.3,81.6 L356.3,80.3 L363.3,79.1 L370.3,77.8 L377.3,76.7 L384.3,75.5 L391.3,74.4 L398.3,73.3 L405.3,72.3 L412.3,71.2 L419.3,70.2 L426.3,69.3 L433.3,68.3 L440.3,67.4 L447.3,66.5 L454.3,65.7 L461.3,64.8 L468.3,64.0 L475.3,63.2 L482.3,62.4 L489.3,61.6 L496.3,60.9 L503.3,60.2 L510.3,59.5 L517.3,58.8 L524.3,58.1 L531.3,57.4 L538.3,56.8 L545.3,56.2 L552.3,55.5 L559.3,54.9 L566.3,54.3 L573.3,53.8 L580.3,53.2 L587.3,52.6 L594.3,52.1 L601.3,51.6 L608.3,51.1 L615.3,50.5"/>
+  <path class="c8" d="M62.3,246.1 L69.3,236.8 L76.3,230.1 L83.3,225.0 L90.3,221.0 L97.3,217.7 L104.3,215.1 L111.3,212.9 L118.3,211.0 L125.3,209.3 L132.3,207.9 L139.3,206.7 L146.3,205.6 L153.3,204.6 L160.3,203.7 L167.3,202.9 L174.3,202.2 L181.3,201.5 L188.3,200.9 L195.3,200.4 L197.7,200.2"/>
+  <circle class="dotr" cx="615.3" cy="50.5" r="5"/><text class="slr" x="610" y="96" text-anchor="end">2k: memory full at B = 238 · 9,973 tok/s</text>
+  <circle class="dotr" cx="197.7" cy="200.2" r="5"/><text class="slr" x="206" y="222">8k: memory full at B = 59 · 2,489 tok/s</text>
+  <text class="sa" x="300" y="112">2k context</text>
+  <text class="sh" x="110" y="196">8k context</text>
+  <text class="sl" x="560" y="182">dashed: if memory were unlimited</text>
+</svg>
+<p class="cap">Our model (<code>CostModel.raw(B, B × context)</code>). Solid lines stop where the KV blocks run out. The dashed lines show that more memory alone would not help much: with the KV read dominating, throughput levels off toward BW ÷ (context × 128 KiB), which is about 12,500 tok/s at 2k and 3,100 tok/s at 8k.</p>
+
+<p>The same numbers at 8k context, computed with <code>CostModel.raw</code>:</p>
+<div class="tw">
+<table>
+  <tr><th>Context</th><th class="num">B = 1: step · tok/s</th><th class="num">Memory cap B</th><th class="num">Step at cap</th><th class="num">Total tok/s at cap</th><th class="num">Per user at cap</th><th class="num">Gain from batching</th></tr>
+  <tr class="pick"><td>2,048 (E1)</td><td class="num">4.9 ms · 205</td><td class="num">238</td><td class="num">23.9 ms</td><td class="num hi">9,973</td><td class="num">42</td><td class="num hi">49×</td></tr>
+  <tr><td>8,192</td><td class="num">5.1 ms · 196</td><td class="num">59</td><td class="num">23.7 ms</td><td class="num lo">2,489</td><td class="num">42</td><td class="num">12.7×</td></tr>
+</table>
+</div>
+<pre class="formula">8k, B = 59:  4.79 ms weights + 59 × 8,192 × 131,072 B ÷ 3.35 TB/s
+           = 4.79 + 18.91                            = 23.70 ms
+             59 ÷ 23.70 ms                           = <span class="g">2,489 tok/s</span>
+<span class="c"># at the cap, both contexts read almost all 63.9 GB of KV every step,</span>
+<span class="c"># so the step is ~24 ms either way. 8k just fits 4× fewer users in it.</span></pre>
+
+<p>Each term, with two contrasting examples from the running setup:</p>
+<div class="tw">
+<table class="parts">
+  <tr><th>Term</th><th class="what">What it means</th><th>Example A: 2k context</th><th>Example B: 8k context</th></tr>
+  <tr><td>Batch size B</td><td class="what">How many requests take a token in the same forward step. In decode, the tokens per step</td>
+      <td class="ex"><b>up to 238</b><span>the most that fit in 63.9 GB of KV</span></td>
+      <td class="ex"><b>up to 59</b><span>each request holds 1.07 GB of KV</span></td></tr>
+  <tr><td>Arithmetic intensity</td><td class="what">FLOPs done per byte read from memory: 2PB ÷ (W + KV). Counting weights only, it is about B, since W = 2P bytes in BF16</td>
+      <td class="ex"><b>0.98 at B = 1 · 47.8 at B = 238</b><span>2 × 8.03e9 × 238 ÷ (16.06 + 63.9) GB</span></td>
+      <td class="ex"><b>0.94 at B = 1 · 11.9 at B = 59</b><span>the H100 needs 295 to keep its math busy</span></td></tr>
+  <tr><td>Critical batch size</td><td class="what">The B where math time equals weight-read time. Below it, extra tokens cost almost nothing</td>
+      <td class="ex"><b>295 on paper</b><span>989 TFLOPS ÷ 3.35 TB/s; memory caps B at 238</span></td>
+      <td class="ex"><b>never reached</b><span>the KV read already equals the weight read at B ≈ 15</span></td></tr>
+</table>
+</div>
+
+<h2>It depends on the setup</h2>
+<p>How much batching buys depends on the hardware, the model size and the context. The reader's own M3 shows the same shape with much smaller numbers:</p>
+<div class="tw">
+<table>
+  <tr><th>Setup</th><th>Source</th><th class="num">One at a time</th><th class="num">Batched</th><th class="num">Total gain</th></tr>
+  <tr><td>Llama-3.1-8B BF16, H100, 2k</td><td>our model</td><td class="num">205 tok/s</td><td class="num">B = 238: 9,973 total · 42 each</td><td class="num hi">49×</td></tr>
+  <tr><td>Llama-3.1-8B BF16, H100, 8k</td><td>our model</td><td class="num">196 tok/s</td><td class="num">B = 59: 2,489 total · 42 each</td><td class="num">12.7×</td></tr>
+  <tr><td>Llama-3.2-3B Q4_K_M, llama-server, Apple M3</td><td>measured (busy machine)</td><td class="num">28.9 tok/s</td><td class="num">16 at once: 100.2 total · 8.5 each</td><td class="num">3.5×</td></tr>
+</table>
+</div>
+<pre class="formula">H100:  9,973 ÷ 205  = 49×   per user 205 → 42   (4.9× slower each)
+M3:    100.2 ÷ 28.9 = 3.5×  per user 31.7 → 8.5 (3.7× slower each)</pre>
+<p class="cap">The M3 row is a real measurement reused from the Inside an inference engine course. Why it gains so much less isn't isolated here; a much smaller GPU with less spare math per byte, 4-bit weights and a busy machine are all plausible causes (our guess, not measured).</p>
+
+<h2>Four ways to get more tokens per weight read</h2>
+<div class="grid2">
+  <div class="cell win"><h3><span class="ok">✓</span> Bigger batch</h3><p>More requests share each 4.79 ms read: 205 → 9,973 tok/s from B = 1 to 238 (our model). It is the one lever the scheduler owns, and the subject of this course. Cost: each user gets slower, and it only works if enough requests are in memory at once.</p></div>
+  <div class="cell"><h3>Speculative decoding</h3><p>A cheap draft guesses k tokens, and one forward step of the big model checks them all, so one weight read can yield several tokens for the same user. Reported: 1.21× to 1.96× depending on batch size; DeepSeek about 1.8× at 80–90% acceptance. Cost: rejected guesses waste math, which is scarcer once the batch is already big (our inference).</p></div>
+  <div class="cell"><h3>Fewer bytes per weight</h3><p>Quantize the weights, for example to 8 bits: W drops to 8.03 GB, so B = 1 goes from 205 to 404 tok/s in our model. At B = 238 it only goes from 9,973 to 10,377 (+4%), because the 19 ms KV read now dominates; for that, quantize the KV cache too. Reported: "30 to 50 percent better performance".</p></div>
+  <div class="cell"><h3>Shorter contexts</h3><p>Less KV per request means less to read each step and more requests in memory: 238 fit at 2k against 59 at 8k, for 9,973 against 2,489 tok/s. Levers: trimming prompts, fewer KV heads (GQA, which Llama-3.1-8B already uses) and KV quantization. Cost: the model sees less, or loses some quality.</p></div>
+</div>
+<p class="cap">The 8-bit rows use our model with W halved and C unchanged; real FP8 also doubles peak math on an H100 and frees memory for about 268 sequences at 2k, so treat them as a floor. Quoted speedups are from the sources in the footer, not our simulation.</p>
+
+<h2>Then why not always run at the maximum batch?</h2>
+<div class="note">
+  <p><b>Latency.</b> Each step takes longer as B grows, and every user waits one step per token. At B = 238, decode alone takes 23.9 ms per token, inside our 50 ms TPOT SLO, but a 4,096-token prompt joining 64 decodes stretches their step from 9.9 to 72.8 ms. Capping max_num_seqs trades one for the other: under overload, 16 seqs give 2,694 tok/s at 5.8 ms TPOT, 512 seqs give 8,980 tok/s at 37.2 ms (our simulation, E4).</p>
+  <p><b>Memory.</b> The cap is 238 at 2k and 59 at 8k, and every running request's KV keeps growing as it writes. Admit too many and the scheduler has to preempt and recompute: with 4,000 blocks at 30 req/s, 63 preemptions push TTFT p99 to 4.1 s.</p>
+  <p><b>Requests don't arrive together.</b> At 2 req/s there are never 238 requests to batch, and every strategy delivers the same ~520 tok/s, because that is all the demand there is. The real question is how long you make an early request wait for company: static batching of 32 gives a median TTFT of 8.7 s, a 50 ms dynamic window 1.96 s, continuous batching 11 ms (E2). The next three cards are about exactly this.</p>
+  <p>When not to batch: a single user on a laptop (like the M3 above, where one stream is all there is), or a latency-critical request that should never share a step with long prompts. For offline jobs with no latency target, run at the memory cap.</p>
+</div>
+
+<div class="foot">
+<p><a class="lab-link" href="https://github.com/seyonv/explainers/blob/main/llm-request-scheduler/labs/experiments.py">Run it: labs/experiments.py</a> E1 prints the batch table. The 8k row, the knee chart and the 8-bit numbers come from <code>CostModel.raw(B, B × context)</code> in <a href="https://github.com/seyonv/explainers/blob/main/llm-request-scheduler/labs/scheduler.py">labs/scheduler.py</a>, with <code>weight_bytes=8.03e9</code> for the 8-bit case.</p>
+<p><b>Read next:</b> <a href="../perf-2-scaling-book-inference/step-time.html">The math of serving an LLM: the step-time formula</a> and <a href="../perf-2-scaling-book-inference/critical-batch-size.html">linear layers and the critical batch size</a>. Then Databricks, <a href="https://www.databricks.com/blog/llm-inference-performance-engineering-best-practices">"LLM Inference Performance Engineering: Best Practices"</a> (the MBU section).</p>
+<p><b>Related:</b> <a href="bottlenecks.html">The bottlenecks</a> · <a href="static-batching.html">Static batching and its padding tax</a> · <a href="continuous-batching.html">Continuous batching</a> · <a href="throughput-levers.html">Every way to raise throughput, ranked</a> · <a href="../perf-1-foundations/roofline-intuition.html">How a GPU runs a language model: roofline intuition</a> · <a href="../perf-2-scaling-book-inference/params-vs-kv.html">The math of serving an LLM: params vs KV</a> · <a href="../perf-4-attention-kv/gqa.html">Attention and the KV cache: GQA</a> · <a href="../perf-4-attention-kv/kv-quantization.html">KV quantization</a> · <a href="../perf-5-engines/quantization-serving.html">Inside an inference engine: quantization in serving</a> · <a href="../perf-5-engines/spec-decoding-practice.html">speculative decoding in practice</a></p>
+<p><b>Sources:</b> Speculative decoding 1.21×–1.96× by batch size, DeepSeek 80–90% acceptance and ~1.8×: <a href="https://blog.bytebytego.com/p/how-to-make-llms-3x-faster">ByteByteGo, "How to Make LLMs 3X Faster"</a>. Quantization "30 to 50 percent better performance": <a href="https://blog.bytebytego.com/p/a-guide-to-ai-inference-engineering">ByteByteGo, "A Guide to AI Inference Engineering"</a>. Model and H100 numbers, E1, E2, E3 and E4: the course's shared facts and <a href="https://github.com/seyonv/explainers/blob/main/llm-request-scheduler/labs/experiments.py">our simulation: labs/experiments.py</a> (100%-of-peak floor). M3 row: the Inside an inference engine course's llama-server measurement.</p>
+</div>
+</article>
+<!-- series-nav:bottom -->
+<div class="snx"><a class="nx" href="index.html#static-batching" target="_top">
+<span class="mini" aria-hidden="true"><span class="m1">Static batching and its padding tax</span><span class="m2">Also called request-level batching or naive batching. It was the default before iteration-level scheduling (FasterTransformer-era servers, a plain padded generate() call), and it survives as…</span><span class="m3">In one breath</span><span class="m4">Wait until B requests have arrived, pad every prompt to the longest one, prefill them together, then decode the whole group until its longest answer is done. Nobody new can join mid-flight, and a row that finishes early keeps its seat, idle, until the last row is done. It's the simplest scheduler there is. You pay for that three…</span></span>
+<span class="tx"><span class="lab">Next up · 07 / 25</span><span class="tt">Static batching and its padding tax</span><span class="ds">Wait for a full batch, run to the longest</span><span class="go">Continue →</span></span></a><div class="aux"><span><a href="index.html#metrics-slos" target="_top">← Measuring a server: TTFT, TPOT, throughput, goodput</a></span><a href="index.html" target="_top">All cards in Build an LLM request scheduler</a></div></div>
+<!-- /series-nav:bottom -->
+</body>
+</html>

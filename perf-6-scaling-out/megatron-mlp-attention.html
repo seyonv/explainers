@@ -1,0 +1,347 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Megatron I: splitting the MLP and attention</title>
+<style>
+:root{
+  --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
+  --text:#1c1f23; --muted:#6b7068; --faint:#b9b9b3;
+  --accent:#4a9d77; --accent-bg:#dcefdf; --accent-border:#8cc79c;
+  --red:#c0492b; --red-bg:#fbeceb;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#15171a; --surface:#1d2024; --surface2:#24282d; --border:#32373d;
+    --text:#e6e8ea; --muted:#9aa1a9; --faint:#4a5057;
+    --accent:#5fb37f; --accent-bg:#1c2b22; --accent-border:#3f7a55;
+    --red:#e57368; --red-bg:#2e1f1e;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text)}
+.card{max-width:820px;margin:0 auto;padding:28px 32px;font-family:-apple-system,"Inter",system-ui,sans-serif;line-height:1.45}
+h1{font-size:26px;font-weight:600;margin:0 0 6px;letter-spacing:-0.01em}
+.sub{font-size:15px;color:var(--muted);margin:0 0 20px}
+h2{font-size:17px;font-weight:600;margin:26px 0 10px}
+h3.sm{font-size:15px;font-weight:600;margin:18px 0 8px}
+p{font-size:15px;margin:0 0 10px}
+ul{font-size:15px;margin:0 0 10px;padding-left:20px}
+li{margin-bottom:4px}
+.cap{font-size:13px;color:var(--muted);margin:8px 0 0;text-align:center}
+.cap + p{margin-top:14px}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+
+/* Tables and formulas */
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border)}
+th{font-size:12px;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:none}
+.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.hi{color:var(--accent);font-weight:600} .lo{color:var(--red)} .mu{color:var(--muted)}
+tr.tot td{font-weight:600;border-top:1.5px solid var(--border)}
+.formula{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin:10px 0;white-space:pre;overflow-x:auto;line-height:1.55}
+.formula .c{color:var(--muted)}
+.formula .g{color:var(--accent);font-weight:600}
+.formula .r{color:var(--red);font-weight:600}
+.tw{overflow-x:auto}
+.tw table{min-width:600px}
+
+/* MathML */
+.mathbox{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px 16px 12px;margin:10px 0;overflow-x:auto}
+.mathbox math{font-size:21px;color:var(--text);font-family:"STIX Two Math","Latin Modern Math","Cambria Math",math}
+.mathbox .t1{color:var(--text)} .mathbox .t2{color:var(--accent)} .mathbox .t3{color:var(--muted)} .mathbox .t4{color:var(--red)}
+.mathbox .lab{font-size:12px;font-family:-apple-system,"Inter",system-ui,sans-serif;padding-top:3px;border-top:1.5px solid currentColor;margin-top:2px}
+.mathbox math + math{margin-top:16px}
+.legend{display:grid;grid-template-columns:auto 1fr auto;column-gap:14px;row-gap:5px;font-size:13px;margin-top:12px;align-items:baseline}
+.legend .sym{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;text-align:right}
+.legend .v{color:var(--muted);text-align:right;font-variant-numeric:tabular-nums}
+@media (max-width:560px){.legend{grid-template-columns:auto 1fr}.legend .v{display:none}}
+
+/* Two examples per term */
+.parts td{vertical-align:top} .parts td:first-child{font-weight:600}
+.parts .ex{font-size:13px} .parts .ex span{display:block;color:var(--muted)}
+.parts .what{font-size:13px}
+@media (max-width:560px){.parts .what{display:none}}
+
+/* 2x2 grid */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.cell{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.cell.win{background:var(--accent-bg);border-color:var(--accent-border)}
+.cell h3{font-size:16px;font-weight:600;margin:0 0 5px;display:flex;gap:8px;align-items:baseline}
+.cell p{font-size:14px;margin:0;color:var(--text)}
+.cell.win h3,.cell.win p{color:var(--accent)}
+.x{color:var(--red)} .ok{color:var(--accent)}
+
+/* Clarification box */
+.note{border:1px solid var(--border);border-radius:10px;padding:14px 18px;font-size:14px}
+.note p,.note li{font-size:14px} .note p:last-child{margin-bottom:0}
+
+.foot{margin-top:22px;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+.foot p{font-size:13px}
+.lab-link{display:inline-block;font-size:13px;border:1px solid var(--accent-border);background:var(--accent-bg);color:var(--accent);border-radius:6px;padding:4px 10px;margin:2px 0 10px;text-decoration:none}
+
+/* SVG */
+svg{display:block;max-width:100%;height:auto;margin-top:6px}
+.sl{font-size:12px;fill:var(--muted)} .st{font-size:13px;fill:var(--text)} .sh{font-size:13px;font-weight:600;fill:var(--text)}
+.sa{font-size:13px;fill:var(--accent)} .sal{font-size:12px;fill:var(--accent)}
+.bn{fill:var(--surface);stroke:var(--border);stroke-width:1}
+.bx{fill:var(--surface2);stroke:var(--faint);stroke-width:1}
+.bxa{fill:var(--accent-bg);stroke:var(--accent);stroke-width:1.2}
+.ln{stroke:var(--muted);stroke-width:1.2;fill:none}
+@media (max-width:560px){.grid2{grid-template-columns:1fr}.card{padding:20px 16px}}
+a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+/* series-nav */
+.sn{max-width:820px;margin:0 auto;padding:16px 32px 0;font-family:-apple-system,"Inter",system-ui,sans-serif;font-size:13px;line-height:1.5;color:var(--muted)}
+.sn a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
+.sn .crumbs{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 7px}
+.sn .crumbs b{color:var(--text);font-weight:600}
+.sn .sep{color:var(--faint,var(--border))}
+.sn .step{margin-left:auto;white-space:nowrap}
+.sn .dep{margin-top:5px;padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface)}
+.sn .dep .ok{color:var(--accent);font-weight:600}
+.snx{max-width:820px;margin:0 auto;padding:6px 32px 44px;font-family:-apple-system,"Inter",system-ui,sans-serif}
+.snx .nx{display:grid;grid-template-columns:280px 1fr;text-decoration:none;color:var(--text);background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.snx .nx:hover,.snx .nx:focus-visible{border-color:var(--accent-border,var(--accent));outline:none}
+.snx .mini{position:relative;height:210px;overflow:hidden;background:var(--bg);border-right:1px solid var(--border);padding:14px 16px}
+.snx .mini span{display:block}
+.snx .mini .m1{font-size:12.5px;font-weight:600;margin:0 0 4px;line-height:1.3}
+.snx .mini .m2{font-size:9px;color:var(--muted);margin:0 0 8px;line-height:1.4}
+.snx .mini .m3{font-size:8.5px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;margin:0 0 3px}
+.snx .mini .m4{font-size:9.5px;margin:0;line-height:1.45}
+.snx .tx{padding:16px 20px}
+.snx .lab{font-size:12px;font-weight:600;color:var(--accent);letter-spacing:.04em;text-transform:uppercase}
+.snx .tt{display:block;font-size:20px;font-weight:600;margin:5px 0 4px;line-height:1.25}
+.snx .ds{display:block;font-size:14px;color:var(--muted)}
+.snx .nd{display:block;font-size:13px;color:var(--muted);margin-top:10px}
+.snx .go{display:block;margin-top:12px;font-size:14px;font-weight:600;color:var(--accent)}
+.snx .aux{display:flex;justify-content:space-between;gap:12px;margin-top:10px;font-size:13px;color:var(--muted)}
+.snx .aux a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
+@media (max-width:560px){.sn,.snx{padding-left:16px;padding-right:16px}.snx .nx{grid-template-columns:1fr}.snx .mini{display:none}.sn .step{margin-left:0}}
+/* /series-nav */
+</style>
+</head>
+<body>
+<!-- series-nav:top -->
+<nav class="sn" aria-label="Course navigation"><div class="crumbs"><a href="../perf-0-map/index.html" target="_top">Fast LLM inference</a><span class="sep">›</span><a href="index.html" target="_top">6 · Serving across GPUs</a><span class="sep">›</span><b>03 / 15</b><span class="step"><a href="index.html#collectives" target="_top">← prev</a> · <a href="index.html#megatron-scaling" target="_top">next →</a></span></div>
+<div class="dep"><b>Before this:</b> <a href="index.html#collectives" target="_top">How GPUs talk: collectives and interconnects</a></div></nav>
+<!-- /series-nav:top -->
+<article class="card">
+<h1>Megatron I: splitting the MLP and attention</h1>
+<p class="sub">Also called tensor parallelism (TP), Megatron-style or intra-layer model parallelism, and column-parallel / row-parallel linear layers. Card 1 of 2 on Megatron-LM (Shoeybi et al., NVIDIA, 2019). It walks §2.3 (where this idea sits) and all of §3 up to the embeddings: Eq 1–3, the f and g operators, head-parallel attention, and Fig 3–4. The paper never uses the words "tensor parallelism"; it says "intra-layer model parallel". <a href="megatron-scaling.html">Card 2</a> covers the embeddings, the fused loss, the experiments and what TP costs when serving.</p>
+
+<h2>In one breath</h2>
+<p>Split every weight matrix of a transformer layer across GPUs so that each GPU does 1/8 of every matmul at the same time. Megatron's trick is the order of the splits: cut the first matrix of each block by columns and the second by rows. Each GPU then runs its whole slice of the block alone, and the GPUs talk only once at the end of the block to add up their partial results. That is one all-reduce after attention and one after the MLP.</p>
+
+<h2>§2.3 Where this sits: three ways to use many GPUs</h2>
+<p>The paper names two ways to scale out. <b>Data parallelism</b> splits the batch. It scales throughput almost linearly, but "the model must fit entirely on one worker". <b>Model parallelism</b> splits the model, and it comes in two kinds. <b>Layer-wise pipeline parallelism</b> (GPipe) gives each device a group of layers and "suffers from pipeline bubbles". <b>Distributed tensor computation</b> (Mesh-TensorFlow, FlexFlow) splits the individual tensor operations. Megatron borrows Mesh-TensorFlow's insight of splitting the attention heads, but uses no compiler, only "a few simple primitives" added to ordinary PyTorch. Everyday picture: data parallelism is 8 kitchens each cooking whole meals; pipeline is one assembly line where each cook does a few steps; tensor parallelism is 8 cooks chopping the same onion at once.</p>
+<div class="tw"><table class="parts">
+<tr><th>Split</th><th class="what">What each GPU holds</th><th>Example A: Megatron (training, V100)</th><th>Example B: our serving examples (H100)</th></tr>
+<tr><td>Data parallel</td><td class="what">A full copy of the model. Each copy gets different requests or examples.</td>
+<td class="ex"><b>64-way</b><span>the 512-GPU run is 8-way model × 64-way data parallel</span></td>
+<td class="ex"><b>8 copies of Llama-3.1-8B</b><span>16.06 GB each, so it fits on one GPU. 70B at 141.1 GB can't do this.</span></td></tr>
+<tr><td>Pipeline parallel</td><td class="what">A contiguous group of layers. Activations pass from one stage to the next.</td>
+<td class="ex"><b>not used</b><span>the paper cites GPipe and calls its own method "orthogonal and complimentary [sic] to pipeline model parallelism"</span></td>
+<td class="ex"><b>70B layers 1–40 | 41–80</b><span>on two nodes (illustrative); see <a href="pipeline-data-parallel.html">the pipeline card</a></span></td></tr>
+<tr><td>Tensor parallel</td><td class="what">A slice of every weight matrix in every layer. All GPUs work on every token together.</td>
+<td class="ex"><b>8-way, 8.3B GPT-2</b><span>inside one DGX-2H, NVSwitch at 300 GB/s</span></td>
+<td class="ex"><b class="ok">TP8, Llama-3.1-70B</b><span>17.6 GB of weights per GPU; the rest of this card</span></td></tr>
+</table></div>
+
+<h2>§3a The MLP: why column first, then row</h2>
+<p>A transformer layer is a self-attention block followed by a two-layer MLP (Fig 2), and the paper splits each block separately. The MLP starts with a matmul and a GeLU (Eq 1). There are two ways to cut the first weight matrix A across GPUs:</p>
+<div class="mathbox">
+<math display="block">
+  <mi>Y</mi><mo>=</mo><mtext>GeLU</mtext><mo>(</mo><mi>X</mi><mi>A</mi><mo>)</mo>
+  <mspace width="2em"/><mtext mathsize="0.7em">(Eq 1)</mtext>
+</math>
+<math display="block">
+  <munder class="t4"><mrow>
+  <mi>X</mi><mo>=</mo><mo>[</mo><msub><mi>X</mi><mn>1</mn></msub><mo>,</mo><msub><mi>X</mi><mn>2</mn></msub><mo>]</mo><mo>,</mo><mspace width="0.4em"/>
+  <mi>A</mi><mo>=</mo><mrow><mo>[</mo><mtable><mtr><mtd><msub><mi>A</mi><mn>1</mn></msub></mtd></mtr><mtr><mtd><msub><mi>A</mi><mn>2</mn></msub></mtd></mtr></mtable><mo>]</mo></mrow>
+  <mspace width="0.6em"/><mo>&#8658;</mo><mspace width="0.6em"/>
+  <mi>Y</mi><mo>=</mo><mtext>GeLU</mtext><mo>(</mo><msub><mi>X</mi><mn>1</mn></msub><msub><mi>A</mi><mn>1</mn></msub><mo>+</mo><msub><mi>X</mi><mn>2</mn></msub><msub><mi>A</mi><mn>2</mn></msub><mo>)</mo>
+  </mrow><mtext class="lab">split A by rows (Eq 2): the sum must happen before GeLU, so the GPUs must sync first</mtext></munder>
+</math>
+<math display="block">
+  <munder class="t2"><mrow>
+  <mi>A</mi><mo>=</mo><mo>[</mo><msub><mi>A</mi><mn>1</mn></msub><mo>,</mo><msub><mi>A</mi><mn>2</mn></msub><mo>]</mo>
+  <mspace width="0.6em"/><mo>&#8658;</mo><mspace width="0.6em"/>
+  <mo>[</mo><msub><mi>Y</mi><mn>1</mn></msub><mo>,</mo><msub><mi>Y</mi><mn>2</mn></msub><mo>]</mo><mo>=</mo>
+  <mo>[</mo><mtext>GeLU</mtext><mo>(</mo><mi>X</mi><msub><mi>A</mi><mn>1</mn></msub><mo>)</mo><mo>,</mo><mtext>GeLU</mtext><mo>(</mo><mi>X</mi><msub><mi>A</mi><mn>2</mn></msub><mo>)</mo><mo>]</mo>
+  </mrow><mtext class="lab">split A by columns (Eq 3): each GPU applies GeLU to its own columns, no sync</mtext></munder>
+</math>
+<math display="block">
+  <mi>Z</mi><mo>=</mo><mi>Y</mi><mi>B</mi><mo>=</mo>
+  <munder class="t2"><mrow><msub><mi>Y</mi><mn>1</mn></msub><msub><mi>B</mi><mn>1</mn></msub></mrow><mtext class="lab">GPU 1</mtext></munder><mo>+</mo>
+  <munder class="t2"><mrow><msub><mi>Y</mi><mn>2</mn></msub><msub><mi>B</mi><mn>2</mn></msub></mrow><mtext class="lab">GPU 2</mtext></munder>
+  <mspace width="0.5em"/>
+  <munder class="t3"><mrow><mo>&#8594;</mo><mspace width="0.3em"/><mtext>all-reduce</mtext></mrow><mtext class="lab">g: the one sync</mtext></munder>
+</math>
+<div class="legend">
+  <span class="sym">X</span><span>input activations, one row per token, replicated on every GPU</span><span class="v">tokens × 8,192</span>
+  <span class="sym">A</span><span>first MLP weight (the paper's GPT-2 has one; Llama has two, see below)</span><span class="v">8,192 × 28,672</span>
+  <span class="sym">B</span><span>second MLP weight, split by <b>rows</b> to match Y's column split</span><span class="v">28,672 × 8,192</span>
+  <span class="sym">Y, Z</span><span>GeLU output (split by columns), block output (after the all-reduce)</span><span class="v">F-wide · D-wide</span>
+</div>
+</div>
+<p class="cap">Shapes are Llama-3.1-70B's (D = 8,192, F = 28,672). The paper's example uses 2 GPUs; TP8 cuts into 8 pieces the same way.</p>
+<p>GeLU can't be pushed through a sum because it is non-linear. A one-number check from the lab: GeLU(1.0 − 0.5) = <b>0.3457</b>, but GeLU(1.0) + GeLU(−0.5) = 0.8412 − 0.1543 = <b class="lo">0.6869</b>. With the column split, each GPU already has <i>complete</i> pre-activations for its own columns, so GeLU (or any elementwise function) is exact locally. The second matmul then needs the columns of Y that each GPU owns, and those are exactly the rows of B it owns, so it "takes the output of the GeLU layer directly without requiring any communication". Each GPU ends with a full-size but partial Z. One all-reduce sums them "before passing the output to the dropout layer".</p>
+
+<h3 class="sm">The f and g operators (Fig 3, Code 1)</h3>
+<p>The paper wraps this in two tiny autograd functions that are "conjugates" of each other. <b>f</b> sits at the start of the block and <b>g</b> at the end. Code 1 is about six lines: a <code>torch.autograd.Function</code> whose forward hands the input back unchanged and whose backward all-reduces the incoming gradient. g is the same with the two directions swapped. In outline (our paraphrase):</p>
+<div class="formula">             forward pass                 backward pass
+f  (input)   y  = x          <span class="c"># identity</span>   dx = all_reduce(dy)   <span class="c"># sum the partial dX</span>
+g  (output)  y  = all_reduce(x)           dx = dy          <span class="c"># identity</span></div>
+<p>Why f needs an all-reduce going backward: X was copied to every GPU, and each GPU only computes its own share of the gradient, dX<sub>i</sub> = dH<sub>i</sub>·A<sub>i</sub><sup>T</sup>. The true dX is their sum. In the lab, one GPU's dX alone is off by up to <b class="lo">2.37</b>; after f's all-reduce the error is <b>6.2e-15</b>. So the MLP needs "a single all-reduce operation in the forward pass (g operator) and a single all-reduce in the backward pass (f operator)".</p>
+
+<h2>§3b Self-attention: split by heads</h2>
+<p>Attention already comes in independent pieces: the heads. The paper splits the Q, K and V matmuls "in a column parallel fashion such that the matrix multiply corresponding to each attention head is done locally on one GPU". Each GPU computes its heads' scores, softmax and weighted sum with no communication. The output projection is split by rows and consumes those head outputs directly, like B in the MLP. Its partial sums take one all-reduce. Llama adds two things the 2019 paper doesn't have, and neither breaks the split. RoPE rotates within one head, so it stays local. Grouped-query attention shares one KV head across 8 query heads, so the 8 query heads that share a KV head must sit on the same GPU as that KV head.</p>
+
+<svg viewBox="0 0 800 336" role="img" aria-label="Fig 3 redrawn for Llama-3.1-70B at TP8: f, per-GPU column-parallel then row-parallel slices, then g all-reduce, for the MLP and the attention block">
+  <text class="sh" x="0" y="14">(a) MLP block, Llama's SwiGLU (Fig 3a)</text>
+  <rect class="bn" x="0" y="58" width="96" height="46" rx="4"/><text class="st" x="48" y="77" text-anchor="middle">X</text><text class="sl" x="48" y="94" text-anchor="middle">tokens × 8192</text>
+  <line class="ln" x1="96" y1="81" x2="109" y2="81"/>
+  <circle class="bx" cx="122" cy="81" r="13"/><text class="sh" x="122" y="86" text-anchor="middle">f</text>
+  <path class="ln" d="M135 81 L148 81 L148 46 L160 46 M148 81 L148 116 L160 116"/>
+  <rect class="bxa" x="160" y="26" width="220" height="40" rx="4"/><text class="sa" x="270" y="43" text-anchor="middle">GPU 1 · gate₁, up₁ 8192×3584</text><text class="sal" x="270" y="59" text-anchor="middle">column-parallel · Case 1</text>
+  <line class="ln" x1="380" y1="46" x2="392" y2="46"/>
+  <rect class="bxa" x="392" y="26" width="84" height="40" rx="4"/><text class="sa" x="434" y="43" text-anchor="middle">SiLU(g)⊙u</text><text class="sal" x="434" y="59" text-anchor="middle">elementwise</text>
+  <line class="ln" x1="476" y1="46" x2="488" y2="46"/>
+  <rect class="bxa" x="488" y="26" width="164" height="40" rx="4"/><text class="sa" x="570" y="43" text-anchor="middle">down₁ 3584×8192</text><text class="sal" x="570" y="59" text-anchor="middle">row-parallel · Case 3</text>
+  <text class="sl" x="406" y="86" text-anchor="middle">GPUs 2–7 do the same on their own slices · no communication inside the block</text>
+  <rect class="bxa" x="160" y="96" width="220" height="40" rx="4"/><text class="sa" x="270" y="113" text-anchor="middle">GPU 8 · gate₈, up₈ 8192×3584</text><text class="sal" x="270" y="129" text-anchor="middle">column-parallel · Case 1</text>
+  <line class="ln" x1="380" y1="116" x2="392" y2="116"/>
+  <rect class="bxa" x="392" y="96" width="84" height="40" rx="4"/><text class="sa" x="434" y="113" text-anchor="middle">SiLU(g)⊙u</text><text class="sal" x="434" y="129" text-anchor="middle">elementwise</text>
+  <line class="ln" x1="476" y1="116" x2="488" y2="116"/>
+  <rect class="bxa" x="488" y="96" width="164" height="40" rx="4"/><text class="sa" x="570" y="113" text-anchor="middle">down₈ 3584×8192</text><text class="sal" x="570" y="129" text-anchor="middle">row-parallel · Case 3</text>
+  <path class="ln" d="M652 46 L664 46 L664 81 L677 81 M652 116 L664 116 L664 81"/>
+  <circle class="bx" cx="690" cy="81" r="13"/><text class="sh" x="690" y="86" text-anchor="middle">g</text>
+  <line class="ln" x1="703" y1="81" x2="714" y2="81"/>
+  <rect class="bn" x="714" y="58" width="86" height="46" rx="4"/><text class="st" x="757" y="77" text-anchor="middle">Z</text><text class="sl" x="757" y="94" text-anchor="middle">summed</text>
+
+  <text class="sh" x="0" y="174">(b) Self-attention block with GQA (Fig 3b)</text>
+  <rect class="bn" x="0" y="218" width="96" height="46" rx="4"/><text class="st" x="48" y="237" text-anchor="middle">X</text><text class="sl" x="48" y="254" text-anchor="middle">tokens × 8192</text>
+  <line class="ln" x1="96" y1="241" x2="109" y2="241"/>
+  <circle class="bx" cx="122" cy="241" r="13"/><text class="sh" x="122" y="246" text-anchor="middle">f</text>
+  <path class="ln" d="M135 241 L148 241 L148 206 L160 206 M148 241 L148 276 L160 276"/>
+  <rect class="bxa" x="160" y="186" width="220" height="40" rx="4"/><text class="sa" x="270" y="203" text-anchor="middle">GPU 1 · q heads 1–8, KV head 1</text><text class="sal" x="270" y="219" text-anchor="middle">Wq 8192×1024 · Wk, Wv 8192×128</text>
+  <line class="ln" x1="380" y1="206" x2="392" y2="206"/>
+  <rect class="bxa" x="392" y="186" width="84" height="40" rx="4"/><text class="sa" x="434" y="203" text-anchor="middle">attention</text><text class="sal" x="434" y="219" text-anchor="middle">8 heads, local</text>
+  <line class="ln" x1="476" y1="206" x2="488" y2="206"/>
+  <rect class="bxa" x="488" y="186" width="164" height="40" rx="4"/><text class="sa" x="570" y="203" text-anchor="middle">Wo₁ 1024×8192</text><text class="sal" x="570" y="219" text-anchor="middle">row-parallel · Case 3</text>
+  <text class="sl" x="406" y="246" text-anchor="middle">GPUs 2–7: heads 9–56 and KV heads 2–7 · KV cache for those heads stays local</text>
+  <rect class="bxa" x="160" y="256" width="220" height="40" rx="4"/><text class="sa" x="270" y="273" text-anchor="middle">GPU 8 · q heads 57–64, KV head 8</text><text class="sal" x="270" y="289" text-anchor="middle">Wq 8192×1024 · Wk, Wv 8192×128</text>
+  <line class="ln" x1="380" y1="276" x2="392" y2="276"/>
+  <rect class="bxa" x="392" y="256" width="84" height="40" rx="4"/><text class="sa" x="434" y="273" text-anchor="middle">attention</text><text class="sal" x="434" y="289" text-anchor="middle">8 heads, local</text>
+  <line class="ln" x1="476" y1="276" x2="488" y2="276"/>
+  <rect class="bxa" x="488" y="256" width="164" height="40" rx="4"/><text class="sa" x="570" y="273" text-anchor="middle">Wo₈ 1024×8192</text><text class="sal" x="570" y="289" text-anchor="middle">row-parallel · Case 3</text>
+  <path class="ln" d="M652 206 L664 206 L664 241 L677 241 M652 276 L664 276 L664 241"/>
+  <circle class="bx" cx="690" cy="241" r="13"/><text class="sh" x="690" y="246" text-anchor="middle">g</text>
+  <line class="ln" x1="703" y1="241" x2="714" y2="241"/>
+  <rect class="bn" x="714" y="218" width="86" height="46" rx="4"/><text class="st" x="757" y="237" text-anchor="middle">out</text><text class="sl" x="757" y="254" text-anchor="middle">summed</text>
+
+  <rect class="bxa" x="0" y="316" width="14" height="12" rx="2"/><text class="sl" x="20" y="326">compute on this GPU's slice</text>
+  <circle class="bx" cx="208" cy="322" r="7"/><text class="sl" x="220" y="326">f / g: identity one way, all-reduce the other</text>
+  <rect class="bn" x="490" y="316" width="14" height="12" rx="2"/><text class="sl" x="510" y="326">activations, replicated on all 8 GPUs</text>
+</svg>
+<p class="cap">The paper's Fig 3, redrawn for Llama-3.1-70B at TP8 (it draws 2 GPUs and a GeLU MLP). LayerNorm (RMSNorm in Llama), dropout and the residual add sit outside these boxes and are simply repeated on every GPU; card 2 covers that.</p>
+
+<h3 class="sm">Fig 4: how many all-reduces per layer</h3>
+<p>Both blocks follow the same pattern: two matmuls fused into one slice per GPU, with no sync in between. The paper: "all GEMMs in a simple transformer layer using only two all-reduces in the forward path and two in the backward path".</p>
+<table>
+<tr><th>Setting</th><th class="num">Forward</th><th class="num">Backward</th><th class="num">Per layer</th><th class="num">Llama-3.1-70B, 80 layers</th></tr>
+<tr><td>Training (the paper, Fig 4)</td><td class="num">2 (g, g)</td><td class="num">2 (f, f)</td><td class="num">4</td><td class="num">320 per step</td></tr>
+<tr><td>Serving (<b>our inference</b>: no backward pass, so no f)</td><td class="num">2 (g, g)</td><td class="num">0</td><td class="num hi">2</td><td class="num hi">160 per forward pass</td></tr>
+</table>
+<p class="cap">The paper is about training. The serving count is our inference from its forward/backward count, not a sentence in the paper. The lab's fake communicator counts exactly 1 all-reduce for the split SwiGLU MLP, 1 for split attention and 2 for the layer.</p>
+
+<h2>The same thing in the Scaling Book's notation</h2>
+<p>Scaling Book Part 3 sorts every sharded matmul into four cases by whether the <b>contracting</b> dimension (the one summed over) is split. Write the 8 TP GPUs as mesh axis Y; A[D, F<sub>Y</sub>] means "F is split 8 ways". Megatron's two matmuls are exactly Case 1 then Case 3 (the mapping is ours, not stated in either source):</p>
+<div class="tw"><table>
+<tr><th>Step</th><th>Sharded matmul</th><th>Case</th><th>Communication</th></tr>
+<tr><td>Column-parallel (gate, up, q, k, v)</td><td class="mono">X[T, D] ·<sub>D</sub> A[D, F<sub>Y</sub>] → H[T, F<sub>Y</sub>]</td><td><b>1</b>: contracting D not split</td><td class="ok">none</td></tr>
+<tr><td>Elementwise (SiLU⊙, GeLU) or per-head attention</td><td class="mono">H[T, F<sub>Y</sub>] → H'[T, F<sub>Y</sub>]</td><td>–</td><td class="ok">none</td></tr>
+<tr><td>Row-parallel (down, o)</td><td class="mono">H'[T, F<sub>Y</sub>] ·<sub>F</sub> B[F<sub>Y</sub>, D] → Z[T, D]{U<sub>Y</sub>}</td><td><b>3</b>: both sides split on F</td><td>AllReduce<sub>Y</sub> = Megatron's <b>g</b></td></tr>
+<tr><td class="mu">Row-first alternative (Eq 2)</td><td class="mono mu">X[T, D<sub>Y</sub>] ·<sub>D</sub> A[D<sub>Y</sub>, F] → [T, F]{U<sub>Y</sub>}</td><td class="mu">3</td><td class="lo">AllReduce of F-wide data before GeLU</td></tr>
+</table></div>
+<p class="cap">{U<sub>Y</sub>} is the book's mark for "unreduced along Y": each GPU holds a partial sum of the right shape. T = tokens in the batch.</p>
+
+<h2>Worked example: Llama-3.1-70B at TP8</h2>
+<p>Every weight matrix of every layer, cut 8 ways (lab output). SwiGLU note: Llama's MLP has <b>three</b> matrices. Gate and up are both column-parallel, split the same way, so column j of gate and column j of up land on the same GPU and SiLU(gate)⊙up stays local. Down is row-parallel.</p>
+<div class="tw"><table>
+<tr><th>Matrix</th><th class="num">Full shape</th><th>Split</th><th class="num">Per-GPU slice</th><th class="num">Params / GPU</th><th class="num">BF16 / GPU</th></tr>
+<tr><td>q_proj</td><td class="num">8192 × 8192</td><td>column</td><td class="num">8192 × 1024 <span class="mu">(8 heads × 128)</span></td><td class="num">8.39 M</td><td class="num">16.8 MB</td></tr>
+<tr><td>k_proj, v_proj</td><td class="num">8192 × 1024 each</td><td>column</td><td class="num">8192 × 128 <span class="mu">(1 KV head)</span></td><td class="num">1.05 M each</td><td class="num">2.1 MB each</td></tr>
+<tr><td>o_proj</td><td class="num">8192 × 8192</td><td>row</td><td class="num">1024 × 8192</td><td class="num">8.39 M</td><td class="num">16.8 MB</td></tr>
+<tr><td>gate_proj, up_proj</td><td class="num">8192 × 28672 each</td><td>column</td><td class="num">8192 × 3584</td><td class="num">29.36 M each</td><td class="num">58.7 MB each</td></tr>
+<tr><td>down_proj</td><td class="num">28672 × 8192</td><td>row</td><td class="num">3584 × 8192</td><td class="num">29.36 M</td><td class="num">58.7 MB</td></tr>
+<tr class="tot"><td>One layer</td><td class="num">855.6 M params</td><td></td><td class="num">÷ 8</td><td class="num">106.95 M</td><td class="num">213.9 MB</td></tr>
+</table></div>
+<div class="formula">heads per GPU    64 query ÷ 8 = 8,  8 KV ÷ 8 = 1;  F: 28,672 ÷ 8 = 3,584 columns
+weights per GPU  213.9 MB × 80 layers                      = 17.11 GB
+               + embeddings + LM head ÷ 8 (vocab split)    =  0.53 GB <span class="c"># card 2</span>
+               + RMSNorm weights, replicated               = 0.003 GB
+                                                           = <span class="g">17.64 GB</span> per GPU
+                 (141.1 GB ÷ 8 = 17.6 GB; 62.4 GB of 80 GB left for KV)
+KV per GPU       327,680 B/token ÷ 8 = <span class="g">40,960 B per token</span> (its own KV head only)</div>
+<p class="cap">Llama-3.1-70B has only <b>K = 8</b> KV heads. TP8 gives each GPU exactly one. TP16 would give 4 query heads per GPU but half a KV head, so each KV head (and its KV cache) has to be <b>replicated</b> on 2 GPUs; TP32 on 4. The lab prints both. That is one reason 70B deployments usually stop at TP8 inside one node (our inference).</p>
+
+<p>What the all-reduces carry per forward pass: after each block, every GPU holds a full tokens × 8,192 partial result in BF16. That is the message S:</p>
+<div class="formula">message S = tokens × D × 2 B;  per-GPU ring traffic = 2(n−1)/n × S = 1.75 × S
+                   S                   1.75 × S    × 160 per step
+decode, batch 1    16.4 kB (16 KiB)     28.7 kB           4.59 MB
+decode, batch 64   1.05 MB (1 MiB)      1.84 MB          293.6 MB
+decode, batch 256  4.19 MB (4 MiB)      7.34 MB          1,174 MB
+prefill 2,048 tok  33.6 MB (32 MiB)     58.7 MB          9,395 MB
+each GPU reads 213.9 MB of weights per layer: <span class="g">13,056×</span> the batch-1 message</div>
+<p class="cap">Ring cost from the course's shared facts (see <a href="collectives.html">collectives</a>). At batch 1 the bytes are tiny and the 160 fixed per-call latencies are what hurt. <a href="megatron-scaling.html">Card 2</a> turns these into milliseconds per decode step at TP 1–8. The row-first split (Eq 2) would all-reduce F-wide data instead: 57,344 B per token, 3.5× the D-wide message.</p>
+
+<h3 class="sm">The lab's numeric check (small shapes, same structure)</h3>
+<p>Same head layout as 70B (64 query heads, 8 KV heads, 8 GPUs, F = 3.5·D), with the head dim shrunk from 128 to 8 so it runs in under a second. Float64, 16 tokens, causal mask and RoPE:</p>
+<table>
+<tr><th>Check</th><th class="num">Max |split − unsplit|</th><th class="num">All-reduces</th></tr>
+<tr><td>GeLU MLP, column then row (Eq 3)</td><td class="num hi">6.0e-15</td><td class="num">1</td></tr>
+<tr><td>GeLU MLP, rows first, GeLU applied before the sum (Eq 2 without the sync)</td><td class="num lo">1.19</td><td class="num">0</td></tr>
+<tr><td>Rows first, all-reduce then GeLU</td><td class="num">3.7e-15</td><td class="num">1, but 3.5× larger</td></tr>
+<tr><td>Backward dX, one GPU alone → after f's all-reduce</td><td class="num"><span class="lo">2.37</span> → <span class="hi">6.2e-15</span></td><td class="num">1</td></tr>
+<tr><td>Llama SwiGLU: gate, up column; down row</td><td class="num hi">5.8e-15</td><td class="num">1</td></tr>
+<tr><td>GQA attention by heads (8 query + 1 KV head per GPU)</td><td class="num hi">4.0e-15</td><td class="num">1</td></tr>
+</table>
+<p class="cap">Errors near 1e-15 are floating-point rounding: the split layer computes the same numbers as the unsplit one.</p>
+
+<h2>Why it beats the alternatives</h2>
+<div class="grid2">
+  <div class="cell"><h3><span class="x">&#10007;</span> Split A by rows first</h3><p>Eq 2. Each GPU holds a partial pre-activation, and GeLU of a partial sum is wrong (1.19 error in the lab). Syncing first costs an F-wide all-reduce, 3.5× the bytes for Llama, and you still have to split B.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Split both matmuls by columns</h3><p>The second matmul contracts over F, which is now split. That's Scaling Book Case 2, so every GPU must AllGather the F-wide activations first, and the output comes out split too. That's more traffic than one D-wide all-reduce (our reasoning).</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Only pipeline (split by layers)</h3><p>Fits the model, but one token still walks through all 80 layers one stage at a time, so at batch 1 only one GPU's bandwidth is working (our inference for serving). In training it "suffers from pipeline bubbles".</p></div>
+  <div class="cell win"><h3><span class="ok">&#10003;</span> Column, then row (Megatron)</h3><p>No sync inside a block, one D-wide all-reduce after it, and all 8 GPUs read their 1/8 of the weights at the same time. That's the 42.12 → 5.27 ms memory-only decode step from the shared facts (comms ignored), with no compiler and a few lines of PyTorch.</p></div>
+</div>
+
+<h2>Is tensor parallelism always the right split?</h2>
+<div class="note">
+  <p>No. It's the default <i>inside</i> one NVLink node, and a poor choice in several cases:</p>
+  <ul>
+    <li><b>Across nodes.</b> 160 all-reduces per token over InfiniBand (50 GB/s per GPU vs 450 GB/s NVLink) is too slow. Megatron itself kept its 8-way groups inside one DGX-2H. Across nodes people use pipeline or data parallelism (<a href="pipeline-data-parallel.html">next cards</a>).</li>
+    <li><b>When the model fits one GPU.</b> Llama-3.1-8B on 8 GPUs gets more tokens per GPU as 8 independent copies. TP only buys lower latency per request, and pays for it in all-reduces.</li>
+    <li><b>Past the number of KV heads.</b> Beyond TP8, Llama-3.1-70B has to replicate KV heads and their KV cache.</li>
+    <li><b>At small batch.</b> The messages are tiny, so fixed latency dominates. <a href="megatron-scaling.html">Card 2</a> puts numbers on it.</li>
+  </ul>
+  <p>Also note: f exists only because training has a backward pass. A serving engine needs only the g all-reduces. Some setups keep the activations between blocks split too and replace each all-reduce with a ReduceScatter at the end of a block and an AllGather at the start of the next (the Scaling Book's Q7 form). The total bytes are the same, since AllReduce = ReduceScatter + AllGather.</p>
+</div>
+
+<div class="foot">
+<p><a class="lab-link" href="https://github.com/seyonv/explainers/blob/main/perf-6-scaling-out/labs/tp-split.py">Run it: labs/tp-split.py</a> <b>[L]</b> numpy only, under 1 s on the M3. It checks that the split GeLU MLP, SwiGLU MLP and GQA attention equal the unsplit ones, shows that the row-first split and a gradient without f are wrong, counts all-reduces with a fake communicator, and prints the 70B TP8 slice table, weights per GPU, KV head replication at TP16/32 and the all-reduce message sizes. Every number on this card comes from its output or the shared facts. Try this: set <code>TP = 16</code> in part 1 and replicate the KV heads to fix it, or split <code>Wd</code> by columns and watch the error.</p>
+<p><b>Read next:</b> Shoeybi et al., <a href="https://arxiv.org/abs/1909.08053">"Megatron-LM: Training Multi-Billion Parameter Language Models Using Model Parallelism"</a>: §3 all of it with Code 1, Fig 3 and Fig 4 (~15 min), then §2.3 (~5 min). Then the Scaling Book, <a href="https://jax-ml.github.io/scaling-book/sharding/">Part 3 "Sharded Matrices and How to Multiply Them"</a>, "Computation with sharded arrays", Cases 1 and 3 (~15 min), plus Question 7 ("this is called tensor parallelism", ~5 min).</p>
+<p><b>Related:</b> <a href="megatron-scaling.html">Megatron II: embeddings, the fused loss, and what TP costs</a> · <a href="collectives.html">How GPUs talk: collectives and interconnects</a> · <a href="pipeline-data-parallel.html">Pipeline and data parallelism when serving</a> · <a href="sizing-deployment.html">Sizing a deployment</a> · <a href="../perf-2-scaling-book-inference/sharding-prefill-generation.html">course 2: sharding prefill vs generation</a> · <a href="../perf-2-scaling-book-inference/serving-llama-70b.html">course 2: serving LLaMA 3-70B end to end</a> · <a href="../perf-4-attention-kv/gqa.html">course 4: grouped-query attention</a> · <a href="../llm-latency/memory-bandwidth.html">memory-bandwidth-bound decoding</a></p>
+<p><b>Sources:</b> §2.3 and §3 quotes, Eq 1–3, Code 1, Fig 3–4, the 8-way / 64-way split and DGX-2H 300 GB/s NVSwitch: <a href="https://arxiv.org/pdf/1909.08053">Megatron-LM, arXiv 1909.08053 v4</a>. Matmul Cases 1–4, the {U<sub>Y</sub>} notation, AllReduce = ReduceScatter + AllGather and Q7: <a href="https://jax-ml.github.io/scaling-book/sharding/">Scaling Book Part 3</a>. Llama-3.1-70B shapes (L 80, D 8,192, F 28,672, 64 query / 8 KV heads, head dim 128, vocab 128,256), 141.1 GB, 327,680 B/token KV, the 42.12 / 5.27 ms steps, 450 / 50 GB/s and the ring formula: the course's shared facts. Slices, bytes, message sizes and numeric errors: our recomputation (<code>labs/tp-split.py</code>). The 2 all-reduces per layer when serving is our inference. The pipeline example (layers 1–40 | 41–80) is illustrative.</p>
+</div>
+</article>
+<!-- series-nav:bottom -->
+<div class="snx"><a class="nx" href="index.html#megatron-scaling" target="_top">
+<span class="mini" aria-hidden="true"><span class="m1">Megatron II: embeddings, the fused loss, and what TP costs</span><span class="m2">Also called vocab-parallel embedding, parallel cross-entropy, or "the cost of tensor parallelism". Part two of Megatron-LM (Shoeybi et al., 2019, arXiv 1909.08053): the rest of §3, Appendix B's GPU…</span><span class="m3">In one breath</span><span class="m4">Megatron splits the model's two ends the way it splits the layers: each GPU keeps a slice of the vocabulary, only small tensors (b × s × H activations or b × s losses) ever cross GPUs, and cheap work like layernorm and dropout is simply repeated on every GPU. That kept an 8-way split at 77% efficiency inside one server. For…</span></span>
+<span class="tx"><span class="lab">Next up · 04 / 15</span><span class="tt">Megatron II: embeddings, the fused loss, and what TP costs</span><span class="ds">Scaling results, and TP step time for a 70B model</span><span class="nd">Builds directly on this card.</span><span class="go">Continue →</span></span></a><div class="aux"><span><a href="index.html#collectives" target="_top">← How GPUs talk: collectives and interconnects</a></span><a href="index.html" target="_top">All cards in 6 · Serving across GPUs</a></div></div>
+<!-- /series-nav:bottom -->
+</body>
+</html>

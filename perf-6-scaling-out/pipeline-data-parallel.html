@@ -1,0 +1,409 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pipeline and data parallelism when serving</title>
+<style>
+:root{
+  --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
+  --text:#1c1f23; --muted:#6b7068; --faint:#b9b9b3;
+  --accent:#4a9d77; --accent-bg:#dcefdf; --accent-border:#8cc79c;
+  --red:#c0492b; --red-bg:#fbeceb;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#15171a; --surface:#1d2024; --surface2:#24282d; --border:#32373d;
+    --text:#e6e8ea; --muted:#9aa1a9; --faint:#4a5057;
+    --accent:#5fb37f; --accent-bg:#1c2b22; --accent-border:#3f7a55;
+    --red:#e57368; --red-bg:#2e1f1e;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text)}
+.card{max-width:820px;margin:0 auto;padding:28px 32px;font-family:-apple-system,"Inter",system-ui,sans-serif;line-height:1.45}
+h1{font-size:26px;font-weight:600;margin:0 0 6px;letter-spacing:-0.01em}
+.sub{font-size:15px;color:var(--muted);margin:0 0 20px}
+h2{font-size:17px;font-weight:600;margin:26px 0 10px}
+h2 small{font-size:13px;font-weight:400;color:var(--muted)}
+p{font-size:15px;margin:0 0 10px}
+ul{font-size:15px;margin:0 0 10px;padding-left:20px} li{margin-bottom:4px}
+.cap{font-size:13px;color:var(--muted);margin:8px 0 0;text-align:center}
+.cap + p,.cap + h3{margin-top:14px}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+blockquote{margin:10px 0;padding:6px 14px;border-left:3px solid var(--border);color:var(--muted);font-size:14px}
+.take{border-left:3px solid var(--accent-border);background:var(--surface);padding:8px 14px;margin:12px 0;font-size:14px;border-radius:0 6px 6px 0}
+.take b{color:var(--accent)}
+
+/* Tables and formulas */
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border)}
+th{font-size:12px;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:none}
+td small{display:block;font-size:12px;color:var(--muted)}
+.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.hi{color:var(--accent);font-weight:600} .lo{color:var(--red)} .mu{color:var(--muted)}
+.formula{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin:10px 0;white-space:pre;overflow-x:auto;line-height:1.55}
+.formula .c{color:var(--muted)} .formula .g{color:var(--accent);font-weight:600} .formula .r{color:var(--red);font-weight:600}
+.tw{overflow-x:auto}
+.tw table{min-width:640px}
+
+/* MathML */
+.mathbox{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px 16px 12px;margin:10px 0;overflow-x:auto}
+.mathbox math{font-size:21px;color:var(--text);font-family:"STIX Two Math","Latin Modern Math","Cambria Math",math}
+.mathbox .t1{color:var(--text)} .mathbox .t2{color:var(--accent)} .mathbox .t3{color:var(--muted)}
+.mathbox .lab{font-size:12px;font-family:-apple-system,"Inter",system-ui,sans-serif;padding-top:3px;border-top:1.5px solid currentColor;margin-top:2px}
+.mathbox .gap{height:14px}
+.legend{display:grid;grid-template-columns:auto 1fr auto;column-gap:14px;row-gap:5px;font-size:13px;margin-top:12px;align-items:baseline}
+.legend .sym{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;text-align:right}
+.legend .v{color:var(--muted);text-align:right;font-variant-numeric:tabular-nums}
+@media (max-width:560px){.legend{grid-template-columns:auto 1fr}.legend .v{display:none}}
+
+/* Two examples per term */
+.parts td{vertical-align:top} .parts td:first-child{font-weight:600}
+.parts .ex{font-size:13px} .parts .ex span{display:block;color:var(--muted)}
+.parts .what{font-size:13px}
+@media (max-width:560px){.parts .what{display:none}}
+
+/* Stacked latency bars */
+.bars{display:grid;grid-template-columns:150px 1fr 70px;column-gap:12px;row-gap:9px;align-items:center;font-size:14px}
+.bars .hd{font-size:12px;color:var(--muted);font-weight:600}
+.bars .hd.r,.bars .v{text-align:right;font-variant-numeric:tabular-nums}
+.bars .nm small{display:block;font-size:12px;color:var(--muted)}
+.bars .track{display:flex;height:20px}
+.bars .seg{height:20px}
+.bars .rd{background:var(--accent);border-radius:3px 0 0 3px}
+.bars .ar{background:var(--faint);border-radius:0 3px 3px 0}
+.bars .ar.bad{background:var(--red)}
+.bars .grp{grid-column:1 / -1;font-size:12px;font-weight:600;color:var(--muted);letter-spacing:.02em;padding-top:6px}
+.key{display:flex;flex-wrap:wrap;gap:6px 18px;font-size:13px;color:var(--muted);margin:10px 0 0}
+.key i{display:inline-block;width:12px;height:12px;border-radius:2px;margin-right:6px;vertical-align:-1px}
+.key .k1{background:var(--accent)} .key .k2{background:var(--faint)} .key .k3{background:var(--red)}
+
+/* 2x2 grid */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.cell{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.cell.win{background:var(--accent-bg);border-color:var(--accent-border)}
+.cell h3{font-size:16px;font-weight:600;margin:0 0 5px;display:flex;gap:8px;align-items:baseline}
+.cell p{font-size:14px;margin:0;color:var(--text)}
+.cell.win h3,.cell.win p{color:var(--accent)}
+.x{color:var(--red)} .ok{color:var(--accent)}
+
+/* Clarification box */
+.note{border:1px solid var(--border);border-radius:10px;padding:14px 18px;font-size:14px}
+.note p,.note li{font-size:14px} .note p:last-child{margin-bottom:0}
+.note ul{padding-left:18px}
+
+.foot{margin-top:22px;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+.foot p{font-size:13px}
+.lab-link{display:inline-block;font-size:13px;border:1px solid var(--accent-border);background:var(--accent-bg);color:var(--accent);border-radius:6px;padding:4px 10px;margin:2px 0 10px;text-decoration:none}
+a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+
+/* SVG */
+svg{display:block;max-width:100%;height:auto;margin-top:6px;font-family:-apple-system,"Inter",system-ui,sans-serif}
+.sl{font-size:12px;fill:var(--muted)} .st{font-size:13px;fill:var(--text)} .sh{font-size:13px;font-weight:600;fill:var(--text)}
+.slr{font-size:12px;fill:var(--red);font-weight:600}
+.gt{font-size:11px;fill:var(--text)}
+.bt{font-size:11px;fill:var(--text);font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.grp{fill:none;stroke:var(--muted);stroke-width:1;stroke-dasharray:4 3}
+.gpu{fill:var(--surface);stroke:var(--border);stroke-width:1}
+.bd{fill:var(--accent-bg);stroke:var(--accent);stroke-width:1.2}
+.idle{fill:var(--surface2);stroke:var(--faint);stroke-width:1;stroke-dasharray:3 3}
+.br{stroke:var(--red);stroke-width:1.5;fill:none}
+.ax{stroke:var(--faint);stroke-width:1}
+@media (max-width:560px){.grid2{grid-template-columns:1fr}.card{padding:20px 16px}.bars{grid-template-columns:104px 1fr 56px}}
+/* series-nav */
+.sn{max-width:820px;margin:0 auto;padding:16px 32px 0;font-family:-apple-system,"Inter",system-ui,sans-serif;font-size:13px;line-height:1.5;color:var(--muted)}
+.sn a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
+.sn .crumbs{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 7px}
+.sn .crumbs b{color:var(--text);font-weight:600}
+.sn .sep{color:var(--faint,var(--border))}
+.sn .step{margin-left:auto;white-space:nowrap}
+.sn .dep{margin-top:5px;padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface)}
+.sn .dep .ok{color:var(--accent);font-weight:600}
+.snx{max-width:820px;margin:0 auto;padding:6px 32px 44px;font-family:-apple-system,"Inter",system-ui,sans-serif}
+.snx .nx{display:grid;grid-template-columns:280px 1fr;text-decoration:none;color:var(--text);background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.snx .nx:hover,.snx .nx:focus-visible{border-color:var(--accent-border,var(--accent));outline:none}
+.snx .mini{position:relative;height:210px;overflow:hidden;background:var(--bg);border-right:1px solid var(--border);padding:14px 16px}
+.snx .mini span{display:block}
+.snx .mini .m1{font-size:12.5px;font-weight:600;margin:0 0 4px;line-height:1.3}
+.snx .mini .m2{font-size:9px;color:var(--muted);margin:0 0 8px;line-height:1.4}
+.snx .mini .m3{font-size:8.5px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;margin:0 0 3px}
+.snx .mini .m4{font-size:9.5px;margin:0;line-height:1.45}
+.snx .tx{padding:16px 20px}
+.snx .lab{font-size:12px;font-weight:600;color:var(--accent);letter-spacing:.04em;text-transform:uppercase}
+.snx .tt{display:block;font-size:20px;font-weight:600;margin:5px 0 4px;line-height:1.25}
+.snx .ds{display:block;font-size:14px;color:var(--muted)}
+.snx .nd{display:block;font-size:13px;color:var(--muted);margin-top:10px}
+.snx .go{display:block;margin-top:12px;font-size:14px;font-weight:600;color:var(--accent)}
+.snx .aux{display:flex;justify-content:space-between;gap:12px;margin-top:10px;font-size:13px;color:var(--muted)}
+.snx .aux a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
+@media (max-width:560px){.sn,.snx{padding-left:16px;padding-right:16px}.snx .nx{grid-template-columns:1fr}.snx .mini{display:none}.sn .step{margin-left:0}}
+/* /series-nav */
+</style>
+</head>
+<body>
+<!-- series-nav:top -->
+<nav class="sn" aria-label="Course navigation"><div class="crumbs"><a href="../perf-0-map/index.html" target="_top">Fast LLM inference</a><span class="sep">›</span><a href="index.html" target="_top">6 · Serving across GPUs</a><span class="sep">›</span><b>05 / 15</b><span class="step"><a href="index.html#megatron-scaling" target="_top">← prev</a> · <a href="index.html#moe-basics" target="_top">next →</a></span></div>
+<div class="dep"><b>Before this:</b> <a href="index.html#megatron-scaling" target="_top">Megatron II: embeddings, the fused loss, and what TP costs</a></div></nav>
+<!-- /series-nav:top -->
+<article class="card">
+<h1>Pipeline and data parallelism when serving</h1>
+<p class="sub">Also called PP (pipeline model parallelism, inter-layer or inter-op parallelism) and DP (replicas, horizontal scaling), usually combined with TP as layouts written like "TP8PP2". This card follows Kiely's <i>Inference Engineering</i> §5.4 (pp. 142–147), the Scaling Book Part 7 on sharding for generation, DistServe §3.2, Megatron-LM §2.3 and Sarathi-Serve §3.3. The Llama-3.1-70B on H100 numbers are our ceiling model (labs/layouts.py), not measurements.</p>
+
+<h2>In one breath</h2>
+<p>A pipeline stage owns a contiguous block of layers. Each token still passes through every stage one after another, so pipelining adds <b>throughput, not speed</b>: it lets more GPUs hold one model while sending only a single activation between stages. Data parallelism runs <b>independent replicas</b> that never talk to each other. Tensor parallelism is the one split that makes each token faster, and it pays for that with two all-reduces per layer. When serving, you pick TP for per-token latency, PP only to cross the slow link between nodes, and DP for everything else.</p>
+
+<h2>Four ways to place one 70B model on an 8×H100 node</h2>
+<svg viewBox="0 0 780 278" role="img" aria-label="Four ways to place Llama-3.1-70B on 8 H100s">
+<text x="0" y="38" class="sh">TP8</text><text x="0" y="55" class="sl">1 replica · 8 GPUs</text>
+<rect x="186" y="14" width="544" height="52" rx="7" class="grp"/>
+<rect x="190" y="20" width="60" height="40" rx="4" class="gpu"/><text x="220.0" y="36" class="gt" text-anchor="middle">⅛ of</text><text x="220.0" y="52" class="gt" text-anchor="middle">L1–80</text>
+<rect x="258" y="20" width="60" height="40" rx="4" class="gpu"/><text x="288.0" y="36" class="gt" text-anchor="middle">⅛ of</text><text x="288.0" y="52" class="gt" text-anchor="middle">L1–80</text>
+<rect x="326" y="20" width="60" height="40" rx="4" class="gpu"/><text x="356.0" y="36" class="gt" text-anchor="middle">⅛ of</text><text x="356.0" y="52" class="gt" text-anchor="middle">L1–80</text>
+<rect x="394" y="20" width="60" height="40" rx="4" class="gpu"/><text x="424.0" y="36" class="gt" text-anchor="middle">⅛ of</text><text x="424.0" y="52" class="gt" text-anchor="middle">L1–80</text>
+<rect x="462" y="20" width="60" height="40" rx="4" class="gpu"/><text x="492.0" y="36" class="gt" text-anchor="middle">⅛ of</text><text x="492.0" y="52" class="gt" text-anchor="middle">L1–80</text>
+<rect x="530" y="20" width="60" height="40" rx="4" class="gpu"/><text x="560.0" y="36" class="gt" text-anchor="middle">⅛ of</text><text x="560.0" y="52" class="gt" text-anchor="middle">L1–80</text>
+<rect x="598" y="20" width="60" height="40" rx="4" class="gpu"/><text x="628.0" y="36" class="gt" text-anchor="middle">⅛ of</text><text x="628.0" y="52" class="gt" text-anchor="middle">L1–80</text>
+<rect x="666" y="20" width="60" height="40" rx="4" class="gpu"/><text x="696.0" y="36" class="gt" text-anchor="middle">⅛ of</text><text x="696.0" y="52" class="gt" text-anchor="middle">L1–80</text>
+<text x="0" y="104" class="sh">TP4 × PP2</text><text x="0" y="121" class="sl">stage 1 → stage 2</text>
+<rect x="186" y="80" width="272" height="52" rx="7" class="grp"/>
+<rect x="190" y="86" width="60" height="40" rx="4" class="gpu"/><text x="220.0" y="102" class="gt" text-anchor="middle">¼ of</text><text x="220.0" y="118" class="gt" text-anchor="middle">L1–40</text>
+<rect x="258" y="86" width="60" height="40" rx="4" class="gpu"/><text x="288.0" y="102" class="gt" text-anchor="middle">¼ of</text><text x="288.0" y="118" class="gt" text-anchor="middle">L1–40</text>
+<rect x="326" y="86" width="60" height="40" rx="4" class="gpu"/><text x="356.0" y="102" class="gt" text-anchor="middle">¼ of</text><text x="356.0" y="118" class="gt" text-anchor="middle">L1–40</text>
+<rect x="394" y="86" width="60" height="40" rx="4" class="gpu"/><text x="424.0" y="102" class="gt" text-anchor="middle">¼ of</text><text x="424.0" y="118" class="gt" text-anchor="middle">L1–40</text>
+<rect x="466" y="80" width="272" height="52" rx="7" class="grp"/>
+<rect x="470" y="86" width="60" height="40" rx="4" class="gpu"/><text x="500.0" y="102" class="gt" text-anchor="middle">¼ of</text><text x="500.0" y="118" class="gt" text-anchor="middle">L41–80</text>
+<rect x="538" y="86" width="60" height="40" rx="4" class="gpu"/><text x="568.0" y="102" class="gt" text-anchor="middle">¼ of</text><text x="568.0" y="118" class="gt" text-anchor="middle">L41–80</text>
+<rect x="606" y="86" width="60" height="40" rx="4" class="gpu"/><text x="636.0" y="102" class="gt" text-anchor="middle">¼ of</text><text x="636.0" y="118" class="gt" text-anchor="middle">L41–80</text>
+<rect x="674" y="86" width="60" height="40" rx="4" class="gpu"/><text x="704.0" y="102" class="gt" text-anchor="middle">¼ of</text><text x="704.0" y="118" class="gt" text-anchor="middle">L41–80</text>
+<path d="M456 106 l6 0" class="ba"/>
+<text x="0" y="170" class="sh">TP4 × DP2</text><text x="0" y="187" class="sl">2 replicas</text>
+<rect x="186" y="146" width="272" height="52" rx="7" class="grp"/>
+<rect x="190" y="152" width="60" height="40" rx="4" class="gpu"/><text x="220.0" y="168" class="gt" text-anchor="middle">¼ of</text><text x="220.0" y="184" class="gt" text-anchor="middle">L1–80</text>
+<rect x="258" y="152" width="60" height="40" rx="4" class="gpu"/><text x="288.0" y="168" class="gt" text-anchor="middle">¼ of</text><text x="288.0" y="184" class="gt" text-anchor="middle">L1–80</text>
+<rect x="326" y="152" width="60" height="40" rx="4" class="gpu"/><text x="356.0" y="168" class="gt" text-anchor="middle">¼ of</text><text x="356.0" y="184" class="gt" text-anchor="middle">L1–80</text>
+<rect x="394" y="152" width="60" height="40" rx="4" class="gpu"/><text x="424.0" y="168" class="gt" text-anchor="middle">¼ of</text><text x="424.0" y="184" class="gt" text-anchor="middle">L1–80</text>
+<rect x="466" y="146" width="272" height="52" rx="7" class="grp"/>
+<rect x="470" y="152" width="60" height="40" rx="4" class="gpu"/><text x="500.0" y="168" class="gt" text-anchor="middle">¼ of</text><text x="500.0" y="184" class="gt" text-anchor="middle">L1–80</text>
+<rect x="538" y="152" width="60" height="40" rx="4" class="gpu"/><text x="568.0" y="168" class="gt" text-anchor="middle">¼ of</text><text x="568.0" y="184" class="gt" text-anchor="middle">L1–80</text>
+<rect x="606" y="152" width="60" height="40" rx="4" class="gpu"/><text x="636.0" y="168" class="gt" text-anchor="middle">¼ of</text><text x="636.0" y="184" class="gt" text-anchor="middle">L1–80</text>
+<rect x="674" y="152" width="60" height="40" rx="4" class="gpu"/><text x="704.0" y="168" class="gt" text-anchor="middle">¼ of</text><text x="704.0" y="184" class="gt" text-anchor="middle">L1–80</text>
+<text x="0" y="236" class="sh">FP8 TP2 × DP4</text><text x="0" y="253" class="sl">4 replicas</text>
+<rect x="186" y="212" width="136" height="52" rx="7" class="grp"/>
+<rect x="190" y="218" width="60" height="40" rx="4" class="gpu"/><text x="220.0" y="234" class="gt" text-anchor="middle">½ of</text><text x="220.0" y="250" class="gt" text-anchor="middle">L1–80</text>
+<rect x="258" y="218" width="60" height="40" rx="4" class="gpu"/><text x="288.0" y="234" class="gt" text-anchor="middle">½ of</text><text x="288.0" y="250" class="gt" text-anchor="middle">L1–80</text>
+<rect x="330" y="212" width="136" height="52" rx="7" class="grp"/>
+<rect x="334" y="218" width="60" height="40" rx="4" class="gpu"/><text x="364.0" y="234" class="gt" text-anchor="middle">½ of</text><text x="364.0" y="250" class="gt" text-anchor="middle">L1–80</text>
+<rect x="402" y="218" width="60" height="40" rx="4" class="gpu"/><text x="432.0" y="234" class="gt" text-anchor="middle">½ of</text><text x="432.0" y="250" class="gt" text-anchor="middle">L1–80</text>
+<rect x="474" y="212" width="136" height="52" rx="7" class="grp"/>
+<rect x="478" y="218" width="60" height="40" rx="4" class="gpu"/><text x="508.0" y="234" class="gt" text-anchor="middle">½ of</text><text x="508.0" y="250" class="gt" text-anchor="middle">L1–80</text>
+<rect x="546" y="218" width="60" height="40" rx="4" class="gpu"/><text x="576.0" y="234" class="gt" text-anchor="middle">½ of</text><text x="576.0" y="250" class="gt" text-anchor="middle">L1–80</text>
+<rect x="618" y="212" width="136" height="52" rx="7" class="grp"/>
+<rect x="622" y="218" width="60" height="40" rx="4" class="gpu"/><text x="652.0" y="234" class="gt" text-anchor="middle">½ of</text><text x="652.0" y="250" class="gt" text-anchor="middle">L1–80</text>
+<rect x="690" y="218" width="60" height="40" rx="4" class="gpu"/><text x="720.0" y="234" class="gt" text-anchor="middle">½ of</text><text x="720.0" y="250" class="gt" text-anchor="middle">L1–80</text>
+</svg>
+<p class="cap">Each box is one GPU. "¼ of L1–40" means a quarter of every weight matrix in layers 1–40 (tensor-split across the dashed group). Dashed groups are one TP group. TP4 × PP2 is still one replica; the DP layouts are independent copies. Llama-3.1-70B is 141.1 GB in BF16, and 70.6 GB in FP8.</p>
+
+<p>Everyday version: a kitchen of 8 cooks making soup. TP: all 8 chop every ingredient together and have to shout after each step (all-reduce). PP: 4 cooks do the first half of the recipe and pass the pot to the other 4 cooks. DP: two separate kitchens, each with its own recipe book.</p>
+<div class="tw"><table class="parts">
+  <tr><th>Term</th><th class="what">What it means when serving</th><th>Example A: one node, 8 GPUs</th><th>Example B: two nodes, 16 GPUs</th></tr>
+  <tr><td>Stage</td><td class="what">The GPUs that own one contiguous block of layers. Inside a stage the layers are usually tensor-split.</td>
+      <td class="ex"><b>TP4 × PP2</b><span>stage 1 = GPUs 0–3, layers 1–40; stage 2 = GPUs 4–7, layers 41–80</span></td>
+      <td class="ex"><b>TP8 × PP2</b><span>stage = one whole node; Kiely's dense multi-node recipe (p. 147)</span></td></tr>
+  <tr><td>Hop</td><td class="what">Point-to-point send of one activation (batch × D × 2 bytes) from the end of a stage to the next. The last stage sends back only token ids.</td>
+      <td class="ex"><b>16 kB at batch 1</b><span>over NVLink: ~1 µs, one hop of latency (illustrative)</span></td>
+      <td class="ex"><b>3.5 MB at batch 212</b><span>over InfiniBand, 400 GB/s per node: 11 µs incl. 2 µs latency (illustrative)</span></td></tr>
+  <tr><td>Micro-batch</td><td class="what">A slice of the running batch. With p stages you need at least p micro-batches in flight, or some stage sits idle.</td>
+      <td class="ex"><b>185 sequences → 2 × 92.5</b><span>stage 1 runs micro-batch A while stage 2 runs B</span></td>
+      <td class="ex"><b>batch 1 → 1 micro-batch</b><span>stage 2 waits for stage 1, then stage 1 waits: 50% idle</span></td></tr>
+  <tr><td>Bubble</td><td class="what">Time a stage waits with nothing to do. In inference: fill/drain, plus imbalance when micro-batches take different times.</td>
+      <td class="ex"><b>200 ms once</b><span>fill with uniform 200 ms decode micro-batches</span></td>
+      <td class="ex"><b class="lo">≈ 950 ms</b><span>Falcon-180B, a 1,150 ms prefill next to a 200 ms decode (Sarathi-Serve §3.3)</span></td></tr>
+  <tr><td>Replica (DP)</td><td class="what">A complete, independent copy of the model with its own KV cache and its own batch. There is no communication between replicas; a load balancer spreads requests.</td>
+      <td class="ex"><b>TP4 × DP2</b><span>two 4-GPU servers, 66 sequences of 8k each</span></td>
+      <td class="ex"><b>TP8 × DP2</b><span>Kiely: extra nodes are usually "better off" as replicas (p. 148)</span></td></tr>
+  <tr><td>TP degree</td><td class="what">How many GPUs split each layer. It divides the bytes each GPU reads per token, and adds 2 all-reduces per layer, 160 per token for 80 layers (our inference from Megatron).</td>
+      <td class="ex"><b>TP8: 17.6 GB/GPU</b><span>5.27 ms of weight reading per step</span></td>
+      <td class="ex"><b>TP16 over IB</b><span>8.8 GB/GPU, but only 8 KV heads to split</span></td></tr>
+</table></div>
+
+<h2>How a pipeline behaves at inference time</h2>
+<p><b>No backward, so a smaller bubble.</b> Megatron-LM §2.3 sets up the choice: layer-wise pipelining (GPipe) "suffers from pipeline bubbles that reduce efficiency", which is why Megatron splits inside each layer instead. In training the bubble comes from the forward and backward passes; DeepSeek-V3's Table 2 puts 1F1B's bubble at (PP−1)(F+B). Inference has no B. A serving pipeline also never really drains: as soon as micro-batch A leaves the last stage with its new token, its next decode step re-enters stage 1. So the bubble left is fill/drain, which happens once, plus <b>imbalance</b> between micro-batches (our inference from these sources; Sarathi-Serve measures the imbalance part).</p>
+<div class="mathbox">
+<math display="block">
+  <msub><mi>T</mi><mtext>token</mtext></msub><mo>=</mo>
+  <munder class="t2"><mrow><munderover><mo>&#8721;</mo><mrow><mi>s</mi><mo>=</mo><mn>1</mn></mrow><mi>p</mi></munderover><msub><mi>T</mi><mi>s</mi></msub></mrow><mtext class="lab">every stage, one after another</mtext></munder>
+  <mo>+</mo>
+  <munder class="t3"><mrow><mo>(</mo><mi>p</mi><mo>&#8722;</mo><mn>1</mn><mo>)</mo><mo>&#8290;</mo><msub><mi>t</mi><mtext>hop</mtext></msub></mrow><mtext class="lab">activation sends</mtext></munder>
+  <mspace width="1.4em"/>
+  <mtext>tok/s</mtext><mo>=</mo>
+  <mfrac><mi>B</mi><mrow><mi>p</mi><mo>&#8290;</mo><msub><mi>T</mi><mtext>stage</mtext></msub><mo>(</mo><mi>B</mi><mo>/</mo><mi>p</mi><mo>)</mo><mo>+</mo><mo>(</mo><mi>p</mi><mo>&#8722;</mo><mn>1</mn><mo>)</mo><msub><mi>t</mi><mtext>hop</mtext></msub></mrow></mfrac>
+</math>
+<div class="legend">
+  <span class="sym">p</span><span>pipeline stages</span><span class="v">2 in every example here</span>
+  <span class="sym">T_s</span><span>one stage's step: read its weights and KV, its all-reduces</span><span class="v">5.85 ms, TP4 stage at batch 1</span>
+  <span class="sym">t_hop</span><span>one activation send between stages</span><span class="v">1 µs NVLink, 2 µs IB (illustrative)</span>
+  <span class="sym">B</span><span>sequences decoding in this replica, split into p micro-batches</span><span class="v">185 on 8 × H100 at 8k context</span>
+</div>
+</div>
+<p class="cap">Balanced stages: splitting a step across p stages makes each stage p times shorter, and the token still visits all of them. So latency ≈ the TP-only step plus hops. Throughput grows because p micro-batches keep all stages busy at once.</p>
+
+<p style="margin-top:14px"><b>Imbalance is the real bubble (Sarathi-Serve §3.3).</b> Micro-batches aren't equal: one may carry a new prompt's prefill, and decode cost grows with each request's context. The paper's example: for Falcon-180B, "a single prompt of 4k tokens takes ≈ 1150 ms to execute compared to a decode only iteration with batch size 32 which would take about ≈ 200 ms", and interleaving them "could result in a bubble of ≈ 950 ms". Our 2-stage replay of those two numbers (we treat them as per-stage times, which is how the paper's 950 = 1,150 − 200 works out):</p>
+<svg viewBox="0 0 780 262" role="img" aria-label="Two-stage pipeline timelines: uniform micro-batches vs one micro-batch carrying a prefill">
+<text x="0" y="14" class="sh">Uniform: every micro-batch is a 200 ms decode step</text>
+<text x="0" y="42" class="st">stage 1 (GPUs 0–3)</text>
+<rect x="150" y="26" width="252.0" height="24" class="idle"/>
+<rect x="150.0" y="26" width="36.0" height="24" rx="2" class="bd"/><text x="168.0" y="42" class="bt" text-anchor="middle">A0</text>
+<rect x="186.0" y="26" width="36.0" height="24" rx="2" class="bd"/><text x="204.0" y="42" class="bt" text-anchor="middle">B0</text>
+<rect x="222.0" y="26" width="36.0" height="24" rx="2" class="bd"/><text x="240.0" y="42" class="bt" text-anchor="middle">A1</text>
+<rect x="258.0" y="26" width="36.0" height="24" rx="2" class="bd"/><text x="276.0" y="42" class="bt" text-anchor="middle">B1</text>
+<rect x="294.0" y="26" width="36.0" height="24" rx="2" class="bd"/><text x="312.0" y="42" class="bt" text-anchor="middle">A2</text>
+<rect x="330.0" y="26" width="36.0" height="24" rx="2" class="bd"/><text x="348.0" y="42" class="bt" text-anchor="middle">B2</text>
+<text x="0" y="72" class="st">stage 2 (GPUs 4–7)</text>
+<rect x="150" y="56" width="252.0" height="24" class="idle"/>
+<rect x="186.0" y="56" width="36.0" height="24" rx="2" class="bd"/><text x="204.0" y="72" class="bt" text-anchor="middle">A0</text>
+<rect x="222.0" y="56" width="36.0" height="24" rx="2" class="bd"/><text x="240.0" y="72" class="bt" text-anchor="middle">B0</text>
+<rect x="258.0" y="56" width="36.0" height="24" rx="2" class="bd"/><text x="276.0" y="72" class="bt" text-anchor="middle">A1</text>
+<rect x="294.0" y="56" width="36.0" height="24" rx="2" class="bd"/><text x="312.0" y="72" class="bt" text-anchor="middle">B1</text>
+<rect x="330.0" y="56" width="36.0" height="24" rx="2" class="bd"/><text x="348.0" y="72" class="bt" text-anchor="middle">A2</text>
+<rect x="366.0" y="56" width="36.0" height="24" rx="2" class="bd"/><text x="384.0" y="72" class="bt" text-anchor="middle">B2</text>
+<text x="168.0" y="96" class="sl" text-anchor="middle">fill</text>
+<text x="384.0" y="96" class="sl" text-anchor="middle">drain</text>
+<text x="0" y="114" class="sh">Mixed: micro-batch A starts with a 4k-token prefill (1,150 ms)</text>
+<text x="0" y="164" class="st">stage 1 (GPUs 0–3)</text>
+<rect x="150" y="148" width="594.0" height="24" class="idle"/>
+<rect x="150.0" y="148" width="207.0" height="24" rx="2" class="bd"/><text x="253.5" y="164" class="bt" text-anchor="middle">A0</text>
+<rect x="357.0" y="148" width="36.0" height="24" rx="2" class="bd"/><text x="375.0" y="164" class="bt" text-anchor="middle">B0</text>
+<rect x="564.0" y="148" width="36.0" height="24" rx="2" class="bd"/><text x="582.0" y="164" class="bt" text-anchor="middle">A1</text>
+<rect x="600.0" y="148" width="36.0" height="24" rx="2" class="bd"/><text x="618.0" y="164" class="bt" text-anchor="middle">B1</text>
+<rect x="636.0" y="148" width="36.0" height="24" rx="2" class="bd"/><text x="654.0" y="164" class="bt" text-anchor="middle">A2</text>
+<rect x="672.0" y="148" width="36.0" height="24" rx="2" class="bd"/><text x="690.0" y="164" class="bt" text-anchor="middle">B2</text>
+<text x="0" y="194" class="st">stage 2 (GPUs 4–7)</text>
+<rect x="150" y="178" width="594.0" height="24" class="idle"/>
+<rect x="357.0" y="178" width="207.0" height="24" rx="2" class="bd"/><text x="460.5" y="194" class="bt" text-anchor="middle">A0</text>
+<rect x="564.0" y="178" width="36.0" height="24" rx="2" class="bd"/><text x="582.0" y="194" class="bt" text-anchor="middle">B0</text>
+<rect x="600.0" y="178" width="36.0" height="24" rx="2" class="bd"/><text x="618.0" y="194" class="bt" text-anchor="middle">A1</text>
+<rect x="636.0" y="178" width="36.0" height="24" rx="2" class="bd"/><text x="654.0" y="194" class="bt" text-anchor="middle">B1</text>
+<rect x="672.0" y="178" width="36.0" height="24" rx="2" class="bd"/><text x="690.0" y="194" class="bt" text-anchor="middle">A2</text>
+<rect x="708.0" y="178" width="36.0" height="24" rx="2" class="bd"/><text x="726.0" y="194" class="bt" text-anchor="middle">B2</text>
+<path d="M393.0 146 l0 -6 l171.0 0 l0 6" class="br"/>
+<text x="478.5" y="134" class="slr" text-anchor="middle">≈ 950 ms bubble: stage 1 waits for A</text>
+<text x="253.5" y="222" class="sl" text-anchor="middle">fill (1,150 ms)</text>
+<line x1="150" y1="236" x2="744.0" y2="236" class="ax"/>
+<line x1="150.0" y1="236" x2="150.0" y2="240" class="ax"/><text x="150.0" y="254" class="sl" text-anchor="middle">0</text>
+<line x1="240.0" y1="236" x2="240.0" y2="240" class="ax"/><text x="240.0" y="254" class="sl" text-anchor="middle">500</text>
+<line x1="330.0" y1="236" x2="330.0" y2="240" class="ax"/><text x="330.0" y="254" class="sl" text-anchor="middle">1,000</text>
+<line x1="420.0" y1="236" x2="420.0" y2="240" class="ax"/><text x="420.0" y="254" class="sl" text-anchor="middle">1,500</text>
+<line x1="510.0" y1="236" x2="510.0" y2="240" class="ax"/><text x="510.0" y="254" class="sl" text-anchor="middle">2,000</text>
+<line x1="600.0" y1="236" x2="600.0" y2="240" class="ax"/><text x="600.0" y="254" class="sl" text-anchor="middle">2,500</text>
+<line x1="690.0" y1="236" x2="690.0" y2="240" class="ax"/><text x="690.0" y="254" class="sl" text-anchor="middle">3,000</text>
+<text x="744.0" y="254" class="sl" text-anchor="end">ms</text>
+</svg>
+<p class="cap">Green: a micro-batch running on a stage (A0 = micro-batch A, iteration 0). Grey dashed: idle. A micro-batch can't start its next iteration until it leaves stage 2, because it needs that token. Uniform: 1,400 ms for 3 iterations, each stage idle 200 ms (fill or drain). Mixed: 3,300 ms, and stage 1 sits idle for an extra 950 ms. Sarathi fixes this with chunked prefill, which makes micro-batches uniform (<a href="../perf-5-engines/sarathi-stalls.html">course 5, Sarathi-Serve I</a>).</p>
+
+<h2>Worked example: Llama-3.1-70B on 8 H100s <small>(our model)</small></h2>
+<p>A decode step costs max(HBM bytes ÷ 3.35 TB/s, FLOPs ÷ peak) + 160 all-reduces + hops, with no overlap. An all-reduce inside a node costs 2(n−1) ring hops × an illustrative <b>1 µs</b> (14 µs at TP8, 6 at TP4, 2 at TP2; the shared value from the <a href="collectives.html">collectives card</a>) plus 2(n−1)/n · message ÷ 450 GB/s. For "big batch", every sequence is at 8,192 tokens (2.68 GB of KV each), and we pack in as many as the HBM left after weights allows. We use full HBM and link speeds, so treat these numbers as ceilings.</p>
+<div class="bars">
+  <div class="hd">Layout</div><div class="hd">Per-token time at batch 1 (scale: 13 ms)</div><div class="hd r">ms</div>
+  <div class="grp">ONE NODE · 8 GPUs · NVLink</div>
+  <div class="nm">TP8<small>1 replica</small></div><div class="track"><div class="seg rd" style="width:41.3%"></div><div class="seg ar" style="width:17.3%"></div></div><div class="v hi">7.62</div>
+  <div class="nm">TP4 × PP2<small>1 replica, 2 stages</small></div><div class="track"><div class="seg rd" style="width:82.5%"></div><div class="seg ar" style="width:7.5%"></div></div><div class="v">11.70</div>
+  <div class="nm">TP4 × DP2<small>2 replicas</small></div><div class="track"><div class="seg rd" style="width:82.5%"></div><div class="seg ar" style="width:7.5%"></div></div><div class="v">11.70</div>
+  <div class="nm">FP8 TP2 × DP4<small>4 replicas</small></div><div class="track"><div class="seg rd" style="width:84.1%"></div><div class="seg ar" style="width:2.5%"></div></div><div class="v">11.26</div>
+  <div class="grp">TWO NODES · 16 GPUs · InfiniBand between them</div>
+  <div class="nm">TP16 over IB<small>1 replica</small></div><div class="track"><div class="seg rd" style="width:21.0%"></div><div class="seg ar bad" style="width:34.5%"></div></div><div class="v hi">7.23</div>
+  <div class="nm">TP8 × PP2<small>stage per node</small></div><div class="track"><div class="seg rd" style="width:41.3%"></div><div class="seg ar" style="width:17.3%"></div></div><div class="v">7.62</div>
+  <div class="nm">TP8 × DP2<small>2 replicas</small></div><div class="track"><div class="seg rd" style="width:41.3%"></div><div class="seg ar" style="width:17.3%"></div></div><div class="v">7.62</div>
+</div>
+<div class="key"><span><i class="k1"></i>reading weights + one 8k KV cache from HBM</span><span><i class="k2"></i>160 all-reduces (+ hops, ≤ 0.002 ms)</span><span><i class="k3"></i>all-reduces larger than the HBM time</span></div>
+
+<div class="formula">TP8, batch 1
+  weights  141.1 GB / 8 = 17.64 GB ÷ 3.35 TB/s  = 5.27 ms
+  KV       2.68 GB / 8 ÷ 3.35 TB/s             = 0.10 ms
+  comms    160 × (14 × 1 µs + 2·⅞·16 kB ÷ 450 GB/s)
+           = 160 × 14.06 µs                    = 2.25 ms
+  total                                        = <span class="g">7.62 ms → 131 tok/s</span>
+TP4 × PP2, batch 1
+  stage    (17.64 + 0.34) GB ÷ 3.35 TB/s
+           + 80 × 6.05 µs = 5.37 + 0.48        = 5.85 ms
+  total    2 stages + 1 hop (1 µs)             = <span class="r">11.70 ms → 85 tok/s</span>
+           <span class="c">same as TP4 alone: PP bought no speed</span></div>
+
+<div class="tw"><table>
+  <tr><th>8 × H100</th><th class="num">Weights / GPU</th><th class="num">8k sequences</th><th class="num">Batch 1</th><th class="num">Big-batch TPOT</th><th class="num">Total tok/s</th><th class="num">tok/s per GPU</th></tr>
+  <tr><td>TP8 (one replica)</td><td class="num">17.6 GB</td><td class="num">185</td><td class="num hi">7.62 ms</td><td class="num">27.92 ms</td><td class="num hi">6,626</td><td class="num hi">828</td></tr>
+  <tr><td>TP4 × PP2</td><td class="num">17.6 GB</td><td class="num">185</td><td class="num">11.70 ms</td><td class="num lo">30.83 ms</td><td class="num">6,000</td><td class="num">750</td></tr>
+  <tr><td>TP4 × DP2</td><td class="num">35.3 GB</td><td class="num">2 × 66</td><td class="num">11.70 ms</td><td class="num">25.29 ms</td><td class="num lo">5,220</td><td class="num lo">652</td></tr>
+  <tr><td>FP8 TP2 × DP4</td><td class="num">35.3 GB</td><td class="num">4 × 33</td><td class="num">11.26 ms</td><td class="num hi">24.26 ms</td><td class="num">5,440</td><td class="num">680</td></tr>
+</table></div>
+<p class="cap">From labs/layouts.py. "8k sequences" is floor(free HBM ÷ 2.68 GB); the facts table's 186 and 67 are the unrounded 185.9 and 66.6. Big-batch TPOT = time for every sequence in a replica to get one more token.</p>
+
+<ul style="margin-top:12px">
+<li><b>Does FP8 TP2 fit?</b> Yes: 70.6 GB ÷ 2 = 35.3 GB per GPU, leaving 44.7 GB each, so 89.4 GB of KV per replica = <b>33</b> sequences of 8k (BF16 KV). Activation memory and engine overhead would take a little of that. It reads the same 35.3 GB per GPU per step as BF16 TP4, and its 2-GPU all-reduce pays only 2 hops, so it is slightly faster at batch 1 (11.26 vs 11.70 ms) with half the GPUs per replica.</li>
+<li><b>Why PP loses throughput here.</b> In memory-bound decode, each micro-batch re-reads its stage's weights. TP4 × PP2 reads the 17.6 GB twice per cycle (29.06 ms of HBM time vs TP8's 23.80 ms) to save some all-reduce time (1.77 vs 4.13 ms). That's a bad trade inside a node, where NVLink makes all-reduces cheap.</li>
+<li><b>Why DP loses throughput here too.</b> Every replica holds its own copy of the weights. Two copies of 141.1 GB leave room for 132 sequences; one copy leaves room for 185. At 8k context, KV room decides the batch, so TP8 serves the most tokens per second. The replicas win on per-user speed at full load (24.3–25.3 vs 27.9 ms TPOT): each replica runs a smaller batch and does fewer, cheaper all-reduces. At 2k context the gap shrinks: FP8 TP2 × DP4 reaches 21.3k tok/s against TP8's 22.1k (lab "try this").</li>
+</ul>
+
+<h2>16 GPUs across two nodes</h2>
+<div class="tw"><table>
+  <tr><th>2 × 8 H100, IB between nodes</th><th class="num">Weights / GPU</th><th class="num">8k sequences</th><th class="num">Batch 1</th><th class="num">Big-batch TPOT</th><th class="num">Total tok/s</th><th class="num">tok/s per GPU</th></tr>
+  <tr><td>TP16 over IB</td><td class="num">8.8 GB</td><td class="num lo">212</td><td class="num hi">7.23 ms</td><td class="num">31.13 ms</td><td class="num lo">6,811</td><td class="num lo">426</td></tr>
+  <tr><td>TP8 × PP2 (Kiely's recipe)</td><td class="num">8.8 GB</td><td class="num hi">424</td><td class="num">7.62 ms</td><td class="num">30.91 ms</td><td class="num hi">13,717</td><td class="num hi">857</td></tr>
+  <tr><td>TP8 × DP2 (two replicas)</td><td class="num">17.6 GB</td><td class="num">2 × 185</td><td class="num">7.62 ms</td><td class="num hi">27.92 ms</td><td class="num">13,252</td><td class="num">828</td></tr>
+</table></div>
+<p class="cap">Cross-node all-reduce = illustrative 28 µs (2× the in-node TP8 value, <a href="collectives.html">collectives card</a>) + 2 × message ÷ 400 GB/s per node; a cross-node PP send pays 2 µs. The Scaling Book: past one node, an AllReduce costs about 2 × bytes ÷ node egress, 400 GB/s on H100 (8 NICs × 50 GB/s). So in our model the cross-node bandwidth isn't what hurts TP16.</p>
+<ul>
+<li><b>At batch 1, the winner depends on a number nobody publishes.</b> TP16 halves the bytes per GPU (2.73 ms), but pays 160 cross-node all-reduce latencies (4.49 ms). It beats TP8 × PP2 only if one cross-node all-reduce costs under <b>30.4 µs</b>; at our illustrative 28 µs it just wins (7.23 vs 7.62 ms). At 40 µs it takes 9.15 ms. The one measurement in our sources is on a slower network: Sarathi-Serve ran Falcon-180B on 2 nodes × 4 A100s over 100 Gbps Ethernet and saw TP8's median decode latency "∼ 2× higher" than TP4-PP2, "due to cross-node all-reduces" (§5.3).</li>
+<li><b>At a big batch, TP16 loses on memory, not network.</b> Llama-3.1-70B has only K = 8 KV heads, so beyond TP8 the KV cache can't be split further; pairs of GPUs hold the same heads. TP16 fits 212 sequences to TP8 × PP2's 424, and serves half the tokens per second. (The Scaling Book's fix is to shard KV along the batch dimension instead, at the cost of two extra AllToAlls per attention layer.)</li>
+<li><b>If the model already fits one node, use replicas.</b> TP8 × DP2 gets within about 3% of PP's throughput (13,252 vs 13,717 tok/s) with better TPOT (27.9 vs 30.9 ms), no cross-node traffic, and a failure only takes down half the capacity. Kiely: unless the model and KV cache need multiple nodes, "you're often better off using the extra nodes for horizontal scaling across replicas, or for disaggregated serving."</li>
+</ul>
+
+<h2>What the sources say</h2>
+<ul>
+<li><b>Kiely §5.4 (pp. 143–147).</b> His table rates PP "Not recommended due to poor latency and utilization from step-by-step pipeline" (the row mentions a backward pass, which inference doesn't have). "Tensor Parallelism should be your default strategy for multi-GPU model inference." "Pipeline Parallelism is only used for multi-node inference." Across nodes, for dense models: "use Tensor Parallelism within each node and Pipeline Parallelism between nodes (e.g., TP8PP2)".</li>
+<li><b>Scaling Book Part 7, generation.</b> "FSDP is impossible": decode is limited by reading weights from HBM, and moving them over links "orders of magnitudes slower than HBM" is a regression. "We want to move activations rather than weights." For 70B on 8 GPUs (our recomputation): all-gathering 7/8 of 141.1 GB per token takes 274 ms, vs 5.27 ms to read a TP8 shard from HBM. On DP: "pure data parallelism is unhelpful because it replicates our parameters and doesn't help us load parameters faster. You're better off spinning up multiple copies of the model instead." In other words, use replicas, not a synchronized DP group (course 2, <a href="../perf-2-scaling-book-inference/sharding-prefill-generation.html">sharding prefill vs generation</a>).</li>
+<li><b>DistServe §3.2, the decode rule.</b> At large batch (13B, Fig 5), "intra-op parallelism reduces latency with diminishing returns" while "inter-op parallelism can almost linearly scale the throughput. Hence, when the TPOT SLO is stringent, intra-op parallelism is essential to reduce TPOT… Beyond this, inter-op parallelism is preferable to enhance throughput linearly." And when the model fits one GPU, "replication is a competitive option". Intra-op is DistServe's name for TP-style splits; inter-op is its name for pipeline stages.</li>
+</ul>
+
+<h2>Decision table</h2>
+<div class="tw"><table>
+  <tr><th>Situation</th><th>Layout</th><th>Why</th></tr>
+  <tr><td>Model + KV fit on one GPU<small>8B BF16 on an H100: 16.06 GB</small></td><td class="hi">DP replicas only</td><td>No communication at all; capacity scales linearly (DistServe §3.2, Scaling Book)</td></tr>
+  <tr><td>Needs a node, tight TPOT / per-user speed</td><td class="hi">TP up to 8, inside NVLink</td><td>The only split that shortens each token: 7.62 vs 11.70 ms here</td></tr>
+  <tr><td>Needs a node, cost matters, TPOT is loose</td><td>Smallest TP that leaves KV room (FP8 TP2 / TP4) × replicas, or TP8</td><td>Depends on context length: at 8k, TP8's single weight copy holds more KV (6.6k vs 5.4k tok/s); at 2k, FP8 TP2 × DP4 gets within 3%. Measure it on your traffic</td></tr>
+  <tr><td>Dense model too big for one node</td><td class="hi">TP8 in each node × PP across nodes</td><td>One activation hop per stage instead of 160 cross-node all-reduces; KV splits across all 16 GPUs (Kiely p. 147)</td></tr>
+  <tr><td>Fits one node, but you have more nodes</td><td class="hi">Replicas (TP8 × DPn)</td><td>Same throughput as PP, better TPOT, smaller failure blast radius (Kiely pp. 147–148)</td></tr>
+  <tr><td>MoE across nodes</td><td>EP (e.g. EP16), TP for attention</td><td>Kiely: TP8PP2 gives lower per-user latency, EP16 higher system throughput (<a href="expert-parallel.html">expert parallelism</a>)</td></tr>
+  <tr><td>Using PP with a prefill-heavy mix</td><td>Add chunked prefill</td><td>Makes micro-batches uniform, which removes the imbalance bubble (Sarathi-Serve: 3.6× capacity for Falcon-180B TP4-PP2, strict SLO)</td></tr>
+</table></div>
+
+<h2>How it differs from related ideas</h2>
+<div class="grid2">
+  <div class="cell"><h3><span class="x">&#10007;</span> PP inside a node for speed</h3><p>A token still visits every stage in turn, so TP4 × PP2 takes 11.70 ms per token, the same as TP4 alone. It also re-reads weights once per micro-batch.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> TP across InfiniBand</h3><p>160 cross-node all-reduce latencies per token, and past 8 KV heads the cache stops splitting. Half the batch of TP8 × PP2 at 8k context.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> FSDP / synchronized DP for decode</h3><p>Moves weights instead of activations: 274 ms per token to gather 70B vs 5.27 ms to read a shard. A classic regression when training settings leak into serving.</p></div>
+  <div class="cell win"><h3><span class="ok">&#10003;</span> TP in the node, PP or replicas across</h3><p>TP buys latency where links are fast. PP crosses the slow link with a single activation per stage. Replicas add capacity with no communication at all.</p></div>
+</div>
+
+<h2>Is PP ever the right call inside a node, and is TP8 always best?</h2>
+<div class="note">
+  <p>PP inside a node makes sense only when TP can't run there: Kiely notes that L4/L40-class GPUs without NVLink "must be used individually or via inefficient parallelism methods like Pipeline Parallelism" (p. 80). Otherwise use it just to cross nodes.</p>
+  <p>TP8 winning both columns in our table depends on the model's assumptions: 8k contexts, no compute/communication overlap, and an illustrative 1 µs per ring hop. At 5 µs per hop, FP8 TP2 becomes the fastest layout on the node (lab "try this"). Real engines lose efficiency as TP grows (smaller matmuls, synchronization across more GPUs), and the lab's "try this" shows DP gaining ground at shorter contexts. Replicas also bring things this model ignores: independent failures, rolling upgrades, and simpler routing. Pick the layout per workload, and when prefill and decode want different layouts, split them onto different GPUs (<a href="distserve-interference.html">DistServe I</a>).</p>
+</div>
+
+<p style="margin-top:16px"><a class="lab-link" href="https://github.com/seyonv/explainers/blob/main/perf-6-scaling-out/labs/layouts.py">Run it: labs/layouts.py</a> A ceiling model (stdlib, under a second). It computes the 70.55B parameter count from the config, then prints every row of both tables with a batch-1 breakdown (HBM | all-reduces | hops) and a big-batch breakdown (HBM | FLOPs | all-reduces | hops). It also prints the FP8 TP2 fit check, the 30.4 µs break-even, the Sarathi two-stage timeline with its 950 ms bubble, and the FSDP 274 ms comparison. Try this: <code>CTX = 2048</code>, <code>ALPHA_IB = 40e-6</code>, <code>HOP = 5e-6</code>.</p>
+
+<div class="foot">
+<p><b>Read next:</b> Kiely, <i>Inference Engineering</i>, §5.4 "Model Parallelism", all of it (pp. 142–148), ~10 min. Scaling Book Part 7 (<a href="https://jax-ml.github.io/scaling-book/inference/">jax-ml.github.io/scaling-book/inference</a>), "Distributing Inference Over Multiple Accelerators": the Prefill and Generation subsections plus "Sharding the KV cache", ~15 min. DistServe (<a href="https://arxiv.org/abs/2401.09670">arXiv 2401.09670</a>) §3.2 "Analysis for Decoding Instance", ~5 min. Optional: Sarathi-Serve (<a href="https://www.usenix.org/system/files/osdi24-agrawal.pdf">OSDI '24 PDF</a>) §3.3 and §5.3, ~8 min.</p>
+<p><b>Related:</b> <a href="collectives.html">collectives and interconnects</a> · <a href="megatron-mlp-attention.html">Megatron I: splitting the MLP and attention</a> · <a href="megatron-scaling.html">Megatron II: what TP costs</a> · <a href="expert-parallel.html">expert parallelism</a> · <a href="distserve-interference.html">DistServe I</a> · <a href="distserve-placement.html">DistServe II</a> · <a href="sizing-deployment.html">sizing a deployment</a> · <a href="_overview.html">overview</a> · <a href="../perf-2-scaling-book-inference/sharding-prefill-generation.html">course 2: sharding prefill vs generation</a> · <a href="../perf-2-scaling-book-inference/serving-llama-70b.html">course 2: serving Llama 70B</a> · <a href="../perf-5-engines/sarathi-stalls.html">course 5: Sarathi-Serve I</a> · <a href="../perf-5-engines/quantization-serving.html">course 5: quantization for serving</a></p>
+<p><b>Sources:</b> P. Kiely, <i>Inference Engineering</i>, pp. 80, 142–148 (PP/TP/EP table, TP default, TP8PP2, replicas). Scaling Book Part 7 "Generation" (FSDP, data parallelism, KV sharding) and GPU chapter (<a href="https://jax-ml.github.io/scaling-book/gpus/">jax-ml.github.io/scaling-book/gpus</a>: cross-node AllReduce ≈ 2 × bytes ÷ 400 GB/s). DistServe §3.2. Megatron-LM §2.3 (<a href="https://arxiv.org/abs/1909.08053">arXiv 1909.08053</a>). DeepSeek-V3 Table 2 (<a href="https://arxiv.org/abs/2412.19437">arXiv 2412.19437</a>). Sarathi-Serve §3.3 (1,150 / 200 / 950 ms) and §5.3 (TP8 ~2× latency, 3.6×). Llama-3.1-70B shapes, KV per token, H100 3.35 TB/s, 450 GB/s NVLink and 50 GB/s per NIC: course facts. Every H100 latency and throughput number above is our ceiling model. The latencies are illustrative and shared with the <a href="collectives.html">collectives card</a>: 1 µs per ring hop (the Scaling Book's TPU figure), so 14 µs per TP8 all-reduce, and 28 µs for one spanning two nodes. NVIDIA doesn't publish them.</p>
+</div>
+</article>
+<!-- series-nav:bottom -->
+<div class="snx"><a class="nx" href="index.html#moe-basics" target="_top">
+<span class="mini" aria-hidden="true"><span class="m1">Mixture of experts: routers, top-k and imbalance</span><span class="m2">Also called MoE, sparse MoE (SMoE), "total vs active parameters"; the router is also called the gate or gating network, and Switch Transformer calls its top-1 version a "Switch layer". This card opens…</span><span class="m3">In one breath</span><span class="m4">An MoE layer replaces a transformer's single MLP with E smaller MLPs ("experts") and a tiny linear layer, the router, that scores all E for each token and sends the token to only the top k. So the model stores E experts' worth of weights but computes only k per token. The price: tokens don't spread evenly, so some experts…</span></span>
+<span class="tx"><span class="lab">Next up · 06 / 15</span><span class="tt">Mixture of experts: routers, top-k and imbalance</span><span class="ds">Active vs total parameters, capacity and drops</span><span class="nd">Builds on: Linear layers and the critical batch size.</span><span class="go">Continue →</span></span></a><div class="aux"><span><a href="index.html#megatron-scaling" target="_top">← Megatron II: embeddings, the fused loss, and what TP costs</a></span><a href="index.html" target="_top">All cards in 6 · Serving across GPUs</a></div></div>
+<!-- /series-nav:bottom -->
+</body>
+</html>

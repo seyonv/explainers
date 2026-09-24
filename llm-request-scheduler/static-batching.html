@@ -1,0 +1,444 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Static batching and its padding tax</title>
+<style>
+:root{
+  --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
+  --text:#1c1f23; --muted:#6b7068; --faint:#b9b9b3;
+  --accent:#4a9d77; --accent-bg:#dcefdf; --accent-border:#8cc79c;
+  --red:#c0492b; --red-bg:#fbeceb;
+  --amber:#c58a1f; --amber-bg:#f6e7c8;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#15171a; --surface:#1d2024; --surface2:#24282d; --border:#32373d;
+    --text:#e6e8ea; --muted:#9aa1a9; --faint:#4a5057;
+    --accent:#5fb37f; --accent-bg:#1c2b22; --accent-border:#3f7a55;
+    --red:#e57368; --red-bg:#2e1f1e;
+    --amber:#dca84c; --amber-bg:#33291a;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text)}
+.card{max-width:820px;margin:0 auto;padding:28px 32px;font-family:-apple-system,"Inter",system-ui,sans-serif;line-height:1.45}
+h1{font-size:26px;font-weight:600;margin:0 0 6px;letter-spacing:-0.01em}
+.sub{font-size:15px;color:var(--muted);margin:0 0 20px}
+h2{font-size:17px;font-weight:600;margin:26px 0 10px}
+h2 small{font-size:13px;font-weight:400;color:var(--muted)}
+p{font-size:15px;margin:0 0 10px}
+ul,ol{font-size:15px;margin:0 0 10px;padding-left:20px}
+li{margin-bottom:4px}
+.cap{font-size:13px;color:var(--muted);margin:8px 0 0;text-align:center}
+.cap + p{margin-top:14px}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+
+/* Tables and formulas */
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border)}
+th{font-size:12px;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:none}
+.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.hi{color:var(--accent);font-weight:600} .lo{color:var(--red)} .mu{color:var(--muted)}
+tr.pick td{background:var(--accent-bg)}
+.formula{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin:10px 0;white-space:pre;overflow-x:auto;line-height:1.55}
+.formula .c{color:var(--muted)}
+.formula .g{color:var(--accent);font-weight:600}
+.formula .r{color:var(--red);font-weight:600}
+.tw{overflow-x:auto}
+.tw table{min-width:600px}
+
+/* MathML */
+.mathbox{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px 16px 12px;margin:10px 0;overflow-x:auto}
+.mathbox math{font-size:21px;color:var(--text);font-family:"STIX Two Math","Latin Modern Math","Cambria Math",math}
+.mathbox .t1{color:var(--text)} .mathbox .t2{color:var(--accent)} .mathbox .t3{color:var(--muted)} .mathbox .t4{color:var(--red)}
+.mathbox .lab{font-size:12px;font-family:-apple-system,"Inter",system-ui,sans-serif;padding-top:3px;border-top:1.5px solid currentColor;margin-top:2px}
+.legend{display:grid;grid-template-columns:auto 1fr auto;column-gap:14px;row-gap:5px;font-size:13px;margin-top:12px;align-items:baseline}
+.legend .sym{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;text-align:right}
+.legend .v{color:var(--muted);text-align:right;font-variant-numeric:tabular-nums}
+@media (max-width:560px){.legend{grid-template-columns:auto 1fr}.legend .v{display:none}}
+
+/* Two examples per term */
+.parts td{vertical-align:top} .parts td:first-child{font-weight:600}
+.parts .ex{font-size:13px} .parts .ex span{display:block;color:var(--muted)}
+.parts .what{font-size:13px}
+@media (max-width:560px){.parts .what{display:none}}
+
+/* 2x2 grid */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.cell{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.cell.win{background:var(--accent-bg);border-color:var(--accent-border)}
+.cell h3{font-size:16px;font-weight:600;margin:0 0 5px;display:flex;gap:8px;align-items:baseline}
+.cell .q{font-size:12px;color:var(--muted);margin:0 0 6px}
+.cell p{font-size:14px;margin:0;color:var(--text)}
+.cell.win h3,.cell.win p{color:var(--accent)}
+.x{color:var(--red)} .ok{color:var(--accent)}
+
+/* Clarification box */
+.note{border:1px solid var(--border);border-radius:10px;padding:14px 18px;font-size:14px}
+.note p,.note li{font-size:14px} .note p:last-child{margin-bottom:0}
+
+.foot{margin-top:22px;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+.foot p{font-size:13px}
+.lab-link{display:inline-block;font-size:13px;border:1px solid var(--accent-border);background:var(--accent-bg);color:var(--accent);border-radius:6px;padding:4px 10px;margin:2px 0 10px;text-decoration:none}
+.deeper{font-size:14px;color:var(--muted)}
+
+/* SVG */
+svg{display:block;max-width:100%;height:auto;margin-top:6px}
+.s15{font-size:15px;font-weight:600;fill:var(--text)}
+.s13m{font-size:13px;fill:var(--muted)} .s12m{font-size:12px;fill:var(--muted)}
+.pp{fill:var(--amber)}
+.pad{fill:var(--surface2);stroke:var(--faint);stroke-width:1}
+.tok{fill:var(--accent-bg);stroke:var(--accent);stroke-width:1.2}
+.idle{fill:var(--red-bg);stroke:var(--red);stroke-width:1.2}
+@media (max-width:560px){.grid2{grid-template-columns:1fr}.card{padding:20px 16px}}
+a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+/* series-nav */
+.sn{max-width:820px;margin:0 auto;padding:16px 32px 0;font-family:-apple-system,"Inter",system-ui,sans-serif;font-size:13px;line-height:1.5;color:var(--muted)}
+.sn a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
+.sn .crumbs{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 7px}
+.sn .crumbs b{color:var(--text);font-weight:600}
+.sn .sep{color:var(--faint,var(--border))}
+.sn .step{margin-left:auto;white-space:nowrap}
+.sn .dep{margin-top:5px;padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface)}
+.sn .dep .ok{color:var(--accent);font-weight:600}
+.snx{max-width:820px;margin:0 auto;padding:6px 32px 44px;font-family:-apple-system,"Inter",system-ui,sans-serif}
+.snx .nx{display:grid;grid-template-columns:280px 1fr;text-decoration:none;color:var(--text);background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.snx .nx:hover,.snx .nx:focus-visible{border-color:var(--accent-border,var(--accent));outline:none}
+.snx .mini{position:relative;height:210px;overflow:hidden;background:var(--bg);border-right:1px solid var(--border);padding:14px 16px}
+.snx .mini span{display:block}
+.snx .mini .m1{font-size:12.5px;font-weight:600;margin:0 0 4px;line-height:1.3}
+.snx .mini .m2{font-size:9px;color:var(--muted);margin:0 0 8px;line-height:1.4}
+.snx .mini .m3{font-size:8.5px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;margin:0 0 3px}
+.snx .mini .m4{font-size:9.5px;margin:0;line-height:1.45}
+.snx .tx{padding:16px 20px}
+.snx .lab{font-size:12px;font-weight:600;color:var(--accent);letter-spacing:.04em;text-transform:uppercase}
+.snx .tt{display:block;font-size:20px;font-weight:600;margin:5px 0 4px;line-height:1.25}
+.snx .ds{display:block;font-size:14px;color:var(--muted)}
+.snx .nd{display:block;font-size:13px;color:var(--muted);margin-top:10px}
+.snx .go{display:block;margin-top:12px;font-size:14px;font-weight:600;color:var(--accent)}
+.snx .aux{display:flex;justify-content:space-between;gap:12px;margin-top:10px;font-size:13px;color:var(--muted)}
+.snx .aux a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
+@media (max-width:560px){.sn,.snx{padding-left:16px;padding-right:16px}.snx .nx{grid-template-columns:1fr}.snx .mini{display:none}.sn .step{margin-left:0}}
+/* /series-nav */
+</style>
+</head>
+<body>
+<!-- series-nav:top -->
+<nav class="sn" aria-label="Course navigation"><div class="crumbs"><a href="../index.html" target="_top">All explainers</a><span class="sep">›</span><a href="index.html" target="_top">Build an LLM request scheduler</a><span class="sep">›</span><b>07 / 25</b><span class="step"><a href="index.html#why-batch" target="_top">← prev</a> · <a href="index.html#dynamic-batching" target="_top">next →</a></span></div>
+</nav>
+<!-- /series-nav:top -->
+<article class="card">
+<h1>Static batching and its padding tax</h1>
+<p class="sub">Also called request-level batching or naive batching. It was the default before iteration-level scheduling (FasterTransformer-era servers, a plain padded <code>generate()</code> call), and it survives as TensorRT-LLM's <code>kSTATIC_BATCH</code> policy. On this card: our simulator, Llama-3.1-8B BF16 on one H100, B = 32.</p>
+
+<h2>In one breath</h2>
+<p>Wait until B requests have arrived, pad every prompt to the longest one, prefill them together, then decode the whole group until its longest answer is done. Nobody new can join mid-flight, and a row that finishes early keeps its seat, idle, until the last row is done. It's the simplest scheduler there is. You pay for that three times: padding, idle seats, and the wait for the batch to fill.</p>
+
+<h2>How it works <small>four toy requests (0–3 of the course's toy trace)</small></h2>
+<ol>
+  <li><b>Collect B.</b> The batch starts only when B = 4 requests are there. Request 3 arrives at 1 ms, so the batch starts at 1 ms.</li>
+  <li><b>Pad and prefill.</b> Every prompt is padded to the longest one (20 tokens), and one prefill step produces each row's first token.</li>
+  <li><b>Decode to the longest.</b> The group decodes one token per row per step until the row with the longest output (request 1, 9 tokens) finishes.</li>
+  <li><b>Nobody joins.</b> Rows that finish early sit idle. Requests 4–7 wait in the queue for the next batch.</li>
+</ol>
+<svg viewBox="0 0 524 234" role="img" aria-label="Four requests in one static batch: prompts padded to 20 tokens, then 9 output steps, with 15 idle seats after rows finish">
+<text class="s13m" x="100" y="16">prompt, padded to 20</text>
+<text class="s13m" x="258" y="16">output slots, one column per step</text>
+<text class="s12m" x="271" y="36" text-anchor="middle">1</text>
+<text class="s12m" x="300" y="36" text-anchor="middle">2</text>
+<text class="s12m" x="329" y="36" text-anchor="middle">3</text>
+<text class="s12m" x="358" y="36" text-anchor="middle">4</text>
+<text class="s12m" x="387" y="36" text-anchor="middle">5</text>
+<text class="s12m" x="416" y="36" text-anchor="middle">6</text>
+<text class="s12m" x="445" y="36" text-anchor="middle">7</text>
+<text class="s12m" x="474" y="36" text-anchor="middle">8</text>
+<text class="s12m" x="503" y="36" text-anchor="middle">9</text>
+<text class="s15" x="0" y="56">req 0</text><text class="s12m" x="0" y="71">12 in · 4 out</text>
+<rect class="pp" x="100" y="44" width="6" height="26" rx="1"/>
+<rect class="pp" x="107" y="44" width="6" height="26" rx="1"/>
+<rect class="pp" x="114" y="44" width="6" height="26" rx="1"/>
+<rect class="pp" x="121" y="44" width="6" height="26" rx="1"/>
+<rect class="pp" x="128" y="44" width="6" height="26" rx="1"/>
+<rect class="pp" x="135" y="44" width="6" height="26" rx="1"/>
+<rect class="pp" x="142" y="44" width="6" height="26" rx="1"/>
+<rect class="pp" x="149" y="44" width="6" height="26" rx="1"/>
+<rect class="pp" x="156" y="44" width="6" height="26" rx="1"/>
+<rect class="pp" x="163" y="44" width="6" height="26" rx="1"/>
+<rect class="pp" x="170" y="44" width="6" height="26" rx="1"/>
+<rect class="pp" x="177" y="44" width="6" height="26" rx="1"/>
+<rect class="pad" x="184" y="44" width="6" height="26" rx="1"/>
+<rect class="pad" x="191" y="44" width="6" height="26" rx="1"/>
+<rect class="pad" x="198" y="44" width="6" height="26" rx="1"/>
+<rect class="pad" x="205" y="44" width="6" height="26" rx="1"/>
+<rect class="pad" x="212" y="44" width="6" height="26" rx="1"/>
+<rect class="pad" x="219" y="44" width="6" height="26" rx="1"/>
+<rect class="pad" x="226" y="44" width="6" height="26" rx="1"/>
+<rect class="pad" x="233" y="44" width="6" height="26" rx="1"/>
+<rect class="tok" x="258" y="44" width="26" height="26" rx="3"/>
+<rect class="tok" x="287" y="44" width="26" height="26" rx="3"/>
+<rect class="tok" x="316" y="44" width="26" height="26" rx="3"/>
+<rect class="tok" x="345" y="44" width="26" height="26" rx="3"/>
+<rect class="idle" x="374" y="44" width="26" height="26" rx="3"/>
+<rect class="idle" x="403" y="44" width="26" height="26" rx="3"/>
+<rect class="idle" x="432" y="44" width="26" height="26" rx="3"/>
+<rect class="idle" x="461" y="44" width="26" height="26" rx="3"/>
+<rect class="idle" x="490" y="44" width="26" height="26" rx="3"/>
+<text class="s15" x="0" y="94">req 1</text><text class="s12m" x="0" y="109">5 in · 9 out</text>
+<rect class="pp" x="100" y="82" width="6" height="26" rx="1"/>
+<rect class="pp" x="107" y="82" width="6" height="26" rx="1"/>
+<rect class="pp" x="114" y="82" width="6" height="26" rx="1"/>
+<rect class="pp" x="121" y="82" width="6" height="26" rx="1"/>
+<rect class="pp" x="128" y="82" width="6" height="26" rx="1"/>
+<rect class="pad" x="135" y="82" width="6" height="26" rx="1"/>
+<rect class="pad" x="142" y="82" width="6" height="26" rx="1"/>
+<rect class="pad" x="149" y="82" width="6" height="26" rx="1"/>
+<rect class="pad" x="156" y="82" width="6" height="26" rx="1"/>
+<rect class="pad" x="163" y="82" width="6" height="26" rx="1"/>
+<rect class="pad" x="170" y="82" width="6" height="26" rx="1"/>
+<rect class="pad" x="177" y="82" width="6" height="26" rx="1"/>
+<rect class="pad" x="184" y="82" width="6" height="26" rx="1"/>
+<rect class="pad" x="191" y="82" width="6" height="26" rx="1"/>
+<rect class="pad" x="198" y="82" width="6" height="26" rx="1"/>
+<rect class="pad" x="205" y="82" width="6" height="26" rx="1"/>
+<rect class="pad" x="212" y="82" width="6" height="26" rx="1"/>
+<rect class="pad" x="219" y="82" width="6" height="26" rx="1"/>
+<rect class="pad" x="226" y="82" width="6" height="26" rx="1"/>
+<rect class="pad" x="233" y="82" width="6" height="26" rx="1"/>
+<rect class="tok" x="258" y="82" width="26" height="26" rx="3"/>
+<rect class="tok" x="287" y="82" width="26" height="26" rx="3"/>
+<rect class="tok" x="316" y="82" width="26" height="26" rx="3"/>
+<rect class="tok" x="345" y="82" width="26" height="26" rx="3"/>
+<rect class="tok" x="374" y="82" width="26" height="26" rx="3"/>
+<rect class="tok" x="403" y="82" width="26" height="26" rx="3"/>
+<rect class="tok" x="432" y="82" width="26" height="26" rx="3"/>
+<rect class="tok" x="461" y="82" width="26" height="26" rx="3"/>
+<rect class="tok" x="490" y="82" width="26" height="26" rx="3"/>
+<text class="s15" x="0" y="132">req 2</text><text class="s12m" x="0" y="147">20 in · 2 out</text>
+<rect class="pp" x="100" y="120" width="6" height="26" rx="1"/>
+<rect class="pp" x="107" y="120" width="6" height="26" rx="1"/>
+<rect class="pp" x="114" y="120" width="6" height="26" rx="1"/>
+<rect class="pp" x="121" y="120" width="6" height="26" rx="1"/>
+<rect class="pp" x="128" y="120" width="6" height="26" rx="1"/>
+<rect class="pp" x="135" y="120" width="6" height="26" rx="1"/>
+<rect class="pp" x="142" y="120" width="6" height="26" rx="1"/>
+<rect class="pp" x="149" y="120" width="6" height="26" rx="1"/>
+<rect class="pp" x="156" y="120" width="6" height="26" rx="1"/>
+<rect class="pp" x="163" y="120" width="6" height="26" rx="1"/>
+<rect class="pp" x="170" y="120" width="6" height="26" rx="1"/>
+<rect class="pp" x="177" y="120" width="6" height="26" rx="1"/>
+<rect class="pp" x="184" y="120" width="6" height="26" rx="1"/>
+<rect class="pp" x="191" y="120" width="6" height="26" rx="1"/>
+<rect class="pp" x="198" y="120" width="6" height="26" rx="1"/>
+<rect class="pp" x="205" y="120" width="6" height="26" rx="1"/>
+<rect class="pp" x="212" y="120" width="6" height="26" rx="1"/>
+<rect class="pp" x="219" y="120" width="6" height="26" rx="1"/>
+<rect class="pp" x="226" y="120" width="6" height="26" rx="1"/>
+<rect class="pp" x="233" y="120" width="6" height="26" rx="1"/>
+<rect class="tok" x="258" y="120" width="26" height="26" rx="3"/>
+<rect class="tok" x="287" y="120" width="26" height="26" rx="3"/>
+<rect class="idle" x="316" y="120" width="26" height="26" rx="3"/>
+<rect class="idle" x="345" y="120" width="26" height="26" rx="3"/>
+<rect class="idle" x="374" y="120" width="26" height="26" rx="3"/>
+<rect class="idle" x="403" y="120" width="26" height="26" rx="3"/>
+<rect class="idle" x="432" y="120" width="26" height="26" rx="3"/>
+<rect class="idle" x="461" y="120" width="26" height="26" rx="3"/>
+<rect class="idle" x="490" y="120" width="26" height="26" rx="3"/>
+<text class="s15" x="0" y="170">req 3</text><text class="s12m" x="0" y="185">7 in · 6 out</text>
+<rect class="pp" x="100" y="158" width="6" height="26" rx="1"/>
+<rect class="pp" x="107" y="158" width="6" height="26" rx="1"/>
+<rect class="pp" x="114" y="158" width="6" height="26" rx="1"/>
+<rect class="pp" x="121" y="158" width="6" height="26" rx="1"/>
+<rect class="pp" x="128" y="158" width="6" height="26" rx="1"/>
+<rect class="pp" x="135" y="158" width="6" height="26" rx="1"/>
+<rect class="pp" x="142" y="158" width="6" height="26" rx="1"/>
+<rect class="pad" x="149" y="158" width="6" height="26" rx="1"/>
+<rect class="pad" x="156" y="158" width="6" height="26" rx="1"/>
+<rect class="pad" x="163" y="158" width="6" height="26" rx="1"/>
+<rect class="pad" x="170" y="158" width="6" height="26" rx="1"/>
+<rect class="pad" x="177" y="158" width="6" height="26" rx="1"/>
+<rect class="pad" x="184" y="158" width="6" height="26" rx="1"/>
+<rect class="pad" x="191" y="158" width="6" height="26" rx="1"/>
+<rect class="pad" x="198" y="158" width="6" height="26" rx="1"/>
+<rect class="pad" x="205" y="158" width="6" height="26" rx="1"/>
+<rect class="pad" x="212" y="158" width="6" height="26" rx="1"/>
+<rect class="pad" x="219" y="158" width="6" height="26" rx="1"/>
+<rect class="pad" x="226" y="158" width="6" height="26" rx="1"/>
+<rect class="pad" x="233" y="158" width="6" height="26" rx="1"/>
+<rect class="tok" x="258" y="158" width="26" height="26" rx="3"/>
+<rect class="tok" x="287" y="158" width="26" height="26" rx="3"/>
+<rect class="tok" x="316" y="158" width="26" height="26" rx="3"/>
+<rect class="tok" x="345" y="158" width="26" height="26" rx="3"/>
+<rect class="tok" x="374" y="158" width="26" height="26" rx="3"/>
+<rect class="tok" x="403" y="158" width="26" height="26" rx="3"/>
+<rect class="idle" x="432" y="158" width="26" height="26" rx="3"/>
+<rect class="idle" x="461" y="158" width="26" height="26" rx="3"/>
+<rect class="idle" x="490" y="158" width="26" height="26" rx="3"/>
+<rect class="pp" x="0" y="204" width="14" height="14" rx="2"/><text class="s13m" x="20" y="216">prompt token</text>
+<rect class="pad" x="118" y="204" width="14" height="14" rx="2"/><text class="s13m" x="138" y="216">padding</text>
+<rect class="tok" x="212" y="204" width="14" height="14" rx="2"/><text class="s13m" x="232" y="216">token made</text>
+<rect class="idle" x="326" y="204" width="14" height="14" rx="2"/><text class="s13m" x="346" y="216">done, seat idle</text>
+</svg>
+<p class="cap">Rows are seats in the batch and columns are forward steps. Column 1 is the prefill step, which makes each row's first token. Columns 2–9 are decode steps. Request 2 is done after column 2, but its seat stays reserved (and computed on) for 7 more steps.</p>
+<div class="formula"><span class="c"># prompt padding: every row is padded to the longest prompt</span>
+4 rows × 20 = 80 prefill slots;  real = 12 + 5 + 20 + 7 = 44
+padding = 80 − 44 = <span class="r">36 tokens (45%)</span>
+
+<span class="c"># idle seats: 8 decode steps (columns 2–9) × 4 rows</span>
+slot-steps = 4 × 8 = 32;  useful = 3 + 8 + 1 + 5 = 17
+idle = 32 − 17 = <span class="r">15 slot-steps (47%)</span>   <span class="c"># the simulator's "padding waste"</span>
+
+<span class="c"># time, our model: every step is weight-bound, about 4.8 ms</span>
+9 steps, 1.0 → 44.2 ms;  request 4 arrived at 2 ms, first token at 49.0 ms</div>
+<p class="cap">Our simulator (<code>simulate_request_level(toy_trace(), cost, 4)</code>). Request 4's TTFT is 47.0 ms. It waits behind request 1's ninth token, even though request 2's seat has been empty since 10.6 ms. At this tiny size the padding costs no time, because every step is paying for the 16.06 GB weight read anyway. It costs seats. At B = 32 with 500-token prompts it costs time too (below).</p>
+
+<h2>The waste, as an equation</h2>
+<p>The fraction of decode seats that sit idle depends only on the spread of output lengths inside a batch:</p>
+<div class="mathbox">
+<math display="block">
+  <mtext>idle fraction</mtext><mo>=</mo><mn>1</mn><mo>&#8722;</mo>
+  <mfrac>
+    <munder class="t2"><mrow><munderover><mo>&#8721;</mo><mrow><mi>i</mi><mo>=</mo><mn>1</mn></mrow><mi>B</mi></munderover><mo>(</mo><msub><mi>o</mi><mi>i</mi></msub><mo>&#8722;</mo><mn>1</mn><mo>)</mo></mrow><mtext class="lab">tokens actually decoded</mtext></munder>
+    <munder class="t4"><mrow><mi>B</mi><mo>&#8901;</mo><mo>(</mo><msub><mi>o</mi><mtext>max</mtext></msub><mo>&#8722;</mo><mn>1</mn><mo>)</mo></mrow><mtext class="lab">seats × decode steps</mtext></munder>
+  </mfrac>
+</math>
+<div class="legend">
+  <span class="sym">B</span><span>rows in the batch</span><span class="v">4 toy · 32 at scale</span>
+  <span class="sym">o_i</span><span>output tokens of row i (the first comes from the prefill)</span><span class="v">4, 9, 2, 6 · median 201</span>
+  <span class="sym">o_max</span><span>the longest output in the batch: every row runs this long</span><span class="v">9 · median 977.5</span>
+</div>
+</div>
+<div class="formula">toy:     1 − 17 / (4 × 8)                    = <span class="r">46.9%</span>
+at scale (1,000 requests, 32 batches of 32, our trace):
+         1 − 269,469 / 917,528                = <span class="r">70.6% → the 71% in E2</span></div>
+<p class="cap">Our simulation. Output lengths are lognormal (median 200, σ 0.8, capped at 1,024). The median request writes 201 tokens, but the median <i>batch</i> runs 977.5 steps, and 15 of the 32 batches hit the 1,024 cap. The maximum of 32 draws from a long-tailed distribution is always near the tail. The rate doesn't change this: the same 32-request groups form at 2, 20 and 60 req/s, so waste is 71% at all three.</p>
+
+<h2>The four costs, each with two examples</h2>
+<p>Like a tour bus that leaves only when it's full and returns only when the last passenger is done sightseeing:</p>
+<div class="tw">
+<table class="parts">
+  <tr><th>Cost</th><th class="what">What actually happens</th><th>Example A: the toy batch</th><th>Example B: 1,000 requests, B = 32 (our sim)</th></tr>
+  <tr><td>Prompt padding</td><td class="what">Short prompts are padded to the longest one, and the padding is computed and its KV is read</td>
+      <td class="ex"><b>36 of 80 tokens</b><span>free in time: weight-bound steps</span></td>
+      <td class="ex"><b class="lo">74% of prefill tokens</b><span>batch max prompt averages 2,638 vs 696 mean; padded prefill = 1.35 s per batch</span></td></tr>
+  <tr><td>Idle after finish</td><td class="what">A finished row keeps its seat until the longest row ends</td>
+      <td class="ex"><b>15 of 32 slot-steps</b><span>request 2 idle for 7 steps</span></td>
+      <td class="ex"><b class="lo">71%</b><span>648,059 of 917,528 decode slot-steps</span></td></tr>
+  <tr><td>Fill and head-of-line wait</td><td class="what">A request waits for B arrivals, then for the batch ahead of it to run to its longest output</td>
+      <td class="ex"><b>47.0 ms TTFT</b><span>request 4 waits for the first batch</span></td>
+      <td class="ex"><b class="lo">8.7 s TTFT p50</b><span>even at 2 req/s</span></td></tr>
+  <tr><td>Memory reservation</td><td class="what">KV for every row is sized for the longest prompt plus the output cap, because nobody knows which row will run long</td>
+      <td class="ex"><b>4 × (20 + 9) = 116</b><span>token slots for 65 real tokens (56%), even with the true max output</span></td>
+      <td class="ex"><b class="lo">21.5 GB for 32 rows</b><span>a request uses 18.9% of its row on average</span></td></tr>
+</table>
+</div>
+
+<h2>At scale: E2 <small>1,000 Poisson requests, SLO TTFT ≤ 1 s and TPOT ≤ 50 ms</small></h2>
+<div class="tw">
+<table>
+  <tr><th>Rate</th><th>Strategy</th><th class="num">Out tok/s</th><th class="num">TTFT p50</th><th class="num">TTFT p99</th><th class="num">TPOT p50</th><th class="num">In SLO</th><th class="num">Padding waste</th></tr>
+  <tr><td>2 req/s</td><td>static B = 32</td><td class="num">511</td><td class="num lo">8,698 ms</td><td class="num lo">21,650 ms</td><td class="num">8.0 ms</td><td class="num lo">1%</td><td class="num lo">71%</td></tr>
+  <tr class="pick"><td></td><td>continuous + chunked</td><td class="num">521</td><td class="num hi">11.1 ms</td><td class="num">59.5 ms</td><td class="num">5.0 ms</td><td class="num hi">100%</td><td class="num">0%</td></tr>
+  <tr><td>20 req/s</td><td>static B = 32</td><td class="num lo">913</td><td class="num lo">118 s</td><td class="num lo">233 s</td><td class="num">8.0 ms</td><td class="num lo">0%</td><td class="num lo">71%</td></tr>
+  <tr class="pick"><td></td><td>continuous + chunked</td><td class="num hi">4,755</td><td class="num hi">16.1 ms</td><td class="num">83.1 ms</td><td class="num">7.1 ms</td><td class="num hi">100%</td><td class="num">0%</td></tr>
+  <tr><td>60 req/s</td><td>static B = 32</td><td class="num lo">916</td><td class="num lo">134 s</td><td class="num lo">265 s</td><td class="num">8.0 ms</td><td class="num lo">0%</td><td class="num lo">71%</td></tr>
+  <tr class="pick"><td></td><td>continuous + chunked</td><td class="num hi">9,102</td><td class="num">1,397 ms</td><td class="num">4,816 ms</td><td class="num">23.7 ms</td><td class="num">41%</td><td class="num">0%</td></tr>
+</table>
+</div>
+<p>Where the numbers come from, in our model:</p>
+<div class="formula"><span class="c"># why TTFT p50 is 8.7 s at only 2 req/s (back-of-envelope)</span>
+fill 32 seats: 31 gaps × 0.5 s = 15.5 s; a request waits ~half
+of that for the bus to fill ≈ 7.8 s, plus prefill → <span class="r">8.7 s</span> measured
+
+<span class="c"># why it saturates at ≈ 916 tok/s</span>
+one batch = 1.35 s padded prefill + 7.86 s decode = 9.21 s
+32 requests / 9.21 s = <span class="r">3.4 req/s</span> ≈ 916 tok/s ÷ 270.5 mean out
+<span class="c"># 20 req/s arrive, 3.4 req/s leave: the queue grows, TTFT → 118 s</span>
+
+<span class="c"># vs the same 32 seats always full (E1, decode at 2k context)</span>
+4,349 tok/s possible;  static delivers 916;  continuous 9,102 = <span class="g">≈ 10×</span></div>
+<p class="cap">Our simulation (a floor at 100% of peak), from <code>labs/experiments.py</code>. Static batching is under the SLO even at 1 req/s: capacity 0 req/s, against 40 req/s for continuous + chunked. TPOT looks fine (8.0 ms), because once a batch is running it streams fast. The damage is all in the wait before the first token.</p>
+
+<h2>The memory side <small>reserve for the worst row, for every row</small></h2>
+<p>A padded batch is one rectangular tensor. Its KV cache has to hold, for every row, the longest prompt plus room for the longest output the server allows. The server can't know in advance which row will run long, so it can't size rows individually.</p>
+<div class="formula">one row: (4,096 max prompt + 1,024 max output) × 128 KiB = 671 MB
+32 rows: 32 × 671 MB = <span class="r">21.5 GB</span> reserved
+average request uses 696 + 270.5 = 967 tokens = <span class="r">18.9%</span> of its row
+rows that fit in 63.9 GB: 487,504 / 5,120 = 95  <span class="c"># paged KV: 238 at 2k</span></div>
+<p class="cap">Arithmetic on the course's shared numbers and our trace's means. The vLLM team reported that systems which reserve contiguous KV "waste 60% – 80% of memory due to fragmentation", against under 4% with paging. Engines that still reserve to completion (TGI, TensorRT-LLM's default <code>GUARANTEED_NO_EVICT</code>) do it per request, not per padded rectangle, and they let new requests join every step.</p>
+
+<h2>How it compares, measured elsewhere</h2>
+<div class="tw">
+<table>
+  <tr><th>Source</th><th>Setup</th><th class="num">Static</th><th class="num">Continuous</th><th>Note</th></tr>
+  <tr><td>Anyscale (2023)</td><td>OPT-13B, one A100 40 GB</td><td class="num">4× (FasterTransformer)</td><td class="num">8× · 23× with vLLM</td><td>throughput, each vs the post's baseline</td></tr>
+  <tr><td>Orca (OSDI '22)</td><td>GPT-3 175B</td><td class="num">1× (FasterTransformer)</td><td class="num">36.9×</td><td>throughput at the same latency</td></tr>
+  <tr><td>Databricks (2023)</td><td>not specified in the post's claim</td><td class="num">beats dynamic</td><td class="num">10–20× dynamic</td><td>dynamic "typically performs worse than static"</td></tr>
+  <tr class="pick"><td>Our simulation</td><td>Llama-3.1-8B BF16, one H100, B = 32</td><td class="num">916 tok/s</td><td class="num">9,102 tok/s</td><td>≈ 10×, saturated</td></tr>
+</table>
+</div>
+<div class="formula">Anyscale, continuous alone vs optimised static: 8× / 4× = 2×
+Anyscale, vLLM vs optimised static:            23× / 4× ≈ 5.8×</div>
+
+<h2>The code <small>the core of <code>simulate_request_level</code> in scheduler.py</small></h2>
+<pre class="formula">if len(queue) &lt; max_batch and pending:
+    deadline = queue[0].arrival + max_delay  <span class="c"># inf for static</span>
+    if pending[0].arrival &lt;= deadline:       <span class="c"># someone can join</span>
+        t = max(t, pending[0].arrival)       <span class="c"># wait for them</span>
+        continue
+batch = [queue.popleft() for _ in range(min(max_batch, len(queue)))]
+b = len(batch)
+p = max(r.prompt_len for r in batch)
+o = max(r.output_len for r in batch)
+t += cost.raw(b * p, b * p)                  <span class="c"># padded prefill</span>
+for k in range(1, o):
+    t += cost.raw(b, b * (p + k))            <span class="c"># padded decode step</span>
+    for r in batch:
+        if r.num_generated &lt; r.output_len: ... <span class="c"># busy_slots += 1</span>
+        else: idle_slots += 1               <span class="c"># finished, seat idle</span></pre>
+<p class="cap">Lightly condensed from <a href="https://github.com/seyonv/explainers/blob/main/llm-request-scheduler/labs/scheduler.py">labs/scheduler.py</a>: names are unchanged, and the first-token bookkeeping is left out. <code>max_delay = inf</code> is static batching; a finite window makes it dynamic batching (next card). Cost per batch is O(B · o_max) seat updates, and the batch is fixed from the first step to the last. The whole weakness is that the loop over <code>k</code> never looks at <code>queue</code>.</p>
+
+<h2>When static batching is the right tool</h2>
+<p>Two questions decide it: does all the work exist up front, and do the outputs have a (short, similar) length?</p>
+<div class="grid2">
+  <div class="cell win"><p class="q">All work known up front · no decode, or equal lengths</p><h3><span class="ok">&#10003;</span> Static batching</h3><p>Embeddings, classification, reranking or scoring (one forward pass, no decode). Offline jobs with a fixed short output. Sort by length into buckets and pad: no idle seats, no one waiting for a first token, and the simplest code there is.</p></div>
+  <div class="cell"><p class="q">Requests stream in · single pass (no decode)</p><h3><span class="x">&#10007;</span> Static: waits to fill</h3><p>Nobody should wait for 31 strangers. Use <b>dynamic batching</b> instead: a size cap plus a time window (Triton's <code>max_queue_delay_microseconds</code>, e.g. 16 requests or 100 ms in Baseten's example).</p></div>
+  <div class="cell"><p class="q">All work known up front · outputs vary</p><h3><span class="x">&#10007;</span> Static: idle seats</h3><p>A batch-API-style overnight job. Nobody is waiting, but 71% of seats idle is still 71% of the GPU bill. Sorting helps only if you know the output lengths (see below). <b>Continuous batching</b> still wins: 4,426 vs 2,164 tok/s with the same 32 seats in our sim.</p></div>
+  <div class="cell"><p class="q">Requests stream in · outputs vary (chat)</p><h3><span class="x">&#10007;</span> Static: all three costs</h3><p>This is the E2 table: 8.7 s TTFT p50 at 2 req/s, 0% in SLO at 20 req/s. Use <b>continuous batching</b> with chunked prefill, the default in vLLM, SGLang, TGI and TensorRT-LLM.</p></div>
+</div>
+<p class="cap">Inference: we don't have a source on how any provider's batch endpoint schedules work. "Batch-API-style" means only "large offline job, results in hours", and our sim says continuous batching is still the better engine for it.</p>
+
+<h2>Doesn't sorting by length fix it?</h2>
+<div class="note">
+  <p>Partly. Bucketing similar lengths together attacks the padding, but not the wait for the batch to fill, and it can only fix the idle seats if you know the <i>output</i> lengths, which you don't until they're written. Our simulation: the same 1,000 requests, B = 32.</p>
+  <div class="tw">
+  <table>
+    <tr><th>Offline: all 1,000 requests present at t = 0</th><th class="num">Out tok/s</th><th class="num">Idle seats</th><th class="num">Makespan</th></tr>
+    <tr><td>static, arrival order</td><td class="num lo">917</td><td class="num lo">70.6%</td><td class="num">294.8 s</td></tr>
+    <tr><td>static, sorted by prompt length (knowable)</td><td class="num">1,427</td><td class="num lo">69.7%</td><td class="num">189.5 s</td></tr>
+    <tr><td>static, sorted by true output length (an oracle)</td><td class="num">2,164</td><td class="num">5.5%</td><td class="num">125.0 s</td></tr>
+    <tr><td>continuous, max 32 seats, no sorting</td><td class="num">4,426</td><td class="num">0%</td><td class="num">61.1 s</td></tr>
+    <tr class="pick"><td>continuous, max 256 seats (the sim's default)</td><td class="num hi">9,222</td><td class="num">0%</td><td class="num hi">29.3 s</td></tr>
+  </table>
+  </div>
+  <p style="margin-top:10px">Sorting by prompt cuts the prefill padding and the padded KV reads (1.55× faster) but leaves the idle seats at 70%. Only oracle output sorting removes them, and even then continuous batching with the same 32 seats is 2× faster, because static still pads every prompt. Online, sorting doesn't help at all: with requests at 2 req/s arriving in perfect output-length order, static still has <b>TTFT p50 8,642 ms</b> and <b>1%</b> in SLO. The bus still has to fill.</p>
+  <p>When static batching <i>is</i> the choice: single-pass models (embeddings, classifiers), offline jobs with fixed short outputs, and compiled engines that only run a few fixed shapes (one padded shape per length bucket). For anything that decodes a variable-length answer while people wait, use continuous batching.</p>
+</div>
+<p class="deeper">Go deeper → <a href="../perf-5-engines/orca-iteration-scheduling.html">Inside an inference engine: Orca I, iteration-level scheduling</a>, the paper that replaced request-level batching.</p>
+
+<div class="foot">
+<p><a class="lab-link" href="https://github.com/seyonv/explainers/blob/main/llm-request-scheduler/labs/experiments.py">Run it: labs/experiments.py</a> The E2 rows come from <code>python3 experiments.py</code>. The toy trace, the waste breakdown, the memory arithmetic and the sorting table come from short scripts that import <code>labs/scheduler.py</code> (<code>simulate_request_level</code> and <code>simulate</code> on <code>poisson_trace(1000, rate=20, seed=1)</code>, with arrivals set to 0 for the offline rows). Each one runs in a few seconds.</p>
+<p><b>Read next:</b> <a href="dynamic-batching.html">Dynamic batching: wait a little, batch a lot</a>, then <a href="continuous-batching.html">Continuous batching: join and leave every step</a>.</p>
+<p><b>Related:</b> <a href="why-batch.html">Why batching works</a> · <a href="dynamic-batching.html">Dynamic batching</a> · <a href="continuous-batching.html">Continuous batching</a> · <a href="../perf-5-engines/orca-iteration-scheduling.html">Inside an inference engine: Orca I</a> · <a href="../perf-4-attention-kv/paged-memory.html">Attention and the KV cache: paged memory</a> · <a href="../perf-2-scaling-book-inference/step-time.html">The math of serving an LLM: step time</a></p>
+<p><b>Sources:</b> 4×/8×/23× on OPT-13B: <a href="https://www.anyscale.com/blog/continuous-batching-llm-inference">Anyscale, "How continuous batching enables 23x throughput"</a>. 60–80% vs under 4% KV waste: <a href="https://vllm.ai/blog/2023-06-20-vllm">vLLM blog, PagedAttention</a>. 36.9× over FasterTransformer: <a href="https://www.usenix.org/conference/osdi22/presentation/yu">Orca, OSDI '22</a>. Dynamic vs static, 10–20×: <a href="https://www.databricks.com/blog/llm-inference-performance-engineering-best-practices">Databricks, LLM inference best practices</a>. 16 requests / 100 ms window: <a href="https://www.baseten.co/blog/continuous-vs-dynamic-batching-for-ai-inference/">Baseten, continuous vs dynamic batching</a>. <code>max_queue_delay_microseconds</code>: <a href="https://docs.nvidia.com/deeplearning/triton-inference-server/user-guide/docs/user_guide/batcher.html">Triton dynamic batcher docs</a>. <code>kSTATIC_BATCH</code> and <code>GUARANTEED_NO_EVICT</code>: <code>cpp/include/tensorrt_llm/executor/types.h</code> in <a href="https://github.com/NVIDIA/TensorRT-LLM">NVIDIA/TensorRT-LLM</a>. Everything else is our simulation: <a href="https://github.com/seyonv/explainers/blob/main/llm-request-scheduler/labs/experiments.py">labs/experiments.py</a> and <a href="https://github.com/seyonv/explainers/blob/main/llm-request-scheduler/labs/scheduler.py">labs/scheduler.py</a>, a floor at 100% of peak. Nothing on this card is illustrative except the tour-bus analogy.</p>
+</div>
+</article>
+<!-- series-nav:bottom -->
+<div class="snx"><a class="nx" href="index.html#dynamic-batching" target="_top">
+<span class="mini" aria-hidden="true"><span class="m1">Dynamic batching: wait a little, batch a lot</span><span class="m2">Also called time-window batching, adaptive batching, or the Triton dynamic batcher. It is the classic way to batch models that answer in one forward pass. In this course it is the middle row of the…</span><span class="m3">In one breath</span><span class="m4">Don't send each request to the GPU alone, and don't wait for a full batch either. Hold requests in a queue and fire the batch as soon as either it reaches the maximum size or the oldest request has waited max_delay. You pay at most max_delay of extra latency, and you get batches that grow with traffic. That is a great deal when…</span></span>
+<span class="tx"><span class="lab">Next up · 08 / 25</span><span class="tt">Dynamic batching: wait a little, batch a lot</span><span class="ds">A time window, and why it still fails for generation</span><span class="go">Continue →</span></span></a><div class="aux"><span><a href="index.html#why-batch" target="_top">← Why batching works: one weight read, many tokens</a></span><a href="index.html" target="_top">All cards in Build an LLM request scheduler</a></div></div>
+<!-- /series-nav:bottom -->
+</body>
+</html>

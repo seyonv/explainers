@@ -1,0 +1,393 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MegaScale-Infer I: splitting attention from the experts</title>
+<style>
+:root{
+  --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
+  --text:#1c1f23; --muted:#6b7068; --faint:#b9b9b3;
+  --accent:#4a9d77; --accent-bg:#dcefdf; --accent-border:#8cc79c;
+  --red:#c0492b; --red-bg:#fbeceb;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#15171a; --surface:#1d2024; --surface2:#24282d; --border:#32373d;
+    --text:#e6e8ea; --muted:#9aa1a9; --faint:#4a5057;
+    --accent:#5fb37f; --accent-bg:#1c2b22; --accent-border:#3f7a55;
+    --red:#e57368; --red-bg:#2e1f1e;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text)}
+.card{max-width:820px;margin:0 auto;padding:28px 32px;font-family:-apple-system,"Inter",system-ui,sans-serif;line-height:1.45}
+h1{font-size:26px;font-weight:600;margin:0 0 6px;letter-spacing:-0.01em}
+.sub{font-size:15px;color:var(--muted);margin:0 0 20px}
+h2{font-size:17px;font-weight:600;margin:26px 0 10px}
+h2 small{font-size:13px;font-weight:400;color:var(--muted)}
+h3.sm{font-size:15px;font-weight:600;margin:18px 0 8px}
+h3.sm small{font-size:13px;font-weight:400;color:var(--muted)}
+p{font-size:15px;margin:0 0 10px}
+ul{font-size:15px;margin:0 0 10px;padding-left:20px}
+li{margin-bottom:4px}
+.cap{font-size:13px;color:var(--muted);margin:8px 0 0;text-align:center}
+.cap + p{margin-top:14px}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+blockquote{margin:10px 0;padding:8px 14px;border-left:3px solid var(--accent-border);background:var(--surface);font-size:14px;border-radius:0 6px 6px 0}
+blockquote cite{display:block;font-style:normal;font-size:12px;color:var(--muted);margin-top:4px}
+.ours{border-left:3px solid var(--accent-border);padding:2px 0 2px 14px;margin:10px 0}
+.warn{border:1px solid var(--red);background:var(--red-bg);border-radius:8px;padding:10px 14px;font-size:14px;margin:10px 0}
+.warn p{font-size:14px;margin:0 0 6px} .warn p:last-child{margin:0}
+
+/* Tables and formulas */
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border)}
+th{font-size:12px;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:none}
+.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.hi{color:var(--accent);font-weight:600} .lo{color:var(--red)} .mu{color:var(--muted)}
+tr.pick td{background:var(--accent-bg)}
+.formula{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin:10px 0;white-space:pre;overflow-x:auto;line-height:1.55}
+.formula .c{color:var(--muted)}
+.formula .g{color:var(--accent);font-weight:600}
+.formula .r{color:var(--red);font-weight:600}
+.tw{overflow-x:auto}
+.tw table{min-width:620px}
+.t3 td,.t3 th{padding:7px 6px}
+
+/* MathML */
+.mathbox{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px 16px 12px;margin:10px 0;overflow-x:auto}
+.mathbox math{font-size:21px;color:var(--text);font-family:"STIX Two Math","Latin Modern Math","Cambria Math",math}
+.mathbox .t1{color:var(--text)} .mathbox .t2{color:var(--accent)} .mathbox .t3{color:var(--muted)}
+.mathbox .lab{font-size:12px;font-family:-apple-system,"Inter",system-ui,sans-serif;padding-top:3px;border-top:1.5px solid currentColor;margin-top:2px}
+.mathbox math + math{margin-top:14px}
+.mathbox .eqn{font-size:12px;color:var(--muted);font-family:-apple-system,"Inter",system-ui,sans-serif;margin:14px 0 2px}
+.mathbox .eqn:first-child{margin-top:0}
+.legend{display:grid;grid-template-columns:auto 1fr auto;column-gap:14px;row-gap:5px;font-size:13px;margin-top:12px;align-items:baseline}
+.legend .sym{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;text-align:right}
+.legend .v{color:var(--muted);text-align:right;font-variant-numeric:tabular-nums}
+@media (max-width:560px){.legend{grid-template-columns:auto 1fr}.legend .v{display:none}}
+
+/* Two examples per term */
+.parts td{vertical-align:top} .parts td:first-child{font-weight:600}
+.parts .ex{font-size:13px} .parts .ex span{display:block;color:var(--muted)}
+.parts .what{font-size:13px}
+@media (max-width:560px){.parts .what{display:none}}
+
+/* 2x2 grid */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.cell{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.cell.win{background:var(--accent-bg);border-color:var(--accent-border)}
+.cell h3{font-size:16px;font-weight:600;margin:0 0 5px;display:flex;gap:8px;align-items:baseline}
+.cell p{font-size:14px;margin:0;color:var(--text)}
+.cell.win h3,.cell.win p{color:var(--accent)}
+.x{color:var(--red)} .ok{color:var(--accent)}
+
+/* Clarification box */
+.note{border:1px solid var(--border);border-radius:10px;padding:14px 18px;font-size:14px}
+.note p,.note li{font-size:14px} .note p:last-child{margin-bottom:0}
+
+.foot{margin-top:22px;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+.foot p{font-size:13px}
+.lab-link{display:inline-block;font-size:13px;border:1px solid var(--accent-border);background:var(--accent-bg);color:var(--accent);border-radius:6px;padding:4px 10px;margin:2px 0 10px;text-decoration:none}
+
+/* SVG */
+svg{display:block;max-width:100%;height:auto;margin-top:6px}
+.sl{font-size:12px;fill:var(--muted)} .st{font-size:13px;fill:var(--text)} .sh{font-size:13px;font-weight:600;fill:var(--text)}
+.slr{font-size:12px;fill:var(--red)} .slg{font-size:12px;fill:var(--accent)}
+.bx{fill:var(--surface2);stroke:var(--faint);stroke-width:1}
+.bxa{fill:var(--accent-bg);stroke:var(--accent);stroke-width:1.2}
+.dv{stroke:var(--border);stroke-width:1}
+.ax{stroke:var(--muted);stroke-width:1}
+.wire{stroke:var(--faint);stroke-width:1.2;fill:none}
+.c1{fill:none;stroke:var(--text);stroke-width:2.5}
+.c2{fill:none;stroke:var(--muted);stroke-width:2.5;stroke-dasharray:6 4}
+.c3{fill:none;stroke:var(--red);stroke-width:2.5}
+.cut{stroke:var(--red);stroke-width:1.2;stroke-dasharray:4 3}
+.dotr{fill:var(--red)} .dotg{fill:var(--accent)} .dott{fill:var(--text)} .dotm{fill:var(--muted)}
+@media (max-width:560px){.grid2{grid-template-columns:1fr}.card{padding:20px 16px}}
+a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+/* series-nav */
+.sn{max-width:820px;margin:0 auto;padding:16px 32px 0;font-family:-apple-system,"Inter",system-ui,sans-serif;font-size:13px;line-height:1.5;color:var(--muted)}
+.sn a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
+.sn .crumbs{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 7px}
+.sn .crumbs b{color:var(--text);font-weight:600}
+.sn .sep{color:var(--faint,var(--border))}
+.sn .step{margin-left:auto;white-space:nowrap}
+.sn .dep{margin-top:5px;padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface)}
+.sn .dep .ok{color:var(--accent);font-weight:600}
+.snx{max-width:820px;margin:0 auto;padding:6px 32px 44px;font-family:-apple-system,"Inter",system-ui,sans-serif}
+.snx .nx{display:grid;grid-template-columns:280px 1fr;text-decoration:none;color:var(--text);background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.snx .nx:hover,.snx .nx:focus-visible{border-color:var(--accent-border,var(--accent));outline:none}
+.snx .mini{position:relative;height:210px;overflow:hidden;background:var(--bg);border-right:1px solid var(--border);padding:14px 16px}
+.snx .mini span{display:block}
+.snx .mini .m1{font-size:12.5px;font-weight:600;margin:0 0 4px;line-height:1.3}
+.snx .mini .m2{font-size:9px;color:var(--muted);margin:0 0 8px;line-height:1.4}
+.snx .mini .m3{font-size:8.5px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;margin:0 0 3px}
+.snx .mini .m4{font-size:9.5px;margin:0;line-height:1.45}
+.snx .tx{padding:16px 20px}
+.snx .lab{font-size:12px;font-weight:600;color:var(--accent);letter-spacing:.04em;text-transform:uppercase}
+.snx .tt{display:block;font-size:20px;font-weight:600;margin:5px 0 4px;line-height:1.25}
+.snx .ds{display:block;font-size:14px;color:var(--muted)}
+.snx .nd{display:block;font-size:13px;color:var(--muted);margin-top:10px}
+.snx .go{display:block;margin-top:12px;font-size:14px;font-weight:600;color:var(--accent)}
+.snx .aux{display:flex;justify-content:space-between;gap:12px;margin-top:10px;font-size:13px;color:var(--muted)}
+.snx .aux a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
+@media (max-width:560px){.sn,.snx{padding-left:16px;padding-right:16px}.snx .nx{grid-template-columns:1fr}.snx .mini{display:none}.sn .step{margin-left:0}}
+/* /series-nav */
+</style>
+</head>
+<body>
+<!-- series-nav:top -->
+<nav class="sn" aria-label="Course navigation"><div class="crumbs"><a href="../perf-0-map/index.html" target="_top">Fast LLM inference</a><span class="sep">›</span><a href="index.html" target="_top">6 · Serving across GPUs</a><span class="sep">›</span><b>13 / 15</b><span class="step"><a href="index.html#disaggregation-in-production" target="_top">← prev</a> · <a href="index.html#megascale-infer-pingpong" target="_top">next →</a></span></div>
+<div class="dep"><b>Before this:</b> <a href="index.html#expert-parallel" target="_top">Expert parallelism: dispatch, combine and EPLB</a> · <a href="index.html#distserve-interference" target="_top">DistServe I: why prefill and decode want different GPUs</a></div></nav>
+<!-- /series-nav:top -->
+<article class="card">
+<h1>MegaScale-Infer I: splitting attention from the experts</h1>
+<p class="sub">Also called attention–FFN disaggregation (AFD) or, in the paper's words, disaggregated expert parallelism. Card 1 of 2 on MegaScale-Infer (Zhu et al., ByteDance Seed and Peking University, arXiv 2504.02263 v4). It walks §1–3 in order: why MoE experts starve during decode, the roofline arithmetic, and the attention-node / expert-node layout. Then §4.3, which puts each side on different, cheaper GPUs, plus the two §4.2 formulas that size the split. <a href="megascale-infer-pingpong.html">Card 2</a> covers the ping-pong pipeline (§4.1), the plan search (§4.2), M2N communication (§5) and the results (§7).</p>
+
+<h2>In one breath</h2>
+<p>In a MoE model each expert sees only a small slice of the decode batch (top-k of E), so its matrix multiplies stay memory-bound and the GPU's compute sits idle. MegaScale-Infer moves attention and the experts onto <b>different GPUs</b>. Many attention replicas (data parallel, each holding its own requests' KV cache) all send their tokens to <b>one shared set of expert nodes</b> (expert parallel, one expert per node). Pooling the tokens gives each expert a batch big enough to be compute-bound. Each side can then scale on its own and run on the GPU that is cheapest for its bottleneck: memory for attention, FLOPs for experts.</p>
+
+<h2>§1–2.2 The problem: batching only helps the part that shares weights</h2>
+<p>Decode attention is memory-bound "because they must access the intermediate states (i.e., key-value cache) of all previous tokens". Batching doesn't fix that, because every request reads <i>its own</i> KV cache. FFN weights, on the other hand, are shared by every token in the batch, so "batching is only efficient for FFNs to reuse model parameters". In a dense model a big enough decode batch makes the FFN compute-bound. In a MoE model the router splits the batch, so "fewer tokens—less than a quarter, or even an order of magnitude less—are assigned to each expert within the same batch size". The paper's Fig 1 draws this as a sketch with no numbers: attention utilization stays low at every batch size, the dense FFN saturates, the MoE FFN doesn't.</p>
+<p>§2.2 recaps the standard tools. Tensor parallelism splits each matmul and "introduces substantial communication overhead", so it stays inside an NVLink node (<a href="megatron-mlp-attention.html">Megatron I</a>). Pipeline parallelism "slightly increases inference time" but "scales serving throughput linearly". Expert parallelism puts whole experts on different devices, so each MoE layer needs "two all-to-all communications" (dispatch and combine, <a href="expert-parallel.html">expert parallelism</a>). EP runs complete matmuls, which GPUs like, but risks load imbalance and more traffic as top-k grows: "whether TP or EP benefits FFN more depends highly on the structure of MoE models and the real-time workload." Prior work: Infinite-LLM already split attention off, for <i>dense</i> long-context models, where memory capacity is the limit and the traffic is simpler than top-k routing.</p>
+
+<h2>§2.3 The roofline for one expert <small>formulas as printed</small></h2>
+<p>The paper's example is Mixtral 8×22B (about 141B parameters, about 39B active per token, top-2 of 8 experts) on an A100-SXM-80GB in bf16. A decode GEMM multiplies a b × h batch by an h × n weight: 2bhn FLOPs, and hn parameters = 2hn bytes to read. It is compute-bound once the math takes at least as long as the read:</p>
+<div class="mathbox">
+<div class="eqn">Roofline condition (§2.3)</div>
+<math display="block">
+  <munder class="t2"><mfrac><mrow><mn>2</mn><mi>b</mi><mi>h</mi><mi>n</mi></mrow><mi>F</mi></mfrac><mtext class="lab">time to compute</mtext></munder>
+  <mo>&#8805;</mo>
+  <munder class="t3"><mfrac><mrow><mn>2</mn><mi>h</mi><mi>n</mi></mrow><mi>B</mi></mfrac><mtext class="lab">time to read weights</mtext></munder>
+  <mspace width="0.8em"/><mo>&#8660;</mo><mspace width="0.8em"/>
+  <mi>b</mi><mo>&#8805;</mo><mfrac><mi>F</mi><mi>B</mi></mfrac>
+</math>
+<div class="eqn">FFN utilization vs decode batch b</div>
+<math display="block">
+  <msub><mtext>util</mtext><mtext>dense</mtext></msub><mo>=</mo>
+  <mo>min</mo><mo>(</mo><mfrac><mi>B</mi><mi>F</mi></mfrac><mi>b</mi><mo>,</mo><mn>1</mn><mo>)</mo>
+  <mspace width="1.4em"/>
+  <msub><mtext>util</mtext><mtext>MoE</mtext></msub><mo>=</mo>
+  <mo>min</mo><mo>(</mo>
+  <munder class="t3"><mfrac><mtext>topk</mtext><mrow><mo>#</mo><mtext>expert</mtext></mrow></mfrac><mtext class="lab">share each expert gets</mtext></munder>
+  <mfrac><mi>B</mi><mi>F</mi></mfrac><mi>b</mi><mo>,</mo><mn>1</mn><mo>)</mo>
+</math>
+<div class="legend">
+  <span class="sym">b</span><span>decode batch, tokens per step (one per sequence)</span><span class="v">156 in the example</span>
+  <span class="sym">h, n</span><span>the GEMM's input and output widths (hidden size, FFN width)</span><span class="v">cancel out</span>
+  <span class="sym">F</span><span>GPU compute, FLOP/s. <b>Not</b> the FFN</span><span class="v">A100 312 T · H100 989 T</span>
+  <span class="sym">B</span><span>memory <b>bandwidth</b>, bytes/s. <b>Not</b> a batch size (Table 1 later reuses B for the global batch)</span><span class="v">A100 2 TB/s · H100 3.35 TB/s</span>
+  <span class="sym">topk / #expert</span><span>experts per token ÷ experts per layer</span><span class="v">Mixtral 2/8 · DeepSeek-V3 8/256</span>
+</div>
+</div>
+<p class="cap">F/B has units of FLOPs per byte, but the paper reads it as tokens. That works because the bf16 2 bytes per weight cancel the 2 in 2bhn. With FP8 weights and bf16 math the ridge halves (<a href="moe-basics.html">MoE basics</a> has that table).</p>
+
+<div class="formula"><span class="c"># the paper's numbers (A100, bf16)</span>
+F / B                  312 TFLOPS ÷ 2 TB/s          = <span class="g">156 tokens</span>
+Mixtral at b = 156     156 × topk/#expert = 156 × 2/8 = <span class="r">39 tokens per expert</span>
+FFN MFU                min(2/8 × 156/156, 1)        = <span class="r">25%</span>
+
+<span class="c"># the same on your H100 (our recomputation, course facts)</span>
+F / B                  989 TFLOPS ÷ 3.35 TB/s       = 295.2 → <span class="g">295 tokens</span>
+Mixtral 8×22B          needs b ≥ 295 × 8/2          = 1,180 tokens per step
+DeepSeek-V3            needs b ≥ 295 × 256/8        = <span class="r">9,440 tokens per step</span>
+DeepSeek-V3 at b = 295 util = 8/256                 = <span class="r">3.1%</span></div>
+
+<svg viewBox="0 0 800 290" role="img" aria-label="Theoretical FFN utilization on an H100 versus decode batch on a log scale. A dense FFN reaches 100 percent at 295 tokens, Mixtral at 1,180 and DeepSeek-V3 only at 9,440. One colocated replica with 384 tokens gives DeepSeek-V3 experts 4.1 percent; pooling 9,440 tokens from many attention replicas reaches 100 percent.">
+  <line class="dv" x1="70" y1="177.5" x2="760" y2="177.5"/><line class="dv" x1="70" y1="125" x2="760" y2="125"/><line class="dv" x1="70" y1="72.5" x2="760" y2="72.5"/><line class="dv" x1="70" y1="20" x2="760" y2="20"/>
+  <line class="ax" x1="70" y1="230" x2="760" y2="230"/><line class="ax" x1="70" y1="20" x2="70" y2="230"/>
+  <text class="sl" x="62" y="234" text-anchor="end">0%</text><text class="sl" x="62" y="129" text-anchor="end">50%</text><text class="sl" x="62" y="24" text-anchor="end">100%</text><text class="sl" x="62" y="181" text-anchor="end">25%</text><text class="sl" x="62" y="76" text-anchor="end">75%</text>
+  <text class="sl" x="70" y="248" text-anchor="middle">1</text><text class="sl" x="168.6" y="248" text-anchor="middle">4</text><text class="sl" x="267.1" y="248" text-anchor="middle">16</text><text class="sl" x="365.7" y="248" text-anchor="middle">64</text><text class="sl" x="464.3" y="248" text-anchor="middle">256</text><text class="sl" x="562.9" y="248" text-anchor="middle">1,024</text><text class="sl" x="661.4" y="248" text-anchor="middle">4,096</text><text class="sl" x="760" y="248" text-anchor="middle">16,384</text>
+  <text class="sl" x="415" y="270" text-anchor="middle">decode batch b, tokens per step (log scale) · H100, bf16, formula only</text>
+  <text class="sl" x="14" y="125" transform="rotate(-90 14 125)" text-anchor="middle">FFN utilization</text>
+  <path class="c1" d="M70.0,229.3 L82.3,229.2 L94.6,229.0 L107.0,228.8 L119.3,228.6 L131.6,228.3 L143.9,228.0 L156.2,227.6 L168.6,227.2 L180.9,226.6 L193.2,226.0 L205.5,225.2 L217.9,224.3 L230.2,223.2 L242.5,222.0 L254.8,220.4 L267.1,218.6 L279.5,216.5 L291.8,213.9 L304.1,210.9 L316.4,207.2 L328.8,202.9 L341.1,197.8 L353.4,191.7 L365.7,184.5 L378.0,175.9 L390.4,165.6 L402.7,153.4 L415.0,139.0 L427.3,121.7 L439.6,101.2 L452.0,76.9 L464.3,47.9 L474.4,20.0 L760.0,20.0"/>
+  <path class="c2" d="M70.0,229.8 L82.3,229.8 L94.6,229.7 L107.0,229.7 L119.3,229.6 L131.6,229.6 L143.9,229.5 L156.2,229.4 L168.6,229.3 L180.9,229.2 L193.2,229.0 L205.5,228.8 L217.9,228.6 L230.2,228.3 L242.5,228.0 L254.8,227.6 L267.1,227.2 L279.5,226.6 L291.8,226.0 L304.1,225.2 L316.4,224.3 L328.8,223.2 L341.1,222.0 L353.4,220.4 L365.7,218.6 L378.0,216.5 L390.4,213.9 L402.7,210.9 L415.0,207.2 L427.3,202.9 L439.6,197.8 L452.0,191.7 L464.3,184.5 L476.6,175.9 L488.9,165.6 L501.2,153.4 L513.6,139.0 L525.9,121.7 L538.2,101.2 L550.5,76.9 L562.9,47.9 L573.0,20.0 L760.0,20.0"/>
+  <path class="c3" d="M70.0,230.0 L82.3,230.0 L94.6,230.0 L107.0,230.0 L119.3,230.0 L131.6,229.9 L143.9,229.9 L156.2,229.9 L168.6,229.9 L180.9,229.9 L193.2,229.9 L205.5,229.9 L217.9,229.8 L230.2,229.8 L242.5,229.7 L254.8,229.7 L267.1,229.6 L279.5,229.6 L291.8,229.5 L304.1,229.4 L316.4,229.3 L328.8,229.2 L341.1,229.0 L353.4,228.8 L365.7,228.6 L378.0,228.3 L390.4,228.0 L402.7,227.6 L415.0,227.2 L427.3,226.6 L439.6,226.0 L452.0,225.2 L464.3,224.3 L476.6,223.2 L488.9,222.0 L501.2,220.4 L513.6,218.6 L525.9,216.5 L538.2,213.9 L550.5,210.9 L562.9,207.2 L575.2,202.9 L587.5,197.8 L599.8,191.7 L612.1,184.5 L624.5,175.9 L636.8,165.6 L649.1,153.4 L661.4,139.0 L673.8,121.7 L686.1,101.2 L698.4,76.9 L710.7,47.9 L720.9,20.0 L760.0,20.0"/>
+  <line class="c1" x1="84" y1="36" x2="112" y2="36"/><text class="st" x="120" y="40">dense: compute-bound from 295</text>
+  <line class="c2" x1="84" y1="56" x2="112" y2="56"/><text class="sl" x="120" y="60">Mixtral (top-2 of 8): from 1,180</text>
+  <line class="c3" x1="84" y1="76" x2="112" y2="76"/><text class="slr" x="120" y="80">DeepSeek-V3 (top-8 of 256): from 9,440</text>
+  <circle class="dotg" cx="98" cy="96" r="5"/><text class="slg" x="120" y="100">pooled from many attention replicas → 100%</text>
+  <circle class="dott" cx="474.4" cy="20" r="4"/><circle class="dotm" cx="572.9" cy="20" r="4"/><circle class="dotg" cx="720.8" cy="20" r="5"/>
+  <circle class="dotr" cx="493.1" cy="221.5" r="4"/><text class="slr" x="500" y="214">DeepSeek-V3, one replica's 384 tokens: 4.1%</text>
+</svg>
+<p class="cap">From the two utilization formulas, not a measurement (lab section 3). Every MoE curve is the dense curve shifted right by #expert/topk: ×4 for Mixtral, ×32 for DeepSeek-V3. The red dot is one attention replica that keeps 3 micro-batches of 128 sequences (the sizing example below) and runs its own experts.</p>
+
+<p><b>Why not just raise the batch?</b> §2.3 names three limits. A bigger batch makes each step slower, which can break the time-between-tokens SLO. Every sequence in the batch needs its KV cache in GPU memory, and "for large-scale MoE, the GPU memory becomes more scarce, resulting in a smaller maximum batch size". Spreading the model over more GPUs to make room "introduces more communication overhead". For DeepSeek-V3 on H100s, 9,440 sequences decoding in one replica's step is far beyond any of these limits (our inference).</p>
+
+<h2>§2.4 Two opportunities, two challenges</h2>
+<p>Splitting attention from the FFN "naturally provides two key advantages". <b>Independent scaling</b>: add attention replicas, and each one's requests are aggregated at the FFN, so it "becomes compute-intensive". <b>Heterogeneous deployment</b>: each module runs on "the most cost-effective GPUs" for it (§4.3 below). It also creates two problems, both solved in <a href="megascale-infer-pingpong.html">card 2</a>. First, every token goes attention → FFN → attention in sequence, so one side idles while the other computes or while data is on the wire. A <b>ping-pong pipeline</b> of micro-batches keeps both busy. Second, M attention GPUs talking to N expert GPUs need <b>M2N and N2M</b> communication instead of all-to-all, and "directly leveraging peer-to-peer communication primitives from existing libraries results in significant performance degradation".</p>
+
+<h2>§3 The layout: attention nodes and expert nodes</h2>
+<p>MegaScale-Infer first splits prefill from decode onto separate clusters, "following prior work" (DistServe, Splitwise). The paper is about decode only. One <b>runtime instance</b> serves one model replica during decode and is made of two kinds of node:</p>
+<svg viewBox="0 0 760 330" role="img" aria-label="One MegaScale-Infer runtime instance. On the left, n_a attention nodes, each with a copy of the attention weights and its own requests' KV cache, tensor parallel inside the node. On the right, E expert nodes, each holding one expert of every MoE layer, tensor parallel inside the node. Every attention node is wired to every expert node: M2N sends tokens to their chosen experts, N2M sends the outputs back.">
+  <text class="sh" x="135" y="16" text-anchor="middle">n_a attention nodes · data parallel</text>
+  <text class="sh" x="625" y="16" text-anchor="middle">E expert nodes · expert parallel</text>
+  <line class="wire" x1="250" y1="70" x2="510" y2="70"/>
+  <line class="wire" x1="250" y1="70" x2="510" y2="124"/>
+  <line class="wire" x1="250" y1="70" x2="510" y2="178"/>
+  <line class="wire" x1="250" y1="70" x2="510" y2="256"/>
+  <line class="wire" x1="250" y1="124" x2="510" y2="70"/>
+  <line class="wire" x1="250" y1="124" x2="510" y2="124"/>
+  <line class="wire" x1="250" y1="124" x2="510" y2="178"/>
+  <line class="wire" x1="250" y1="124" x2="510" y2="256"/>
+  <line class="wire" x1="250" y1="178" x2="510" y2="70"/>
+  <line class="wire" x1="250" y1="178" x2="510" y2="124"/>
+  <line class="wire" x1="250" y1="178" x2="510" y2="178"/>
+  <line class="wire" x1="250" y1="178" x2="510" y2="256"/>
+  <line class="wire" x1="250" y1="256" x2="510" y2="70"/>
+  <line class="wire" x1="250" y1="256" x2="510" y2="124"/>
+  <line class="wire" x1="250" y1="256" x2="510" y2="178"/>
+  <line class="wire" x1="250" y1="256" x2="510" y2="256"/>
+  <rect class="bx" x="20" y="46" width="230" height="48" rx="4"/><text class="sh" x="32" y="65">attention node 1 · tp_a GPUs</text><text class="sl" x="32" y="83">attention weights + own KV cache</text>
+  <rect class="bx" x="510" y="46" width="230" height="48" rx="4"/><text class="sh" x="522" y="65">expert node 1 · tp_e GPUs</text><text class="sl" x="522" y="83">expert 1 of every MoE layer</text>
+  <rect class="bx" x="20" y="100" width="230" height="48" rx="4"/><text class="sh" x="32" y="119">attention node 2 · tp_a GPUs</text><text class="sl" x="32" y="137">attention weights + own KV cache</text>
+  <rect class="bx" x="510" y="100" width="230" height="48" rx="4"/><text class="sh" x="522" y="119">expert node 2 · tp_e GPUs</text><text class="sl" x="522" y="137">expert 2 of every MoE layer</text>
+  <rect class="bx" x="20" y="154" width="230" height="48" rx="4"/><text class="sh" x="32" y="173">attention node 3 · tp_a GPUs</text><text class="sl" x="32" y="191">attention weights + own KV cache</text>
+  <rect class="bx" x="510" y="154" width="230" height="48" rx="4"/><text class="sh" x="522" y="173">expert node 3 · tp_e GPUs</text><text class="sl" x="522" y="191">expert 3 of every MoE layer</text>
+  <rect class="bx" x="20" y="232" width="230" height="48" rx="4"/><text class="sh" x="32" y="251">attention node n_a · tp_a GPUs</text><text class="sl" x="32" y="269">attention weights + own KV cache</text>
+  <rect class="bx" x="510" y="232" width="230" height="48" rx="4"/><text class="sh" x="522" y="251">expert node E · tp_e GPUs</text><text class="sl" x="522" y="269">expert E of every MoE layer</text>
+  <text class="st" x="135" y="222" text-anchor="middle">⋮</text><text class="st" x="625" y="222" text-anchor="middle">⋮</text>
+  <text class="sl" x="380" y="36" text-anchor="middle">M2N → tokens to their top-K experts</text>
+  <text class="sl" x="380" y="298" text-anchor="middle">← N2M: expert outputs back, twice per MoE layer in total</text>
+  <text class="sl" x="380" y="322" text-anchor="middle">decode only · prefill runs on its own cluster and hands over the KV cache</text>
+</svg>
+<blockquote>"Each expert node typically consists of 1-8 GPUs within a single physical server and stores the parameters of one expert. All expert nodes together form an expert parallelism group. The parameters of the attention module (e.g., weight matrices for QKV and output projection) are replicated on each attention node, where the key-value caches are also stored. Tensor parallelism is employed within each attention/expert node to leverage high-bandwidth connectivity between GPUs (e.g., NVLink)."<cite>MegaScale-Infer §3</cite></blockquote>
+<p>So attention is <b>data parallel</b> (DP: identical copies, each with its own requests and KV cache), the experts are <b>expert parallel</b> (EP: expert i of every layer on node i), and <b>tensor parallelism</b> (TP) appears only inside a node, over NVLink. The two sides are sized separately: the number of attention nodes n<sub>a</sub> doesn't have to match the number of experts E.</p>
+
+<p>Each part, with two examples. Everyday analogy: many order counters (attention) each keep their own customers' tickets, and a single row of specialist kitchens (experts) cooks for all counters at once.</p>
+<div class="tw">
+<table class="parts">
+  <tr><th>Part</th><th class="what">What it holds and does</th><th>Example A: Mixtral 8×22B (the paper)</th><th>Example B: DeepSeek-V3 on H100 (ours)</th></tr>
+  <tr><td>Attention node</td><td class="what">One copy of the attention weights plus the KV cache of its own requests. Runs QKV projection, attention and output projection for its micro-batch of size b<sub>a</sub>. tp<sub>a</sub> GPUs</td>
+      <td class="ex"><b>b<sub>a</sub> = 128, tp<sub>a</sub> = 2</b><span>the §7.3 message-size example</span></td>
+      <td class="ex"><b>74 of them</b><span>to give 256 experts 295 tokens each at b<sub>a</sub> = 128 (sizing below)</span></td></tr>
+  <tr><td>Expert node</td><td class="what">Expert i of every MoE layer, on 1–8 GPUs of one server (tp<sub>e</sub>). Runs the FFN GEMMs for b<sub>e</sub> tokens</td>
+      <td class="ex"><b>8 nodes · 33.8 GB each</b><span>3 × 6144 × 16384 × 56 layers = 16.9B bf16 params (our recomputation)</span></td>
+      <td class="ex"><b>256 nodes · 2.55 GB each</b><span>44.0M × 58 layers, FP8: a whole node for 2.55 GB (our recomputation)</span></td></tr>
+  <tr><td>M2N / N2M</td><td class="what">Point-to-point sends from M attention GPUs to N expert GPUs and back, replacing EP's all-to-all</td>
+      <td class="ex"><b>196,608 B</b><span>per attention GPU per expert GPU: 128 × 2/8 × 6144 × 2 B ÷ tp<sub>a</sub> 2 (§7.3)</span></td>
+      <td class="ex"><b>each token → 8 of 256 nodes</b><span>every attention node talks to all 256 expert nodes</span></td></tr>
+  <tr><td>Runtime instance</td><td class="what">One model replica for decode: n<sub>a</sub> attention nodes + E expert nodes</td>
+      <td class="ex"><b>5 + 8 nodes</b><span>our sizing below (A100 roofline, b<sub>a</sub> = 128)</span></td>
+      <td class="ex"><b>74 + 256 nodes</b><span>our sizing; DeepSeek's own decode unit is 320 GPUs with DP80 attention</span></td></tr>
+</table>
+</div>
+<p class="cap">Our inference from Example B: "one expert per node" suits coarse experts like Mixtral's. A fine-grained model such as DeepSeek-V3 would leave most of each node's memory empty, so it would need several experts per node. The paper's §3 doesn't describe that case. It evaluates Mixtral (8 experts), DBRX (16) and Scaled-MoE (32).</p>
+
+<h2>Three ways to split, side by side</h2>
+<p>P/D disaggregation (<a href="distserve-interference.html">DistServe</a>) splits a request <b>by phase</b>. AFD splits each decode step <b>by layer type</b>. MegaScale-Infer does both: P/D first, then AFD inside decode. DeepSeek's decode unit (<a href="expert-parallel.html">expert parallelism</a>) already pools tokens from many attention replicas, but on the same GPUs that run the experts.</p>
+<div class="tw">
+<table>
+  <tr><th>Design</th><th>What gets its own GPUs</th><th>What crosses the network</th><th>What you size separately</th></tr>
+  <tr><td>Colocated TP replica (vLLM, TensorRT-LLM)</td><td>nothing: every GPU runs every layer</td><td>all-reduce inside the TP group</td><td>only the number of replicas</td></tr>
+  <tr><td>P/D disaggregation (DistServe)</td><td>prefill instances vs decode instances</td><td>each request's KV cache, once</td><td>prefill : decode GPU ratio</td></tr>
+  <tr><td>Large EP (DeepSeek-V3 decode)</td><td>experts spread one per GPU; attention DP80 on the <b>same</b> 320 GPUs</td><td>all-to-all dispatch + combine, every MoE layer</td><td>little: each GPU adds attention and expert capacity together (our inference)</td></tr>
+  <tr class="pick"><td><b>AFD (MegaScale-Infer)</b></td><td>attention nodes vs expert nodes, inside decode</td><td>M2N + N2M, every MoE layer</td><td>n<sub>a</sub> vs E, and the GPU type of each</td></tr>
+</table>
+</div>
+
+<h2>§4.2 Sizing the split: how many attention nodes feed the experts</h2>
+<p>The global batch B is cut into m micro-batches. Each attention node handles b<sub>a</sub> tokens per micro-batch. Each token goes to K of the E experts, so each expert node gets b<sub>e</sub> tokens per micro-batch. Counting the same tokens from both sides:</p>
+<div class="mathbox">
+<div class="eqn">Batch identity (§4.2)</div>
+<math display="block">
+  <munder class="t1"><mrow><msub><mi>b</mi><mi>a</mi></msub><mo>&#215;</mo><mi>m</mi><mo>&#215;</mo><msub><mi>n</mi><mi>a</mi></msub></mrow><mtext class="lab">tokens leaving attention</mtext></munder>
+  <mo>=</mo>
+  <munder class="t2"><mrow><msub><mi>b</mi><mi>e</mi></msub><mo>&#215;</mo><mi>m</mi><mo>&#215;</mo><mi>E</mi><mo>/</mo><mi>K</mi></mrow><mtext class="lab">token-copies at experts ÷ K</mtext></munder>
+  <mo>=</mo><mi>B</mi>
+</math>
+<div class="eqn">Balance: T<sub>a</sub> = k<sub>1</sub>b<sub>a</sub> + k<sub>2</sub>, T<sub>e</sub> = k<sub>3</sub>b<sub>e</sub> + k<sub>4</sub>, choose n<sub>a</sub> so T<sub>a</sub> ≈ T<sub>e</sub></div>
+<math display="block">
+  <msub><mi>n</mi><mi>a</mi></msub><mo>=</mo>
+  <mfrac><mrow><msub><mi>b</mi><mi>e</mi></msub><mi>E</mi></mrow><mrow><msub><mi>b</mi><mi>a</mi></msub><mi>K</mi></mrow></mfrac>
+  <mspace width="0.6em"/><mtext>set to</mtext><mspace width="0.6em"/>
+  <munder class="t2"><mfrac><mrow><msub><mi>k</mi><mn>1</mn></msub><mi>E</mi></mrow><mrow><msub><mi>k</mi><mn>3</mn></msub><mi>K</mi></mrow></mfrac><mtext class="lab">attention nodes per instance</mtext></munder>
+</math>
+<div class="legend">
+  <span class="sym">B</span><span>global batch per instance, in tokens. <b>Now B is a batch</b>, not §2.3's bandwidth</span><span class="v">1,920 in the Mixtral example</span>
+  <span class="sym">m</span><span>number of micro-batches in the ping-pong pipeline (card 2)</span><span class="v">Alg 1 tries 3 and 4</span>
+  <span class="sym">b_a, b_e</span><span>micro-batch size per attention node and per expert node</span><span class="v">128 · 160</span>
+  <span class="sym">n_a</span><span>number of attention nodes per instance</span><span class="v">5</span>
+  <span class="sym">E</span><span>number of experts, which is also the number of expert nodes (one expert per node)</span><span class="v">Mixtral 8</span>
+  <span class="sym">K</span><span>experts selected per token (top-k). §6 later reuses K for a load-balancing cost</span><span class="v">Mixtral 2</span>
+  <span class="sym">k1…k4</span><span>fitted slopes and intercepts of attention and expert time per micro-batch, from profiling</span><span class="v">not published</span>
+</div>
+</div>
+<div class="warn"><p><b>Symbol clashes in the paper.</b> <b>B</b> is memory bandwidth in §2.3 and the global batch in Table 1 and §4.2. <b>K</b> is top-k here, but §6 reuses it for the minimum cost of a cold expert. <b>E</b> counts both experts and expert nodes, which only works because each node holds exactly one expert. And <b>F</b> in §2.3 is FLOPS, not the FFN.</p></div>
+<p>The second formula is the paper's balance rule: it fits a linear time model to each side and picks n<sub>a</sub> so both finish a micro-batch at the same time (constraint 1 in card 2). Dropping the constants, k<sub>1</sub>b<sub>a</sub> = k<sub>3</sub>b<sub>e</sub> gives b<sub>e</sub>/b<sub>a</sub> = k<sub>1</sub>/k<sub>3</sub>, and substituting into the first formula gives k<sub>1</sub>E/(k<sub>3</sub>K). The paper doesn't print that step or any k values. With illustrative ratios for Mixtral (E/K = 4): k<sub>1</sub>/k<sub>3</sub> = 0.5 → 2 attention nodes, 1 → 4, 2 → 8.</p>
+<p>A different question is how many attention nodes you need before each expert is compute-bound, b<sub>e</sub> ≥ F/B. The first formula answers it directly (lab section 4). The paper sizes n<sub>a</sub> by balance, not by this target. This is our framing of what the pooling buys.</p>
+<div class="formula"><span class="c"># Mixtral 8×22B, A100 roofline (F/B = 156), b_a = 128, m = 3   (b_a, m illustrative)</span>
+n_a  = ⌈156 × E / (K × b_a)⌉ = ⌈156 × 8 / (2 × 128)⌉ = ⌈4.88⌉ = <span class="g">5 attention nodes</span>
+b_e  = 128 × 5 × 2/8          = <span class="g">160 tokens per expert</span>  → util 100%
+B    = b_a × m × n_a          = 128 × 3 × 5 = 1,920 tokens in flight
+alone: one node's 384 tokens  → 384 × 2/8 = 96 per expert → <span class="r">util 61.5%</span>
+
+<span class="c"># DeepSeek-V3, H100 roofline (F/B = 295), b_a = 128, m = 3   (our recomputation)</span>
+n_a  = ⌈295 × 256 / (8 × 128)⌉ = ⌈73.75⌉ = <span class="g">74 attention nodes</span>
+b_e  = 128 × 74 × 8/256        = <span class="g">296 tokens per expert</span>  → util 100%
+B    = 128 × 3 × 74            = 28,416 tokens in flight
+alone: one node's 384 tokens   → 384 × 8/256 = 12 per expert → <span class="r">util 4.1%</span></div>
+<p class="cap">b<sub>a</sub> = 128 is the micro-batch in the paper's §7.3 message-size example, and m = 3 is where Alg 1 starts its search. Neither is a tuned plan. The 74 attention nodes land close to DeepSeek's own DP80 decode deployment, which also exists to pool tokens for 256 experts. We read that as a coincidence of the same arithmetic, not a design the papers share.</p>
+
+<h2>§4.3 Heterogeneous hardware: the cheapest GPU for each bottleneck</h2>
+<p>Once the two sides live on different nodes, they don't have to be the same GPU. Attention nodes are memory-bound and hold the KV cache, so they want "higher per-cost memory bandwidth and larger per-cost memory capacity". Expert nodes are compute-bound (once pooled), so they want "higher cost-effectiveness in compute capability". Table 3, with prices normalized so an L20 = 1.00:</p>
+<div class="tw">
+<table class="t3">
+  <tr><th>GPU</th><th class="num">Price</th><th class="num">GB</th><th class="num">GB/s</th><th class="num">TFLOPS</th><th class="num">GB/cost</th><th class="num">GB/s/cost</th><th class="num">TFLOPS/cost</th><th class="num">ops:byte*</th></tr>
+  <tr><td>L20</td><td class="num">1.00</td><td class="num">48</td><td class="num">864</td><td class="num">119.5</td><td class="num">48</td><td class="num">864</td><td class="num">119.5</td><td class="num">138</td></tr>
+  <tr><td>H800</td><td class="num">5.28</td><td class="num">80</td><td class="num">3,430.4</td><td class="num">989</td><td class="num">15.2</td><td class="num">649.7</td><td class="num">187.3</td><td class="num">288</td></tr>
+  <tr><td>A800</td><td class="num">2.26</td><td class="num">80</td><td class="num">2,039</td><td class="num">312</td><td class="num">35.4</td><td class="num">902.2</td><td class="num">138.1</td><td class="num">153</td></tr>
+  <tr class="pick"><td><b>H20</b> → attention</td><td class="num">1.85</td><td class="num">96</td><td class="num">4,096</td><td class="num">148</td><td class="num hi">51.9</td><td class="num hi">2,214.1</td><td class="num">80.0</td><td class="num">36</td></tr>
+  <tr class="pick"><td><b>L40S</b> → experts</td><td class="num">1.08</td><td class="num">48</td><td class="num">864</td><td class="num">362</td><td class="num">44.4</td><td class="num">800.0</td><td class="num hi">335.2</td><td class="num">419</td></tr>
+  <tr><td class="mu">H100 SXM*</td><td class="num mu">–</td><td class="num mu">80</td><td class="num mu">3,350</td><td class="num mu">989</td><td class="num mu">–</td><td class="num mu">–</td><td class="num mu">–</td><td class="num mu">295</td></tr>
+</table>
+</div>
+<div class="formula"><span class="c"># the three winning cells, recomputed from the raw columns</span>
+H20   capacity per cost    96 ÷ 1.85   = <span class="g">51.9 GB</span>
+H20   bandwidth per cost   4,096 ÷ 1.85 = <span class="g">2,214.1 GB/s</span>     <span class="c"># 3.4× the H800's 649.7</span>
+L40S  compute per cost     362 ÷ 1.08  = <span class="g">335.2 TFLOPS</span>     <span class="c"># 1.8× the H800's 187.3</span>
+
+<span class="c"># ops:byte = TFLOPS ÷ TB/s, our recomputation</span>
+H20   148 ÷ 4.096 = 36     <span class="c"># balanced for memory-bound attention</span>
+L40S  362 ÷ 0.864 = <span class="r">419</span>    <span class="c"># each expert needs b_e ≥ 419 tokens to be compute-bound</span>
+Mixtral on L40S experts: n_a = ⌈419 × 8 / (2 × 128)⌉ = 14 attention nodes at b_a = 128</div>
+<p class="cap">*Our additions: the ops:byte column, and the H100 row from the course facts (it isn't in Table 3, so it has no price). Our reading of the last lines: cheap FLOPs come with a very high ops:byte ratio, so an L40S expert only pays off with a large pooled batch. That is exactly what disaggregation supplies. "Per cost" is a normalized purchase price, not dollars. The TFLOPS and bandwidth columns look like vendor peak figures. We didn't re-derive them.</p>
+<p>The paper enumerates every GPU type for each side and concludes: "H20 is more suitable for attention due to its large memory capacity and high memory bandwidth per unit cost. Meanwhile, the L40S GPU is more cost-effective for experts." Power points the same way: 500 W maximum for the H20 and 350 W for the L40S. At equal power the L40S gives more compute and the H20 more bandwidth. In §7.2 the H20 + L40S deployment reaches up to <b>1.86×</b> the decode throughput per cost of TensorRT-LLM on H20 (the intro says 1.7×, and production cost fell 1.5–2.0×). <a href="megascale-infer-pingpong.html">Card 2</a> covers these results and their baselines.</p>
+
+<h2>Why it beats the alternatives</h2>
+<div class="grid2">
+  <div class="cell"><h3><span class="x">&#10007;</span> Colocated replicas (TP inside a node)</h3><p>Each replica's batch is split E/K ways before it reaches an expert. Mixtral at b = 156 on an A100 gets 39 tokens per expert and 25% FFN MFU. DeepSeek-V3 at b = 295 on an H100 gets 3.1%.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Just grow the batch</h3><p>The TBT SLO, KV cache memory, and the extra communication from more model parallelism all cap it (§2.3). DeepSeek-V3 would need 9,440 tokens in every step of one replica.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Large EP with attention on the same GPUs</h3><p>DeepSeek's decode unit does pool 80 attention replicas into EP320. But every GPU runs both halves, so attention and expert capacity grow together on one GPU type, in 320-GPU units (our inference on the trade-off).</p></div>
+  <div class="cell win"><h3><span class="ok">&#10003;</span> Attention–FFN disaggregation</h3><p>n<sub>a</sub> DP attention nodes feed E expert nodes. n<sub>a</sub> is chosen so T<sub>a</sub> ≈ T<sub>e</sub>, and pooling pushes b<sub>e</sub> toward F/B. Each side runs on its cheapest GPU: H20 for memory, L40S for FLOPs.</p></div>
+</div>
+
+<h2>Is splitting attention from the experts always better?</h2>
+<div class="note">
+  <p>No. It pays off when experts starve, which means sparse MoE models with a large E/K. Cases where it doesn't:</p>
+  <ul>
+    <li><b>Dense models.</b> The FFN already reaches F/B with an ordinary batch. The earlier Infinite-LLM split attention off dense models for a different reason: long-context memory capacity.</li>
+    <li><b>Per-token latency.</b> AFD raises throughput per GPU, not speed per token. §7.2 reports TBT "comparable" to the baselines, and the ping-pong pipeline "may even incur additional latency". The paper's 150 ms TBT SLO is loose, and StepFun's Step-3 paper points this out.</li>
+    <li><b>Prefill.</b> Prefill is already compute-bound. End-to-end gains including prefill are only up to 1.18× on homogeneous GPUs.</li>
+    <li><b>Small deployments and slow networks.</b> You need at least E expert nodes plus the attention nodes, and M2N traffic every layer. In the paper's ablation, the M2N traffic only fit under the compute time (T<sub>c</sub> &lt; T<sub>f</sub>) once NCCL was replaced by its own library. That is card 2's §5.</li>
+    <li><b>Fine-grained experts.</b> One expert per node wastes GPUs at DeepSeek-V3's 2.55 GB per expert (our inference). Large colocated EP, as in the <a href="expert-parallel.html">expert parallelism card</a>, is the usual choice there.</li>
+  </ul>
+</div>
+
+<div class="foot">
+<p><a class="lab-link" href="https://github.com/seyonv/explainers/blob/main/perf-6-scaling-out/labs/afd-util.py">Run it: labs/afd-util.py</a> <b>[L]</b> stdlib + numpy, under a second on the M3. It prints the §2.3 A100 arithmetic, the H100 recomputation (295, 1,180, 9,440), a utilization table for dense, Mixtral and DeepSeek-V3 vs batch, the n<sub>a</sub> sizing for Mixtral and DeepSeek-V3, Table 3's per-cost columns with ops:byte, and what one expert node stores. Try this: <code>b_a = 64</code> (DeepSeek-V3 then needs 148 attention nodes), FP8 weights on the H100 (the ridge drops to about 148), or swap in DBRX (top-4 of 16).</p>
+<p><b>Read next:</b> Zhu et al., <a href="https://arxiv.org/abs/2504.02263">"MegaScale-Infer: Serving Mixture-of-Experts at Scale with Disaggregated Expert Parallelism"</a> (arXiv 2504.02263 v4). Read §1 with Fig 1 (5 min), §2.2–2.4 with the §2.3 Mixtral arithmetic (7 min), §3 with Fig 3 and Table 1 (5 min), and §4.3 with Table 3 (3 min). About 20 min.</p>
+<p><b>Related:</b> <a href="megascale-infer-pingpong.html">MegaScale-Infer II: the ping-pong pipeline, M2N and results</a> · <a href="moe-basics.html">Mixture of experts: routers, top-k and imbalance</a> · <a href="expert-parallel.html">Expert parallelism: dispatch, combine and EPLB</a> · <a href="distserve-interference.html">DistServe I: why prefill and decode want different GPUs</a> · <a href="deepseek-v3-infrastructure.html">DeepSeek-V3 II: infrastructure, FP8 and deployment</a> · <a href="megatron-mlp-attention.html">Megatron I: splitting the MLP and attention</a> · <a href="../perf-2-scaling-book-inference/critical-batch-size.html">course 2, The math of serving an LLM: critical batch size</a> · <a href="../llm-latency/moe.html">mixture of experts (hub card)</a></p>
+<p><b>Sources:</b> all quotes, the §2.3 roofline (A100 312 TFLOPS, 2 TB/s, 156, 39 tokens, 25%, both utilization formulas), Mixtral's 141B / 39B / top-2, §2.4, the §3 layout and Table 1 notation, the §4.2 batch identity and balance rule, Table 3 (prices normalized to L20), the H20/L40S choice and 500 W / 350 W, Table 4 shapes (Mixtral hidden 6144, intermediate 16384, 56 layers), the §7.3 196,608 B payload, and the §7.2 figures (1.86×, 1.18×, TBT "comparable"): <a href="https://arxiv.org/abs/2504.02263">MegaScale-Infer, arXiv 2504.02263 v4</a>. The 150 ms critique: <a href="https://arxiv.org/abs/2507.19427">Step-3, arXiv 2507.19427</a>. H100 989 TFLOPS and 3.35 TB/s, DeepSeek-V3's 256 experts, top-8, width 2048, 58 MoE layers, and the DP80 / EP320 decode unit: the course's shared facts. Our recomputation: 295, 1,180, 9,440, 3.1%, 4.1%, the n<sub>a</sub> sizings (5, 74, 14), the ops:byte column and the per-node expert sizes (SwiGLU, 3 matrices assumed). b<sub>a</sub> = 128 and m = 3 in the sizing and the k<sub>1</sub>/k<sub>3</sub> ratios are illustrative.</p>
+</div>
+</article>
+<!-- series-nav:bottom -->
+<div class="snx"><a class="nx" href="index.html#megascale-infer-pingpong" target="_top">
+<span class="mini" aria-hidden="true"><span class="m1">MegaScale-Infer II: the ping-pong pipeline, M2N and results</span><span class="m2">Also called ping-pong pipeline parallelism, micro-batch ping-pong, or attention–FFN disaggregation (AFD) with micro-batching; M2N/N2M is the many-attention-GPUs to many-expert-GPUs token exchange.…</span><span class="m3">In one breath</span><span class="m4">Once attention runs on one set of GPUs and the experts on another, each GPU would sit idle while the other side works and while tokens cross the network. So the batch is cut into m micro-batches that bounce back and forth ("ping-pong"): while the experts work on micro-batch 1, attention works on micro-batch 2. With compute…</span></span>
+<span class="tx"><span class="lab">Next up · 14 / 15</span><span class="tt">MegaScale-Infer II: the ping-pong pipeline, M2N and results</span><span class="ds">Micro-batches that keep both sides busy</span><span class="nd">Builds directly on this card.</span><span class="go">Continue →</span></span></a><div class="aux"><span><a href="index.html#disaggregation-in-production" target="_top">← Disaggregation in production: Splitwise, Mooncake and Dynamo</a></span><a href="index.html" target="_top">All cards in 6 · Serving across GPUs</a></div></div>
+<!-- /series-nav:bottom -->
+</body>
+</html>

@@ -1,0 +1,417 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Measuring a server: TTFT, TPOT, throughput, goodput</title>
+<style>
+:root{
+  --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
+  --text:#1c1f23; --muted:#6b7068; --faint:#b9b9b3;
+  --accent:#4a9d77; --accent-bg:#dcefdf; --accent-border:#8cc79c;
+  --red:#c0492b; --red-bg:#fbeceb;
+  --amber:#b7791f; --amber-bg:#f6ead3;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#15171a; --surface:#1d2024; --surface2:#24282d; --border:#32373d;
+    --text:#e6e8ea; --muted:#9aa1a9; --faint:#4a5057;
+    --accent:#5fb37f; --accent-bg:#1c2b22; --accent-border:#3f7a55;
+    --red:#e57368; --red-bg:#2e1f1e;
+    --amber:#d9a441; --amber-bg:#33291a;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text)}
+.card{max-width:820px;margin:0 auto;padding:28px 32px;font-family:-apple-system,"Inter",system-ui,sans-serif;line-height:1.45}
+h1{font-size:26px;font-weight:600;margin:0 0 6px;letter-spacing:-0.01em}
+.sub{font-size:15px;color:var(--muted);margin:0 0 20px}
+h2{font-size:17px;font-weight:600;margin:26px 0 10px}
+h2 small{font-size:13px;font-weight:400;color:var(--muted)}
+h3.sm{font-size:15px;font-weight:600;margin:18px 0 8px}
+h3.sm small{font-size:13px;font-weight:400;color:var(--muted)}
+p{font-size:15px;margin:0 0 10px}
+ul{font-size:15px;margin:0 0 10px;padding-left:20px}
+li{margin-bottom:4px}
+.cap{font-size:13px;color:var(--muted);margin:8px 0 0;text-align:center}
+.cap + p{margin-top:14px}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+
+/* Tables and formulas */
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border)}
+th{font-size:12px;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:none}
+.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.hi{color:var(--accent);font-weight:600} .lo{color:var(--red)} .mu{color:var(--muted)}
+tr.pick td{background:var(--accent-bg)}
+.formula{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin:10px 0;white-space:pre;overflow-x:auto;line-height:1.55}
+.formula .c{color:var(--muted)}
+.formula .g{color:var(--accent);font-weight:600}
+.formula .r{color:var(--red);font-weight:600}
+.tw{overflow-x:auto}
+.tw table{min-width:600px}
+
+/* MathML */
+.mathbox{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px 16px 12px;margin:10px 0;overflow-x:auto}
+.mathbox math{font-size:21px;color:var(--text);font-family:"STIX Two Math","Latin Modern Math","Cambria Math",math}
+.mathbox .t1{color:var(--text)} .mathbox .t2{color:var(--accent)} .mathbox .t3{color:var(--muted)}
+.mathbox .lab{font-size:12px;font-family:-apple-system,"Inter",system-ui,sans-serif;padding-top:3px;border-top:1.5px solid currentColor;margin-top:2px}
+.mathbox math + math{margin-top:14px}
+.legend{display:grid;grid-template-columns:auto 1fr auto;column-gap:14px;row-gap:5px;font-size:13px;margin-top:12px;align-items:baseline}
+.legend .sym{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;text-align:right}
+.legend .v{color:var(--muted);text-align:right;font-variant-numeric:tabular-nums}
+@media (max-width:560px){.legend{grid-template-columns:auto 1fr}.legend .v{display:none}}
+
+/* Two examples per term */
+.parts td{vertical-align:top} .parts td:first-child{font-weight:600}
+.parts .ex{font-size:13px} .parts .ex span{display:block;color:var(--muted)}
+.parts .what{font-size:13px}
+@media (max-width:560px){.parts .what{display:none}}
+
+/* Bar charts */
+.bars{display:grid;grid-template-columns:150px 1fr 110px;column-gap:10px;row-gap:9px;align-items:center;font-size:13px}
+.bars .nm{font-size:13px}
+.bars .track{display:flex;align-items:center}
+.bars .bar{height:18px;border-radius:3px;background:var(--faint)}
+.bars .bar.w{background:var(--accent)}
+.bars .bar.l{background:var(--red)}
+.bars .v{text-align:right;font-variant-numeric:tabular-nums}
+.bars .v.w{color:var(--accent);font-weight:600}
+.bars .v.l{color:var(--red)}
+
+/* 2x2 grid */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.cell{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.cell.win{background:var(--accent-bg);border-color:var(--accent-border)}
+.cell h3{font-size:16px;font-weight:600;margin:0 0 5px;display:flex;gap:8px;align-items:baseline}
+.cell p{font-size:14px;margin:0;color:var(--text)}
+.cell.win h3,.cell.win p{color:var(--accent)}
+.x{color:var(--red)} .ok{color:var(--accent)}
+
+/* Clarification box */
+.note{border:1px solid var(--border);border-radius:10px;padding:14px 18px;font-size:14px}
+.note p,.note li{font-size:14px} .note p:last-child{margin-bottom:0}
+
+.foot{margin-top:22px;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+.foot p{font-size:13px}
+.lab-link{display:inline-block;font-size:13px;border:1px solid var(--accent-border);background:var(--accent-bg);color:var(--accent);border-radius:6px;padding:4px 10px;margin:2px 0 10px;text-decoration:none}
+
+/* SVG */
+svg{display:block;max-width:100%;height:auto;margin-top:6px}
+.sl{font-size:12px;fill:var(--muted)} .st{font-size:13px;fill:var(--text)} .sh{font-size:13px;font-weight:600;fill:var(--text)}
+.slr{font-size:12px;fill:var(--red)}
+.bx{fill:var(--surface2);stroke:var(--faint);stroke-width:1}
+.bxa{fill:var(--accent-bg);stroke:var(--accent);stroke-width:1.2}
+.band{fill:var(--accent)}
+.dv{stroke:var(--border);stroke-width:1}
+.bxp{fill:var(--amber-bg);stroke:var(--amber);stroke-width:1.2}
+.sg{font-size:13px;font-weight:600;fill:var(--accent)}
+.dot{fill:var(--accent)} .dotr{fill:var(--red)}
+.charts{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.charts svg{border:1px solid var(--border);border-radius:10px;background:var(--surface);padding:6px}
+@media (max-width:560px){.charts{grid-template-columns:1fr}}
+@media (max-width:560px){.grid2{grid-template-columns:1fr}.card{padding:20px 16px}.bars{grid-template-columns:96px 1fr 80px}}
+a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+/* series-nav */
+.sn{max-width:820px;margin:0 auto;padding:16px 32px 0;font-family:-apple-system,"Inter",system-ui,sans-serif;font-size:13px;line-height:1.5;color:var(--muted)}
+.sn a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
+.sn .crumbs{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 7px}
+.sn .crumbs b{color:var(--text);font-weight:600}
+.sn .sep{color:var(--faint,var(--border))}
+.sn .step{margin-left:auto;white-space:nowrap}
+.sn .dep{margin-top:5px;padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface)}
+.sn .dep .ok{color:var(--accent);font-weight:600}
+.snx{max-width:820px;margin:0 auto;padding:6px 32px 44px;font-family:-apple-system,"Inter",system-ui,sans-serif}
+.snx .nx{display:grid;grid-template-columns:280px 1fr;text-decoration:none;color:var(--text);background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.snx .nx:hover,.snx .nx:focus-visible{border-color:var(--accent-border,var(--accent));outline:none}
+.snx .mini{position:relative;height:210px;overflow:hidden;background:var(--bg);border-right:1px solid var(--border);padding:14px 16px}
+.snx .mini span{display:block}
+.snx .mini .m1{font-size:12.5px;font-weight:600;margin:0 0 4px;line-height:1.3}
+.snx .mini .m2{font-size:9px;color:var(--muted);margin:0 0 8px;line-height:1.4}
+.snx .mini .m3{font-size:8.5px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;margin:0 0 3px}
+.snx .mini .m4{font-size:9.5px;margin:0;line-height:1.45}
+.snx .tx{padding:16px 20px}
+.snx .lab{font-size:12px;font-weight:600;color:var(--accent);letter-spacing:.04em;text-transform:uppercase}
+.snx .tt{display:block;font-size:20px;font-weight:600;margin:5px 0 4px;line-height:1.25}
+.snx .ds{display:block;font-size:14px;color:var(--muted)}
+.snx .nd{display:block;font-size:13px;color:var(--muted);margin-top:10px}
+.snx .go{display:block;margin-top:12px;font-size:14px;font-weight:600;color:var(--accent)}
+.snx .aux{display:flex;justify-content:space-between;gap:12px;margin-top:10px;font-size:13px;color:var(--muted)}
+.snx .aux a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
+@media (max-width:560px){.sn,.snx{padding-left:16px;padding-right:16px}.snx .nx{grid-template-columns:1fr}.snx .mini{display:none}.sn .step{margin-left:0}}
+/* /series-nav */
+</style>
+</head>
+<body>
+<!-- series-nav:top -->
+<nav class="sn" aria-label="Course navigation"><div class="crumbs"><a href="../index.html" target="_top">All explainers</a><span class="sep">›</span><a href="index.html" target="_top">Build an LLM request scheduler</a><span class="sep">›</span><b>05 / 25</b><span class="step"><a href="index.html#bottlenecks" target="_top">← prev</a> · <a href="index.html#why-batch" target="_top">next →</a></span></div>
+</nav>
+<!-- /series-nav:top -->
+<article class="card">
+<h1>Measuring a server: TTFT, TPOT, throughput, goodput</h1>
+<p class="sub">Also called TBT or ITL (the gap between two tokens), E2E latency, P50/P99, SLO, capacity. Before you build a scheduler you need its scoreboard. This card defines each number on one request's timeline, shows where averages hide stalls, and settles what the scheduler should maximise. The numbers come from our simulator (Llama-3.1-8B on one H100 at 100% of peak, so they are floors) and one real sweep on an M3 Mac.</p>
+
+<h2>In one breath</h2>
+<p>A user feels two things: how long until the first word appears (<b>TTFT</b>) and how smoothly the rest streams (the gap between tokens, <b>ITL</b>, whose per-request average is <b>TPOT</b>). The operator cares about <b>throughput</b>, the tokens per second across everyone. <b>Goodput</b> joins the two views: it counts only the requests that met a latency target (an <b>SLO</b>). A scheduler should be judged on goodput, because raw throughput goes up when you let the queue grow.</p>
+
+<h2>One request, timed</h2>
+<p>Request 5 from the course's 8-request toy trace (our simulator, toy config: 16-token budget, 4 seats, 12 KV blocks). It arrives at 4 ms with a 4-token prompt and writes 8 tokens. Every step here takes 4.8 ms, the time to read the 16.06 GB of weights once.</p>
+<svg viewBox="0 0 660 258" role="img" aria-label="Timeline of toy request 5: arrives at 4 ms, queues 48.8 ms, prefill 4.8 ms, first token at 57.5 ms, seven 4.8 ms decode steps, finishes at 91.1 ms">
+<line class="dv" x1="24.0" y1="24" x2="24.0" y2="80"/><text class="sl" x="24.0" y="16" text-anchor="middle">0 ms</text>
+<line class="dv" x1="156.0" y1="24" x2="156.0" y2="80"/><text class="sl" x="156.0" y="16" text-anchor="middle">20 ms</text>
+<line class="dv" x1="288.0" y1="24" x2="288.0" y2="80"/><text class="sl" x="288.0" y="16" text-anchor="middle">40 ms</text>
+<line class="dv" x1="420.0" y1="24" x2="420.0" y2="80"/><text class="sl" x="420.0" y="16" text-anchor="middle">60 ms</text>
+<line class="dv" x1="552.0" y1="24" x2="552.0" y2="80"/><text class="sl" x="552.0" y="16" text-anchor="middle">80 ms</text>
+<rect class="bx" x="50.4" y="34" width="321.8" height="30" rx="3"/><text class="sl" x="211.3" y="53" text-anchor="middle">queue 48.8 ms: waiting for room in the batch</text>
+<rect class="bxp" x="372.1" y="34" width="30.1" height="30" rx="3"/>
+<rect class="bxa" x="404.8" y="34" width="29.7" height="30" rx="3"/>
+<rect class="bxa" x="436.4" y="34" width="29.6" height="30" rx="3"/>
+<rect class="bxa" x="468.1" y="34" width="29.7" height="30" rx="3"/>
+<rect class="bxa" x="499.7" y="34" width="29.6" height="30" rx="3"/>
+<rect class="bxa" x="531.4" y="34" width="29.7" height="30" rx="3"/>
+<rect class="bxa" x="563.0" y="34" width="29.7" height="30" rx="3"/>
+<rect class="bxa" x="594.7" y="34" width="29.6" height="30" rx="3"/>
+<circle class="dot" cx="403.8" cy="74" r="3.5"/>
+<circle class="dot" cx="435.4" cy="74" r="3.5"/>
+<circle class="dot" cx="467.1" cy="74" r="3.5"/>
+<circle class="dot" cx="498.7" cy="74" r="3.5"/>
+<circle class="dot" cx="530.4" cy="74" r="3.5"/>
+<circle class="dot" cx="562.0" cy="74" r="3.5"/>
+<circle class="dot" cx="593.7" cy="74" r="3.5"/>
+<circle class="dot" cx="625.3" cy="74" r="3.5"/>
+<line x1="50.4" y1="28" x2="50.4" y2="80" style="stroke:var(--text);stroke-width:1.5"/>
+<text class="st" x="50.4" y="96" text-anchor="middle">arrives</text>
+<text class="st" x="399.8" y="96" text-anchor="end">prefill → first token</text>
+<text class="st" x="625.3" y="96" text-anchor="middle">finish</text>
+<path d="M50.4 116 V122 H403.8 V116" fill="none" style="stroke:var(--muted);stroke-width:1.2"/>
+<text class="sh" x="227.1" y="138" text-anchor="middle">TTFT = 57.5 − 4.0 = 53.5 ms</text>
+<path d="M403.8 116 V122 H435.4 V116" fill="none" style="stroke:var(--muted);stroke-width:1.2"/>
+<text class="sh" x="403.8" y="138" text-anchor="start">one ITL gap = 4.8 ms</text>
+<path d="M403.8 160 V166 H625.3 V160" fill="none" style="stroke:var(--muted);stroke-width:1.2"/>
+<text class="sg" x="625.3" y="182" text-anchor="end">TPOT = (87.1 − 53.5) ÷ (8 − 1) = 4.8 ms</text>
+<path d="M50.4 204 V210 H625.3 V204" fill="none" style="stroke:var(--muted);stroke-width:1.2"/>
+<text class="sh" x="337.9" y="226" text-anchor="middle">E2E = 91.1 − 4.0 = 87.1 ms  (8 output tokens)</text>
+<rect class="bx" x="24" y="240" width="14" height="12" rx="2"/><text class="sl" x="44" y="250">waiting in queue</text>
+<rect class="bxp" x="154" y="240" width="14" height="12" rx="2"/><text class="sl" x="174" y="250">prefill (4-token prompt)</text>
+<rect class="bxa" x="324" y="240" width="14" height="12" rx="2"/><text class="sl" x="344" y="250">one decode step</text>
+<circle class="dot" cx="471" cy="246" r="3.5"/><text class="sl" x="480" y="250">a token reaches the user</text>
+</svg>
+<p class="cap">Our simulation, drawn to scale. The queue is most of this request's TTFT: the toy server had no room for it until 52.8 ms. Each green step emits one token, so every gap is one step time.</p>
+
+<p>The same definitions as formulas. The top one is about one request, the bottom one about the whole server over a run of length <i>T</i>:</p>
+<div class="mathbox">
+<math display="block">
+  <mtext>TTFT</mtext><mo>=</mo>
+  <munder class="t3"><msub><mi>t</mi><mtext>queue</mtext></msub><mtext class="lab">waiting</mtext></munder><mo>+</mo>
+  <munder class="t1"><msub><mi>t</mi><mtext>prefill</mtext></msub><mtext class="lab">prompt</mtext></munder>
+  <mo>,</mo><mspace width="1.2em"/>
+  <mtext>TPOT</mtext><mo>=</mo>
+  <mfrac><mrow><mtext>E2E</mtext><mo>&#8722;</mo><mtext>TTFT</mtext></mrow><mrow><mi>n</mi><mo>&#8722;</mo><mn>1</mn></mrow></mfrac>
+  <mo>,</mo><mspace width="1.2em"/>
+  <mtext>E2E</mtext><mo>=</mo><mtext>TTFT</mtext><mo>+</mo><mo stretchy="false">(</mo><mi>n</mi><mo>&#8722;</mo><mn>1</mn><mo stretchy="false">)</mo><mo>&#183;</mo><mtext>TPOT</mtext>
+</math>
+<math display="block">
+  <mtext>throughput</mtext><mo>=</mo>
+  <mfrac><mrow><munder><mo>&#8721;</mo><mi>r</mi></munder><msub><mi>n</mi><mi>r</mi></msub></mrow><mi>T</mi></mfrac>
+  <mo>,</mo><mspace width="1.2em"/>
+  <munder class="t2"><mrow><mtext>goodput</mtext><mo>=</mo>
+  <mfrac><mrow><mo>#</mo><mo>{</mo><mi>r</mi><mo>:</mo><msub><mtext>TTFT</mtext><mi>r</mi></msub><mo>&#8804;</mo><mn>1</mn><mtext>&#8201;s</mtext><mo>&#8743;</mo><msub><mtext>TPOT</mtext><mi>r</mi></msub><mo>&#8804;</mo><mn>50</mn><mtext>&#8201;ms</mtext><mo>}</mo></mrow><mi>T</mi></mfrac></mrow><mtext class="lab">only requests inside the SLO count</mtext></munder>
+</math>
+<div class="legend">
+  <span class="sym">n</span><span>output tokens of one request</span><span class="v">8 for request 5</span>
+  <span class="sym">ITL</span><span>one gap, t<sub>i+1</sub> − t<sub>i</sub>; TPOT is their mean over one request</span><span class="v">4.8 ms each</span>
+  <span class="sym">T</span><span>run length: first arrival to last finish</span><span class="v">29.7 s at 60 req/s</span>
+  <span class="sym">SLO</span><span>the course's target, used on every card</span><span class="v">TTFT ≤ 1 s, TPOT ≤ 50 ms</span>
+</div>
+</div>
+<div class="formula">TTFT  = 48.8 queue + 4.8 prefill                 = 53.5 ms
+TPOT  = (87.1 − 53.5) ÷ (8 − 1) = 33.6 ÷ 7          =  4.8 ms
+E2E   = 53.5 + 7 × 4.8                             = 87.1 ms
+<span class="c"># tools differ: vLLM's benchmark divides by n − 1, as here;</span>
+<span class="c"># Databricks writes latency = TTFT + TPOT × tokens (n, not n − 1)</span></div>
+
+<h2>Each metric, a quiet and a busy example</h2>
+<p>Think of a restaurant: TTFT is the wait until the first plate arrives, ITL the gap between plates, E2E the whole meal, throughput the plates the kitchen sends out per hour, and goodput the tables that left happy. Example A is a quiet server; example B is a busy or badly scheduled one. All are our simulation of the running example unless marked.</p>
+<div class="tw">
+<table class="parts">
+  <tr><th>Metric</th><th class="what">What it measures</th><th>Example A: quiet</th><th>Example B: busy</th></tr>
+  <tr><td>TTFT</td><td class="what">Arrival to first token: queue wait plus prefill</td>
+      <td class="ex"><b class="ok">11.1 ms</b><span>P50 at 2 req/s (E2)</span></td>
+      <td class="ex"><b class="lo">1,397 ms</b><span>P50 at 60 req/s: almost all of it queue</span></td></tr>
+  <tr><td>ITL (TBT)</td><td class="what">One gap between two consecutive tokens of the same request</td>
+      <td class="ex"><b class="ok">4.8 ms</b><span>every gap of toy request 5</span></td>
+      <td class="ex"><b class="lo">185.1 ms</b><span>worst gap, long prompts, whole-prompt prefill (E3)</span></td></tr>
+  <tr><td>TPOT</td><td class="what">Mean gap per request: (E2E − TTFT) ÷ (n − 1). Some tools call this TBT or ITL too</td>
+      <td class="ex"><b class="ok">5.0 ms</b><span>P50 at 2 req/s: small batches, short steps</span></td>
+      <td class="ex"><b>23.7 ms</b><span>P50 at 60 req/s: big batches, longer steps, still under 50</span></td></tr>
+  <tr><td>E2E latency</td><td class="what">Arrival to last token: the whole answer</td>
+      <td class="ex"><b class="ok">1.01 s</b><span>P50 at 2 req/s (~200 tokens × 5 ms)</span></td>
+      <td class="ex"><b class="lo">6.49 s</b><span>P50 at 60 req/s; P99 20.1 s</span></td></tr>
+  <tr><td>Throughput</td><td class="what">Output tokens per second, summed over all users</td>
+      <td class="ex"><b>521 tok/s</b><span>2 req/s: the server mostly waits for work</span></td>
+      <td class="ex"><b>9,102 tok/s</b><span>60 req/s: about the ceiling</span></td></tr>
+  <tr><td>Goodput</td><td class="what">Requests per second that met the SLO (some tools count their tokens instead)</td>
+      <td class="ex"><b class="ok">17.6 req/s</b><span>20 req/s offered: all 1,000 in SLO</span></td>
+      <td class="ex"><b class="lo">13.8 req/s</b><span>60 req/s offered: 410 of 1,000 in SLO</span></td></tr>
+  <tr><td>P50 / P99</td><td class="what">The value half of requests beat / 99 in 100 beat. Tails set the user's worst memory</td>
+      <td class="ex"><b>11.1 / 59.5 ms</b><span>TTFT at 2 req/s: 5× apart</span></td>
+      <td class="ex"><b>1,397 / 4,816 ms</b><span>TTFT at 60 req/s: 3.4× apart</span></td></tr>
+  <tr><td>SLO</td><td class="what">The latency target a request must meet to count</td>
+      <td class="ex"><b>TTFT ≤ 1 s, TPOT ≤ 50 ms</b><span>this course</span></td>
+      <td class="ex"><b>TTFT &lt; 350 ms, TTIT &lt; 25 ms</b><span>Meta's stated targets (see below)</span></td></tr>
+  <tr><td>Capacity</td><td class="what">Highest arrival rate with ≥ 99% of requests in SLO</td>
+      <td class="ex"><b class="ok">40 req/s</b><span>course SLO, continuous + chunked (E2, steady state)</span></td>
+      <td class="ex"><b>38 req/s</b><span>Meta-style targets, our run (E2, steady state)</span></td></tr>
+</table>
+</div>
+<p class="cap">"Goodput" in our simulator = requests in SLO ÷ run length, and the run includes draining the queue after the last arrival: 1,000 ÷ 56.9 s at 20 req/s, 410 ÷ 29.7 s at 60 req/s.</p>
+
+<h2>Why averages lie</h2>
+<p>TPOT is an average, so one long stall disappears into hundreds of short gaps. In E3 (long prompts, median 2,048, 8 req/s, whole-prompt prefill), a new prompt joins the running batch as one big step and every decoding user waits for it. Here is one real request from that run, request 442: 1,834-token prompt, 521 output tokens.</p>
+<svg viewBox="0 0 640 232" role="img" aria-label="Gap before each of request 442's 520 later tokens: mostly 6 to 8 ms, with six spikes above 50 ms and one of 185 ms">
+<line class="dv" x1="56" y1="190.0" x2="628" y2="190.0"/><text class="sl" x="50" y="194.0" text-anchor="end">0</text>
+<line class="dv" x1="56" y1="147.5" x2="628" y2="147.5"/><text class="sl" x="50" y="151.5" text-anchor="end">50</text>
+<line class="dv" x1="56" y1="105.0" x2="628" y2="105.0"/><text class="sl" x="50" y="109.0" text-anchor="end">100</text>
+<line class="dv" x1="56" y1="62.5" x2="628" y2="62.5"/><text class="sl" x="50" y="66.5" text-anchor="end">150</text>
+<line class="dv" x1="56" y1="20.0" x2="628" y2="20.0"/><text class="sl" x="50" y="24.0" text-anchor="end">200</text>
+<polyline points="56.0,184.3 57.1,184.3 58.2,184.4 59.3,184.4 60.4,184.4 61.5,184.4 62.6,164.5 63.7,158.4 64.8,184.3 65.9,184.3 67.0,184.3 68.1,184.3 69.2,184.3 70.3,184.3 71.4,184.3 72.5,184.3 73.6,184.3 74.7,184.3 75.8,184.2 76.9,184.2 78.0,184.2 79.1,184.2 80.2,184.2 81.3,184.2 82.5,184.2 83.6,184.2 84.7,184.2 85.8,184.2 86.9,184.2 88.0,184.2 89.1,184.2 90.2,184.2 91.3,184.2 92.4,184.2 93.5,184.2 94.6,184.2 95.7,184.2 96.8,184.2 97.9,184.2 99.0,184.2 100.1,184.2 101.2,184.2 102.3,158.5 103.4,184.2 104.5,184.2 105.6,184.2 106.7,184.2 107.8,184.2 108.9,184.2 110.0,184.2 111.1,184.2 112.2,184.2 113.3,184.2 114.4,184.1 115.5,184.1 116.6,184.1 117.7,184.1 118.8,184.1 119.9,184.1 121.0,184.1 122.1,184.1 123.2,184.1 124.3,184.1 125.4,184.1 126.5,184.1 127.6,184.1 128.7,184.1 129.8,184.1 130.9,184.1 132.0,184.1 133.1,184.1 134.3,184.1 135.4,184.1 136.5,184.1 137.6,184.1 138.7,184.1 139.8,184.1 140.9,184.1 142.0,184.1 143.1,184.1 144.2,177.7 145.3,184.1 146.4,184.1 147.5,184.1 148.6,184.1 149.7,184.1 150.8,184.1 151.9,184.1 153.0,184.1 154.1,184.2 155.2,184.2 156.3,184.2 157.4,184.2 158.5,184.3 159.6,184.3 160.7,184.3 161.8,184.3 162.9,184.3 164.0,184.3 165.1,184.3 166.2,184.3 167.3,184.3 168.4,184.3 169.5,184.3 170.6,184.3 171.7,184.3 172.8,184.3 173.9,184.3 175.0,184.3 176.1,184.3 177.2,184.3 178.3,184.3 179.4,184.3 180.5,184.3 181.6,184.3 182.7,184.3 183.8,184.3 184.9,184.3 186.1,184.3 187.2,184.3 188.3,184.3 189.4,184.3 190.5,184.3 191.6,184.3 192.7,184.3 193.8,184.3 194.9,184.3 196.0,175.0 197.1,157.5 198.2,184.1 199.3,184.1 200.4,184.1 201.5,184.1 202.6,184.1 203.7,184.1 204.8,184.1 205.9,184.1 207.0,173.9 208.1,184.1 209.2,184.1 210.3,184.1 211.4,184.1 212.5,184.1 213.6,184.1 214.7,184.1 215.8,184.1 216.9,184.1 218.0,184.1 219.1,184.1 220.2,184.1 221.3,184.1 222.4,176.2 223.5,184.1 224.6,184.1 225.7,184.1 226.8,184.1 227.9,184.1 229.0,165.7 230.1,184.0 231.2,184.0 232.3,184.1 233.4,184.1 234.5,184.1 235.6,184.2 236.7,184.2 237.8,184.2 239.0,184.2 240.1,184.2 241.2,184.3 242.3,184.3 243.4,184.3 244.5,184.3 245.6,184.3 246.7,184.3 247.8,184.3 248.9,184.3 250.0,148.2 251.1,184.2 252.2,184.2 253.3,184.2 254.4,184.2 255.5,184.2 256.6,184.2 257.7,184.2 258.8,184.2 259.9,184.2 261.0,184.2 262.1,184.2 263.2,184.2 264.3,184.2 265.4,184.2 266.5,184.2 267.6,184.2 268.7,184.2 269.8,184.2 270.9,184.4 272.0,184.4 273.1,184.4 274.2,184.4 275.3,164.4 276.4,184.4 277.5,184.4 278.6,184.4 279.7,184.3 280.8,184.3 281.9,184.3 283.0,184.3 284.1,184.3 285.2,184.3 286.3,184.3 287.4,184.3 288.5,184.3 289.6,184.5 290.8,184.5 291.9,184.5 293.0,184.5 294.1,184.5 295.2,184.5 296.3,184.5 297.4,184.5 298.5,184.5 299.6,184.5 300.7,166.5 301.8,184.4 302.9,184.4 304.0,184.4 305.1,184.4 306.2,184.4 307.3,184.4 308.4,184.4 309.5,184.4 310.6,184.4 311.7,184.4 312.8,184.4 313.9,184.4 315.0,184.4 316.1,184.4 317.2,184.4 318.3,184.5 319.4,184.5 320.5,184.5 321.6,184.5 322.7,184.7 323.8,184.7 324.9,184.7 326.0,184.7 327.1,184.7 328.2,184.7 329.3,184.7 330.4,184.7 331.5,184.7 332.6,184.7 333.7,184.7 334.8,184.7 335.9,184.7 337.0,184.7 338.1,184.7 339.2,184.7 340.3,184.7 341.4,184.7 342.6,184.7 343.7,184.7 344.8,184.7 345.9,184.7 347.0,184.7 348.1,184.8 349.2,184.8 350.3,184.8 351.4,184.8 352.5,184.8 353.6,184.8 354.7,184.9 355.8,184.9 356.9,184.9 358.0,184.9 359.1,184.9 360.2,184.9 361.3,184.9 362.4,184.9 363.5,184.9 364.6,184.9 365.7,184.9 366.8,184.9 367.9,184.9 369.0,184.9 370.1,184.9 371.2,184.9 372.3,184.9 373.4,184.9 374.5,184.9 375.6,184.9 376.7,184.9 377.8,184.9 378.9,184.9 380.0,184.9 381.1,184.9 382.2,184.9 383.3,184.9 384.4,184.9 385.5,184.9 386.6,184.9 387.7,184.9 388.8,184.9 389.9,184.9 391.0,184.9 392.1,184.9 393.2,184.0 394.4,184.9 395.5,184.9 396.6,184.9 397.7,184.9 398.8,184.9 399.9,184.9 401.0,184.9 402.1,184.9 403.2,184.9 404.3,184.9 405.4,184.9 406.5,184.9 407.6,184.9 408.7,184.9 409.8,184.9 410.9,184.9 412.0,185.0 413.1,185.0 414.2,185.0 415.3,185.0 416.4,185.0 417.5,185.0 418.6,185.0 419.7,185.0 420.8,185.0 421.9,185.0 423.0,185.0 424.1,185.0 425.2,185.0 426.3,185.0 427.4,185.0 428.5,185.0 429.6,185.0 430.7,185.0 431.8,185.1 432.9,185.1 434.0,185.1 435.1,185.1 436.2,185.1 437.3,185.1 438.4,185.1 439.5,185.1 440.6,185.1 441.7,185.1 442.8,185.1 443.9,185.1 445.0,185.1 446.2,185.2 447.3,185.2 448.4,185.2 449.5,185.2 450.6,185.2 451.7,185.2 452.8,185.2 453.9,185.2 455.0,185.2 456.1,185.2 457.2,185.2 458.3,185.2 459.4,185.2 460.5,185.3 461.6,185.3 462.7,185.3 463.8,185.3 464.9,185.3 466.0,185.3 467.1,185.3 468.2,168.7 469.3,185.2 470.4,185.2 471.5,185.2 472.6,185.2 473.7,185.2 474.8,185.2 475.9,185.2 477.0,185.3 478.1,185.3 479.2,185.3 480.3,185.3 481.4,185.3 482.5,185.3 483.6,185.3 484.7,185.3 485.8,185.3 486.9,185.3 488.0,185.3 489.1,185.3 490.2,185.3 491.3,185.4 492.4,143.8 493.5,185.3 494.6,185.3 495.7,185.3 496.8,152.4 497.9,185.2 499.1,185.2 500.2,185.2 501.3,185.2 502.4,185.2 503.5,185.2 504.6,185.2 505.7,185.2 506.8,185.2 507.9,185.2 509.0,185.2 510.1,185.2 511.2,185.2 512.3,185.2 513.4,185.2 514.5,185.2 515.6,185.2 516.7,185.2 517.8,185.2 518.9,185.2 520.0,185.2 521.1,185.2 522.2,185.2 523.3,185.2 524.4,185.2 525.5,185.2 526.6,185.2 527.7,185.2 528.8,185.2 529.9,185.2 531.0,185.2 532.1,185.2 533.2,185.2 534.3,185.2 535.4,185.2 536.5,185.2 537.6,185.2 538.7,185.4 539.8,185.4 540.9,185.4 542.0,185.4 543.1,185.4 544.2,185.4 545.3,185.4 546.4,185.4 547.5,185.4 548.6,185.4 549.7,185.4 550.9,185.4 552.0,185.4 553.1,185.4 554.2,185.4 555.3,185.4 556.4,185.4 557.5,185.1 558.6,185.4 559.7,185.5 560.8,185.5 561.9,185.5 563.0,185.5 564.1,185.5 565.2,185.5 566.3,185.5 567.4,185.5 568.5,185.5 569.6,185.5 570.7,185.5 571.8,185.5 572.9,185.5 574.0,185.5 575.1,185.5 576.2,185.5 577.3,185.5 578.4,185.5 579.5,185.5 580.6,185.5 581.7,185.5 582.8,185.5 583.9,185.5 585.0,185.5 586.1,185.5 587.2,185.5 588.3,185.5 589.4,185.5 590.5,185.5 591.6,185.5 592.7,185.4 593.8,185.4 594.9,185.4 596.0,185.4 597.1,185.4 598.2,185.4 599.3,185.4 600.4,185.4 601.5,185.4 602.7,185.4 603.8,173.0 604.9,97.8 606.0,112.5 607.1,32.7 608.2,137.8 609.3,184.5 610.4,184.5 611.5,184.5 612.6,184.5 613.7,184.5 614.8,184.5 615.9,184.5 617.0,184.5 618.1,184.5 619.2,184.5 620.3,184.5 621.4,184.5 622.5,184.5 623.6,131.7 624.7,174.1 625.8,184.3 626.9,184.3 628.0,184.3" fill="none" style="stroke:var(--faint);stroke-width:1"/>
+<line x1="492.4" y1="190.0" x2="492.4" y2="143.8" style="stroke:var(--red);stroke-width:1.6"/>
+<line x1="604.9" y1="190.0" x2="604.9" y2="97.8" style="stroke:var(--red);stroke-width:1.6"/>
+<line x1="606.0" y1="190.0" x2="606.0" y2="112.5" style="stroke:var(--red);stroke-width:1.6"/>
+<line x1="607.1" y1="190.0" x2="607.1" y2="32.7" style="stroke:var(--red);stroke-width:1.6"/>
+<line x1="608.2" y1="190.0" x2="608.2" y2="137.8" style="stroke:var(--red);stroke-width:1.6"/>
+<line x1="623.6" y1="190.0" x2="623.6" y2="131.7" style="stroke:var(--red);stroke-width:1.6"/>
+<text class="slr" x="601.1" y="42.7" text-anchor="end">185.1 ms stall</text>
+<line x1="56" y1="147.5" x2="628" y2="147.5" style="stroke:var(--red);stroke-width:1;stroke-dasharray:5 4"/>
+<text class="slr" x="62" y="142.5">50 ms: the TPOT limit in our SLO</text>
+<line x1="56" y1="183.2" x2="628" y2="183.2" style="stroke:var(--accent);stroke-width:1.6;stroke-dasharray:5 4"/>
+<text class="sg" x="306" y="159.2">TPOT = 7.9 ms (passes)</text>
+<text class="sl" x="56" y="212">token 2</text><text class="sl" x="628" y="212" text-anchor="end">token 521</text>
+<text class="sl" x="342.0" y="228" text-anchor="middle">gap before each token (ms), in token order</text>
+</svg>
+<p class="cap">Our simulation. Median gap 6.5 ms. Six gaps pass 50 ms and the worst is 185.1 ms, the run's ITL max, yet the request's TPOT is 7.9 ms and it counts as "in SLO".</p>
+<div class="formula">request 442:  TPOT = (4,164.1 − 32.2) ms ÷ 520 gaps     = <span class="g">7.9 ms</span>   passes 50 ms
+              worst single gap                          = <span class="r">185.1 ms</span>
+whole run:    TPOT P99 = 15.5 ms,   ITL P99 = 68.7 ms,   ITL max = <span class="r">185.1 ms</span>
+              540 of 600 requests had a gap &gt; 50 ms; all 600 passed TPOT ≤ 50 ms</div>
+<p>Two lessons. Report <b>percentiles, not means</b> (P50 and P99 at least), and if smooth streaming matters, put the SLO on <b>ITL percentiles</b>, not on TPOT. The fix for this stall is a scheduler change: with chunked prefill at a 512-token budget, the same run's ITL max drops to 11.7 ms (see <a href="chunked-prefill.html">chunked prefill</a>).</p>
+
+<h2>Throughput vs goodput</h2>
+<p>Push more requests at the server and throughput keeps climbing, while the share of happy users collapses. Continuous batching with chunked prefill (2,048), 1,000 requests each, SLO TTFT ≤ 1 s and TPOT ≤ 50 ms:</p>
+<table>
+  <tr><th>Offered rate</th><th class="num">Out tok/s</th><th class="num">TTFT P50 / P99</th><th class="num">TPOT P50</th><th class="num">In SLO</th><th class="num">Goodput</th></tr>
+  <tr><td>2 req/s</td><td class="num">521</td><td class="num">11.1 / 59.5 ms</td><td class="num">5.0 ms</td><td class="num hi">100%</td><td class="num">1.9 req/s</td></tr>
+  <tr class="pick"><td>20 req/s</td><td class="num">4,755</td><td class="num">16.1 / 83.1 ms</td><td class="num">7.1 ms</td><td class="num hi">100%</td><td class="num hi">17.6 req/s</td></tr>
+  <tr><td>60 req/s</td><td class="num hi">9,102</td><td class="num lo">1,397 / 4,816 ms</td><td class="num">23.7 ms</td><td class="num lo">41%</td><td class="num lo">13.8 req/s</td></tr>
+</table>
+<div class="formula">20 → 60 req/s:  throughput  4,755 → 9,102 tok/s  = <span class="g">1.9× more</span>
+                goodput     17.6  →  13.8 req/s   = <span class="r">22% less</span>
+60 req/s misses: 590 requests fail TTFT, 0 fail TPOT  <span class="c"># a queue problem</span>
+capacity (≥ 99% in SLO, 3,000-request traces):  <span class="g">40 req/s</span></div>
+<p class="cap">Our simulation (E2, plus the failure split and goodput computed for this card from the same seeded run). The server is past capacity at 60 req/s: requests arrive faster than they finish, so the queue, and with it TTFT, grows without bound. TPOT stays fine because the batch is capped by memory.</p>
+
+<h2>The throughput–latency trade-off</h2>
+<p>Where does that curve come from? One decode step reads the weights once however many requests ride along, so adding requests raises total throughput almost for free, until the step gets longer and each user slows down. Per user = 1 ÷ step time; total = B ÷ step time.</p>
+<div class="charts">
+<svg viewBox="0 0 410 290" role="img" aria-label="H100, our simulation (E1)">
+<text class="sh" x="58" y="16">H100, our simulation (E1)</text>
+<line class="dv" x1="58" y1="238.0" x2="390" y2="238.0"/><text class="sl" x="52" y="242.0" text-anchor="end">0</text>
+<line class="dv" x1="58" y1="190.7" x2="390" y2="190.7"/><text class="sl" x="52" y="194.7" text-anchor="end">50</text>
+<line class="dv" x1="58" y1="143.5" x2="390" y2="143.5"/><text class="sl" x="52" y="147.5" text-anchor="end">100</text>
+<line class="dv" x1="58" y1="96.2" x2="390" y2="96.2"/><text class="sl" x="52" y="100.2" text-anchor="end">150</text>
+<line class="dv" x1="58" y1="48.9" x2="390" y2="48.9"/><text class="sl" x="52" y="52.9" text-anchor="end">200</text>
+<text class="sl" x="58.0" y="254" text-anchor="middle">0</text>
+<text class="sl" x="141.0" y="254" text-anchor="middle">2,500</text>
+<text class="sl" x="224.0" y="254" text-anchor="middle">5,000</text>
+<text class="sl" x="307.0" y="254" text-anchor="middle">7,500</text>
+<text class="sl" x="390.0" y="254" text-anchor="middle">10,000</text>
+<text class="sl" x="224.0" y="272" text-anchor="middle">total tok/s (the server)</text>
+<text class="sl" x="14" y="134.0" transform="rotate(-90 14 134.0)" text-anchor="middle">per-user tok/s</text>
+<line x1="58" y1="219.1" x2="390" y2="219.1" style="stroke:var(--red);stroke-width:1;stroke-dasharray:5 4"/><text class="slr" x="62" y="234.1">TPOT 50 ms = 20 tok/s per user</text>
+<polyline points="64.8,44.2 106.9,64.0 202.4,109.4 272.1,142.5 340.4,175.6 389.1,198.3" fill="none" style="stroke:var(--accent);stroke-width:2"/>
+<circle class="dot" cx="64.8" cy="44.2" r="4"/>
+<text class="st" x="70.8" y="35.2" text-anchor="start">B=1</text>
+<circle class="dot" cx="106.9" cy="64.0" r="4"/>
+<text class="st" x="113.9" y="55.0" text-anchor="start">B=8</text>
+<circle class="dot" cx="202.4" cy="109.4" r="4"/>
+<text class="st" x="209.4" y="100.4" text-anchor="start">B=32</text>
+<circle class="dot" cx="272.1" cy="142.5" r="4"/>
+<text class="st" x="279.1" y="133.5" text-anchor="start">B=64</text>
+<circle class="dot" cx="340.4" cy="175.6" r="4"/>
+<text class="st" x="347.4" y="166.6" text-anchor="start">B=128</text>
+<circle class="dot" cx="389.1" cy="198.3" r="4"/>
+<text class="st" x="381.1" y="216.3" text-anchor="end">B=238</text>
+</svg>
+<svg viewBox="0 0 410 290" role="img" aria-label="M3 Mac, measured (llama-server)">
+<text class="sh" x="58" y="16">M3 Mac, measured (llama-server)</text>
+<line class="dv" x1="58" y1="238.0" x2="390" y2="238.0"/><text class="sl" x="52" y="242.0" text-anchor="end">0</text>
+<line class="dv" x1="58" y1="178.6" x2="390" y2="178.6"/><text class="sl" x="52" y="182.6" text-anchor="end">10</text>
+<line class="dv" x1="58" y1="119.1" x2="390" y2="119.1"/><text class="sl" x="52" y="123.1" text-anchor="end">20</text>
+<line class="dv" x1="58" y1="59.7" x2="390" y2="59.7"/><text class="sl" x="52" y="63.7" text-anchor="end">30</text>
+<text class="sl" x="58.0" y="254" text-anchor="middle">0</text>
+<text class="sl" x="133.5" y="254" text-anchor="middle">25</text>
+<text class="sl" x="208.9" y="254" text-anchor="middle">50</text>
+<text class="sl" x="284.4" y="254" text-anchor="middle">75</text>
+<text class="sl" x="359.8" y="254" text-anchor="middle">100</text>
+<text class="sl" x="224.0" y="272" text-anchor="middle">total tok/s (the server)</text>
+<text class="sl" x="14" y="134.0" transform="rotate(-90 14 134.0)" text-anchor="middle">per-user tok/s</text>
+<line x1="58" y1="119.1" x2="390" y2="119.1" style="stroke:var(--red);stroke-width:1;stroke-dasharray:5 4"/><text class="slr" x="62" y="134.1">TPOT 50 ms = 20 tok/s per user</text>
+<polyline points="145.2,49.6 203.8,71.6 360.4,187.5" fill="none" style="stroke:var(--accent);stroke-width:2"/>
+<circle class="dot" cx="145.2" cy="49.6" r="4"/>
+<text class="st" x="152.2" y="40.6" text-anchor="start">C=1</text>
+<circle class="dot" cx="203.8" cy="71.6" r="4"/>
+<text class="st" x="210.8" y="62.6" text-anchor="start">C=2</text>
+<circle class="dotr" cx="360.4" cy="187.5" r="4"/>
+<text class="st" x="358.4" y="175.5" text-anchor="end">C=16</text>
+</svg>
+</div>
+<p class="cap">Left: our simulation, decode at 2k context (E1): B = 64 gives 64 ÷ 9.9 ms ≈ 6,450 tok/s total and 101 per user. From B = 1 to 238 (the memory limit at 2k), total rises 49× while each user drops from 205 to 42 tok/s; all of these points still pass a 50 ms TPOT. Right: measured on the M3 Mac, Llama-3.2-3B Q4_K_M under llama-server, closed loop, busy machine (from Course 5's benchmarking card). C = 1 → 16: total 28.9 → 100.2 tok/s, per user 31.7 → 8.5 (TPOT 31.5 → 118.2 ms), so C = 16 misses the 50 ms target. That card also shows a dip at C = 4–8 not drawn here.</p>
+
+<h2>How you generate the load</h2>
+<table>
+  <tr><th>Load generator</th><th>How it sends requests</th><th>Use it for</th></tr>
+  <tr><td><b>Open loop</b></td><td>On its own clock (e.g. Poisson at a rate), whatever the server is doing. Our simulator's <code>poisson_trace</code>, like real independent users.</td><td>Latency at a traffic level, and capacity: the queue forms, so TTFT shows it.</td></tr>
+  <tr><td><b>Closed loop</b></td><td>C users, each sends its next request only when the last one finishes. Our Mac sweep.</td><td>Peak throughput at a concurrency cap. When the server slows, the load backs off, so it hides queueing.</td></tr>
+</table>
+
+<h2>A real-world SLO</h2>
+<p>Meta's engineering blog on scaling LLM inference states its targets as TTFT "under 350ms" and TTIT "less than 25ms". We read TTIT as time to incremental token, a per-token gap like ITL. Our research kit records only the two numbers, not which models or traffic they cover. What happens to our running example's capacity if we hold it to those numbers?</p>
+<table>
+  <tr><th>SLO</th><th>First token</th><th>Streaming</th><th class="num">Capacity, our sim</th></tr>
+  <tr><td>This course</td><td>TTFT ≤ 1 s</td><td>TPOT ≤ 50 ms</td><td class="num hi">40 req/s</td></tr>
+  <tr><td>Meta's stated targets</td><td>TTFT &lt; 350 ms</td><td>TTIT &lt; 25 ms, per token</td><td class="num">38 req/s<br><span class="mu">checked as TPOT ≤ 25 ms</span></td></tr>
+</table>
+<div class="formula">rate       36      38      39      40  req/s
+in SLO  100.0%   99.4%   97.4%   76.4%   <span class="c"># Meta-style limits, 3,000-request trace</span>
+40 → 38 req/s = <span class="r">5% fewer requests</span> per GPU for the tighter targets</div>
+<p class="cap">Computed for this card with our simulator (seed 2, the same 3,000-request capacity sweep as E2; a 600-request trace never reaches steady state and overstates capacity at 51 and 45 req/s). We checked the 25 ms limit against each request's TPOT, which is looser than a per-token TTIT limit: judged per gap, capacity would be at most 38 req/s (our inference, not run).</p>
+
+<h2>Why goodput beats the alternatives <small>as the scheduler's score</small></h2>
+<div class="grid2">
+  <div class="cell"><h3><span class="x">&#10007;</span> Raw throughput</h3><p>Rewards letting the queue grow. 60 req/s gives the most tokens (9,102 tok/s) while 59% of users wait past 1 s for a first token, and goodput falls from 17.6 to 13.8 req/s.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Mean latency or TPOT alone</h3><p>Averages hide stalls: request 442's TPOT is 7.9 ms with a 185.1 ms freeze inside it, and 540 of 600 requests had a gap over 50 ms while all passed.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Single-request latency</h3><p>Timing one request on an idle server (28.9 tok/s on the Mac) says nothing about batching or queueing: the same server does 100.2 tok/s at C = 16, with users 3.7× slower.</p></div>
+  <div class="cell win"><h3>&#10003; Goodput under an SLO</h3><p>Counts only requests that met both targets, and the highest rate where 99% still do (capacity, 40 req/s here) is the number you size a fleet by.</p></div>
+</div>
+
+<h2>Which metric does the scheduler optimise?</h2>
+<div class="note">
+  <p><b>Goodput under an SLO, not raw throughput.</b> Every knob the scheduler has trades one metric for another. A bigger batch (<code>max_num_seqs</code>) raises throughput and TPOT. A smaller token budget lowers ITL and raises TTFT: in E3, a 256-token budget gives ITL max 7.4 ms but TTFT P99 375.5 ms, against 37.1 and 179.4 ms at 2,048. Admission control can refuse work to keep the admitted requests inside their targets. The scheduler's job is to serve as many requests per second as possible while P99 TTFT and P99 ITL/TPOT stay inside the SLO. DistServe's paper frames serving the same way, as goodput with TTFT and TPOT met together.</p>
+  <p>When it's not the right score: offline batch jobs with no user watching (evaluations, bulk summarisation) have no latency target, so maximise raw throughput, meaning tokens per GPU-hour. When users stream text, per-token gaps matter more than the TPOT average, so put the SLO on ITL percentiles. With many tenants, a high overall goodput can still hide one tenant starving, so add a fairness goal (see <a href="policies.html">policies</a>).</p>
+</div>
+
+<div class="foot">
+<p><a class="lab-link" href="https://github.com/seyonv/explainers/blob/main/llm-request-scheduler/labs/experiments.py">Run it: labs/experiments.py</a> E1–E3 print every simulated table on this card; <code>report()</code> in <a href="https://github.com/seyonv/explainers/blob/main/llm-request-scheduler/labs/scheduler.py">labs/scheduler.py</a> computes TTFT, TPOT, ITL and goodput exactly as defined above.</p>
+<p><b>Read next:</b> go deeper in <a href="../perf-1-foundations/serving-metrics.html">Course 1: serving metrics</a> · <a href="../perf-5-engines/benchmarking.html">Course 5: benchmarking a server</a> (curves, open vs closed loop, goodput flags) · <a href="../llm-latency/tail-latency.html">the user-side course: tail latency</a></p>
+<p><b>Related:</b> <a href="bottlenecks.html">The bottlenecks: bandwidth, compute, memory, and the CPU</a> · <a href="why-batch.html">Why batching works: one weight read, many tokens</a> · <a href="chunked-prefill.html">Chunked prefill and the token budget</a> · <a href="policies.html">Who goes next: FCFS, SJF, priority, fairness</a></p>
+<p><b>Sources:</b> Meta's TTFT and TTIT targets: <a href="https://engineering.fb.com/2025/10/17/ai-research/scaling-llm-inference-innovations-tensor-parallelism-context-parallelism-expert-parallelism/">Meta Engineering, "Scaling LLM Inference: Innovations in TP, CP, and EP"</a> (Oct 2025). Latency = TTFT + TPOT × tokens: <a href="https://www.databricks.com/blog/llm-inference-performance-engineering-best-practices">Databricks, "LLM Inference Performance Engineering: Best Practices"</a>. Goodput with TTFT and TPOT met together: <a href="https://arxiv.org/abs/2401.09670">DistServe, OSDI '24</a>. Mac sweep (llama-server, M3): Course 5's <a href="../perf-5-engines/benchmarking.html">benchmarking card</a>. Everything else: our simulation, <a href="https://github.com/seyonv/explainers/blob/main/llm-request-scheduler/labs/experiments.py">labs/experiments.py</a> (100%-of-peak cost model: a floor). Request 442, the failure split at 60 req/s, the 2 req/s E2E and the Meta-style capacity were computed for this card with the same simulator and seeds. The restaurant analogy is illustrative.</p>
+</div>
+</article>
+<!-- series-nav:bottom -->
+<div class="snx"><a class="nx" href="index.html#why-batch" target="_top">
+<span class="mini" aria-hidden="true"><span class="m1">Why batching works: one weight read, many tokens</span><span class="m2">Also called batch size, arithmetic intensity or the critical batch size. In this course it is the mechanism under everything else: every batching strategy and every scheduler decision later on exists…</span><span class="m3">In one breath</span><span class="m4">Producing one token means reading all 16.06 GB of weights from memory, and that read takes about 4.8 ms whether the step computes 1 token or 200. So if you run many requests in the same step, they share that one read: total throughput goes up almost in proportion to the batch, and each user's speed drops only a little. Two…</span></span>
+<span class="tx"><span class="lab">Next up · 06 / 25</span><span class="tt">Why batching works: one weight read, many tokens</span><span class="ds">205 → 9,973 tok/s from the same step</span><span class="go">Continue →</span></span></a><div class="aux"><span><a href="index.html#bottlenecks" target="_top">← The bottlenecks: bandwidth, compute, memory, and the CPU</a></span><a href="index.html" target="_top">All cards in Build an LLM request scheduler</a></div></div>
+<!-- /series-nav:bottom -->
+</body>
+</html>

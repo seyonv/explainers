@@ -1,0 +1,440 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>How GPUs talk: collectives and interconnects</title>
+<style>
+:root{
+  --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
+  --text:#1c1f23; --muted:#6b7068; --faint:#b9b9b3;
+  --accent:#4a9d77; --accent-bg:#dcefdf; --accent-border:#8cc79c;
+  --red:#c0492b; --red-bg:#fbeceb;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#15171a; --surface:#1d2024; --surface2:#24282d; --border:#32373d;
+    --text:#e6e8ea; --muted:#9aa1a9; --faint:#4a5057;
+    --accent:#5fb37f; --accent-bg:#1c2b22; --accent-border:#3f7a55;
+    --red:#e57368; --red-bg:#2e1f1e;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text)}
+.card{max-width:820px;margin:0 auto;padding:28px 32px;font-family:-apple-system,"Inter",system-ui,sans-serif;line-height:1.45}
+h1{font-size:26px;font-weight:600;margin:0 0 6px;letter-spacing:-0.01em}
+.sub{font-size:15px;color:var(--muted);margin:0 0 20px}
+h2{font-size:17px;font-weight:600;margin:26px 0 10px}
+p{font-size:15px;margin:0 0 10px}
+ul{font-size:15px;margin:0 0 10px;padding-left:20px} li{margin:0 0 4px}
+.cap{font-size:13px;color:var(--muted);margin:8px 0 14px;text-align:center}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+
+/* Tables and formulas */
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border)}
+th{font-size:12px;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:none}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+.hi{color:var(--accent);font-weight:600} .lo{color:var(--red);font-weight:600}
+.formula{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin:10px 0;white-space:pre;overflow-x:auto;line-height:1.55}
+.tw{overflow-x:auto}
+
+/* MathML */
+.mathbox{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px 16px 12px;margin:10px 0;overflow-x:auto}
+.mathbox math{font-size:21px;color:var(--text);font-family:"STIX Two Math","Latin Modern Math","Cambria Math",math}
+.mathbox .t1{color:var(--text)} .mathbox .t2{color:var(--accent)} .mathbox .t3{color:var(--muted)}
+.mathbox .lab{font-size:12px;font-family:-apple-system,"Inter",system-ui,sans-serif;padding-top:3px;border-top:1.5px solid currentColor;margin-top:2px}
+.legend{display:grid;grid-template-columns:auto 1fr auto;column-gap:14px;row-gap:5px;font-size:13px;margin-top:12px;align-items:baseline}
+.legend .sym{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;text-align:right}
+.legend .v{color:var(--muted);text-align:right;font-variant-numeric:tabular-nums}
+
+/* The six collectives */
+.six{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+.op{border:1px solid var(--border);border-radius:10px;padding:10px 12px 12px;background:var(--bg)}
+.op h3{font-size:15px;font-weight:600;margin:0 0 4px}
+.op p{font-size:13px;color:var(--muted);margin:6px 0 0}
+.ck{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;fill:var(--text)}
+
+/* Ring steps */
+.chips{display:flex;flex-wrap:nowrap;gap:3px;align-items:center}
+.chips span{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;padding:2px 5px;border-radius:4px;border:1px solid var(--border);background:var(--surface);min-width:26px;text-align:center}
+.chips .a{background:var(--accent-bg);border-color:var(--accent-border);color:var(--accent);font-weight:600}
+.chips .s{border:1.5px solid var(--text);font-weight:600}
+.ring td{padding:5px 6px} .ring .stp{font-size:12px;color:var(--muted);white-space:nowrap}
+
+/* Two examples per term */
+.parts td{vertical-align:top} .parts td:first-child{font-weight:600}
+.parts .ex{font-size:13px} .parts .ex span{display:block;color:var(--muted)}
+
+/* 2x2 grid */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.cell{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.cell.win{background:var(--accent-bg);border-color:var(--accent-border)}
+.cell h3{font-size:16px;font-weight:600;margin:0 0 5px;display:flex;gap:8px;align-items:baseline}
+.cell p{font-size:14px;margin:0;color:var(--text)}
+.cell.win h3,.cell.win p{color:var(--accent)}
+.x{color:var(--red)} .ok{color:var(--accent)}
+
+/* Clarification box */
+.note{border:1px solid var(--border);border-radius:10px;padding:14px 18px;font-size:14px}
+.note p,.note li{font-size:14px} .note p:last-child{margin-bottom:0}
+.ours{border-left:3px solid var(--accent-border);padding:2px 0 2px 14px;margin:10px 0}
+
+.foot{margin-top:22px;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+.foot p{font-size:13px;margin:0 0 6px}
+svg{display:block;max-width:100%;height:auto;margin:6px 0}
+.sl{font-size:12px;fill:var(--muted)} .st{font-size:13px;fill:var(--text)}
+a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+@media (max-width:700px){.six{grid-template-columns:1fr 1fr}}
+@media (max-width:560px){
+  .card{padding:22px 16px}
+  .grid2,.six{grid-template-columns:1fr}
+  .legend{grid-template-columns:auto 1fr}.legend .v{display:none}
+  .parts .what{display:none}
+  th,td{padding:6px 6px}
+}
+/* series-nav */
+.sn{max-width:820px;margin:0 auto;padding:16px 32px 0;font-family:-apple-system,"Inter",system-ui,sans-serif;font-size:13px;line-height:1.5;color:var(--muted)}
+.sn a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
+.sn .crumbs{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 7px}
+.sn .crumbs b{color:var(--text);font-weight:600}
+.sn .sep{color:var(--faint,var(--border))}
+.sn .step{margin-left:auto;white-space:nowrap}
+.sn .dep{margin-top:5px;padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface)}
+.sn .dep .ok{color:var(--accent);font-weight:600}
+.snx{max-width:820px;margin:0 auto;padding:6px 32px 44px;font-family:-apple-system,"Inter",system-ui,sans-serif}
+.snx .nx{display:grid;grid-template-columns:280px 1fr;text-decoration:none;color:var(--text);background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.snx .nx:hover,.snx .nx:focus-visible{border-color:var(--accent-border,var(--accent));outline:none}
+.snx .mini{position:relative;height:210px;overflow:hidden;background:var(--bg);border-right:1px solid var(--border);padding:14px 16px}
+.snx .mini span{display:block}
+.snx .mini .m1{font-size:12.5px;font-weight:600;margin:0 0 4px;line-height:1.3}
+.snx .mini .m2{font-size:9px;color:var(--muted);margin:0 0 8px;line-height:1.4}
+.snx .mini .m3{font-size:8.5px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;margin:0 0 3px}
+.snx .mini .m4{font-size:9.5px;margin:0;line-height:1.45}
+.snx .tx{padding:16px 20px}
+.snx .lab{font-size:12px;font-weight:600;color:var(--accent);letter-spacing:.04em;text-transform:uppercase}
+.snx .tt{display:block;font-size:20px;font-weight:600;margin:5px 0 4px;line-height:1.25}
+.snx .ds{display:block;font-size:14px;color:var(--muted)}
+.snx .nd{display:block;font-size:13px;color:var(--muted);margin-top:10px}
+.snx .go{display:block;margin-top:12px;font-size:14px;font-weight:600;color:var(--accent)}
+.snx .aux{display:flex;justify-content:space-between;gap:12px;margin-top:10px;font-size:13px;color:var(--muted)}
+.snx .aux a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
+@media (max-width:560px){.sn,.snx{padding-left:16px;padding-right:16px}.snx .nx{grid-template-columns:1fr}.snx .mini{display:none}.sn .step{margin-left:0}}
+/* /series-nav */
+</style>
+</head>
+<body>
+<!-- series-nav:top -->
+<nav class="sn" aria-label="Course navigation"><div class="crumbs"><a href="../perf-0-map/index.html" target="_top">Fast LLM inference</a><span class="sep">›</span><a href="index.html" target="_top">6 · Serving across GPUs</a><span class="sep">›</span><b>02 / 15</b><span class="step"><a href="index.html#_overview" target="_top">← prev</a> · <a href="index.html#megatron-mlp-attention" target="_top">next →</a></span></div>
+<div class="dep"><b>Before this:</b> <a href="../perf-2-scaling-book-inference/index.html#sharding-prefill-generation" target="_top">Sharding prefill vs generation</a> (perf-2)</div></nav>
+<!-- /series-nav:top -->
+<article class="card">
+<h1>How GPUs talk: collectives and interconnects</h1>
+<p class="sub">Also called collective communication, NCCL collectives, or "comms"; the wires are scale-up (NVLink, NVSwitch) and scale-out (InfiniBand, RoCE, the NIC). This card covers the six collectives in NVIDIA's NCCL docs, the ring all-reduce behind nccl-tests' "busbw" column, the cost formulas from the Scaling Book (Part 3 and the GPU chapter), and what one all-reduce costs Llama-3.1-70B split over 8 H100s. It is the vocabulary every later card in this course uses.</p>
+
+<h2>In one breath</h2>
+<p>When one model runs on several GPUs, each GPU computes part of the answer, and the pieces must be combined before the next layer can start. A collective is a combining pattern that every GPU joins at once: sum everything and give everyone the total (AllReduce), give everyone a copy of everyone's piece (AllGather), and so on. Its cost is a fixed latency per hop plus bytes divided by link bandwidth. The link inside a server (NVLink, 450 GB/s per direction on an H100) is 9× faster than the link between servers (InfiniBand, 50 GB/s per GPU), and that gap decides where each kind of parallelism can live.</p>
+
+<h2>The six collectives, on 4 GPUs</h2>
+<p>NCCL's names. Each letter is one GPU's data (a is on GPU0, b on GPU1 and so on) and each digit a chunk position. Green chunks are sums over all four GPUs (Σ0 = a0 + b0 + c0 + d0). Dashed boxes are buffers the operation doesn't write.</p>
+<div class="six">
+  <div class="op"><h3>AllReduce</h3><svg viewBox="0 0 250 128" role="img" aria-label="AllReduce on 4 GPUs, before and after">
+<text x="40" y="11" class="sl">before</text><text x="160" y="11" class="sl">after</text>
+<text x="0" y="32" class="sl">GPU0</text>
+<rect x="40" y="18" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="50.5" y="32" class="ck" text-anchor="middle">a0</text><rect x="62" y="18" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="72.5" y="32" class="ck" text-anchor="middle">a1</text><rect x="84" y="18" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="94.5" y="32" class="ck" text-anchor="middle">a2</text><rect x="106" y="18" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="116.5" y="32" class="ck" text-anchor="middle">a3</text>
+<rect x="160" y="18" width="21" height="20" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/><text x="170.5" y="32" class="ck" text-anchor="middle" style="fill:var(--accent);font-weight:600">Σ0</text><rect x="182" y="18" width="21" height="20" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/><text x="192.5" y="32" class="ck" text-anchor="middle" style="fill:var(--accent);font-weight:600">Σ1</text><rect x="204" y="18" width="21" height="20" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/><text x="214.5" y="32" class="ck" text-anchor="middle" style="fill:var(--accent);font-weight:600">Σ2</text><rect x="226" y="18" width="21" height="20" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/><text x="236.5" y="32" class="ck" text-anchor="middle" style="fill:var(--accent);font-weight:600">Σ3</text>
+<text x="0" y="59" class="sl">GPU1</text>
+<rect x="40" y="45" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="50.5" y="59" class="ck" text-anchor="middle">b0</text><rect x="62" y="45" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="72.5" y="59" class="ck" text-anchor="middle">b1</text><rect x="84" y="45" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="94.5" y="59" class="ck" text-anchor="middle">b2</text><rect x="106" y="45" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="116.5" y="59" class="ck" text-anchor="middle">b3</text>
+<rect x="160" y="45" width="21" height="20" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/><text x="170.5" y="59" class="ck" text-anchor="middle" style="fill:var(--accent);font-weight:600">Σ0</text><rect x="182" y="45" width="21" height="20" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/><text x="192.5" y="59" class="ck" text-anchor="middle" style="fill:var(--accent);font-weight:600">Σ1</text><rect x="204" y="45" width="21" height="20" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/><text x="214.5" y="59" class="ck" text-anchor="middle" style="fill:var(--accent);font-weight:600">Σ2</text><rect x="226" y="45" width="21" height="20" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/><text x="236.5" y="59" class="ck" text-anchor="middle" style="fill:var(--accent);font-weight:600">Σ3</text>
+<text x="0" y="86" class="sl">GPU2</text>
+<rect x="40" y="72" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="50.5" y="86" class="ck" text-anchor="middle">c0</text><rect x="62" y="72" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="72.5" y="86" class="ck" text-anchor="middle">c1</text><rect x="84" y="72" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="94.5" y="86" class="ck" text-anchor="middle">c2</text><rect x="106" y="72" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="116.5" y="86" class="ck" text-anchor="middle">c3</text>
+<rect x="160" y="72" width="21" height="20" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/><text x="170.5" y="86" class="ck" text-anchor="middle" style="fill:var(--accent);font-weight:600">Σ0</text><rect x="182" y="72" width="21" height="20" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/><text x="192.5" y="86" class="ck" text-anchor="middle" style="fill:var(--accent);font-weight:600">Σ1</text><rect x="204" y="72" width="21" height="20" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/><text x="214.5" y="86" class="ck" text-anchor="middle" style="fill:var(--accent);font-weight:600">Σ2</text><rect x="226" y="72" width="21" height="20" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/><text x="236.5" y="86" class="ck" text-anchor="middle" style="fill:var(--accent);font-weight:600">Σ3</text>
+<text x="0" y="113" class="sl">GPU3</text>
+<rect x="40" y="99" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="50.5" y="113" class="ck" text-anchor="middle">d0</text><rect x="62" y="99" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="72.5" y="113" class="ck" text-anchor="middle">d1</text><rect x="84" y="99" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="94.5" y="113" class="ck" text-anchor="middle">d2</text><rect x="106" y="99" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="116.5" y="113" class="ck" text-anchor="middle">d3</text>
+<rect x="160" y="99" width="21" height="20" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/><text x="170.5" y="113" class="ck" text-anchor="middle" style="fill:var(--accent);font-weight:600">Σ0</text><rect x="182" y="99" width="21" height="20" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/><text x="192.5" y="113" class="ck" text-anchor="middle" style="fill:var(--accent);font-weight:600">Σ1</text><rect x="204" y="99" width="21" height="20" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/><text x="214.5" y="113" class="ck" text-anchor="middle" style="fill:var(--accent);font-weight:600">Σ2</text><rect x="226" y="99" width="21" height="20" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/><text x="236.5" y="113" class="ck" text-anchor="middle" style="fill:var(--accent);font-weight:600">Σ3</text>
+<path d="M132 64 H152" stroke="var(--muted)" stroke-width="1.5"/><path d="M148 60 L153 64 L148 68" fill="none" stroke="var(--muted)" stroke-width="1.5"/>
+</svg><p>Sum across GPUs; every GPU gets the full sum. Tensor parallelism's workhorse.</p></div>
+  <div class="op"><h3>ReduceScatter</h3><svg viewBox="0 0 250 128" role="img" aria-label="ReduceScatter on 4 GPUs, before and after">
+<text x="40" y="11" class="sl">before</text><text x="160" y="11" class="sl">after</text>
+<text x="0" y="32" class="sl">GPU0</text>
+<rect x="40" y="18" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="50.5" y="32" class="ck" text-anchor="middle">a0</text><rect x="62" y="18" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="72.5" y="32" class="ck" text-anchor="middle">a1</text><rect x="84" y="18" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="94.5" y="32" class="ck" text-anchor="middle">a2</text><rect x="106" y="18" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="116.5" y="32" class="ck" text-anchor="middle">a3</text>
+<rect x="160" y="18" width="21" height="20" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/><text x="170.5" y="32" class="ck" text-anchor="middle" style="fill:var(--accent);font-weight:600">Σ0</text>
+<text x="0" y="59" class="sl">GPU1</text>
+<rect x="40" y="45" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="50.5" y="59" class="ck" text-anchor="middle">b0</text><rect x="62" y="45" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="72.5" y="59" class="ck" text-anchor="middle">b1</text><rect x="84" y="45" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="94.5" y="59" class="ck" text-anchor="middle">b2</text><rect x="106" y="45" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="116.5" y="59" class="ck" text-anchor="middle">b3</text>
+<rect x="160" y="45" width="21" height="20" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/><text x="170.5" y="59" class="ck" text-anchor="middle" style="fill:var(--accent);font-weight:600">Σ1</text>
+<text x="0" y="86" class="sl">GPU2</text>
+<rect x="40" y="72" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="50.5" y="86" class="ck" text-anchor="middle">c0</text><rect x="62" y="72" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="72.5" y="86" class="ck" text-anchor="middle">c1</text><rect x="84" y="72" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="94.5" y="86" class="ck" text-anchor="middle">c2</text><rect x="106" y="72" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="116.5" y="86" class="ck" text-anchor="middle">c3</text>
+<rect x="160" y="72" width="21" height="20" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/><text x="170.5" y="86" class="ck" text-anchor="middle" style="fill:var(--accent);font-weight:600">Σ2</text>
+<text x="0" y="113" class="sl">GPU3</text>
+<rect x="40" y="99" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="50.5" y="113" class="ck" text-anchor="middle">d0</text><rect x="62" y="99" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="72.5" y="113" class="ck" text-anchor="middle">d1</text><rect x="84" y="99" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="94.5" y="113" class="ck" text-anchor="middle">d2</text><rect x="106" y="99" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="116.5" y="113" class="ck" text-anchor="middle">d3</text>
+<rect x="160" y="99" width="21" height="20" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/><text x="170.5" y="113" class="ck" text-anchor="middle" style="fill:var(--accent);font-weight:600">Σ3</text>
+<path d="M132 64 H152" stroke="var(--muted)" stroke-width="1.5"/><path d="M148 60 L153 64 L148 68" fill="none" stroke="var(--muted)" stroke-width="1.5"/>
+</svg><p>Sum across GPUs, but GPU k keeps only chunk k of the result.</p></div>
+  <div class="op"><h3>AllGather</h3><svg viewBox="0 0 250 128" role="img" aria-label="AllGather on 4 GPUs, before and after">
+<text x="40" y="11" class="sl">before</text><text x="160" y="11" class="sl">after</text>
+<text x="0" y="32" class="sl">GPU0</text>
+<rect x="40" y="18" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="50.5" y="32" class="ck" text-anchor="middle">a</text>
+<rect x="160" y="18" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="170.5" y="32" class="ck" text-anchor="middle">a</text><rect x="182" y="18" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="192.5" y="32" class="ck" text-anchor="middle">b</text><rect x="204" y="18" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="214.5" y="32" class="ck" text-anchor="middle">c</text><rect x="226" y="18" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="236.5" y="32" class="ck" text-anchor="middle">d</text>
+<text x="0" y="59" class="sl">GPU1</text>
+<rect x="40" y="45" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="50.5" y="59" class="ck" text-anchor="middle">b</text>
+<rect x="160" y="45" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="170.5" y="59" class="ck" text-anchor="middle">a</text><rect x="182" y="45" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="192.5" y="59" class="ck" text-anchor="middle">b</text><rect x="204" y="45" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="214.5" y="59" class="ck" text-anchor="middle">c</text><rect x="226" y="45" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="236.5" y="59" class="ck" text-anchor="middle">d</text>
+<text x="0" y="86" class="sl">GPU2</text>
+<rect x="40" y="72" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="50.5" y="86" class="ck" text-anchor="middle">c</text>
+<rect x="160" y="72" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="170.5" y="86" class="ck" text-anchor="middle">a</text><rect x="182" y="72" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="192.5" y="86" class="ck" text-anchor="middle">b</text><rect x="204" y="72" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="214.5" y="86" class="ck" text-anchor="middle">c</text><rect x="226" y="72" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="236.5" y="86" class="ck" text-anchor="middle">d</text>
+<text x="0" y="113" class="sl">GPU3</text>
+<rect x="40" y="99" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="50.5" y="113" class="ck" text-anchor="middle">d</text>
+<rect x="160" y="99" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="170.5" y="113" class="ck" text-anchor="middle">a</text><rect x="182" y="99" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="192.5" y="113" class="ck" text-anchor="middle">b</text><rect x="204" y="99" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="214.5" y="113" class="ck" text-anchor="middle">c</text><rect x="226" y="99" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="236.5" y="113" class="ck" text-anchor="middle">d</text>
+<path d="M132 64 H152" stroke="var(--muted)" stroke-width="1.5"/><path d="M148 60 L153 64 L148 68" fill="none" stroke="var(--muted)" stroke-width="1.5"/>
+</svg><p>Everyone's piece, concatenated in rank order, on every GPU. No arithmetic.</p></div>
+  <div class="op"><h3>Broadcast</h3><svg viewBox="0 0 250 128" role="img" aria-label="Broadcast on 4 GPUs, before and after">
+<text x="40" y="11" class="sl">before</text><text x="160" y="11" class="sl">after</text>
+<text x="0" y="32" class="sl">GPU0</text>
+<rect x="40" y="18" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="50.5" y="32" class="ck" text-anchor="middle">a0</text><rect x="62" y="18" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="72.5" y="32" class="ck" text-anchor="middle">a1</text><rect x="84" y="18" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="94.5" y="32" class="ck" text-anchor="middle">a2</text><rect x="106" y="18" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="116.5" y="32" class="ck" text-anchor="middle">a3</text>
+<rect x="160" y="18" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="170.5" y="32" class="ck" text-anchor="middle">a0</text><rect x="182" y="18" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="192.5" y="32" class="ck" text-anchor="middle">a1</text><rect x="204" y="18" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="214.5" y="32" class="ck" text-anchor="middle">a2</text><rect x="226" y="18" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="236.5" y="32" class="ck" text-anchor="middle">a3</text>
+<text x="0" y="59" class="sl">GPU1</text>
+<rect x="40" y="45" width="21" height="20" rx="3" fill="none" stroke="var(--faint)" stroke-dasharray="3 2"/><rect x="62" y="45" width="21" height="20" rx="3" fill="none" stroke="var(--faint)" stroke-dasharray="3 2"/><rect x="84" y="45" width="21" height="20" rx="3" fill="none" stroke="var(--faint)" stroke-dasharray="3 2"/><rect x="106" y="45" width="21" height="20" rx="3" fill="none" stroke="var(--faint)" stroke-dasharray="3 2"/>
+<rect x="160" y="45" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="170.5" y="59" class="ck" text-anchor="middle">a0</text><rect x="182" y="45" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="192.5" y="59" class="ck" text-anchor="middle">a1</text><rect x="204" y="45" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="214.5" y="59" class="ck" text-anchor="middle">a2</text><rect x="226" y="45" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="236.5" y="59" class="ck" text-anchor="middle">a3</text>
+<text x="0" y="86" class="sl">GPU2</text>
+<rect x="40" y="72" width="21" height="20" rx="3" fill="none" stroke="var(--faint)" stroke-dasharray="3 2"/><rect x="62" y="72" width="21" height="20" rx="3" fill="none" stroke="var(--faint)" stroke-dasharray="3 2"/><rect x="84" y="72" width="21" height="20" rx="3" fill="none" stroke="var(--faint)" stroke-dasharray="3 2"/><rect x="106" y="72" width="21" height="20" rx="3" fill="none" stroke="var(--faint)" stroke-dasharray="3 2"/>
+<rect x="160" y="72" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="170.5" y="86" class="ck" text-anchor="middle">a0</text><rect x="182" y="72" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="192.5" y="86" class="ck" text-anchor="middle">a1</text><rect x="204" y="72" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="214.5" y="86" class="ck" text-anchor="middle">a2</text><rect x="226" y="72" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="236.5" y="86" class="ck" text-anchor="middle">a3</text>
+<text x="0" y="113" class="sl">GPU3</text>
+<rect x="40" y="99" width="21" height="20" rx="3" fill="none" stroke="var(--faint)" stroke-dasharray="3 2"/><rect x="62" y="99" width="21" height="20" rx="3" fill="none" stroke="var(--faint)" stroke-dasharray="3 2"/><rect x="84" y="99" width="21" height="20" rx="3" fill="none" stroke="var(--faint)" stroke-dasharray="3 2"/><rect x="106" y="99" width="21" height="20" rx="3" fill="none" stroke="var(--faint)" stroke-dasharray="3 2"/>
+<rect x="160" y="99" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="170.5" y="113" class="ck" text-anchor="middle">a0</text><rect x="182" y="99" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="192.5" y="113" class="ck" text-anchor="middle">a1</text><rect x="204" y="99" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="214.5" y="113" class="ck" text-anchor="middle">a2</text><rect x="226" y="99" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="236.5" y="113" class="ck" text-anchor="middle">a3</text>
+<path d="M132 64 H152" stroke="var(--muted)" stroke-width="1.5"/><path d="M148 60 L153 64 L148 68" fill="none" stroke="var(--muted)" stroke-width="1.5"/>
+</svg><p>Copy the root's buffer (here GPU0) to every GPU. The root is a rank, not a device number.</p></div>
+  <div class="op"><h3>Reduce</h3><svg viewBox="0 0 250 128" role="img" aria-label="Reduce on 4 GPUs, before and after">
+<text x="40" y="11" class="sl">before</text><text x="160" y="11" class="sl">after</text>
+<text x="0" y="32" class="sl">GPU0</text>
+<rect x="40" y="18" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="50.5" y="32" class="ck" text-anchor="middle">a0</text><rect x="62" y="18" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="72.5" y="32" class="ck" text-anchor="middle">a1</text><rect x="84" y="18" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="94.5" y="32" class="ck" text-anchor="middle">a2</text><rect x="106" y="18" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="116.5" y="32" class="ck" text-anchor="middle">a3</text>
+<rect x="160" y="18" width="21" height="20" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/><text x="170.5" y="32" class="ck" text-anchor="middle" style="fill:var(--accent);font-weight:600">Σ0</text><rect x="182" y="18" width="21" height="20" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/><text x="192.5" y="32" class="ck" text-anchor="middle" style="fill:var(--accent);font-weight:600">Σ1</text><rect x="204" y="18" width="21" height="20" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/><text x="214.5" y="32" class="ck" text-anchor="middle" style="fill:var(--accent);font-weight:600">Σ2</text><rect x="226" y="18" width="21" height="20" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/><text x="236.5" y="32" class="ck" text-anchor="middle" style="fill:var(--accent);font-weight:600">Σ3</text>
+<text x="0" y="59" class="sl">GPU1</text>
+<rect x="40" y="45" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="50.5" y="59" class="ck" text-anchor="middle">b0</text><rect x="62" y="45" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="72.5" y="59" class="ck" text-anchor="middle">b1</text><rect x="84" y="45" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="94.5" y="59" class="ck" text-anchor="middle">b2</text><rect x="106" y="45" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="116.5" y="59" class="ck" text-anchor="middle">b3</text>
+<rect x="160" y="45" width="21" height="20" rx="3" fill="none" stroke="var(--faint)" stroke-dasharray="3 2"/><rect x="182" y="45" width="21" height="20" rx="3" fill="none" stroke="var(--faint)" stroke-dasharray="3 2"/><rect x="204" y="45" width="21" height="20" rx="3" fill="none" stroke="var(--faint)" stroke-dasharray="3 2"/><rect x="226" y="45" width="21" height="20" rx="3" fill="none" stroke="var(--faint)" stroke-dasharray="3 2"/>
+<text x="0" y="86" class="sl">GPU2</text>
+<rect x="40" y="72" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="50.5" y="86" class="ck" text-anchor="middle">c0</text><rect x="62" y="72" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="72.5" y="86" class="ck" text-anchor="middle">c1</text><rect x="84" y="72" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="94.5" y="86" class="ck" text-anchor="middle">c2</text><rect x="106" y="72" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="116.5" y="86" class="ck" text-anchor="middle">c3</text>
+<rect x="160" y="72" width="21" height="20" rx="3" fill="none" stroke="var(--faint)" stroke-dasharray="3 2"/><rect x="182" y="72" width="21" height="20" rx="3" fill="none" stroke="var(--faint)" stroke-dasharray="3 2"/><rect x="204" y="72" width="21" height="20" rx="3" fill="none" stroke="var(--faint)" stroke-dasharray="3 2"/><rect x="226" y="72" width="21" height="20" rx="3" fill="none" stroke="var(--faint)" stroke-dasharray="3 2"/>
+<text x="0" y="113" class="sl">GPU3</text>
+<rect x="40" y="99" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="50.5" y="113" class="ck" text-anchor="middle">d0</text><rect x="62" y="99" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="72.5" y="113" class="ck" text-anchor="middle">d1</text><rect x="84" y="99" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="94.5" y="113" class="ck" text-anchor="middle">d2</text><rect x="106" y="99" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="116.5" y="113" class="ck" text-anchor="middle">d3</text>
+<rect x="160" y="99" width="21" height="20" rx="3" fill="none" stroke="var(--faint)" stroke-dasharray="3 2"/><rect x="182" y="99" width="21" height="20" rx="3" fill="none" stroke="var(--faint)" stroke-dasharray="3 2"/><rect x="204" y="99" width="21" height="20" rx="3" fill="none" stroke="var(--faint)" stroke-dasharray="3 2"/><rect x="226" y="99" width="21" height="20" rx="3" fill="none" stroke="var(--faint)" stroke-dasharray="3 2"/>
+<path d="M132 64 H152" stroke="var(--muted)" stroke-width="1.5"/><path d="M148 60 L153 64 L148 68" fill="none" stroke="var(--muted)" stroke-width="1.5"/>
+</svg><p>Like AllReduce, but only the root gets the sum.</p></div>
+  <div class="op"><h3>AllToAll</h3><svg viewBox="0 0 250 128" role="img" aria-label="AllToAll on 4 GPUs, before and after">
+<text x="40" y="11" class="sl">before</text><text x="160" y="11" class="sl">after</text>
+<text x="0" y="32" class="sl">GPU0</text>
+<rect x="40" y="18" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="50.5" y="32" class="ck" text-anchor="middle">a0</text><rect x="62" y="18" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="72.5" y="32" class="ck" text-anchor="middle">a1</text><rect x="84" y="18" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="94.5" y="32" class="ck" text-anchor="middle">a2</text><rect x="106" y="18" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="116.5" y="32" class="ck" text-anchor="middle">a3</text>
+<rect x="160" y="18" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="170.5" y="32" class="ck" text-anchor="middle">a0</text><rect x="182" y="18" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="192.5" y="32" class="ck" text-anchor="middle">b0</text><rect x="204" y="18" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="214.5" y="32" class="ck" text-anchor="middle">c0</text><rect x="226" y="18" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="236.5" y="32" class="ck" text-anchor="middle">d0</text>
+<text x="0" y="59" class="sl">GPU1</text>
+<rect x="40" y="45" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="50.5" y="59" class="ck" text-anchor="middle">b0</text><rect x="62" y="45" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="72.5" y="59" class="ck" text-anchor="middle">b1</text><rect x="84" y="45" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="94.5" y="59" class="ck" text-anchor="middle">b2</text><rect x="106" y="45" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="116.5" y="59" class="ck" text-anchor="middle">b3</text>
+<rect x="160" y="45" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="170.5" y="59" class="ck" text-anchor="middle">a1</text><rect x="182" y="45" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="192.5" y="59" class="ck" text-anchor="middle">b1</text><rect x="204" y="45" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="214.5" y="59" class="ck" text-anchor="middle">c1</text><rect x="226" y="45" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="236.5" y="59" class="ck" text-anchor="middle">d1</text>
+<text x="0" y="86" class="sl">GPU2</text>
+<rect x="40" y="72" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="50.5" y="86" class="ck" text-anchor="middle">c0</text><rect x="62" y="72" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="72.5" y="86" class="ck" text-anchor="middle">c1</text><rect x="84" y="72" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="94.5" y="86" class="ck" text-anchor="middle">c2</text><rect x="106" y="72" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="116.5" y="86" class="ck" text-anchor="middle">c3</text>
+<rect x="160" y="72" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="170.5" y="86" class="ck" text-anchor="middle">a2</text><rect x="182" y="72" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="192.5" y="86" class="ck" text-anchor="middle">b2</text><rect x="204" y="72" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="214.5" y="86" class="ck" text-anchor="middle">c2</text><rect x="226" y="72" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="236.5" y="86" class="ck" text-anchor="middle">d2</text>
+<text x="0" y="113" class="sl">GPU3</text>
+<rect x="40" y="99" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="50.5" y="113" class="ck" text-anchor="middle">d0</text><rect x="62" y="99" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="72.5" y="113" class="ck" text-anchor="middle">d1</text><rect x="84" y="99" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="94.5" y="113" class="ck" text-anchor="middle">d2</text><rect x="106" y="99" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="116.5" y="113" class="ck" text-anchor="middle">d3</text>
+<rect x="160" y="99" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="170.5" y="113" class="ck" text-anchor="middle">a3</text><rect x="182" y="99" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="192.5" y="113" class="ck" text-anchor="middle">b3</text><rect x="204" y="99" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="214.5" y="113" class="ck" text-anchor="middle">c3</text><rect x="226" y="99" width="21" height="20" rx="3" fill="var(--surface2)" stroke="var(--border)"/><text x="236.5" y="113" class="ck" text-anchor="middle">d3</text>
+<path d="M132 64 H152" stroke="var(--muted)" stroke-width="1.5"/><path d="M148 60 L153 64 L148 68" fill="none" stroke="var(--muted)" stroke-width="1.5"/>
+</svg><p>GPU i sends its chunk j to GPU j: a transpose. Mixture-of-experts dispatch and combine.</p></div>
+</div>
+<div class="formula">ReduceScatter, then AllGather  = AllReduce     (NCCL docs, on the AllGather entry)
+Reduce, then Broadcast         = AllReduce     (NCCL docs, on the Reduce entry)
+labs/collectives.py checks all six definitions and both identities in numpy: OK</div>
+<p>The first identity is the one to remember. It is how the ring below works, it is why the Scaling Book says "an AllReduce is twice as expensive as an AllGather", and it lets a tensor-parallel layer end in a cheaper ReduceScatter when the next step only needs a slice. NCCL also has Gather, Scatter and point-to-point Send/Recv; every collective call must use the same count and datatype on every rank, or the docs promise "undefined behavior, including hangs, crashes, or data corruption."</p>
+
+<h2>The ring all-reduce, step by step</h2>
+<p>Put the 4 GPUs in a ring (0 → 1 → 2 → 3 → 0) and cut each GPU's array into 4 chunks. In <b>phase 1</b> (a ReduceScatter), at step s GPU i sends chunk (i − s) mod 4 to its neighbour, which adds it to its own copy. After 3 steps each GPU holds one fully summed chunk. In <b>phase 2</b> (an AllGather) the finished chunks travel round the ring for 3 more steps. Each cell below lists whose data a chunk contains; the outlined chip is the one that GPU sends on that step.</p>
+<div class="tw"><table class="ring">
+<tr><th>Step</th><th>GPU0</th><th>GPU1</th><th>GPU2</th><th>GPU3</th></tr>
+<tr><td class="stp">start</td><td><div class="chips"><span>a</span><span>a</span><span>a</span><span>a</span></div></td><td><div class="chips"><span>b</span><span>b</span><span>b</span><span>b</span></div></td><td><div class="chips"><span>c</span><span>c</span><span>c</span><span>c</span></div></td><td><div class="chips"><span>d</span><span>d</span><span>d</span><span>d</span></div></td></tr>
+<tr><td class="stp">reduce-scatter 1</td><td><div class="chips"><span class="s">a→</span><span>a</span><span>a</span><span>ad</span></div></td><td><div class="chips"><span>ab</span><span class="s">b→</span><span>b</span><span>b</span></div></td><td><div class="chips"><span>c</span><span>bc</span><span class="s">c→</span><span>c</span></div></td><td><div class="chips"><span>d</span><span>d</span><span>cd</span><span class="s">d→</span></div></td></tr>
+<tr><td class="stp">reduce-scatter 2</td><td><div class="chips"><span>a</span><span>a</span><span>acd</span><span class="s">ad→</span></div></td><td><div class="chips"><span class="s">ab→</span><span>b</span><span>b</span><span>abd</span></div></td><td><div class="chips"><span>abc</span><span class="s">bc→</span><span>c</span><span>c</span></div></td><td><div class="chips"><span>d</span><span>bcd</span><span class="s">cd→</span><span>d</span></div></td></tr>
+<tr><td class="stp">reduce-scatter 3</td><td><div class="chips"><span>a</span><span class="a">Σ</span><span class="s">acd→</span><span>ad</span></div></td><td><div class="chips"><span>ab</span><span>b</span><span class="a">Σ</span><span class="s">abd→</span></div></td><td><div class="chips"><span class="s">abc→</span><span>bc</span><span>c</span><span class="a">Σ</span></div></td><td><div class="chips"><span class="a">Σ</span><span class="s">bcd→</span><span>cd</span><span>d</span></div></td></tr>
+<tr><td class="stp">all-gather 1</td><td><div class="chips"><span class="a">Σ</span><span class="a s">Σ→</span><span>acd</span><span>ad</span></div></td><td><div class="chips"><span>ab</span><span class="a">Σ</span><span class="a s">Σ→</span><span>abd</span></div></td><td><div class="chips"><span>abc</span><span>bc</span><span class="a">Σ</span><span class="a s">Σ→</span></div></td><td><div class="chips"><span class="a s">Σ→</span><span>bcd</span><span>cd</span><span class="a">Σ</span></div></td></tr>
+<tr><td class="stp">all-gather 2</td><td><div class="chips"><span class="a s">Σ→</span><span class="a">Σ</span><span>acd</span><span class="a">Σ</span></div></td><td><div class="chips"><span class="a">Σ</span><span class="a s">Σ→</span><span class="a">Σ</span><span>abd</span></div></td><td><div class="chips"><span>abc</span><span class="a">Σ</span><span class="a s">Σ→</span><span class="a">Σ</span></div></td><td><div class="chips"><span class="a">Σ</span><span>bcd</span><span class="a">Σ</span><span class="a s">Σ→</span></div></td></tr>
+<tr><td class="stp">all-gather 3</td><td><div class="chips"><span class="a">Σ</span><span class="a">Σ</span><span class="a">Σ</span><span class="a s">Σ→</span></div></td><td><div class="chips"><span class="a s">Σ→</span><span class="a">Σ</span><span class="a">Σ</span><span class="a">Σ</span></div></td><td><div class="chips"><span class="a">Σ</span><span class="a s">Σ→</span><span class="a">Σ</span><span class="a">Σ</span></div></td><td><div class="chips"><span class="a">Σ</span><span class="a">Σ</span><span class="a s">Σ→</span><span class="a">Σ</span></div></td></tr>
+</table></div>
+<p class="cap">Printed by labs/collectives.py (same rule as NCCL's ring as nccl-tests describes it; NCCL's real chunking and channel count differ). Every GPU sends one chunk on every step, so all 4 links are busy the whole time.</p>
+<div class="formula">steps        = (n − 1) reduce-scatter + (n − 1) all-gather = 2(n − 1)
+each step    = every GPU sends S/n bytes to its neighbour
+per GPU      = 2(n − 1) × S/n = 2(n − 1)/n × S
+n = 4        → 6 steps,  1.5 S sent per GPU
+n = 8        → 14 steps, 1.75 S per GPU
+               lab, 8 GPUs × 32 MiB: 56 MiB sent each = 1.7500 S, exact sum
+n → ∞        → 2 S per GPU, never more</div>
+<p>That last line is the ring's big property: the time per byte doesn't grow with the number of GPUs.</p>
+
+<h2>What it costs: bandwidth plus latency</h2>
+<p>Two terms: the bytes each GPU must push through its link, and a fixed delay every time a message hops to the next GPU. The ring pays that delay 2(n − 1) times.</p>
+<div class="mathbox">
+<math display="block">
+  <msub><mi>T</mi><mtext>AllReduce</mtext></msub><mo>&#8776;</mo>
+  <munder class="t3"><mrow><mn>2</mn><mo stretchy="false">(</mo><mi>n</mi><mo>&#8722;</mo><mn>1</mn><mo stretchy="false">)</mo><mo>&#183;</mo><mi>&#945;</mi></mrow><mtext class="lab">latency: hops</mtext></munder>
+  <mo>+</mo>
+  <munder class="t1"><mrow><mfrac><mrow><mn>2</mn><mo stretchy="false">(</mo><mi>n</mi><mo>&#8722;</mo><mn>1</mn><mo stretchy="false">)</mo></mrow><mi>n</mi></mfrac><mo>&#183;</mo><mfrac><mi>S</mi><mi>W</mi></mfrac></mrow><mtext class="lab">bandwidth: bytes on the busiest link</mtext></munder>
+</math>
+<div class="legend">
+  <span class="sym">n</span><span>GPUs in the collective</span><span class="v">8 = one H100 node</span>
+  <span class="sym">S</span><span>bytes of the array each GPU holds</span><span class="v">16 kB – 4.19 MB for 70B decode</span>
+  <span class="sym">W</span><span>link bandwidth per GPU, one direction</span><span class="v">450 GB/s NVLink · 50 GB/s IB</span>
+  <span class="sym">&#945;</span><span>fixed cost per hop, whatever the size</span><span class="v">1 µs, illustrative</span>
+</div>
+</div>
+<p class="cap">This is the textbook latency-plus-bandwidth model for a ring (our framing). The Scaling Book writes the same idea as a max, T = max[T<sub>min</sub>·X/2, V/W], for a bidirectional TPU ring. The two forms never differ by more than 2×. Filled in for 70B decode at batch 64 over NVLink: 14 × 1 µs + 1.75 × 1,048,576 B / 450 GB/s = 14 + 4.08 = 18.1 µs.</p>
+
+<p style="margin-top:14px">The bandwidth term for each collective, in two conventions that are both right and must not be mixed:</p>
+<div class="tw"><table>
+<tr><th>Collective</th><th>Ring, per-direction W (nccl-tests; Scaling Book GPU chapter)</th><th>Scaling Book Part 3 (TPU ring, bidirectional W<sub>ici</sub>)</th><th class="num">8×H100, 1 GB</th></tr>
+<tr><td>AllGather</td><td>(n − 1)/n · S/W</td><td>V / W<sub>ici</sub></td><td class="num">1.94 ms</td></tr>
+<tr><td>ReduceScatter</td><td>(n − 1)/n · S/W</td><td>V / W<sub>ici</sub></td><td class="num">1.94 ms</td></tr>
+<tr><td>AllReduce</td><td>2(n − 1)/n · S/W</td><td>2 · V / W<sub>ici</sub> ("twice as expensive")</td><td class="num">3.89 ms</td></tr>
+<tr><td>AllToAll</td><td>(n − 1)/n² · S/W ≈ S/(8W) inside a switched 8-GPU node</td><td>V / (4 W<sub>ici</sub>) on a bidirectional ring</td><td class="num">0.24 ms</td></tr>
+</table></div>
+<p class="cap">S and V are the whole array (for AllGather, all n pieces together). Last column: our arithmetic at 450 GB/s, bandwidth term only (7/8 × 1 GB / 450 GB/s = 1.94 ms; 7/64 × 1 GB / 450 GB/s = 0.24 ms). The Scaling Book's takeaway: in the bandwidth-bound regime the time "depends only on the size of the array and the available bandwidth, not the number of devices".</p>
+
+<h2>algbw vs busbw: reading an nccl-tests line</h2>
+<p>nccl-tests, the standard NCCL benchmark, prints two bandwidths. <b>algbw</b> = S / t is what your array experienced. <b>busbw</b> multiplies it by the factor above, so it can be compared with the link's spec "independently of the number of ranks".</p>
+<div class="formula">1 GB AllReduce, 8 GPUs, links at 450 GB/s, bandwidth-bound:
+  t     = 1.75 × 1 GB / 450 GB/s = 3.89 ms
+  algbw = 1 GB / 3.89 ms         = 257 GB/s  ← looks like 57% of the link
+  busbw = 257 × 2(8 − 1)/8       = 450 GB/s  ← the link is actually full
+
+busbw factor at n = 8:
+  AllReduce                          2(n−1)/n = 1.75
+  ReduceScatter, AllGather, AlltoAll  (n−1)/n  = 0.875
+  Broadcast, Reduce                             1</div>
+<p>So an algbw far below the spec isn't a problem by itself; a busbw far below it is. For AlltoAll the (n − 1)/n factor is a normalising convention, not a claim that it costs the same as an AllGather.</p>
+
+<h2>Bandwidth-bound or latency-bound: it depends on the message size</h2>
+<p>Setting the two terms equal gives the crossover size, below which the hop latency dominates and the link sits mostly idle:</p>
+<div class="formula">2(n − 1) · α = 2(n − 1)/n · S*/W   →   S* = n · α · W
+
+NVLink:     8 × 1 µs × 450 GB/s = 3.6 MB   (α illustrative)
+InfiniBand: 8 × 1 µs ×  50 GB/s = 0.4 MB</div>
+<svg viewBox="0 0 760 300" role="img" aria-label="Bus bandwidth versus message size: model curves for NVLink and InfiniBand, two measured points, and three decode message sizes">
+<line x1="70" x2="730" y1="250.0" y2="250.0" stroke="var(--border)"/>
+<text x="62" y="254.0" class="sl" text-anchor="end">0</text>
+<line x1="70" x2="730" y1="206.0" y2="206.0" stroke="var(--border)"/>
+<text x="62" y="210.0" class="sl" text-anchor="end">100</text>
+<line x1="70" x2="730" y1="162.0" y2="162.0" stroke="var(--border)"/>
+<text x="62" y="166.0" class="sl" text-anchor="end">200</text>
+<line x1="70" x2="730" y1="118.0" y2="118.0" stroke="var(--border)"/>
+<text x="62" y="122.0" class="sl" text-anchor="end">300</text>
+<line x1="70" x2="730" y1="74.0" y2="74.0" stroke="var(--border)"/>
+<text x="62" y="78.0" class="sl" text-anchor="end">400</text>
+<line x1="70" x2="730" y1="30.0" y2="30.0" stroke="var(--border)"/>
+<text x="62" y="34.0" class="sl" text-anchor="end">500</text>
+<text x="70.0" y="268" class="sl" text-anchor="middle">1 kB</text>
+<text x="164.3" y="268" class="sl" text-anchor="middle">10 kB</text>
+<text x="258.6" y="268" class="sl" text-anchor="middle">100 kB</text>
+<text x="352.9" y="268" class="sl" text-anchor="middle">1 MB</text>
+<text x="447.1" y="268" class="sl" text-anchor="middle">10 MB</text>
+<text x="541.4" y="268" class="sl" text-anchor="middle">100 MB</text>
+<text x="635.7" y="268" class="sl" text-anchor="middle">1 GB</text>
+<text x="730.0" y="268" class="sl" text-anchor="middle">10 GB</text>
+<text x="70" y="18" class="sl">busbw, GB/s</text>
+<text x="730" y="286" class="sl" text-anchor="end">message size per GPU (log scale)</text>
+<line x1="70" x2="730" y1="52.0" y2="52.0" stroke="var(--muted)" stroke-dasharray="5 4"/>
+<text x="76" y="46.0" class="sl">NVLink spec, 450 GB/s per direction</text>
+<line x1="184.5" x2="184.5" y1="86" y2="250" stroke="var(--faint)" stroke-dasharray="3 3"/>
+<text x="184.5" y="80" class="sl" text-anchor="middle">B = 1</text>
+<line x1="354.8" x2="354.8" y1="86" y2="250" stroke="var(--faint)" stroke-dasharray="3 3"/>
+<text x="354.8" y="80" class="sl" text-anchor="middle">B = 64</text>
+<line x1="411.6" x2="411.6" y1="86" y2="250" stroke="var(--faint)" stroke-dasharray="3 3"/>
+<text x="411.6" y="80" class="sl" text-anchor="middle">B = 256</text>
+<text x="190.5" y="100" class="sl">70B TP8 decode messages</text>
+<path d="M70.0,249.9 L74.7,249.9 L79.4,249.9 L84.1,249.9 L88.9,249.9 L93.6,249.9 L98.3,249.9 L103.0,249.9 L107.7,249.9 L112.4,249.8 L117.1,249.8 L121.9,249.8 L126.6,249.8 L131.3,249.8 L136.0,249.7 L140.7,249.7 L145.4,249.7 L150.1,249.6 L154.9,249.6 L159.6,249.5 L164.3,249.5 L169.0,249.4 L173.7,249.3 L178.4,249.2 L183.1,249.1 L187.9,249.0 L192.6,248.9 L197.3,248.8 L202.0,248.6 L206.7,248.5 L211.4,248.3 L216.1,248.1 L220.9,247.8 L225.6,247.6 L230.3,247.3 L235.0,247.0 L239.7,246.6 L244.4,246.2 L249.1,245.7 L253.9,245.2 L258.6,244.6 L263.3,244.0 L268.0,243.3 L272.7,242.5 L277.4,241.7 L282.1,240.7 L286.9,239.6 L291.6,238.4 L296.3,237.1 L301.0,235.6 L305.7,234.0 L310.4,232.2 L315.1,230.3 L319.9,228.1 L324.6,225.8 L329.3,223.2 L334.0,220.5 L338.7,217.5 L343.4,214.2 L348.1,210.7 L352.9,207.0 L357.6,203.0 L362.3,198.7 L367.0,194.2 L371.7,189.5 L376.4,184.5 L381.1,179.4 L385.9,174.1 L390.6,168.6 L395.3,163.1 L400.0,157.4 L404.7,151.7 L409.4,146.0 L414.1,140.4 L418.9,134.8 L423.6,129.3 L428.3,123.9 L433.0,118.7 L437.7,113.8 L442.4,109.0 L447.1,104.4 L451.9,100.1 L456.6,96.0 L461.3,92.2 L466.0,88.6 L470.7,85.3 L475.4,82.3 L480.1,79.4 L484.9,76.8 L489.6,74.4 L494.3,72.2 L499.0,70.2 L503.7,68.4 L508.4,66.8 L513.1,65.3 L517.9,63.9 L522.6,62.7 L527.3,61.6 L532.0,60.6 L536.7,59.7 L541.4,58.9 L546.1,58.2 L550.9,57.5 L555.6,56.9 L560.3,56.4 L565.0,55.9 L569.7,55.5 L574.4,55.1 L579.1,54.8 L583.9,54.5 L588.6,54.2 L593.3,54.0 L598.0,53.8 L602.7,53.6 L607.4,53.4 L612.1,53.3 L616.9,53.1 L621.6,53.0 L626.3,52.9 L631.0,52.8 L635.7,52.7 L640.4,52.6 L645.1,52.6 L649.9,52.5 L654.6,52.4 L659.3,52.4 L664.0,52.4 L668.7,52.3 L673.4,52.3 L678.1,52.3 L682.9,52.2 L687.6,52.2 L692.3,52.2 L697.0,52.2 L701.7,52.1 L706.4,52.1 L711.1,52.1 L715.9,52.1 L720.6,52.1 L725.3,52.1 L730.0,52.1" fill="none" stroke="var(--accent)" stroke-width="2.5"/>
+<path d="M70.0,249.9 L74.7,249.9 L79.4,249.9 L84.1,249.9 L88.9,249.9 L93.6,249.9 L98.3,249.9 L103.0,249.9 L107.7,249.9 L112.4,249.8 L117.1,249.8 L121.9,249.8 L126.6,249.8 L131.3,249.8 L136.0,249.7 L140.7,249.7 L145.4,249.7 L150.1,249.6 L154.9,249.6 L159.6,249.5 L164.3,249.5 L169.0,249.4 L173.7,249.3 L178.4,249.2 L183.1,249.2 L187.9,249.1 L192.6,249.0 L197.3,248.8 L202.0,248.7 L206.7,248.6 L211.4,248.4 L216.1,248.2 L220.9,248.0 L225.6,247.8 L230.3,247.6 L235.0,247.3 L239.7,247.0 L244.4,246.7 L249.1,246.4 L253.9,246.0 L258.6,245.6 L263.3,245.2 L268.0,244.7 L272.7,244.3 L277.4,243.8 L282.1,243.2 L286.9,242.7 L291.6,242.1 L296.3,241.5 L301.0,240.9 L305.7,240.3 L310.4,239.7 L315.1,239.0 L319.9,238.4 L324.6,237.8 L329.3,237.1 L334.0,236.5 L338.7,235.9 L343.4,235.4 L348.1,234.8 L352.9,234.3 L357.6,233.8 L362.3,233.3 L367.0,232.9 L371.7,232.4 L376.4,232.0 L381.1,231.7 L385.9,231.3 L390.6,231.0 L395.3,230.7 L400.0,230.5 L404.7,230.2 L409.4,230.0 L414.1,229.8 L418.9,229.6 L423.6,229.5 L428.3,229.3 L433.0,229.2 L437.7,229.1 L442.4,228.9 L447.1,228.8 L451.9,228.8 L456.6,228.7 L461.3,228.6 L466.0,228.5 L470.7,228.5 L475.4,228.4 L480.1,228.4 L484.9,228.3 L489.6,228.3 L494.3,228.3 L499.0,228.2 L503.7,228.2 L508.4,228.2 L513.1,228.2 L517.9,228.2 L522.6,228.1 L527.3,228.1 L532.0,228.1 L536.7,228.1 L541.4,228.1 L546.1,228.1 L550.9,228.1 L555.6,228.1 L560.3,228.1 L565.0,228.0 L569.7,228.0 L574.4,228.0 L579.1,228.0 L583.9,228.0 L588.6,228.0 L593.3,228.0 L598.0,228.0 L602.7,228.0 L607.4,228.0 L612.1,228.0 L616.9,228.0 L621.6,228.0 L626.3,228.0 L631.0,228.0 L635.7,228.0 L640.4,228.0 L645.1,228.0 L649.9,228.0 L654.6,228.0 L659.3,228.0 L664.0,228.0 L668.7,228.0 L673.4,228.0 L678.1,228.0 L682.9,228.0 L687.6,228.0 L692.3,228.0 L697.0,228.0 L701.7,228.0 L706.4,228.0 L711.1,228.0 L715.9,228.0 L720.6,228.0 L725.3,228.0 L730.0,228.0" fill="none" stroke="var(--red)" stroke-width="2.5"/>
+<text x="369.5" y="135.6" class="st" text-anchor="end" style="fill:var(--accent)">model, NVLink</text>
+<text x="586.4" y="220.0" class="st" style="fill:var(--red)">model, InfiniBand (50 GB/s)</text>
+<circle cx="519.6" cy="184.0" r="5" fill="var(--text)"/>
+<text x="528.6" y="188.0" class="st" text-anchor="start">measured ~150 at 58 MB</text>
+<circle cx="730.0" cy="87.2" r="5" fill="var(--text)"/>
+<text x="721.0" y="91.2" class="st" text-anchor="end">~370 at ~10 GB</text>
+</svg>
+<p class="cap">Lines: the model above with α = 1 µs per hop (illustrative; the Scaling Book's figure for a TPU link hop, as NVIDIA publishes no NVLink hop latency). Dots: measured on 8×H100 with SHARP off, from the Scaling Book's GPU chapter. Dashed ticks: the all-reduce sizes of one 70B decode step at batch 1, 64 and 256.</p>
+<p>The measured reality is worse than the model. The Scaling Book reports that 8×H100 all-reduce busbw reaches "close to 370GB/s … although only around 10GB/device" (82% of the 450 GB/s spec), and that a Llama-3-70B MLP-sized all-reduce under 8-way sharding (bf16[8192, 3584] = 58.7 MB) "can achieve only around 150GB/s" (33%). Working backwards (our arithmetic), 58.7 MB at 150 GB/s busbw is about 685 µs, 2.8× the model's 242 µs. Their takeaway: "it is difficult in practice to exceed 370 GB/s, so adjust the above estimates accordingly." Decode messages are 14 to 3,600 times smaller than that 58.7 MB, which puts them deep in the latency-bound region (our inference; the <a href="sizing-deployment.html">sizing card</a>'s rented-node script measures that part of the curve).</p>
+
+<h2>Scale-up vs scale-out: the two kinds of wire</h2>
+<p>Think of one building with wide internal corridors (scale-up), joined to other buildings by a road (scale-out). Everything inside an 8-GPU server moves over NVLink through NVSwitch chips; anything leaving it goes through a network card (NIC) onto InfiniBand.</p>
+<div class="tw"><table class="parts">
+<tr><th>Part</th><th class="what">What it is</th><th>Example A</th><th>Example B</th></tr>
+<tr><td>NVLink</td><td class="what">NVIDIA's GPU-to-GPU link, many lanes per GPU, full duplex (the same speed each way at once).</td>
+  <td class="ex"><b>450 GB/s</b> per direction<span>H100: 18 links × 25 GB/s each way</span></td>
+  <td class="ex"><b>160 GB/s</b><span>H800, the export version DeepSeek used</span></td></tr>
+<tr><td>NVSwitch</td><td class="what">A switch chip that lets every GPU in the NVLink domain reach every other at full link speed.</td>
+  <td class="ex"><b>8 GPUs</b>, 4 NVSwitches<span>DGX H100 node: 3.6 TB/s leaving all 8 GPUs</span></td>
+  <td class="ex"><b>72 GPUs</b> in one NVLink domain<span>GB200 NVL72, 900 GB/s per GPU per direction</span></td></tr>
+<tr><td>InfiniBand + NIC</td><td class="what">The data-centre network between servers; each GPU usually has its own network card.</td>
+  <td class="ex"><b>400 Gb/s = 50 GB/s</b> per GPU<span>DGX H100: 8 × ConnectX-7, 400 GB/s per node</span></td>
+  <td class="ex"><b>100 GB/s</b> per server<span>V100 DGX-2H (Megatron): 8 InfiniBand adapters</span></td></tr>
+<tr><td>Latency-bound</td><td class="what">The message is so small that fixed per-hop costs dominate; more bandwidth barely helps.</td>
+  <td class="ex"><b>16 kB</b> all-reduce<span>70B decode, batch 1: 0.06 µs of data vs ~14 µs of hops (illustrative α)</span></td>
+  <td class="ex"><b>under 45 kB</b><span>any buffer on a TPU v5e link (Scaling Book Part 3)</span></td></tr>
+<tr><td>Bandwidth-bound</td><td class="what">The message is big enough that bytes ÷ bandwidth dominates.</td>
+  <td class="ex"><b>1 GB</b> all-reduce<span>3.89 ms at 450 GB/s; hops add 14 µs</span></td>
+  <td class="ex"><b>~10 GB</b> per GPU<span>where 8×H100 finally reaches ~370 GB/s busbw</span></td></tr>
+</table></div>
+
+<p style="margin-top:14px">Scale-up vs scale-out bandwidth per GPU, per direction, in bytes:</p>
+<div class="tw"><table>
+<tr><th>System</th><th class="num">Scale-up</th><th class="num">Scale-out</th><th class="num">Ratio</th><th>How the source puts it</th></tr>
+<tr><td>H100 SXM (DGX/HGX H100)</td><td class="num hi">450 GB/s</td><td class="num">50 GB/s</td><td class="num">9×</td><td>NVIDIA: "900GB/s" NVLink (both directions added); ConnectX-7 "Up to 400Gbps"</td></tr>
+<tr><td>H800 (DeepSeek-V3's 2,048 GPUs)</td><td class="num">160 GB/s</td><td class="num">50 GB/s</td><td class="num">3.2×</td><td>"NVLink offers a bandwidth of 160 GB/s, roughly 3.2 times that of IB (50 GB/s)"</td></tr>
+<tr><td>B200 (8-GPU node)</td><td class="num">900 GB/s</td><td class="num">50 GB/s</td><td class="num">18×</td><td>Scaling Book: 900e9 per GPU, 400e9 per node; Kiely: "1800 GB/s on Blackwell" (both directions)</td></tr>
+<tr><td>V100 DGX-2H (Megatron, 2019)</td><td class="num">300 GB/s</td><td class="num">12.5 GB/s</td><td class="num">24×</td><td>"300 GB/sec … inside a server via NVSwitch and 100 GB/sec … between servers"</td></tr>
+</table></div>
+<p class="cap">Ratios are our division. H100 HBM is 3,350 GB/s, so even NVLink is 13% of memory bandwidth, which is Kiely's point that interconnects "are a fraction of the speed of VRAM". The V100 row divides the paper's 100 GB/s per server by 8 GPUs, and the paper doesn't say whether its 300 GB/s counts one direction or both (our inference: NVLink totals are usually quoted with both directions added, so read 24× as an upper bound).</p>
+
+<div class="formula">The units trap: "H100: NVLink 900 GB/s, InfiniBand 400 Gb/s"
+  read naively             900 / 400                  =  2.25×  ✗ bits vs bytes
+  bytes, directions mixed  900 GB/s (both) / 50 GB/s  = 18×     ✗ two-way vs one-way
+  bytes, one direction     450 GB/s / 50 GB/s         =  9×     ✓
+Rule: GB (bytes) = Gb (bits) ÷ 8, and NVIDIA's NVLink headline adds both directions.</div>
+
+<h2>Worked example: one 70B decode step at TP8</h2>
+<p>Llama-3.1-70B in BF16 split 8 ways by tensor parallelism does two all-reduces per layer (our inference from Megatron, see the <a href="megatron-mlp-attention.html">next card</a>), so 2 × 80 = 160 per decode step. Each message is batch × D × 2 bytes = B × 8,192 × 2. The memory-only step at TP8 (weights ÷ bandwidth, course facts) is 5.27 ms. What if the same 8-way group had to talk over InfiniBand instead of NVLink?</p>
+<div class="tw"><table>
+<tr><th>Batch</th><th class="num">Message</th><th class="num">NVLink data per AR</th><th class="num">× 160</th><th class="num">IB data per AR</th><th class="num">× 160</th></tr>
+<tr><td>B = 1</td><td class="num">16,384 B</td><td class="num">0.06 µs</td><td class="num hi">0.01 ms</td><td class="num">0.57 µs</td><td class="num">0.09 ms</td></tr>
+<tr><td>B = 64</td><td class="num">1,048,576 B</td><td class="num">4.08 µs</td><td class="num hi">0.65 ms</td><td class="num">36.70 µs</td><td class="num lo">5.87 ms</td></tr>
+<tr><td>B = 256</td><td class="num">4,194,304 B</td><td class="num">16.31 µs</td><td class="num hi">2.61 ms</td><td class="num">146.80 µs</td><td class="num lo">23.49 ms</td></tr>
+<tr><td colspan="3">+ latency floor, both links: 160 × 14 hops × 1 µs (illustrative)</td><td class="num">2.24 ms</td><td></td><td class="num">2.24 ms</td></tr>
+</table></div>
+<div class="formula">data per AR = 2(8 − 1)/8 × (B × 8192 × 2 bytes) / W
+              B = 64, IB: 1.75 × 1,048,576 / 50e9 = 36.70 µs
+step comms  = 160 × (data per AR + 14 α)
+              B = 64:  NVLink 0.65 + 2.24 = 2.89 ms · IB 5.87 + 2.24 = 8.11 ms
+              B = 256: NVLink 2.61 + 2.24 = 4.85 ms · IB 23.49 + 2.24 = 25.73 ms
+compare     : 5.27 ms memory-only step at TP8</div>
+<p>Three things to take away. Over NVLink the data term stays below the 5.27 ms step at every batch. Over InfiniBand it passes the whole step by batch 64 and is 4.5× the step at batch 256, which is why tensor parallelism stays inside one NVLink node (Kiely: TP "generally requires too much communication across GPUs to be a good fit for multi-node inference"). And at batch 1 the data is nothing; any real cost is hop latency, which our illustrative α puts at 43% of the step. The <a href="megatron-scaling.html">Megatron II card</a> turns this into a full step-time model.</p>
+
+<h2>Why the ring beats the obvious alternatives</h2>
+<div class="grid2">
+  <div class="cell"><h3><span class="x">&#10007;</span> Send everything to one GPU</h3><p>7 GPUs send their full array to GPU0, which sums and sends it back. GPU0's link carries 7S each way: ≥ 7 S/W, 4× the ring, while the other links sit idle.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Everyone sends to everyone</h3><p>Each GPU ships its whole array to all 7 peers and sums locally. 7 S/W per GPU, 4× the ring, and every GPU does the full sum redundantly.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Sum inside the switch (SHARP / NVLS)</h3><p>Hopper's NVSwitch can reduce in the network: in theory S/W, half the ring's cost. Measured: about 30% more bandwidth, not 75%, and it needs SHARP-capable switches (Scaling Book).</p></div>
+  <div class="cell win"><h3><span class="ok">&#10003;</span> Ring all-reduce</h3><p>Every link busy on every step, each byte sent 2(n − 1)/n times, never more than 2 S per GPU however many GPUs join. Needs only neighbour links, so it works on any topology.</p></div>
+</div>
+
+<h2>Is the ring always what runs?</h2>
+<div class="note">
+  <p>No. The ring is bandwidth-optimal but pays 2(n − 1) hop latencies, which is the wrong trade for small messages. NCCL "uses a variety of implementations depending on latency requirements/topology" (Scaling Book): a tree does the same total work in log n hops instead of n − 1 (3 instead of 7 per phase at n = 8), and NVSwitch nodes can use in-switch reduction. nccl-tests' busbw formula holds for "ring, tree, or other" as long as they use point-to-point sends, which is why busbw is still the number to compare.</p>
+  <p>Collectives aren't always the right tool either. When a model fits on one GPU, the fastest collective is none: run independent copies (data parallelism). Across servers, pick a layout whose traffic suits the slow link: pipeline parallelism sends one small activation per stage, and expert parallelism uses AllToAll, which Kiely says "scales well to multi-node deployments". Two cautions: the Scaling Book warns that expert-parallel AllToAlls spread over several nodes "may struggle to achieve even 50% of the total bandwidth", and every spec here is a peak you won't reach at decode message sizes.</p>
+</div>
+
+<h2>Run it yourself</h2>
+<p><a href="https://github.com/seyonv/explainers/blob/main/perf-6-scaling-out/labs/collectives.py">Run it: labs/collectives.py</a> <b>[L]</b> runs on your Mac in a few seconds (numpy only). It checks the six collectives and both identities, prints the 4-GPU ring table above, runs a ring all-reduce over 8 simulated GPUs with 32 MiB each (exact sum, 1.7500 S sent per GPU), and prints the busbw factors, the cost model and crossover sizes, the measured-vs-model gap, the 70B TP8 table and the units trap. Try <code>ALPHA = 5 * US</code> (the NVLink crossover moves to 18 MB, and the latency floor becomes 11.2 ms per 70B step), or <code>n8 = 16</code> and <code>64</code> (1.875 S and 1.97 S per GPU, never past 2 S).</p>
+
+<div class="foot">
+<p><b>Read next:</b> NVIDIA, <a href="https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/usage/collectives.html">NCCL User Guide, "Collective Operations"</a>: all of it, ~10 min. Then <a href="https://github.com/NVIDIA/nccl-tests/blob/master/doc/PERFORMANCE.md">nccl-tests, doc/PERFORMANCE.md</a>: all of it (algbw, busbw and the derivation per collective), ~10 min. Then Scaling Book Part 3, <a href="https://jax-ml.github.io/scaling-book/sharding/">"Sharded Matrices and How to Multiply Them"</a>: the Case 2 and Case 3 sections on AllGather and AllReduce, including "A note on ICI latency", and "A Deeper Dive into TPU Communication Primitives" (AllToAll), ~30 min. Optional: the Scaling Book's <a href="https://jax-ml.github.io/scaling-book/gpus/">"How to Think About GPUs"</a>, the "Networking" section and "How Do Collectives Work on GPUs?", ~25 min.</p>
+<p><b>Related:</b> <a href="megatron-mlp-attention.html">Megatron I: splitting the MLP and attention</a> · <a href="megatron-scaling.html">Megatron II: embeddings, the fused loss, and what TP costs</a> · <a href="pipeline-data-parallel.html">Pipeline and data parallelism when serving</a> · <a href="expert-parallel.html">Expert parallelism: dispatch, combine and EPLB</a> · <a href="deepseek-v3-infrastructure.html">DeepSeek-V3 II: infrastructure, FP8 and deployment</a> · <a href="sizing-deployment.html">Sizing a deployment</a> · course 2, The math of serving an LLM: <a href="../perf-2-scaling-book-inference/sharding-prefill-generation.html">sharding prefill and generation</a>, <a href="../perf-2-scaling-book-inference/serving-llama-70b.html">serving Llama 70B</a> · <a href="../llm-latency/hardware.html">inference hardware</a></p>
+<p><b>Sources:</b> collective definitions and both identities: <a href="https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/usage/collectives.html">NCCL 2.32 docs</a>. algbw, busbw and the factors: <a href="https://github.com/NVIDIA/nccl-tests/blob/master/doc/PERFORMANCE.md">nccl-tests PERFORMANCE.md</a>. V/W<sub>ici</sub>, 2V/W<sub>ici</sub>, V/4W<sub>ici</sub>, ~1 µs per hop and the 45 kB TPU v5e example: <a href="https://jax-ml.github.io/scaling-book/sharding/">Scaling Book Part 3</a>. 18 × 25 GB/s = 450 GB/s, 8 × 400 Gbps CX-7 = 400 GB/s per node, 3.6 TB/s node egress, B200 900e9, S/(8W) AllToAll, ~370 GB/s at ~10 GB, ~150 GB/s at 58 MB, SHARP +30%, "NCCL uses a variety of implementations", "even 50% of the total bandwidth": <a href="https://jax-ml.github.io/scaling-book/gpus/">Scaling Book, "How to Think About GPUs"</a>. "900GB/s" NVLink: <a href="https://www.nvidia.com/en-us/data-center/h100/">nvidia.com H100 spec</a>; 18 links at 25 GB/s each direction: <a href="https://developer.nvidia.com/blog/nvidia-hopper-architecture-in-depth/">NVIDIA Hopper in-depth blog</a>; 8 × ConnectX-7 up to 400 Gbps: <a href="https://docs.nvidia.com/dgx/dgxh100-user-guide/introduction-to-dgxh100.html">DGX H100 user guide</a>. H800 160 GB/s and 50 GB/s IB: <a href="https://arxiv.org/abs/2412.19437">DeepSeek-V3 report</a> §3.2.2. DGX-2H 300 and 100 GB/s: <a href="https://arxiv.org/abs/1909.08053">Megatron-LM</a> §5. Kiely quotes: Philip Kiely, <i>Inference Engineering</i> (Baseten Books, 2026), §3.3.1 pp. 84–86 and §5.4 pp. 143–147. Llama-3.1-70B shapes, 5.27 ms and 3,350 GB/s: course facts. Every other number is our arithmetic in <code>labs/collectives.py</code>; α = 1 µs is illustrative.</p>
+</div>
+</article>
+<!-- series-nav:bottom -->
+<div class="snx"><a class="nx" href="index.html#megatron-mlp-attention" target="_top">
+<span class="mini" aria-hidden="true"><span class="m1">Megatron I: splitting the MLP and attention</span><span class="m2">Also called tensor parallelism (TP), Megatron-style or intra-layer model parallelism, and column-parallel / row-parallel linear layers. Card 1 of 2 on Megatron-LM (Shoeybi et al., NVIDIA, 2019). It…</span><span class="m3">In one breath</span><span class="m4">Split every weight matrix of a transformer layer across GPUs so that each GPU does 1/8 of every matmul at the same time. Megatron's trick is the order of the splits: cut the first matrix of each block by columns and the second by rows. Each GPU then runs its whole slice of the block alone, and the GPUs talk only once at the end…</span></span>
+<span class="tx"><span class="lab">Next up · 03 / 15</span><span class="tt">Megatron I: splitting the MLP and attention</span><span class="ds">Column and row splits, two all-reduces per layer</span><span class="nd">Builds directly on this card.</span><span class="go">Continue →</span></span></a><div class="aux"><span><a href="index.html#_overview" target="_top">← Choosing a parallelism layout</a></span><a href="index.html" target="_top">All cards in 6 · Serving across GPUs</a></div></div>
+<!-- /series-nav:bottom -->
+</body>
+</html>

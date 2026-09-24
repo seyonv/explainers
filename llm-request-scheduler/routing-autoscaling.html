@@ -1,0 +1,369 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Many replicas: routing, admission and autoscaling</title>
+<style>
+:root{
+  --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
+  --text:#1c1f23; --muted:#6b7068; --faint:#b9b9b3;
+  --accent:#4a9d77; --accent-bg:#dcefdf; --accent-border:#8cc79c;
+  --red:#c0492b; --red-bg:#fbeceb;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#15171a; --surface:#1d2024; --surface2:#24282d; --border:#32373d;
+    --text:#e6e8ea; --muted:#9aa1a9; --faint:#4a5057;
+    --accent:#5fb37f; --accent-bg:#1c2b22; --accent-border:#3f7a55;
+    --red:#e57368; --red-bg:#2e1f1e;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text)}
+.card{max-width:820px;margin:0 auto;padding:28px 32px;font-family:-apple-system,"Inter",system-ui,sans-serif;line-height:1.45}
+h1{font-size:26px;font-weight:600;margin:0 0 6px;letter-spacing:-0.01em}
+.sub{font-size:15px;color:var(--muted);margin:0 0 20px}
+h2{font-size:17px;font-weight:600;margin:26px 0 10px}
+h2 small{font-size:13px;font-weight:400;color:var(--muted)}
+h3.sm{font-size:15px;font-weight:600;margin:18px 0 8px}
+h3.sm small{font-size:13px;font-weight:400;color:var(--muted)}
+p{font-size:15px;margin:0 0 10px}
+ul{font-size:15px;margin:0 0 10px;padding-left:20px}
+li{margin-bottom:4px}
+.cap{font-size:13px;color:var(--muted);margin:8px 0 0;text-align:center}
+.cap + p{margin-top:14px}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+
+/* Tables and formulas */
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border)}
+th{font-size:12px;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:none}
+.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.hi{color:var(--accent);font-weight:600} .lo{color:var(--red)} .mu{color:var(--muted)}
+tr.pick td{background:var(--accent-bg)}
+.formula{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin:10px 0;white-space:pre;overflow-x:auto;line-height:1.55}
+.formula .c{color:var(--muted)}
+.formula .g{color:var(--accent);font-weight:600}
+.formula .r{color:var(--red);font-weight:600}
+.tw{overflow-x:auto}
+.tw table{min-width:620px}
+
+/* MathML */
+.mathbox{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px 16px 12px;margin:10px 0;overflow-x:auto}
+.mathbox math{font-size:21px;color:var(--text);font-family:"STIX Two Math","Latin Modern Math","Cambria Math",math}
+.mathbox .t1{color:var(--text)} .mathbox .t2{color:var(--accent)} .mathbox .t3{color:var(--muted)}
+.mathbox .lab{font-size:12px;font-family:-apple-system,"Inter",system-ui,sans-serif;padding-top:3px;border-top:1.5px solid currentColor;margin-top:2px}
+.legend{display:grid;grid-template-columns:auto 1fr auto;column-gap:14px;row-gap:5px;font-size:13px;margin-top:12px;align-items:baseline}
+.legend .sym{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;text-align:right}
+.legend .v{color:var(--muted);text-align:right;font-variant-numeric:tabular-nums}
+@media (max-width:560px){.legend{grid-template-columns:auto 1fr}.legend .v{display:none}}
+
+/* Two examples per term */
+.parts td{vertical-align:top} .parts td:first-child{font-weight:600}
+.parts .ex{font-size:13px} .parts .ex span{display:block;color:var(--muted)}
+.parts .what{font-size:13px}
+@media (max-width:560px){.parts .what{display:none}}
+
+/* 2x2 grid */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.cell{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.cell.win{background:var(--accent-bg);border-color:var(--accent-border)}
+.cell h3{font-size:16px;font-weight:600;margin:0 0 5px;display:flex;gap:8px;align-items:baseline}
+.cell p{font-size:14px;margin:0;color:var(--text)}
+.cell.win h3,.cell.win p{color:var(--accent)}
+.x{color:var(--red)} .ok{color:var(--accent)}
+
+/* Clarification box */
+.note{border:1px solid var(--border);border-radius:10px;padding:14px 18px;font-size:14px}
+.note p,.note li{font-size:14px} .note p:last-child{margin-bottom:0}
+.ours{border-left:3px solid var(--accent-border);padding:2px 0 2px 14px;margin:10px 0}
+
+.foot{margin-top:22px;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+.foot p{font-size:13px}
+.lab-link{display:inline-block;font-size:13px;border:1px solid var(--accent-border);background:var(--accent-bg);color:var(--accent);border-radius:6px;padding:4px 10px;margin:2px 0 10px;text-decoration:none}
+
+/* SVG */
+svg{display:block;max-width:100%;height:auto;margin-top:6px}
+.sl{font-size:13px;fill:var(--muted)} .st{font-size:14px;fill:var(--text)} .sh{font-size:15px;font-weight:600;fill:var(--text)}
+.slr{font-size:13px;fill:var(--red)} .sla{font-size:13px;fill:var(--accent)}
+.bx{fill:var(--surface);stroke:var(--faint);stroke-width:1}
+.bxg{fill:var(--surface2);stroke:var(--faint);stroke-width:1}
+.bxa{fill:var(--accent-bg);stroke:var(--accent);stroke-width:1.2}
+.bxd{fill:none;stroke:var(--faint);stroke-width:1.2;stroke-dasharray:5 4}
+.ar{stroke:var(--muted);stroke-width:1.4;fill:none}
+.arr{stroke:var(--red);stroke-width:1.4;fill:none}
+.ard{stroke:var(--muted);stroke-width:1.2;fill:none;stroke-dasharray:4 4}
+.kvu{fill:var(--accent)} .kvf{fill:var(--surface2);stroke:var(--faint);stroke-width:.8}
+.hd{fill:var(--muted)} .hdr{fill:var(--red)}
+a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+.cmp td{vertical-align:top;font-size:13px}
+.cmp td:first-child{font-weight:600;font-size:14px}
+@media (max-width:560px){.grid2{grid-template-columns:1fr}.card{padding:20px 16px}th,td{padding:6px 6px}}
+/* series-nav */
+.sn{max-width:820px;margin:0 auto;padding:16px 32px 0;font-family:-apple-system,"Inter",system-ui,sans-serif;font-size:13px;line-height:1.5;color:var(--muted)}
+.sn a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
+.sn .crumbs{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 7px}
+.sn .crumbs b{color:var(--text);font-weight:600}
+.sn .sep{color:var(--faint,var(--border))}
+.sn .step{margin-left:auto;white-space:nowrap}
+.sn .dep{margin-top:5px;padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface)}
+.sn .dep .ok{color:var(--accent);font-weight:600}
+.snx{max-width:820px;margin:0 auto;padding:6px 32px 44px;font-family:-apple-system,"Inter",system-ui,sans-serif}
+.snx .nx{display:grid;grid-template-columns:280px 1fr;text-decoration:none;color:var(--text);background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.snx .nx:hover,.snx .nx:focus-visible{border-color:var(--accent-border,var(--accent));outline:none}
+.snx .mini{position:relative;height:210px;overflow:hidden;background:var(--bg);border-right:1px solid var(--border);padding:14px 16px}
+.snx .mini span{display:block}
+.snx .mini .m1{font-size:12.5px;font-weight:600;margin:0 0 4px;line-height:1.3}
+.snx .mini .m2{font-size:9px;color:var(--muted);margin:0 0 8px;line-height:1.4}
+.snx .mini .m3{font-size:8.5px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;margin:0 0 3px}
+.snx .mini .m4{font-size:9.5px;margin:0;line-height:1.45}
+.snx .tx{padding:16px 20px}
+.snx .lab{font-size:12px;font-weight:600;color:var(--accent);letter-spacing:.04em;text-transform:uppercase}
+.snx .tt{display:block;font-size:20px;font-weight:600;margin:5px 0 4px;line-height:1.25}
+.snx .ds{display:block;font-size:14px;color:var(--muted)}
+.snx .nd{display:block;font-size:13px;color:var(--muted);margin-top:10px}
+.snx .go{display:block;margin-top:12px;font-size:14px;font-weight:600;color:var(--accent)}
+.snx .aux{display:flex;justify-content:space-between;gap:12px;margin-top:10px;font-size:13px;color:var(--muted)}
+.snx .aux a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
+@media (max-width:560px){.sn,.snx{padding-left:16px;padding-right:16px}.snx .nx{grid-template-columns:1fr}.snx .mini{display:none}.sn .step{margin-left:0}}
+/* /series-nav */
+</style>
+</head>
+<body>
+<!-- series-nav:top -->
+<nav class="sn" aria-label="Course navigation"><div class="crumbs"><a href="../index.html" target="_top">All explainers</a><span class="sep">›</span><a href="index.html" target="_top">Build an LLM request scheduler</a><span class="sep">›</span><b>22 / 25</b><span class="step"><a href="index.html#disaggregation" target="_top">← prev</a> · <a href="index.html#full-system" target="_top">next →</a></span></div>
+</nav>
+<!-- /series-nav:top -->
+<article class="card">
+<h1>Many replicas: routing, admission and autoscaling</h1>
+<p class="sub">Also called the load balancer, the inference gateway, KV-aware or prefix-aware routing, cache-aware load balancing, data parallelism (DP: many copies of the same model), and, for the scaling part, HPA or KEDA on Kubernetes. This card covers the cluster layer that sits above one engine. It compares the routing policies real systems report on, then runs four of them through our simulator (<code>labs/routing_sim.py</code>: four copies of the course's scheduler with a 100%-of-peak cost model for Llama-3.1-8B on one H100 each, so the times are floors, not measurements).</p>
+
+<h2>In one breath</h2>
+<p>One engine tops out at a few dozen requests a second, so production runs N identical replicas behind two layers. A <b>gateway</b> decides <i>whether</i> a request gets in: it authenticates, applies per-tenant token limits, and sheds load with 429. A <b>router</b> decides <i>where</i> it goes. Each replica has its own KV cache, so the router has to trade <b>cache affinity</b> (send the request to the replica that already holds its prefix) against <b>load balance</b> (send it to the least busy replica). An <b>autoscaler</b> watches queue depth and KV use and adds or removes replicas, and every new replica needs seconds to load its weights.</p>
+
+<h2>The layer above one engine</h2>
+<svg viewBox="0 0 630 500" role="img" aria-label="Clients send requests to a gateway that authenticates, rate limits by tokens, validates, counts tokens and queues or rejects with 429. A router scores four replicas, each with its own KV cache and prefix cache. Replica metrics flow to the router and to an autoscaler, which is loading a fifth replica.">
+  <defs>
+    <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="hd"/></marker>
+    <marker id="ahr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="hdr"/></marker>
+  </defs>
+  <!-- clients -->
+  <rect x="40" y="8" width="150" height="34" rx="6" class="bx"/><text x="115" y="30" class="st" text-anchor="middle">chat app · key A</text>
+  <rect x="235" y="8" width="150" height="34" rx="6" class="bx"/><text x="310" y="30" class="st" text-anchor="middle">agent · key B</text>
+  <rect x="430" y="8" width="150" height="34" rx="6" class="bx"/><text x="505" y="30" class="st" text-anchor="middle">batch job · key C</text>
+  <path d="M115,42 L200,70" class="ar" marker-end="url(#ah)"/>
+  <path d="M310,42 L310,70" class="ar" marker-end="url(#ah)"/>
+  <path d="M505,42 L420,70" class="ar" marker-end="url(#ah)"/>
+  <!-- gateway -->
+  <rect x="20" y="72" width="480" height="96" rx="8" class="bx"/>
+  <text x="34" y="94" class="sh">Gateway: may this request in?</text>
+  <text x="34" y="116" class="st">auth · validate · count tokens (tokenize once)</text>
+  <text x="34" y="137" class="st">per-key token rate limit (token bucket)</text>
+  <text x="34" y="158" class="st">bounded queue, or shed</text>
+  <path d="M500,120 L556,120" class="arr" marker-end="url(#ahr)"/>
+  <text x="560" y="116" class="slr">429 +</text>
+  <text x="560" y="132" class="slr">Retry-</text>
+  <text x="560" y="148" class="slr">After</text>
+  <path d="M260,168 L260,194" class="ar" marker-end="url(#ah)"/>
+  <!-- router -->
+  <rect x="20" y="196" width="480" height="60" rx="8" class="bxa"/>
+  <text x="34" y="219" class="sh">Router: which replica?</text>
+  <text x="34" y="243" class="st">score = w₁·prefix hit − w₂·queue (− w₃·KV use)</text>
+  <!-- fan out -->
+  <path d="M260,256 L72,298" class="ar" marker-end="url(#ah)"/>
+  <path d="M260,256 L194,298" class="ar" marker-end="url(#ah)"/>
+  <path d="M260,256 L316,298" class="ar" marker-end="url(#ah)"/>
+  <path d="M260,256 L438,298" class="ar" marker-end="url(#ah)"/>
+  <!-- replicas -->
+  <g>
+    <rect x="12" y="300" width="112" height="108" rx="6" class="bx"/>
+    <text x="68" y="320" class="st" text-anchor="middle" font-weight="600">replica 1</text>
+    <text x="68" y="339" class="sl" text-anchor="middle">scheduler</text>
+    <rect x="22" y="348" width="92" height="12" class="kvf"/><rect x="22" y="348" width="60" height="12" class="kvu"/>
+    <text x="68" y="376" class="sl" text-anchor="middle">KV 65% used</text>
+    <text x="68" y="397" class="sla" text-anchor="middle">cached: P1 P5</text>
+  </g>
+  <g>
+    <rect x="134" y="300" width="112" height="108" rx="6" class="bx"/>
+    <text x="190" y="320" class="st" text-anchor="middle" font-weight="600">replica 2</text>
+    <text x="190" y="339" class="sl" text-anchor="middle">scheduler</text>
+    <rect x="144" y="348" width="92" height="12" class="kvf"/><rect x="144" y="348" width="30" height="12" class="kvu"/>
+    <text x="190" y="376" class="sl" text-anchor="middle">KV 33% used</text>
+    <text x="190" y="397" class="sla" text-anchor="middle">cached: P2</text>
+  </g>
+  <g>
+    <rect x="256" y="300" width="112" height="108" rx="6" class="bx"/>
+    <text x="312" y="320" class="st" text-anchor="middle" font-weight="600">replica 3</text>
+    <text x="312" y="339" class="sl" text-anchor="middle">scheduler</text>
+    <rect x="266" y="348" width="92" height="12" class="kvf"/><rect x="266" y="348" width="86" height="12" class="kvu"/>
+    <text x="312" y="376" class="slr" text-anchor="middle">KV 93%: hot</text>
+    <text x="312" y="397" class="sla" text-anchor="middle">cached: P3 P4</text>
+  </g>
+  <g>
+    <rect x="378" y="300" width="112" height="108" rx="6" class="bx"/>
+    <text x="434" y="320" class="st" text-anchor="middle" font-weight="600">replica 4</text>
+    <text x="434" y="339" class="sl" text-anchor="middle">scheduler</text>
+    <rect x="388" y="348" width="92" height="12" class="kvf"/><rect x="388" y="348" width="46" height="12" class="kvu"/>
+    <text x="434" y="376" class="sl" text-anchor="middle">KV 50% used</text>
+    <text x="434" y="397" class="sla" text-anchor="middle">cached: P6</text>
+  </g>
+  <rect x="498" y="300" width="114" height="108" rx="6" class="bxd"/>
+  <text x="554" y="320" class="sl" text-anchor="middle">replica 5</text>
+  <text x="554" y="345" class="sl" text-anchor="middle">loading</text>
+  <text x="554" y="362" class="sl" text-anchor="middle">16 GB weights</text>
+  <text x="554" y="379" class="sl" text-anchor="middle">≈ 8 s at 2 GB/s</text>
+  <text x="554" y="396" class="sl" text-anchor="middle">(illustrative)</text>
+  <!-- metrics loop -->
+  <path d="M12,420 L490,420" class="ard"/>
+  <path d="M68,408 L68,420 M190,408 L190,420 M312,408 L312,420 M434,408 L434,420" class="ard"/>
+  <text x="252" y="438" class="sl" text-anchor="middle">metrics: waiting, running, KV use, TTFT, cached prefixes</text>
+  <path d="M490,420 L622,420 L622,226 L504,226" class="ard" marker-end="url(#ah)"/>
+  <rect x="20" y="452" width="480" height="40" rx="8" class="bxg"/>
+  <text x="34" y="477" class="st"><tspan font-weight="600">Autoscaler:</tspan> queue depth · KV use · TTFT → ± replicas</text>
+  <path d="M252,442 L252,450" class="ard" marker-end="url(#ah)"/>
+  <path d="M500,472 L554,472 L554,410" class="ard" marker-end="url(#ah)"/>
+</svg>
+<p class="cap">Green = the part this card is about (the routing decision) and cached prefixes; grey = waiting or overhead; red = rejection and the hot replica. The replica states are illustrative. Solid arrows carry requests; dashed arrows carry metrics.</p>
+
+<h3 class="sm">The four parts, each with two examples</h3>
+<p>An analogy: a hospital. Reception (gateway) checks your card and turns people away when the waiting room is full; triage (router) sends you to the doctor who already has your file, unless that doctor's queue is out the door; and the manager (autoscaler) calls in another doctor, who needs a while to arrive.</p>
+<div class="tw"><table class="parts">
+  <tr><th>Part</th><th class="what">What it does</th><th>Example A</th><th>Example B</th></tr>
+  <tr><td>Gateway</td><td class="what">Checks identity and limits, counts tokens, then forwards, queues or rejects. It never looks inside a replica.</td>
+    <td class="ex"><b class="ok">forwarded</b><span>key A sends 1,000 prompt tokens + max_tokens 512 and is well under its limit (illustrative)</span></td>
+    <td class="ex"><b class="lo">429, Retry-After</b><span>key C's batch job has spent its tokens for this minute, or the cluster queue is full</span></td></tr>
+  <tr><td>Router</td><td class="what">Picks one replica per request from live replica state.</td>
+    <td class="ex"><b class="ok">affinity wins</b><span>turn 7 of a chat goes to the replica that holds turns 1–6 (Character.AI's sticky sessions)</span></td>
+    <td class="ex"><b>balance wins</b><span>a one-off prompt with nothing cached goes to the least-loaded replica</span></td></tr>
+  <tr><td>Replica</td><td class="what">One full engine (scheduler + KV cache + prefix cache), identical weights.</td>
+    <td class="ex"><b>30,469 blocks</b><span>Llama-3.1-8B on an H100: 63.9 GB of KV, which holds all 4 of E7's system prompts easily</span></td>
+    <td class="ex"><b>4,000 blocks</b><span>8.4 GB of KV (workload B below): can't hold 64 system prompts at once</span></td></tr>
+  <tr><td>Autoscaler</td><td class="what">Changes N from metrics. Scaling up is slow (weights load), scaling down must drain running requests.</td>
+    <td class="ex"><b>add one</b><span>queue depth stays high for a minute: start replica 5, which serves traffic ≈ 8 s + start-up later</span></td>
+    <td class="ex"><b>remove one</b><span>traffic falls at night: stop routing to it, let its running requests finish, then shut it down</span></td></tr>
+</table></div>
+
+<h2>Routing policies side by side</h2>
+<p>Every policy answers "which replica?" from a different amount of state. The more state the router reads, the better its choice, and the more it costs to keep that state fresh.</p>
+<div class="tw"><table class="cmp">
+  <tr><th>Policy</th><th>Looks at</th><th>Wins when</th><th>Fails when</th><th>Reported by</th></tr>
+  <tr><td>Round robin</td><td>nothing (a counter)</td><td>requests are alike and share no prefixes</td><td>request sizes vary a lot; a conversation's next turn lands on the replica with its history only 1 time in N</td><td>Perplexity compared it with least-requests and power-of-two by their effect on inter-token latency (no single number given)</td></tr>
+  <tr><td>Least outstanding requests / least queued tokens</td><td>each replica's queue</td><td>lengths vary and there's no reuse</td><td>it ignores the cache entirely, so every replica ends up re-prefilling every prefix</td><td>vLLM's DP router: <code>score = len(waiting) * 4 + len(running)</code>, lowest wins</td></tr>
+  <tr><td>Power of two choices</td><td>two random replicas' queues</td><td>many router instances with stale metrics: sampling two stops them all piling onto the same "least loaded" replica</td><td>same blindness to the cache as least-loaded</td><td>Perplexity's comparison (above); the stale-metrics argument is the classic one for this policy, not from that post</td></tr>
+  <tr><td>Session / sticky</td><td>a session or conversation ID</td><td>multi-turn chat where each turn extends the last</td><td>one heavy session pins a hot replica; prefixes shared <i>across</i> sessions aren't exploited</td><td>Character.AI: sticky sessions, <b>95%</b> cache hit rate</td></tr>
+  <tr><td>Prefix consistent hashing</td><td>a hash of the prompt's first block</td><td>many distinct prefixes that together overflow one replica's cache</td><td>a few hot prefixes: the load follows the hash, not the capacity (our workload A below)</td><td>ours: "prefix-hash" below</td></tr>
+  <tr><td class="hi">Scored (cache + load)</td><td>each replica's cached prefixes, queue and KV use</td><td>almost always, if the router can see the caches</td><td>you have to keep a fleet-wide index fresh (events or an approximate tree), and tune the weights</td><td>GKE Inference Gateway: prefix:queue:kv-utilization <b>3:3:2</b> (the chat rollout used 3:5:2), hit rate 35% → 70%; llm-d precise prefix: P90 TTFT <b>0.542 s vs 31.083 s (57×)</b>, 8,730 vs 4,428.7 tok/s, 16 H100s; SGLang router: hit 20% → 75%, <b>1.9×</b> throughput</td></tr>
+</table></div>
+<p class="cap">Each reported number is that team's own result on its own workload and hardware, so rows are not comparable with each other. The GKE and llm-d numbers are vendor-published.</p>
+
+<h3 class="sm">The tension, and how a scored router resolves it</h3>
+<p>Pure affinity sends every request for prompt P to the one replica that has P cached. If P is popular, that replica melts while the others idle. Pure balance spreads P's requests over all N replicas, so each one prefills and caches P separately, and when the prefixes don't all fit, each replica evicts what the next request needs. A scored router adds both terms into one number and lets the weights set the exchange rate: a cache hit is worth this much queue.</p>
+<div class="mathbox">
+<math display="block">
+  <msub><mi>score</mi><mi>k</mi></msub><mo>=</mo>
+  <munder class="t2"><mrow><msub><mi>w</mi><mtext>hit</mtext></msub><mo>&#8901;</mo><msub><mi>hit</mi><mi>k</mi></msub></mrow><mtext class="lab">cache affinity</mtext></munder>
+  <mo>&#8722;</mo>
+  <munder class="t3"><mrow><msub><mi>w</mi><mtext>load</mtext></msub><mo>&#8901;</mo><mfrac><msub><mi>load</mi><mi>k</mi></msub><mrow><munder><mo movablelimits="false">max</mo><mi>j</mi></munder><msub><mi>load</mi><mi>j</mi></msub></mrow></mfrac></mrow><mtext class="lab">load balance</mtext></munder>
+  <mspace width="1em"/>
+  <msub><mi>load</mi><mi>k</mi></msub><mo>=</mo><mn>4</mn><mo>&#8901;</mo><msub><mi>waiting</mi><mi>k</mi></msub><mo>+</mo><msub><mi>running</mi><mi>k</mi></msub>
+</math>
+<div class="legend">
+  <span class="sym">hit_k</span><span>fraction of this prompt already in replica k's prefix cache (0 to 1)</span><span class="v">0 for a cold replica · ≈ 0.94 for a warm one</span>
+  <span class="sym">load_k</span><span>vLLM's DP router score for replica k, divided by the busiest replica's so it's 0 to 1</span><span class="v">4 per waiting, 1 per running</span>
+  <span class="sym">w_hit, w_load</span><span>the exchange rate; we use 3 and 3, GKE's default prefix and queue weights</span><span class="v">GKE chat used queue 5</span>
+</div>
+</div>
+<p class="cap">The router picks the replica with the highest score. Filled in: a warm replica that is the busiest scores 3·0.94 − 3·1 = −0.18; a cold idle one scores 3·0 − 3·0 = 0, so a replica at maximum load loses its cached request. At half the maximum load, the warm one scores 3·0.94 − 1.5 = 1.32 and keeps it. We added the normalisation; GKE's post gives the weights but not how each scorer is scaled.</p>
+
+<h2>Our simulation: four replicas, four routers <small>· labs/routing_sim.py</small></h2>
+<p>This is E7 (four shared 2,048-token system prompts plus a unique suffix, median 128) at 4× the rate: <b>80 req/s over 4 replicas</b>, 20 per replica on average, the same load E7 put on one. One replica on E7 reached a 91.6% hit rate and a 16.0 ms TTFT p50. Workload B is our illustrative stress case: <b>64</b> system prompts (8,192 blocks of prefix) and only <b>4,000 blocks</b> per replica, so the prompts overflow one replica's cache but fit in the cluster's four.</p>
+<div class="tw"><table>
+  <tr><th>Router</th><th class="num">prefix hit</th><th class="num">TTFT p50</th><th class="num">TTFT p99</th><th class="num">out tok/s</th><th class="num">in SLO</th><th class="num">requests per replica</th><th class="num">preempt</th></tr>
+  <tr><td colspan="8" class="mu" style="font-size:12px;font-weight:600">A · 4 prompts, full H100 KV (30,469 blocks), 600 requests</td></tr>
+  <tr><td>round robin</td><td class="num">89.6%</td><td class="num">12.9 ms</td><td class="num">42.3 ms</td><td class="num">12,821</td><td class="num">100%</td><td class="num">150/150/150/150</td><td class="num">0</td></tr>
+  <tr><td>least-loaded</td><td class="num">89.6%</td><td class="num">13.0 ms</td><td class="num">42.1 ms</td><td class="num">12,624</td><td class="num">100%</td><td class="num">139/143/154/164</td><td class="num">0</td></tr>
+  <tr><td>prefix-hash</td><td class="num">91.4%</td><td class="num">16.5 ms</td><td class="num">45.8 ms</td><td class="num lo">10,459</td><td class="num">100%</td><td class="num lo">302/157/0/141</td><td class="num">0</td></tr>
+  <tr class="pick"><td>scored</td><td class="num">91.1%</td><td class="num">13.1 ms</td><td class="num hi">38.2 ms</td><td class="num hi">13,076</td><td class="num">100%</td><td class="num">156/170/139/135</td><td class="num">0</td></tr>
+  <tr><td colspan="8" class="mu" style="font-size:12px;font-weight:600;padding-top:14px">B · 64 prompts, 4,000 blocks per replica, 800 requests (illustrative stress case)</td></tr>
+  <tr><td>round robin</td><td class="num lo">45.6%</td><td class="num lo">2,690 ms</td><td class="num lo">6,837 ms</td><td class="num">10,259</td><td class="num lo">28%</td><td class="num">200/200/200/200</td><td class="num lo">185</td></tr>
+  <tr><td>least-loaded</td><td class="num lo">47.1%</td><td class="num lo">2,804 ms</td><td class="num lo">6,885 ms</td><td class="num">9,866</td><td class="num lo">29%</td><td class="num">193/211/197/199</td><td class="num lo">224</td></tr>
+  <tr><td>prefix-hash</td><td class="num">84.5%</td><td class="num">14.6 ms</td><td class="num">117.6 ms</td><td class="num">13,209</td><td class="num">100%</td><td class="num">213/154/220/213</td><td class="num">5</td></tr>
+  <tr class="pick"><td>scored</td><td class="num">84.5%</td><td class="num hi">14.3 ms</td><td class="num hi">73.2 ms</td><td class="num hi">13,749</td><td class="num">100%</td><td class="num">194/223/213/170</td><td class="num">0</td></tr>
+</table></div>
+<p class="cap">Our simulation: 100%-of-peak cost model (a floor), prefix caching on in every replica, SLO TTFT ≤ 1 s and TPOT ≤ 50 ms, zero network delay, and a router that reads each replica's exact cache and queue at no cost. Hit rate = prompt tokens served from cache ÷ all prompt tokens (the unique suffixes can never hit).</p>
+<div class="formula"><span class="c">A: when every replica can cache everything, routing hardly matters</span>
+round robin hit 89.6% vs prefix-hash 91.4%: mostly cold misses
+(round robin pays up to 4 prompts × 4 replicas = 16, hashing 4)
+<span class="r">prefix-hash: 4 prompts into 4 buckets land on 4 different</span>
+<span class="r">replicas with probability 4!/4⁴ = 24/256 = 9.4%</span>
+expected empty replicas = 4 × (3/4)⁴ = 1.27; here replica 3 got 0
+scored vs prefix-hash throughput: 13,076 / 10,459 = <span class="g">1.25×</span>
+
+<span class="c">B: when the prompts overflow one cache, affinity is everything</span>
+round robin: every replica sees all 64 prompts (8,192 blocks)
+in a 4,000-block cache, so LRU evicts what the next request needs
+hit 45.6% → 84.5%; TTFT p50 2,690 → 14.3 ms = <span class="g">188×</span>
+scored vs prefix-hash p99: 117.6 → 73.2 ms (it steers around
+the replica that hashing overloaded)</div>
+<p>The two workloads bracket the real cases. A is the "few big system prompts, huge memory" case, where round robin is fine and a naive hash is the worst choice. B is llm-d's case (their cache demand was "nearly six times larger than any single pod's"), where ignoring the cache turns a comfortable load into an overload: a 46% hit rate means each replica re-prefills about half of 2,048-token prompts at 20 req/s, which E7 shows one replica can't sustain without the cache (3.3 s TTFT p50). The scored router is the only one that is best or tied in both.</p>
+
+<h2>Why it beats the alternatives</h2>
+<div class="grid2">
+  <div class="cell"><h3><span class="x">✗</span> Round robin</h3><p>Zero state, perfectly even request counts. But in B it spreads 64 prompts over every replica's cache, hit rate 45.6%, and TTFT p50 is 2.7 s.</p></div>
+  <div class="cell"><h3><span class="x">✗</span> Least-loaded (vLLM DP score)</h3><p>Evens out queues, not work: it can't see that one replica would serve the request from cache. In B it does no better than round robin (47.1%, 2.8 s).</p></div>
+  <div class="cell"><h3><span class="x">✗</span> Prefix consistent hashing</h3><p>Great hit rate, but the load follows the hash. With 4 hot prompts, one replica took 302 requests and another 0, cutting throughput to 10,459 tok/s.</p></div>
+  <div class="cell win"><h3><span class="ok">✓</span> Scored router (hit − load)</h3><p>Takes the cache hit unless that replica is much busier than the rest. It is best or tied on hit rate, p99 and throughput in both workloads (38.2 ms and 73.2 ms p99).</p></div>
+</div>
+
+<h2>Admission at the edge: shed before the queues explode</h2>
+<p>A replica past its capacity doesn't slow down gently. Our E2 workload fits in the SLO up to <b>40 req/s</b> on one replica (steady state). At 60 req/s only <b>41%</b> of requests make the SLO (TTFT p50 1,397 ms), and in E5, at 55 req/s with 64 seats, FCFS pushes TTFT p50 to <b>7.5 s</b>. Once the queue grows, every request in it is late. So the gateway should refuse the excess early, when a rejection is cheap and the client can retry elsewhere or later, rather than admit it into a queue it will time out in.</p>
+<div class="formula"><span class="c">token bucket per API key (one common design; numbers illustrative)</span>
+limit  = 100,000 tokens / min, refills continuously
+charge = prompt tokens + max_tokens = 1,000 + 512 = 1,512
+         (counted at the gateway, so it must tokenize)
+refund = max_tokens − tokens actually generated, at the end
+bucket short?     → 429, Retry-After: seconds until it refills
+cluster queue full → 429 or 503, Retry-After from the drain rate</div>
+<ul>
+  <li><b>Count tokens, not requests.</b> One request can be 50 tokens or 50,000, so a requests-per-minute limit lets one tenant's long prompts starve everyone. The fair-share version of this inside one replica is on <a href="policies.html">Who goes next</a> (E6).</li>
+  <li><b>Early rejection.</b> Mooncake's scheduler uses "prediction-based early rejection" when overloaded (more on the Mooncake card in <i>Attention and the KV cache</i>). GKE Inference Gateway uses "admission control at the ingress" plus upstream queue management to absorb bursts. TGI's single-replica version is <code>max_concurrent_requests</code> (default 128), which returns an <code>overloaded</code> error.</li>
+  <li><b>Retry-After matters.</b> Without it, clients retry immediately and the rejected load comes straight back. With it (and client jitter), retries spread out over the time the queue needs to drain.</li>
+</ul>
+
+<h2>Autoscaling: what to watch, and how slow it is</h2>
+<div class="tw"><table class="cmp">
+  <tr><th>Signal</th><th>Verdict</th><th>Why</th></tr>
+  <tr><td>GPU utilisation</td><td class="lo">misleading</td><td>It measures time busy, not work done. In our model a replica decoding 1 request runs a step every 4.9 ms (205 tok/s); at 238 requests it steps every 23.9 ms (9,973 tok/s, E1). Both look fully busy. (Our inference from E1.)</td></tr>
+  <tr><td>Requests per second</td><td class="mu">partial</td><td>Blind to length: E7's 2,176-token prompts cost far more than E2's 512-token ones at the same rate.</td></tr>
+  <tr><td>Queue depth (waiting requests or queued prefill tokens)</td><td class="hi">leading</td><td>It rises the moment arrivals outpace service, before TTFT does.</td></tr>
+  <tr><td>KV cache utilisation</td><td class="hi">leading</td><td>Near 100%, the scheduler starts preempting (E4: 63 preemptions at 8.4 GB, 469 at 2.1 GB), and throughput falls.</td></tr>
+  <tr><td>TTFT / TPOT p99</td><td class="hi">the goal, but lagging</td><td>It's what the SLO is written in, but by the time p99 moves the queue is already long.</td></tr>
+</table></div>
+<div class="formula"><span class="c">cold start of one Llama-3.1-8B replica (illustrative storage speed)</span>
+weights 16.06 GB ÷ 2 GB/s from storage = <span class="r">8.0 s</span>
++ engine start-up (process, memory profiling, warm-up): not counted
+at 80 req/s, 8.0 s × 80 = 642 requests arrive before it serves one</div>
+<p>So scale on the leading signals, keep some headroom, and let admission control absorb the burst while the new replica loads. On Kubernetes, the HPA or KEDA scale on whatever metric you export, and choosing that metric is the actual design decision. Scaling down has the reverse problem: a replica holds running requests and a warm prefix cache, so drain it (stop routing new work, let running requests finish) and expect the hit rate to dip while the survivors re-warm.</p>
+<p><b>Prefill and decode pools scale separately.</b> When prefill and decode run on different replicas (<a href="disaggregation.html">splitting prefill and decode</a>), their load comes from different things: prefill from prompt tokens per second (it shows in TTFT), decode from concurrent sequences and their KV (it shows in TPOT and KV use). NVIDIA Dynamo's Planner "moves GPUs between prefill and decode" based on SLOs like TTFT and ITL, and llm-d lists "variant autoscaling". Which signal drives which pool is our reading of that split, not a rule from either source.</p>
+
+<div class="note">
+<p><b>Why not just put an ordinary L7 load balancer in front?</b> Because it balances the wrong thing. An HTTP load balancer sees connections and request counts. It can't see that one request is 50 tokens and the next is 20,000, that replica 3's KV cache is 93% full, or that replica 1 already holds this conversation's 6,000-token history. So it behaves like the round robin or least-loaded rows above: fine in workload A, a 188× worse TTFT p50 in workload B. An inference gateway adds exactly the missing inputs: token counts, queued tokens, KV use and cached prefixes.</p>
+<p><b>When a plain load balancer is enough:</b> when prompts share little (no system prompt, no multi-turn), when every replica can cache every shared prefix (workload A), or with one or two replicas, where affinity barely matters. And the scored router isn't free: it needs a fleet-wide view of each cache (llm-d builds one from vLLM's KV events, SGLang's router keeps "an approximate radix tree" per worker), and weights you have to tune. GKE moved the queue weight from 3 to 5 to steer around hot nodes. Our simulation gives the router a perfect, instant view, so real routers do somewhat worse than our "scored" row.</p>
+</div>
+
+<div class="foot">
+<p><a class="lab-link" href="https://github.com/seyonv/explainers/blob/main/llm-request-scheduler/labs/routing_sim.py">Run it: labs/routing_sim.py</a> four replicas of <code>Scheduler</code> + <code>BlockManager</code> from <a href="https://github.com/seyonv/explainers/blob/main/llm-request-scheduler/labs/scheduler.py">labs/scheduler.py</a>, ≈ 15 s of CPU.</p>
+<p><b>Read next:</b> <a href="full-system.html">The whole system, drawn</a></p>
+<p><b>Related:</b> <a href="concurrency.html">Handling concurrent requests</a> · <a href="prefix-caching.html">Prefix caching</a> · <a href="disaggregation.html">Splitting prefill and decode</a> · <a href="admission-preemption.html">Admission, preemption and thrashing</a> · <a href="policies.html">Who goes next</a> · go deeper: <a href="../perf-4-attention-kv/mooncake-scheduling.html">Attention and the KV cache: Mooncake scheduling</a> · <a href="../perf-4-attention-kv/cache-aware-scheduling.html">cache-aware scheduling</a> · the overview map: <a href="../perf-0-map/stack.html">the inference stack</a></p>
+<p><b>Sources:</b> vLLM DP router score: <a href="https://vllm.ai/blog/2025-09-05-anatomy-of-vllm">Inside vLLM: anatomy</a> · GKE 3:3:2, 3:5:2, 35% → 70%, ingress admission control: <a href="https://cloud.google.com/blog/products/containers-kubernetes/how-gke-inference-gateway-improved-latency-for-vertex-ai">GKE Inference Gateway for Vertex AI</a> · llm-d 57×, 16 H100s: <a href="https://llm-d.ai/blog/kvcache-wins-you-can-see">KV-cache wins you can see</a> · llm-d variant autoscaling: <a href="https://llm-d.ai/blog/llm-d-announce">llm-d announce</a> · SGLang router 1.9×, 20% → 75%: <a href="https://lmsys.org/blog/2024-12-04-sglang-v0-4/">SGLang v0.4</a> · 95% sticky sessions: <a href="https://blog.character.ai/optimizing-ai-inference-at-character-ai-2/">Character.AI</a> · round robin / least requests / power of two: <a href="https://developer.nvidia.com/blog/spotlight-perplexity-ai-serves-400-million-search-queries-a-month-using-nvidia-inference-stack/">Perplexity on NVIDIA</a> · early rejection: <a href="https://arxiv.org/abs/2407.00079">Mooncake</a> · Planner: <a href="https://developer.nvidia.com/blog/introducing-nvidia-dynamo-a-low-latency-distributed-inference-framework-for-scaling-reasoning-ai-models/">NVIDIA Dynamo</a> · <code>max_concurrent_requests</code>: <a href="https://huggingface.co/docs/text-generation-inference/en/reference/launcher">TGI launcher</a>. Our simulation: <a href="https://github.com/seyonv/explainers/blob/main/llm-request-scheduler/labs/experiments.py">labs/experiments.py</a> (E1, E2, E4, E5, E7) and <a href="https://github.com/seyonv/explainers/blob/main/llm-request-scheduler/labs/routing_sim.py">labs/routing_sim.py</a> (the four-router table), 100%-of-peak cost model, a floor.</p>
+</div>
+</article>
+<!-- series-nav:bottom -->
+<div class="snx"><a class="nx" href="index.html#full-system" target="_top">
+<span class="mini" aria-hidden="true"><span class="m1">The whole system, drawn</span><span class="m2">Also called the LLM serving architecture, the inference platform, or a reference architecture. This is the course's capstone: every part from the earlier cards put into one working system, from a…</span><span class="m3">In one breath</span><span class="m4">A gateway decides whether a request gets in (auth, per-tenant token limits, 429s). A router decides where it goes (the replica that already holds its prefix and isn't overloaded). Inside each replica, one engine loop decides when it runs: every step, the scheduler packs decodes and prompt chunks into a token budget that the…</span></span>
+<span class="tx"><span class="lab">Next up · 23 / 25</span><span class="tt">The whole system, drawn</span><span class="ds">Every component from gateway to GPU, and one request's path</span><span class="go">Continue →</span></span></a><div class="aux"><span><a href="index.html#disaggregation" target="_top">← Splitting prefill and decode</a></span><a href="index.html" target="_top">All cards in Build an LLM request scheduler</a></div></div>
+<!-- /series-nav:bottom -->
+</body>
+</html>

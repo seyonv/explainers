@@ -1,0 +1,417 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DistServe I: why prefill and decode want different GPUs</title>
+<style>
+:root{
+  --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
+  --text:#1c1f23; --muted:#6b7068; --faint:#b9b9b3;
+  --accent:#4a9d77; --accent-bg:#dcefdf; --accent-border:#8cc79c;
+  --red:#c0492b; --red-bg:#fbeceb;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#15171a; --surface:#1d2024; --surface2:#24282d; --border:#32373d;
+    --text:#e6e8ea; --muted:#9aa1a9; --faint:#4a5057;
+    --accent:#5fb37f; --accent-bg:#1c2b22; --accent-border:#3f7a55;
+    --red:#e57368; --red-bg:#2e1f1e;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text)}
+.card{max-width:820px;margin:0 auto;padding:28px 32px;font-family:-apple-system,"Inter",system-ui,sans-serif;line-height:1.45}
+h1{font-size:26px;font-weight:600;margin:0 0 6px;letter-spacing:-0.01em}
+.sub{font-size:15px;color:var(--muted);margin:0 0 20px}
+h2{font-size:17px;font-weight:600;margin:26px 0 10px}
+h2 small{font-size:13px;font-weight:400;color:var(--muted)}
+h3.sm{font-size:15px;font-weight:600;margin:18px 0 8px}
+h3.sm small{font-size:13px;font-weight:400;color:var(--muted)}
+p{font-size:15px;margin:0 0 10px}
+ul{font-size:15px;margin:0 0 10px;padding-left:20px}
+li{margin-bottom:4px}
+.cap{font-size:13px;color:var(--muted);margin:8px 0 0;text-align:center}
+.cap + p{margin-top:14px}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+blockquote{margin:10px 0;padding:8px 14px;border-left:3px solid var(--accent-border);background:var(--surface);font-size:14px;border-radius:0 6px 6px 0}
+blockquote cite{display:block;font-style:normal;font-size:12px;color:var(--muted);margin-top:4px}
+
+/* Tables and formulas */
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border)}
+th{font-size:12px;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:none}
+.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.hi{color:var(--accent);font-weight:600} .lo{color:var(--red)} .mu{color:var(--muted)}
+tr.pick td{background:var(--accent-bg)}
+.formula{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin:10px 0;white-space:pre;overflow-x:auto;line-height:1.55}
+.formula .c{color:var(--muted)}
+.formula .g{color:var(--accent);font-weight:600}
+.formula .r{color:var(--red);font-weight:600}
+.tw{overflow-x:auto}
+.tw table{min-width:600px}
+
+/* MathML */
+.mathbox{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px 16px 12px;margin:10px 0;overflow-x:auto}
+.mathbox math{font-size:21px;color:var(--text);font-family:"STIX Two Math","Latin Modern Math","Cambria Math",math}
+.mathbox .t1{color:var(--text)} .mathbox .t2{color:var(--accent)} .mathbox .t3{color:var(--muted)}
+.mathbox .lab{font-size:12px;font-family:-apple-system,"Inter",system-ui,sans-serif;padding-top:3px;border-top:1.5px solid currentColor;margin-top:2px}
+.mathbox math + math{margin-top:14px}
+.mathbox .eqn{font-size:12px;color:var(--muted);font-family:-apple-system,"Inter",system-ui,sans-serif;margin:14px 0 2px}
+.mathbox .eqn:first-child{margin-top:0}
+.legend{display:grid;grid-template-columns:auto 1fr auto;column-gap:14px;row-gap:5px;font-size:13px;margin-top:12px;align-items:baseline}
+.legend .sym{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;text-align:right}
+.legend .v{color:var(--muted);text-align:right;font-variant-numeric:tabular-nums}
+@media (max-width:560px){.legend{grid-template-columns:auto 1fr}.legend .v{display:none}}
+
+/* Two examples per term */
+.parts td{vertical-align:top} .parts td:first-child{font-weight:600}
+.parts .ex{font-size:13px} .parts .ex span{display:block;color:var(--muted)}
+.parts .what{font-size:13px}
+@media (max-width:560px){.parts .what{display:none}}
+
+/* Bar charts */
+.bars{display:grid;grid-template-columns:190px 1fr 120px;column-gap:10px;row-gap:9px;align-items:center;font-size:13px}
+.bars .nm{font-size:13px}
+.bars .track{display:flex;align-items:center}
+.bars .bar{height:18px;border-radius:3px;background:var(--faint)}
+.bars .bar.w{background:var(--accent)}
+.bars .bar.l{background:var(--red)}
+.bars .v{text-align:right;font-variant-numeric:tabular-nums}
+.bars .v.w{color:var(--accent);font-weight:600}
+.bars .v.l{color:var(--red)}
+
+/* 2x2 grid */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.cell{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.cell.win{background:var(--accent-bg);border-color:var(--accent-border)}
+.cell h3{font-size:16px;font-weight:600;margin:0 0 5px;display:flex;gap:8px;align-items:baseline}
+.cell p{font-size:14px;margin:0;color:var(--text)}
+.cell.win h3,.cell.win p{color:var(--accent)}
+.x{color:var(--red)} .ok{color:var(--accent)}
+.side .cell h3{font-size:15px}
+
+/* Clarification box */
+.note{border:1px solid var(--border);border-radius:10px;padding:14px 18px;font-size:14px}
+.note p,.note li{font-size:14px} .note p:last-child{margin-bottom:0}
+
+.foot{margin-top:22px;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+.foot p{font-size:13px}
+.lab-link{display:inline-block;font-size:13px;border:1px solid var(--accent-border);background:var(--accent-bg);color:var(--accent);border-radius:6px;padding:4px 10px;margin:2px 0 10px;text-decoration:none}
+
+/* SVG */
+svg{display:block;max-width:100%;height:auto;margin-top:6px}
+.sl{font-size:12px;fill:var(--muted)} .st{font-size:13px;fill:var(--text)} .sh{font-size:13px;font-weight:600;fill:var(--text)}
+.slr{font-size:12px;fill:var(--red)} .slg{font-size:12px;fill:var(--accent)}
+.bx{fill:var(--surface2);stroke:var(--faint);stroke-width:1}
+.bxa{fill:var(--accent-bg);stroke:var(--accent);stroke-width:1.2}
+.bxr{fill:var(--red-bg);stroke:var(--red);stroke-width:1.2}
+.dv{stroke:var(--border);stroke-width:1}
+.ax{stroke:var(--muted);stroke-width:1}
+.c1{fill:none;stroke:var(--faint);stroke-width:2.5}
+.c2{fill:none;stroke:var(--text);stroke-width:2.5}
+.c3{fill:none;stroke:var(--accent);stroke-width:2.5}
+.cut{stroke:var(--red);stroke-width:1.2;stroke-dasharray:4 3}
+.dot{fill:var(--red)}
+@media (max-width:560px){.grid2{grid-template-columns:1fr}.card{padding:20px 16px}.bars{grid-template-columns:110px 1fr 86px}}
+a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+/* series-nav */
+.sn{max-width:820px;margin:0 auto;padding:16px 32px 0;font-family:-apple-system,"Inter",system-ui,sans-serif;font-size:13px;line-height:1.5;color:var(--muted)}
+.sn a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
+.sn .crumbs{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 7px}
+.sn .crumbs b{color:var(--text);font-weight:600}
+.sn .sep{color:var(--faint,var(--border))}
+.sn .step{margin-left:auto;white-space:nowrap}
+.sn .dep{margin-top:5px;padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface)}
+.sn .dep .ok{color:var(--accent);font-weight:600}
+.snx{max-width:820px;margin:0 auto;padding:6px 32px 44px;font-family:-apple-system,"Inter",system-ui,sans-serif}
+.snx .nx{display:grid;grid-template-columns:280px 1fr;text-decoration:none;color:var(--text);background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.snx .nx:hover,.snx .nx:focus-visible{border-color:var(--accent-border,var(--accent));outline:none}
+.snx .mini{position:relative;height:210px;overflow:hidden;background:var(--bg);border-right:1px solid var(--border);padding:14px 16px}
+.snx .mini span{display:block}
+.snx .mini .m1{font-size:12.5px;font-weight:600;margin:0 0 4px;line-height:1.3}
+.snx .mini .m2{font-size:9px;color:var(--muted);margin:0 0 8px;line-height:1.4}
+.snx .mini .m3{font-size:8.5px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;margin:0 0 3px}
+.snx .mini .m4{font-size:9.5px;margin:0;line-height:1.45}
+.snx .tx{padding:16px 20px}
+.snx .lab{font-size:12px;font-weight:600;color:var(--accent);letter-spacing:.04em;text-transform:uppercase}
+.snx .tt{display:block;font-size:20px;font-weight:600;margin:5px 0 4px;line-height:1.25}
+.snx .ds{display:block;font-size:14px;color:var(--muted)}
+.snx .nd{display:block;font-size:13px;color:var(--muted);margin-top:10px}
+.snx .go{display:block;margin-top:12px;font-size:14px;font-weight:600;color:var(--accent)}
+.snx .aux{display:flex;justify-content:space-between;gap:12px;margin-top:10px;font-size:13px;color:var(--muted)}
+.snx .aux a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
+@media (max-width:560px){.sn,.snx{padding-left:16px;padding-right:16px}.snx .nx{grid-template-columns:1fr}.snx .mini{display:none}.sn .step{margin-left:0}}
+/* /series-nav */
+</style>
+</head>
+<body>
+<!-- series-nav:top -->
+<nav class="sn" aria-label="Course navigation"><div class="crumbs"><a href="../perf-0-map/index.html" target="_top">Fast LLM inference</a><span class="sep">›</span><a href="index.html" target="_top">6 · Serving across GPUs</a><span class="sep">›</span><b>10 / 15</b><span class="step"><a href="index.html#deepseek-v3-infrastructure" target="_top">← prev</a> · <a href="index.html#distserve-placement" target="_top">next →</a></span></div>
+<div class="dep"><b>Before this:</b> <a href="../perf-5-engines/index.html#sarathi-chunked-prefill" target="_top">Sarathi-Serve II: chunked prefill and stall-free batching</a> (perf-5)</div></nav>
+<!-- /series-nav:top -->
+<article class="card">
+<h1>DistServe I: why prefill and decode want different GPUs</h1>
+<p class="sub">Also called prefill–decode (P/D) disaggregation, disaggregated serving, or goodput-optimized serving. Card 1 of 2 on DistServe (Zhong et al., OSDI '24, arXiv 2401.09670 v3). It walks §1–3 in order: goodput, the Fig 1 arithmetic, interference and coupling, and the queueing analysis of each phase. <a href="distserve-placement.html">Card 2</a> covers §4–7: the placement algorithms, KV transfer and the results.</p>
+
+<h2>In one breath</h2>
+<p>Prefill is one long, compute-heavy burst per request. Decode is many short, memory-bound steps. If one GPU does both, each new prompt freezes every stream in progress, and one set of GPUs has to be sized for whichever latency target is harder. DistServe puts the two phases on separate GPUs (instances), sizes and parallelizes each one for its own target (TTFT for prefill, TPOT for decode), and measures success as <b>goodput</b>: requests per second per GPU that still meet the targets.</p>
+
+<h2>§1 The metric: goodput under two SLOs</h2>
+<p>DistServe judges a serving system by cost per query under latency targets, not by raw throughput:</p>
+<blockquote>"maximize per-GPU goodput, defined as the maximum request rate that can be served adhering to the SLO attainment goal (say, 90%) for each GPU provisioned – higher per-GPU goodput directly translates into lower cost per query."<cite>DistServe §1. SLO attainment is "the proportion of requests that meet the SLOs", and a request counts only if it meets both TTFT and TPOT.</cite></blockquote>
+<p>The paper names two latencies. <b>TTFT</b> is "the duration of the prefill phase" (plus any queueing). <b>TPOT</b> is "the average time taken to generate a token for each request (except for the first token)". Its footnote 1: request latency = TTFT + TPOT × tokens generated. Applications weight them differently. A chatbot wants low TTFT, and TPOT only has to beat reading speed ("250 words/min"). Summarization wants low TPOT. Different papers use different names for the per-token metric, so check the definition when you compare numbers:</p>
+<table>
+  <tr><th>Source</th><th>Name for the per-token metric</th><th>What it averages</th></tr>
+  <tr><td>DistServe</td><td><b>TPOT</b> (time per output token)</td><td>one request's decode time ÷ its tokens after the first</td></tr>
+  <tr><td>Splitwise; Sarathi-Serve</td><td><b>TBT</b> (time between tokens)</td><td>each gap separately, so a P99 catches single stalls</td></tr>
+  <tr><td>NVIDIA Dynamo docs</td><td><b>ITL</b> (inter-token latency)</td><td>gap between tokens, the planner's target</td></tr>
+  <tr><td>Kiely, <i>Inference Engineering</i></td><td><b>TPS</b> (tokens/s per user)</td><td>1 ÷ the per-token time</td></tr>
+</table>
+<p class="cap">Course 1's <a href="../perf-1-foundations/serving-metrics.html">serving metrics card</a> works these out for Llama-3.1-8B. The difference matters here: TPOT is an average, so a request that stalls once for a long prefill and runs fast otherwise can still pass a TPOT SLO. A P99 TBT target would catch it.</p>
+
+<p>Each term with two examples. Everyday analogy: a restaurant is judged on how fast the first plate arrives, how evenly the courses follow, and how many tables per cook per hour it serves on time.</p>
+<div class="tw">
+<table class="parts">
+  <tr><th>Term</th><th class="what">What it means</th><th>Example A: the paper</th><th>Example B: Llama-3.1-8B on an H100 (ours)</th></tr>
+  <tr><td>TTFT SLO</td><td class="what">Deadline for the first token: queueing + prefill</td>
+      <td class="ex"><b>0.25 s</b><span>chatbot, OPT-13B (Table 1, §6)</span></td>
+      <td class="ex"><b>100 ms</b><span>our choice; the prefill floor is 16.2 ms per 1,000 tokens</span></td></tr>
+  <tr><td>TPOT SLO</td><td class="what">Deadline for the average gap between later tokens</td>
+      <td class="ex"><b>0.1 s</b><span>chatbot, OPT-13B; 0.15 s for summarization, OPT-66B</span></td>
+      <td class="ex"><b>10 ms</b><span>our choice; the batch-1 decode floor is 4.8 ms</span></td></tr>
+  <tr><td>SLO attainment</td><td class="what">Share of requests that meet both deadlines</td>
+      <td class="ex"><b>90% goal</b><span>App C repeats the evaluation at 99%</span></td>
+      <td class="ex"><b>93.3% at 20 req/s · 54.3% at 25</b><span>one colocated GPU, our sim</span></td></tr>
+  <tr><td>Goodput</td><td class="what">Highest rate per GPU that still meets the attainment goal</td>
+      <td class="ex"><b>1.6 rps</b><span>13B colocated on one A100 (Fig 1)</span></td>
+      <td class="ex"><b>20.5 req/s</b><span>one colocated H100, our sim</span></td></tr>
+  <tr><td>Instance</td><td class="what">"a unit of resources that manages exactly one complete copy of model weights" (§2.3). Can span several GPUs</td>
+      <td class="ex"><b>1 A100 each</b><span>Fig 1's prefill-only and decode-only systems</span></td>
+      <td class="ex"><b>1 H100 each</b><span>16.06 GB of weights fit with 63.9 GB to spare</span></td></tr>
+</table>
+</div>
+
+<h2>§1 Fig 1: the 2.1× in four numbers</h2>
+<p>Fig 1 serves a 13B model on one A100-80GB with a synthetic workload (input 512, output 64) and SLOs meant to mimic a short summary. It plots P90 TTFT and P90 TPOT against request rate for three setups. The baseline is vLLM (the paper's ref [32]; the text just says "existing systems"). Read off the plot, the goodputs are:</p>
+<div class="bars" role="img" aria-label="Fig 1 goodputs: colocated 1.6, prefill-only 5.6, decode-only 10, two prefill plus one decode 3.3 per GPU">
+  <span class="nm">Colocated (vLLM), 1 GPU</span><span class="track"><span class="bar l" style="width:16%"></span></span><span class="v l">1.6 rps</span>
+  <span class="nm">Prefill-only GPU</span><span class="track"><span class="bar" style="width:56%"></span></span><span class="v">5.6 rps</span>
+  <span class="nm">Decode-only GPU</span><span class="track"><span class="bar" style="width:100%"></span></span><span class="v">10 rps</span>
+  <span class="nm">2 prefill + 1 decode, per GPU</span><span class="track"><span class="bar w" style="width:33.3%"></span></span><span class="v w">3.3 rps</span>
+</div>
+<div class="formula">2 prefill GPUs     2 × 5.6 = 11.2 rps  ≥ 10       <span class="c"># prefill keeps up</span>
+1 decode GPU       10 rps                        <span class="c"># the tighter stage</span>
+system             min(11.2, 10) = 10 rps on 3 GPUs
+per GPU            10 ÷ 3 = <span class="g">3.33 rps</span>
+gain               3.33 ÷ 1.6 = <span class="g">2.08×</span>          <span class="c"># the paper rounds to 2.1×</span></div>
+<p class="cap">Colocation's 1.6 rps is capped by whichever SLO breaks first. Split up, each phase runs until its own SLO breaks, and you buy each kind of GPU in the ratio the workload needs. The paper calls this ideal ("Ideally, by allocating 2 GPUs for prefill and 1 GPU for decoding"). It leaves out KV transfer, which §3.3 and card 2 cover.</p>
+
+<h2>§2.1 Two phases, two bottlenecks</h2>
+<p>Prefill processes the whole prompt in parallel, so it is compute-bound once the prompt isn't short. The paper: "for a 13B LLM, computing the prefill of a 512-token sequence makes an A100 near compute-bound". Decode makes one token per step but reads "a similar level of I/O" (all the weights), so it is bound by memory bandwidth. The KV cache that prefill writes is needed by every later decode step, and that is why engines kept both phases on the same GPUs. In the running example:</p>
+<div class="formula">prefill, 1,000 tokens   2 × 8.03e9 × 1,000 ÷ 989e12  = <span class="r">16.24 ms</span>   <span class="c"># compute floor</span>
+decode step, batch 1    16.06 GB ÷ 3.35 TB/s          =  <span class="g">4.79 ms</span>   <span class="c"># bandwidth floor</span>
+one prefill             16.24 ÷ 4.79                  =  3.4 decode steps</div>
+<p class="cap">Both values are floors from course 1 (100% of peak). Real kernels are slower, but the ratio makes the point: one 1,000-token prompt costs as much GPU time as 3.4 decode steps for everyone in the batch.</p>
+
+<h2>§2.2 The tools every engine already had</h2>
+<p><b>Continuous batching</b> (Orca, vLLM, Sarathi) puts new requests' prefills in the same batches as running requests' decodes. That maximizes throughput, "tokens generated per second across all users", but DistServe argues that it trades TTFT against TPOT. <b>Chunked prefill</b> "trades TTFT for TPOT and cannot eliminate the interference" (more below). For model parallelism the paper uses two terms (citing AlpaServe, Megatron-LM and Alpa). <b>Intra-operator</b> parallelism splits each matmul across GPUs. That is tensor parallelism (<a href="megatron-mlp-attention.html">Megatron I</a>): it cuts execution time but needs NVLink-class bandwidth. <b>Inter-operator</b> parallelism splits the layers into pipeline stages (<a href="pipeline-data-parallel.html">pipeline and data parallelism</a>). It "moderately increases execution time" but "linearly scales the system's rate capacity". DistServe adds that both kinds also cut <b>queueing delay</b>, because shorter execution empties the queue faster. Footnote 3: latency = execution time + queueing delay. §3.1 turns this into equations.</p>
+
+<h2>§2.3 Three problems with colocation</h2>
+<h3 class="sm">1. Prefill–decode interference <small>Fig 2</small></h3>
+<p>Fig 2 times one batch of a 13B model against batch size. It compares a decode-only batch with the same batch plus one prefill, at input lengths 128 (a) and 1,024 (b). Adding one prefill slows the whole batch ("decoding slowdown"), much more at 1,024 tokens. The decodes also slow the prefill once the GPU is saturated ("prefill slowdown"). The paper gives these results only as curves, with no table or quoted values, so we don't quote numbers from Fig 2. (The y-axes run to about 25 ms in (a) and about 125 ms in (b).) Here is the same effect with the running example's floors:</p>
+<svg viewBox="0 0 800 196" role="img" aria-label="Timeline: on one colocated GPU a 16.2 ms prefill freezes decode for 21 ms; with a separate prefill GPU decode keeps its 4.8 ms rhythm">
+  <line class="dv" x1="180" y1="26" x2="180" y2="168"/><text class="sl" x="180" y="18" text-anchor="middle">0 ms</text>
+  <line class="dv" x1="280" y1="26" x2="280" y2="168"/><text class="sl" x="280" y="18" text-anchor="middle">10</text>
+  <line class="dv" x1="380" y1="26" x2="380" y2="168"/><text class="sl" x="380" y="18" text-anchor="middle">20</text>
+  <line class="dv" x1="480" y1="26" x2="480" y2="168"/><text class="sl" x="480" y="18" text-anchor="middle">30</text>
+  <line class="dv" x1="580" y1="26" x2="580" y2="168"/><text class="sl" x="580" y="18" text-anchor="middle">40</text>
+  <line class="dv" x1="680" y1="26" x2="680" y2="168"/><text class="sl" x="680" y="18" text-anchor="middle">50 ms</text>
+
+  <text class="sh" x="0" y="50">Colocated, 1 GPU</text><text class="sl" x="0" y="66">prefill-first</text>
+  <rect class="bxa" x="180" y="36" width="46.9" height="30" rx="3"/>
+  <rect class="bxa" x="227.9" y="36" width="46.9" height="30" rx="3"/>
+  <rect class="bxa" x="275.8" y="36" width="46.9" height="30" rx="3"/>
+  <rect class="bxr" x="323.7" y="36" width="161.4" height="30" rx="3"/><text class="slr" x="404.4" y="55" text-anchor="middle">prefill 16.24 ms</text>
+  <rect class="bxa" x="486.1" y="36" width="46.9" height="30" rx="3"/>
+  <rect class="bxa" x="534.0" y="36" width="46.9" height="30" rx="3"/>
+  <rect class="bxa" x="581.9" y="36" width="46.9" height="30" rx="3"/>
+  <rect class="bxa" x="629.8" y="36" width="46.9" height="30" rx="3"/>
+  <rect class="bxa" x="677.7" y="36" width="46.9" height="30" rx="3"/>
+  <line class="cut" x1="323.7" y1="74" x2="323.7" y2="84"/><line class="cut" x1="534.0" y1="74" x2="534.0" y2="84"/>
+  <line class="cut" x1="323.7" y1="80" x2="534.0" y2="80"/><text class="slr" x="428.8" y="96" text-anchor="middle">token gap 4.79 + 16.24 = 21.03 ms</text>
+  <text class="sl" x="300" y="30" text-anchor="middle">prompt arrives, 12 ms</text>
+
+  <text class="sh" x="0" y="130">Disaggregated</text><text class="sl" x="0" y="146">GPU A prefill · GPU B decode</text>
+  <rect class="bx" x="300" y="112" width="162.4" height="20" rx="3"/><text class="sl" x="381.2" y="126" text-anchor="middle">A: prefill 16.2 ms</text>
+  <rect class="bxa" x="180" y="138" width="46.9" height="22" rx="3"/>
+  <rect class="bxa" x="227.9" y="138" width="46.9" height="22" rx="3"/>
+  <rect class="bxa" x="275.8" y="138" width="46.9" height="22" rx="3"/>
+  <rect class="bxa" x="323.7" y="138" width="46.9" height="22" rx="3"/>
+  <rect class="bxa" x="371.6" y="138" width="46.9" height="22" rx="3"/>
+  <rect class="bxa" x="419.5" y="138" width="46.9" height="22" rx="3"/>
+  <rect class="bxa" x="467.4" y="138" width="46.9" height="22" rx="3"/>
+  <rect class="bxa" x="515.3" y="138" width="46.9" height="22" rx="3"/>
+  <rect class="bxa" x="563.2" y="138" width="46.9" height="22" rx="3"/>
+  <rect class="bxa" x="611.1" y="138" width="46.9" height="22" rx="3"/>
+  <rect class="bxa" x="659.0" y="138" width="46.9" height="22" rx="3"/>
+  <rect class="bxa" x="706.9" y="138" width="46.9" height="22" rx="3"/>
+  <rect class="bxa" x="180" y="176" width="14" height="12" rx="2"/><text class="sl" x="200" y="186">decode step, 4.79 ms (batch-1 floor)</text>
+  <rect class="bxr" x="450" y="176" width="14" height="12" rx="2"/><text class="sl" x="470" y="186">prefill that stalls running decodes</text>
+</svg>
+<p class="cap">Our floors, not a measurement. On GPU B, TPOT is just the decode step. The new request's KV has to travel from A to B before it joins B's batch (card 2).</p>
+
+<h3 class="sm">2. Ineffective scheduling</h3>
+<p>Running prefills and decodes in separate batches, one after another, doesn't fix this either. Decodes queue behind running prefills, and decode-only batches leave the GPU underused. "Prioritizing tasks in either phase adversely affects the latency of the other." Prefill-first protects TTFT and hurts TPOT. Decode-first does the opposite.</p>
+
+<h3 class="sm">3. Resource and parallelism coupling</h3>
+<p>Colocated phases have to share one GPU count and one parallelism plan. Prefill is compute-bound and "benefits from more intra-op parallelism" to meet a tight TTFT. Decode's best plan "depends on the running batch size". So existing systems size everything for the harder of the two SLOs, which over-provisions for the other.</p>
+
+<h3 class="sm">The chunked-prefill debate: both sides</h3>
+<p>The best-known colocated fix is chunked prefill with piggybacking (<a href="../perf-5-engines/sarathi-chunked-prefill.html">Sarathi-Serve II</a>): cut each prompt into chunks and run each chunk in the same batch as the running decodes. DistServe §2.3 argues it "alleviates" the decode slowdown "but it does not eliminate it", and names three costs:</p>
+<div class="grid2 side">
+  <div class="cell"><h3>DistServe's case against</h3><p>(1) Chunks well below the size that saturates the GPU make the prefill take longer, since it shares the GPU with decodes. (2) Chunks near that size leave little room to piggyback decodes. (3) Every chunk reloads the KV of all earlier chunks: "N + (N − 1) + ... + 1 = O(N²) chunks of KV Cache in total, compared to O(N)", which grows with context length.</p></div>
+  <div class="cell"><h3>Sarathi-Serve's case for</h3><p>Chunking overhead is at most about 25% at chunk 512 and "almost negligible" at 2,048 (Yi-34B, Fig 14), and attention prefill stays compute-bound even at small chunks. Stall-free batching gets 2.6× vLLM's capacity (Mistral-7B, one A100) with no KV to move. Sarathi's §6 says disaggregation's KV migration is "challenging in the absence of high-bandwidth interconnects" and leaves prefill GPUs' memory underused.</p></div>
+</div>
+<div class="formula"><span class="c"># O(N²) re-reads for Llama-3.1-8B, 128 KiB/token (ours)</span>
+1,000 tokens, 4 chunks of 250
+  1+2+3+4 = 10 chunk loads vs 4
+  0.33 GB = 0.10 ms of HBM vs 16 ms of math   (0.6%)
+32,768 tokens, 64 chunks of 512
+  2,080 chunk loads vs 64
+  139.59 GB = 41.67 ms vs 532 ms of math      (<span class="r">7.8%</span>)</div>
+<p class="cap">Our reading: with GQA's small KV, the re-read cost is tiny for chat-length prompts and becomes real only for long contexts. That matches both papers: Sarathi measured short-to-medium prompts, and DistServe's §7 itself says chunked prefill "may be preferred" for throughput-oriented jobs, while long context favours disaggregation. The rest of the argument is about the SLOs: chunking evens out TBT, but a prompt still shares every batch with decodes.</p>
+
+<h3 class="sm">The opportunity</h3>
+<p>Split each request into a <b>prefill instance</b>, which computes the prompt and first token and then sends the KV cache on, and a <b>decoding instance</b>, which generates the rest. "Because decoding computation often has low GPU utilization, we may allocate multiple prefill instances per decoding instance", which lets the decode batch grow. Each instance type gets its own GPU count and its own parallelism plan.</p>
+
+<h2>§3.1 The prefill instance: a queue you can solve on paper</h2>
+<p><b>Batching.</b> Fig 3(a): for 13B, "processing a single sequence of 512 tokens can fully engage an A100". After that, batching only makes the batch longer and delays everyone in it. So DistServe profiles a threshold <b>L<sub>m</sub></b>, the input length where prefill turns compute-bound, batches only requests shorter than it, and keeps prefill batches small.</p>
+<p><b>Parallelism.</b> The experiment: a 66B model on two A100s, uniform 512-token prompts, Poisson arrivals. Fig 4(a) measured: intra-op wins at low rates, inter-op at high rates. To explain why, the paper models a prefill-only instance as an <b>M/D/1 queue</b> (Poisson arrivals, deterministic service time, one server, FCFS, no batching since one request already saturates the GPU):</p>
+<div class="mathbox">
+<div class="eqn">Eq 1 · one GPU</div>
+<math display="block">
+  <msub><mtext>Avg_TTFT</mtext><mtext></mtext></msub><mo>=</mo>
+  <munder class="t2"><mi>D</mi><mtext class="lab">execution</mtext></munder>
+  <mo>+</mo>
+  <munder class="t3"><mfrac><mrow><mi>R</mi><msup><mi>D</mi><mn>2</mn></msup></mrow><mrow><mn>2</mn><mo>(</mo><mn>1</mn><mo>&#8722;</mo><mi>R</mi><mi>D</mi><mo>)</mo></mrow></mfrac><mtext class="lab">queueing</mtext></munder>
+</math>
+<div class="eqn">Eq 2 · 2-way inter-op (two pipeline stages)</div>
+<math display="block">
+  <msub><mtext>Avg_TTFT</mtext><mtext>inter</mtext></msub><mo>=</mo>
+  <msub><mi>D</mi><mi>s</mi></msub><mo>+</mo>
+  <mfrac><mrow><mi>R</mi><msubsup><mi>D</mi><mi>m</mi><mn>2</mn></msubsup></mrow><mrow><mn>2</mn><mo>(</mo><mn>1</mn><mo>&#8722;</mo><mi>R</mi><msub><mi>D</mi><mi>m</mi></msub><mo>)</mo></mrow></mfrac>
+  <mo>=</mo>
+  <munder class="t2"><mi>D</mi><mtext class="lab">execution, unchanged</mtext></munder>
+  <mo>+</mo>
+  <munder class="t3"><mfrac><mrow><mi>R</mi><msup><mi>D</mi><mn>2</mn></msup></mrow><mrow><mn>4</mn><mo>(</mo><mn>2</mn><mo>&#8722;</mo><mi>R</mi><mi>D</mi><mo>)</mo></mrow></mfrac><mtext class="lab">queueing, much smaller</mtext></munder>
+</math>
+<div class="eqn">Eq 3 · 2-way intra-op with speedup K</div>
+<math display="block">
+  <msub><mtext>Avg_TTFT</mtext><mtext>intra</mtext></msub><mo>=</mo>
+  <munder class="t2"><mfrac><mi>D</mi><mi>K</mi></mfrac><mtext class="lab">execution, faster</mtext></munder>
+  <mo>+</mo>
+  <munder class="t3"><mfrac><mrow><mi>R</mi><msup><mi>D</mi><mn>2</mn></msup></mrow><mrow><mn>2</mn><mi>K</mi><mo>(</mo><mi>K</mi><mo>&#8722;</mo><mi>R</mi><mi>D</mi><mo>)</mo></mrow></mfrac><mtext class="lab">queueing</mtext></munder>
+</math>
+<div class="legend">
+  <span class="sym">D</span><span>execution time of one prefill on one GPU (constant: uniform prompts)</span><span class="v">16.24 ms for 1,000 tokens (ours)</span>
+  <span class="sym">R</span><span>Poisson arrival rate, requests per second</span><span class="v">requests/s</span>
+  <span class="sym">RD</span><span>load: the share of one GPU's time prefill needs. Stable only below capacity</span><span class="v">1 GPU &lt; 1 · inter &lt; 2 · intra &lt; K</span>
+  <span class="sym">D_s</span><span>one request's latency through the 2-stage pipeline; D<sub>s</sub> ≈ D (activations between layers are cheap)</span><span class="v">≈ D</span>
+  <span class="sym">D_m</span><span>time of the slowest stage; D<sub>m</sub> ≈ D/2, so a new request can enter every D/2</span><span class="v">≈ D/2</span>
+  <span class="sym">K</span><span>intra-op speedup on 2 GPUs, 1 &lt; K &lt; 2 because of communication</span><span class="v">paper plots 1.5–1.9</span>
+</div>
+</div>
+<p class="cap">Eq 2 in words: the pipeline doesn't make one prefill faster, but it accepts a new request every D/2, so it behaves like one server that is twice as fast for queueing. Eq 3: tensor parallelism makes every prefill K times faster but can accept only K times the load.</p>
+
+<p>Worked example with D = 1 (times in units of one single-GPU prefill) and K = 1.5, from the lab:</p>
+<div class="formula">RD = 0.5  inter  1 + 0.5 ÷ (4 × 1.5)         = 1.083
+          intra  1/1.5 + 0.5 ÷ (2×1.5×1.0)  = <span class="g">0.833</span>
+RD = 0.9  inter  1 + 0.9 ÷ (4 × 1.1)         = 1.205
+          intra  1/1.5 + 0.9 ÷ (2×1.5×0.6)  = <span class="g">1.167</span>
+RD = 1.2  inter  1 + 1.2 ÷ (4 × 0.8)         = <span class="g">1.375</span>
+          intra  1/1.5 + 1.2 ÷ (2×1.5×0.3)  = 2.000
+crossover Eq 2 = Eq 3 at <span class="r">RD ≈ 0.936</span>, both ≈ 1.22 D</div>
+<svg viewBox="0 0 800 300" role="img" aria-label="Average TTFT versus load RD for one GPU, two-stage inter-op and two-way intra-op with K 1.5; intra-op is lower until RD about 0.94, then inter-op wins">
+  <line class="dv" x1="60" y1="173.3" x2="760" y2="173.3"/><line class="dv" x1="60" y1="96.7" x2="760" y2="96.7"/><line class="dv" x1="60" y1="20" x2="760" y2="20"/>
+  <line class="ax" x1="60" y1="250" x2="760" y2="250"/><line class="ax" x1="60" y1="20" x2="60" y2="250"/>
+  <text class="sl" x="52" y="254" text-anchor="end">0</text><text class="sl" x="52" y="177" text-anchor="end">1 D</text><text class="sl" x="52" y="101" text-anchor="end">2 D</text><text class="sl" x="52" y="24" text-anchor="end">3 D</text>
+  <text class="sl" x="60" y="268" text-anchor="middle">0</text><text class="sl" x="176.7" y="268" text-anchor="middle">0.25</text><text class="sl" x="293.3" y="268" text-anchor="middle">0.5</text><text class="sl" x="410" y="268" text-anchor="middle">0.75</text><text class="sl" x="526.7" y="268" text-anchor="middle">1.0</text><text class="sl" x="643.3" y="268" text-anchor="middle">1.25</text><text class="sl" x="760" y="268" text-anchor="middle">1.5</text>
+  <text class="sl" x="410" y="290" text-anchor="middle">load RD (arrival rate × one-GPU prefill time)</text>
+  <text class="sl" x="14" y="140" transform="rotate(-90 14 140)" text-anchor="middle">average TTFT</text>
+  <path class="c1" d="M60.0,173.3 L71.7,172.4 L83.3,171.3 L95.0,170.2 L106.7,169.1 L118.3,167.9 L130.0,166.6 L141.7,165.2 L153.3,163.8 L165.0,162.2 L176.7,160.6 L188.3,158.8 L200.0,156.9 L211.7,154.9 L223.3,152.7 L235.0,150.3 L246.7,147.8 L258.3,145.0 L270.0,142.0 L281.7,138.7 L293.3,135.0 L305.0,131.0 L316.7,126.5 L328.3,121.5 L340.0,115.8 L351.7,109.4 L363.3,102.1 L375.0,93.7 L386.7,83.9 L398.3,72.3 L410.0,58.3 L421.7,41.3"/>
+  <path class="c2" d="M60.0,173.3 L71.7,173.1 L83.3,172.8 L95.0,172.6 L106.7,172.3 L118.3,172.1 L130.0,171.8 L141.7,171.5 L153.3,171.2 L165.0,170.9 L176.7,170.6 L188.3,170.3 L200.0,170.0 L211.7,169.6 L223.3,169.3 L235.0,168.9 L246.7,168.5 L258.3,168.2 L270.0,167.8 L281.7,167.4 L293.3,166.9 L305.0,166.5 L316.7,166.1 L328.3,165.6 L340.0,165.1 L351.7,164.6 L363.3,164.1 L375.0,163.6 L386.7,163.0 L398.3,162.4 L410.0,161.8 L421.7,161.2 L433.3,160.6 L445.0,159.9 L456.7,159.2 L468.3,158.4 L480.0,157.7 L491.7,156.8 L503.3,156.0 L515.0,155.1 L526.7,154.2 L538.3,153.2 L550.0,152.1 L561.7,151.1 L573.3,149.9 L585.0,148.7 L596.7,147.4 L608.3,146.0 L620.0,144.6 L631.7,143.0 L643.3,141.4 L655.0,139.6 L666.7,137.7 L678.3,135.7 L690.0,133.5 L701.7,131.2 L713.3,128.6 L725.0,125.8 L736.7,122.8 L748.3,119.5 L760.0,115.8"/>
+  <path class="c3" d="M60.0,198.9 L71.7,198.5 L83.3,198.0 L95.0,197.5 L106.7,197.1 L118.3,196.6 L130.0,196.0 L141.7,195.5 L153.3,195.0 L165.0,194.4 L176.7,193.8 L188.3,193.2 L200.0,192.5 L211.7,191.8 L223.3,191.1 L235.0,190.4 L246.7,189.6 L258.3,188.8 L270.0,187.9 L281.7,187.0 L293.3,186.1 L305.0,185.1 L316.7,184.1 L328.3,183.0 L340.0,181.9 L351.7,180.6 L363.3,179.3 L375.0,178.0 L386.7,176.5 L398.3,175.0 L410.0,173.3 L421.7,171.6 L433.3,169.7 L445.0,167.7 L456.7,165.5 L468.3,163.1 L480.0,160.6 L491.7,157.8 L503.3,154.7 L515.0,151.4 L526.7,147.8 L538.3,143.7 L550.0,139.3 L561.7,134.2 L573.3,128.6 L585.0,122.2 L596.7,114.9 L608.3,106.5 L620.0,96.7 L631.7,85.1 L643.3,71.1 L655.0,54.1 L666.7,32.8"/>
+  <line class="cut" x1="496.8" y1="20" x2="496.8" y2="250"/><circle class="dot" cx="496.8" cy="156.5" r="4"/>
+  <text class="slr" x="502" y="238">crossover RD ≈ 0.94</text>
+  <text class="sl" x="405" y="36" text-anchor="end">one GPU (Eq 1), unstable at RD ≥ 1</text>
+  <text class="sh" x="690" y="110" text-anchor="end">inter-op (Eq 2)</text>
+  <text class="slg" x="672" y="26">intra-op K = 1.5 (Eq 3) →</text>
+  <text class="slg" x="150" y="212">intra-op: faster at low load</text>
+</svg>
+<p class="cap">From the formulas, D = 1, K = 1.5. Left of the dashed line, the execution term dominates and intra-op's D/K wins. To the right, queueing dominates, and intra-op's capacity of K = 1.5 runs out long before inter-op's 2. A Monte Carlo run of 200,000 requests in the lab matches all three formulas (at RD = 0.5: 1.508 / 1.084 / 0.835 simulated vs 1.500 / 1.083 / 0.833).</p>
+<p>The crossover moves with K: RD ≈ 0.94 at K = 1.5, 1.10 at 1.6, 1.26 at 1.7, 1.43 at 1.8 and 1.63 at 1.9 (lab). This is the paper's Fig 4(b) point: "a decrease in K notably reduces the efficacy of intra-op parallelism". The paper also says a stricter TTFT SLO favours intra-op, because only intra-op shortens execution. K itself depends on input length, model architecture, bandwidth and placement. For the running example, D = 16.24 ms gives one GPU a capacity of 61.6 req/s and puts the K = 1.5 crossover at <b>57.6 req/s</b> (our arithmetic; K = 1.5 is illustrative, not measured for Llama-3.1-8B on H100s).</p>
+
+<h2>§3.2 The decoding instance: batch it, then parallelize for the SLO</h2>
+<p><b>Batching.</b> One decode job is "heavily bandwidth-bound" (Fig 3(b): decode throughput keeps rising with batch size), so a big batch is the whole game. Colocated systems can't grow it without hurting latency. With disaggregation, several prefill instances feed one decoding instance, so it can build "a larger batch size on dedicated GPUs for the decoding phase without sacrificing TPOT". In our sim, a decode-only H100 runs at 120.5 req/s with an average batch of 110 (Little's law), still under 10 ms P90 TPOT.</p>
+<p><b>Parallelism.</b> Memory then caps the batch, since every active request's KV has to fit. Model parallelism, PagedAttention and GQA push the batch toward the compute-bound point, where decode "begins to resemble the prefill phase". Fig 5 (13B, batch 128, input 256, 1–8 GPUs): intra-op "reduces latency with diminishing returns", and inter-op "can almost linearly scale the throughput". The rule:</p>
+<div class="formula">stringent TPOT SLO   →  intra-op (tensor) parallelism first, to cut the step time
+then, for throughput  →  inter-op (pipeline) parallelism, which scales ~linearly
+model fits one GPU   →  replication is also an option: N copies turn R into R/N in Eq 1,
+                        at the cost of N copies of the weights</div>
+<p class="cap"><a href="megatron-scaling.html">Megatron II</a> puts numbers on what tensor parallelism costs per decode step, and <a href="pipeline-data-parallel.html">pipeline and data parallelism</a> applies this rule to Llama-3.1-70B.</p>
+<p><b>§3.3, in brief.</b> Two practical wrinkles. Real prompts vary in length, which leaves pipeline bubbles in inter-op prefill and bends the M/D/1 predictions. And the KV cache has to move from prefill to decode. The paper's example is OPT-66B: about 1.13 GB (really GiB) per 512-token request, so 90 Gbps at 10 rps. <a href="distserve-placement.html">Card 2</a> does that arithmetic and the placements that keep transfers on NVLink.</p>
+
+<h2>Fig 1 again, for the running example <small>our sim, labs/distserve-queue.py</small></h2>
+<p>This is the same experiment as Fig 1, run as a simulation with the running example's floors: Llama-3.1-8B BF16 on H100s, 1,000-token prompts, 100-token outputs, 1,500 Poisson requests. The SLOs are ours: P90 TTFT ≤ 100 ms and TPOT ≤ 10 ms. The colocated GPU is prefill-first, like the vLLM of the paper's time: a waiting prompt runs alone and every running decode waits for it.</p>
+<table>
+  <tr><th class="num">Rate (req/s)</th><th class="num">GPU time in prefill</th><th class="num">P90 TTFT</th><th class="num">P90 TPOT</th><th class="num">Attainment</th></tr>
+  <tr><td class="num">10</td><td class="num">162 ms/s = 16.2%</td><td class="num">26.6 ms</td><td class="num">6.81 ms</td><td class="num">100%</td></tr>
+  <tr><td class="num">15</td><td class="num">244 ms/s = 24.4%</td><td class="num">30.8 ms</td><td class="num">8.07 ms</td><td class="num">100%</td></tr>
+  <tr><td class="num">20</td><td class="num">325 ms/s = 32.5%</td><td class="num">33.6 ms</td><td class="num">9.67 ms</td><td class="num">93.3%</td></tr>
+  <tr><td class="num">25</td><td class="num">406 ms/s = 40.6%</td><td class="num">37.0 ms</td><td class="num lo">12.08 ms</td><td class="num lo">54.3%</td></tr>
+  <tr><td class="num">30</td><td class="num">487 ms/s = 48.7%</td><td class="num">44.0 ms</td><td class="num lo">15.12 ms</td><td class="num lo">10.6%</td></tr>
+</table>
+<p class="cap">TTFT stays far inside its 100 ms SLO, because prefill-first protects it. TPOT is what breaks: at 25 req/s, 41% of the GPU's time goes to prefills that every running stream has to sit through. The paper's §6.2 found the same for vLLM on chatbots: it "meets the TTFT SLO for most requests", but "a large number of requests that violate the TPOT SLO" drag attainment down.</p>
+<div class="bars" role="img" aria-label="Our sim goodputs: colocated 20.5, prefill-only 50.5, decode-only 120.5, five prefill plus two decode 34.4 per GPU">
+  <span class="nm">Colocated, 1 GPU</span><span class="track"><span class="bar l" style="width:17%"></span></span><span class="v l">20.5 req/s</span>
+  <span class="nm">Prefill-only GPU</span><span class="track"><span class="bar" style="width:41.9%"></span></span><span class="v">50.5 req/s</span>
+  <span class="nm">Decode-only GPU</span><span class="track"><span class="bar" style="width:100%"></span></span><span class="v">120.5 req/s</span>
+  <span class="nm">5 prefill + 2 decode, per GPU</span><span class="track"><span class="bar w" style="width:28.5%"></span></span><span class="v w">34.4 req/s</span>
+</div>
+<div class="formula">5 prefill GPUs   5 × 50.5  = 252.5 req/s
+2 decode GPUs    2 × 120.5 = 241.0 req/s         <span class="c"># the tighter stage</span>
+per GPU          241.0 ÷ 7 = <span class="g">34.4 req/s</span>        <span class="c"># best split up to 5P5D</span>
+gain             34.4 ÷ 20.5 = <span class="g">1.68×</span>         <span class="c"># our model, not a measurement</span>
+same, TPOT SLO 20 ms: colocated 34.0, best 4P1D 37.9 per GPU → 1.11×</div>
+<p class="cap">Our model, no measurement: compute and bandwidth floors, no kernel or CPU overheads, no KV transfer, a bisection on a 0.5 req/s grid. The shape matches Fig 1. Colocation is capped by the harder SLO, and each phase alone goes much further. The size of the gain depends on how tight the SLOs are: loosen TPOT to 20 ms and 1.68× shrinks to 1.11×. Card 2's lab searches the P:D split properly.</p>
+
+<h2>Why it beats the alternatives</h2>
+<div class="grid2">
+  <div class="cell"><h3><span class="x">&#10007;</span> Colocated, prefill-first</h3><p>TTFT is protected, but every prompt freezes all running streams. Fig 1: 1.6 rps per A100. Our sim: 20.5 req/s per H100, capped by TPOT while TTFT has room to spare.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Priority scheduling either way</h3><p>Separate prefill and decode batches, prioritizing one. "Prioritizing tasks in either phase adversely affects the latency of the other", and decode-only batches underuse the GPU.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Chunked prefill with piggybacking</h3><p>Smooths TBT, but in DistServe's words it "trades TTFT for TPOT and cannot eliminate the interference". It also re-reads O(N²) KV, and both phases still share one GPU count and one parallelism plan.</p></div>
+  <div class="cell win"><h3><span class="ok">&#10003;</span> Disaggregated prefill and decode</h3><p>No interference, and each phase gets its own GPU count and parallelism, tuned to its own SLO: intra-op prefill at low load, inter-op at high load, a big decode batch. Fig 1: 3.3 rps per GPU, 2.1×.</p></div>
+</div>
+
+<h2>Is disaggregation always better?</h2>
+<div class="note">
+  <p>No. The 2.1× is an "ideal" from Fig 1 that leaves out KV transfer, and the gain depends on how tight the SLOs are: in our sim it drops from 1.68× to 1.11× when the TPOT SLO goes from 10 to 20 ms. DistServe's own §7 names when not to use it. For throughput-oriented or offline jobs, chunked prefill with piggybacking "may be preferred since it can fill each batch to the compute-bound threshold". With few GPUs, or one, there is no room to split the phases. Moving KV needs NVLink or fast InfiniBand, or placement that keeps transfers inside a node (card 2). Sarathi-Serve adds that prefill GPUs' memory sits mostly idle.</p>
+  <p>Two cautions about §3.1. Eq 1–3 assume uniform prompts, FCFS and no batching, and real length variation causes pipeline bubbles that the formulas don't see (§3.3). And the crossover RD ≈ 0.94 is for K = 1.5. With a good NVLink split (K near 1.9), intra-op wins almost everywhere.</p>
+</div>
+
+<div class="foot">
+<p><a class="lab-link" href="https://github.com/seyonv/explainers/blob/main/perf-6-scaling-out/labs/distserve-queue.py">Run it: labs/distserve-queue.py</a> <b>[L]</b> numpy only, under 10 s on the M3. It prints the Fig 1 arithmetic, Eq 1–3 at D = 1 and K = 1.5 with the crossover for K = 1.5–1.9, a Monte Carlo check of all three queues, the Llama-3.1-8B colocated vs prefill-only vs decode-only simulation, the chunked-prefill KV re-reads, and the 20 ms TPOT variant. Try this: set <code>K = 1.9</code>, <code>TPOT_SLO = 0.020</code> or <code>PROMPT = 4000</code>.</p>
+<p><b>Read next:</b> Zhong et al., <a href="https://arxiv.org/abs/2401.09670">"DistServe: Disaggregating Prefill and Decoding for Goodput-optimized Large Language Model Serving"</a> (OSDI '24, arXiv v3). Read §1 with Fig 1 (7 min), §2 with Fig 2 and the chunked-prefill paragraph (8 min), and §3.1–3.3 with Eq 1–3 and Figs 3–5 (10 min). About 25 min.</p>
+<p><b>Related:</b> <a href="distserve-placement.html">DistServe II: placement, KV transfer and results</a> · <a href="disaggregation-in-production.html">Disaggregation in production: Splitwise, Mooncake and Dynamo</a> · <a href="pipeline-data-parallel.html">Pipeline and data parallelism when serving</a> · <a href="megatron-mlp-attention.html">Megatron I: splitting the MLP and attention</a> · <a href="megatron-scaling.html">Megatron II: embeddings, the fused loss, and what TP costs</a> · <a href="../perf-5-engines/sarathi-chunked-prefill.html">course 5: Sarathi-Serve II, chunked prefill</a> · <a href="../perf-5-engines/sarathi-stalls.html">course 5: Sarathi-Serve I, why prefill stalls decode</a> · <a href="../perf-1-foundations/serving-metrics.html">course 1: serving metrics (TTFT, TPOT, goodput)</a> · <a href="../perf-2-scaling-book-inference/inference-engine-design.html">course 2: inference engine design (P = 3G)</a></p>
+<p><b>Sources:</b> goodput and SLO-attainment definitions, TTFT/TPOT, footnotes 1 and 3, Fig 1 (1.6 / 5.6 / 10 rps, 2 prefill + 1 decode, 3.3 rps, 2.1×), the §2.1 compute- vs bandwidth-bound claims, the §2.2 intra-op vs inter-op description, Fig 2, the chunked-prefill critique and O(N²) count, ineffective scheduling, coupling, the instance definition, §3.1 L<sub>m</sub>, the 66B experiment and Eq 1–3, Fig 4(b), §3.2 and Fig 5, §3.3, §7, and Table 1's SLOs: <a href="https://arxiv.org/abs/2401.09670">DistServe, arXiv 2401.09670 v3</a>. The chunking overhead, 2.6× and §6 quotes: <a href="https://arxiv.org/abs/2403.02310">Sarathi-Serve, arXiv 2403.02310</a>. Metric names: Splitwise (<a href="https://arxiv.org/abs/2311.18677">arXiv 2311.18677</a>, TBT), NVIDIA Dynamo docs (ITL), Kiely's <i>Inference Engineering</i> (TPS). Llama-3.1-8B's 16.2 ms prefill floor, 4.8 ms decode step, 16.06 GB and 128 KiB/token, and the H100's 989 TFLOPS and 3.35 TB/s: the course's shared facts. The simulation, the H100 goodputs, the O(N²) byte counts, the 57.6 req/s crossover and the 100 ms / 10 ms SLOs are our model. K = 1.5 for the running example is illustrative.</p>
+</div>
+</article>
+<!-- series-nav:bottom -->
+<div class="snx"><a class="nx" href="index.html#distserve-placement" target="_top">
+<span class="mini" aria-hidden="true"><span class="m1">DistServe II: placement, KV transfer and results</span><span class="m2">Also called placement search, xPyD sizing, instance segments or pull-based KV transfer. DistServe §4–7 (OSDI '24): how it picks each phase's parallelism and GPU count with a simulator, how it keeps…</span><span class="m3">In one breath</span><span class="m4">Once prefill and decode run on separate GPUs, you still have to decide how many GPUs each phase gets, how each copy of the model is split, and which machines they sit on. DistServe calls that answer a placement. It finds one by simulating every candidate layout against your workload and SLOs, keeping the layout with the most…</span></span>
+<span class="tx"><span class="lab">Next up · 11 / 15</span><span class="tt">DistServe II: placement, KV transfer and results</span><span class="ds">How to split the GPUs, and what the KV move costs</span><span class="nd">Builds directly on this card.</span><span class="go">Continue →</span></span></a><div class="aux"><span><a href="index.html#deepseek-v3-infrastructure" target="_top">← DeepSeek-V3 II: infrastructure, FP8 and deployment</a></span><a href="index.html" target="_top">All cards in 6 · Serving across GPUs</a></div></div>
+<!-- /series-nav:bottom -->
+</body>
+</html>

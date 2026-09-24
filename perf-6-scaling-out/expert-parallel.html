@@ -1,0 +1,417 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Expert parallelism: dispatch, combine and EPLB</title>
+<style>
+:root{
+  --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
+  --text:#1c1f23; --muted:#6b7068; --faint:#b9b9b3;
+  --accent:#4a9d77; --accent-bg:#dcefdf; --accent-border:#8cc79c;
+  --red:#c0492b; --red-bg:#fbeceb;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#15171a; --surface:#1d2024; --surface2:#24282d; --border:#32373d;
+    --text:#e6e8ea; --muted:#9aa1a9; --faint:#4a5057;
+    --accent:#5fb37f; --accent-bg:#1c2b22; --accent-border:#3f7a55;
+    --red:#e57368; --red-bg:#2e1f1e;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text)}
+.card{max-width:820px;margin:0 auto;padding:28px 32px;font-family:-apple-system,"Inter",system-ui,sans-serif;line-height:1.45}
+h1{font-size:26px;font-weight:600;margin:0 0 6px;letter-spacing:-0.01em}
+.sub{font-size:15px;color:var(--muted);margin:0 0 20px}
+h2{font-size:17px;font-weight:600;margin:26px 0 10px}
+h3.m{font-size:15px;font-weight:600;margin:18px 0 6px}
+h3.m span{font-weight:400;color:var(--muted);font-size:13px}
+p{font-size:15px;margin:0 0 10px}
+ul{margin:0 0 10px;padding-left:20px} li{font-size:15px;margin:0 0 4px}
+.cap{font-size:13px;color:var(--muted);margin:8px 0 0;text-align:center}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+blockquote{margin:10px 0;padding:8px 14px;border-left:3px solid var(--accent-border);background:var(--surface);font-size:15px;border-radius:0 6px 6px 0}
+blockquote span{display:block;font-size:13px;color:var(--muted);margin-top:4px}
+
+/* Tables and formulas */
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border)}
+th{font-size:12px;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:none}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+.hi{color:var(--accent);font-weight:600} .lo{color:var(--red)}
+.formula{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin:10px 0;white-space:pre;overflow-x:auto;line-height:1.55}
+.tw{overflow-x:auto}
+.tw table{min-width:640px}
+.reg td{vertical-align:top;white-space:nowrap} .reg td small{display:block;font-size:12px;color:var(--muted);font-weight:400;white-space:normal}
+
+/* MathML */
+.mathbox{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px 16px 12px;margin:10px 0;overflow-x:auto}
+.mathbox math{font-size:21px;color:var(--text);font-family:"STIX Two Math","Latin Modern Math","Cambria Math",math}
+.mathbox .t1{color:var(--text)} .mathbox .t2{color:var(--accent)} .mathbox .t3{color:var(--muted)}
+.mathbox .lab{font-size:12px;font-family:-apple-system,"Inter",system-ui,sans-serif;padding-top:3px;border-top:1.5px solid currentColor;margin-top:2px}
+.legend{display:grid;grid-template-columns:auto 1fr auto;column-gap:14px;row-gap:5px;font-size:13px;margin-top:12px;align-items:baseline}
+.legend .sym{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;text-align:right}
+.legend .v{color:var(--muted);text-align:right;font-variant-numeric:tabular-nums}
+@media (max-width:560px){.legend{grid-template-columns:auto 1fr}.legend .v{display:none}}
+
+/* Two examples per term */
+.parts td{vertical-align:top} .parts td:first-child{font-weight:600;white-space:nowrap}
+.parts .ex{font-size:13px} .parts .ex span{display:block;color:var(--muted)}
+@media (max-width:560px){.parts .what{display:none}}
+
+
+/* 2x2 grid */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.cell{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.cell.win{background:var(--accent-bg);border-color:var(--accent-border)}
+.cell h3{font-size:16px;font-weight:600;margin:0 0 5px;display:flex;gap:8px;align-items:baseline}
+.cell p{font-size:14px;margin:0;color:var(--text)}
+.cell.win h3,.cell.win p{color:var(--accent)}
+.x{color:var(--red)} .ok{color:var(--accent)}
+
+/* Clarification box */
+.note{border:1px solid var(--border);border-radius:10px;padding:14px 18px;font-size:14px}
+.note p,.note li{font-size:14px} .note p:last-child{margin-bottom:0}
+
+.foot{margin-top:22px;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+.foot p{font-size:13px}
+.lab-link{display:inline-block;font-size:13px;border:1px solid var(--accent-border);background:var(--accent-bg);color:var(--accent);border-radius:6px;padding:4px 10px;margin:2px 0 10px;text-decoration:none}
+svg{display:block;max-width:100%;height:auto}
+.sl{font-size:12px;fill:var(--muted)} .st{font-size:13px;fill:var(--text)}
+@media (max-width:560px){.grid2{grid-template-columns:1fr}.card{padding:20px 16px}}
+a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+/* series-nav */
+.sn{max-width:820px;margin:0 auto;padding:16px 32px 0;font-family:-apple-system,"Inter",system-ui,sans-serif;font-size:13px;line-height:1.5;color:var(--muted)}
+.sn a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
+.sn .crumbs{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 7px}
+.sn .crumbs b{color:var(--text);font-weight:600}
+.sn .sep{color:var(--faint,var(--border))}
+.sn .step{margin-left:auto;white-space:nowrap}
+.sn .dep{margin-top:5px;padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface)}
+.sn .dep .ok{color:var(--accent);font-weight:600}
+.snx{max-width:820px;margin:0 auto;padding:6px 32px 44px;font-family:-apple-system,"Inter",system-ui,sans-serif}
+.snx .nx{display:grid;grid-template-columns:280px 1fr;text-decoration:none;color:var(--text);background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.snx .nx:hover,.snx .nx:focus-visible{border-color:var(--accent-border,var(--accent));outline:none}
+.snx .mini{position:relative;height:210px;overflow:hidden;background:var(--bg);border-right:1px solid var(--border);padding:14px 16px}
+.snx .mini span{display:block}
+.snx .mini .m1{font-size:12.5px;font-weight:600;margin:0 0 4px;line-height:1.3}
+.snx .mini .m2{font-size:9px;color:var(--muted);margin:0 0 8px;line-height:1.4}
+.snx .mini .m3{font-size:8.5px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;margin:0 0 3px}
+.snx .mini .m4{font-size:9.5px;margin:0;line-height:1.45}
+.snx .tx{padding:16px 20px}
+.snx .lab{font-size:12px;font-weight:600;color:var(--accent);letter-spacing:.04em;text-transform:uppercase}
+.snx .tt{display:block;font-size:20px;font-weight:600;margin:5px 0 4px;line-height:1.25}
+.snx .ds{display:block;font-size:14px;color:var(--muted)}
+.snx .nd{display:block;font-size:13px;color:var(--muted);margin-top:10px}
+.snx .go{display:block;margin-top:12px;font-size:14px;font-weight:600;color:var(--accent)}
+.snx .aux{display:flex;justify-content:space-between;gap:12px;margin-top:10px;font-size:13px;color:var(--muted)}
+.snx .aux a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
+@media (max-width:560px){.sn,.snx{padding-left:16px;padding-right:16px}.snx .nx{grid-template-columns:1fr}.snx .mini{display:none}.sn .step{margin-left:0}}
+/* /series-nav */
+</style>
+</head>
+<body>
+<!-- series-nav:top -->
+<nav class="sn" aria-label="Course navigation"><div class="crumbs"><a href="../perf-0-map/index.html" target="_top">Fast LLM inference</a><span class="sep">›</span><a href="index.html" target="_top">6 · Serving across GPUs</a><span class="sep">›</span><b>07 / 15</b><span class="step"><a href="index.html#moe-basics" target="_top">← prev</a> · <a href="index.html#deepseek-v3-architecture" target="_top">next →</a></span></div>
+<div class="dep"><b>Before this:</b> <a href="index.html#moe-basics" target="_top">Mixture of experts: routers, top-k and imbalance</a> · <a href="index.html#collectives" target="_top">How GPUs talk: collectives and interconnects</a></div></nav>
+<!-- /series-nav:top -->
+<article class="card">
+<h1>Expert parallelism: dispatch, combine and EPLB</h1>
+<p class="sub">Also called EP, "MoE all-to-all", or dispatch/combine; the load balancer is EPLB (expert-parallel load balancer). DeepSeek-V3 serves its 256 routed experts per layer this way: prefill on 32 GPUs (EP32) and decode on 320 GPUs in the paper (EP320) or 144 in production (EP144), using its open-source DeepEP kernels and EPLB placement.</p>
+
+<h2>In one breath</h2>
+<p>Put whole experts on different GPUs. At every MoE layer, each token is <b>sent</b> to the GPUs that hold its chosen experts (dispatch), those experts run, and the results are <b>sent back</b> and summed (combine). Two all-to-all exchanges per layer replace the all-reduce of tensor parallelism. The layer can only finish when the busiest GPU finishes, so hot experts get extra copies (redundant experts), and EPLB decides where every copy lives.</p>
+
+<h2>The layout: attention stays local, the experts are spread out</h2>
+<p>Each GPU holds a few <b>complete</b> experts, not a slice of every expert. Attention runs data-parallel or with a small TP group: each GPU (or TP4 group) keeps its own requests and their KV cache. DeepSeek's prefill unit is 4 nodes / 32 GPUs (attention TP4 + SP with DP8; MoE EP32, 9 experts per GPU = 8 + 1 redundant). Its decode unit is 40 nodes / 320 GPUs (attention TP4 + SP with DP80; MoE EP320, <b>one expert per GPU</b>, with 64 GPUs holding the redundant and shared experts). Kiely's example: 128 experts in EP8 means each GPU hosts 16 full experts.</p>
+<svg viewBox="0 0 760 290" role="img" aria-label="One MoE layer on four GPUs under expert parallelism. Each GPU runs attention on its own tokens, then an all-to-all dispatch sends each token to the GPUs that hold its chosen experts, each GPU runs its experts, and an all-to-all combine sends the results back. GPU 2 holds a hot expert and finishes last, so the others wait.">
+<text x="153.0" y="16" class="sl" text-anchor="middle">attention</text>
+<text x="271.0" y="16" class="sl" text-anchor="middle">dispatch</text>
+<text x="419.0" y="16" class="sl" text-anchor="middle">expert GEMMs</text>
+<text x="567.0" y="16" class="sl" text-anchor="middle">combine</text>
+<text x="685.0" y="16" class="sl" text-anchor="middle">next layer</text>
+<text x="271" y="30" class="sl" text-anchor="middle">all-to-all</text>
+<text x="567" y="30" class="sl" text-anchor="middle">all-to-all</text>
+<text x="0" y="66" class="st">GPU 0</text>
+<rect x="78" y="50" width="150" height="26" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/>
+<text x="153" y="67" class="sl" text-anchor="middle">own tokens (DP)</text>
+<rect x="314" y="50" width="150" height="26" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/>
+<text x="389.0" y="67" class="sl" text-anchor="middle">E0 E1</text>
+<rect x="466" y="50" width="58" height="26" rx="3" fill="var(--surface2)"/>
+<text x="495.0" y="67" class="sl" text-anchor="middle">wait</text>
+<rect x="610" y="50" width="150" height="26" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/>
+<text x="685" y="67" class="sl" text-anchor="middle">attention</text>
+<text x="0" y="120" class="st">GPU 1</text>
+<rect x="78" y="104" width="150" height="26" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/>
+<text x="153" y="121" class="sl" text-anchor="middle">own tokens (DP)</text>
+<rect x="314" y="104" width="110" height="26" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/>
+<text x="369.0" y="121" class="sl" text-anchor="middle">E2 E3</text>
+<rect x="426" y="104" width="98" height="26" rx="3" fill="var(--surface2)"/>
+<text x="475.0" y="121" class="sl" text-anchor="middle">wait</text>
+<rect x="610" y="104" width="150" height="26" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/>
+<text x="685" y="121" class="sl" text-anchor="middle">attention</text>
+<text x="0" y="174" class="st">GPU 2</text>
+<rect x="78" y="158" width="150" height="26" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/>
+<text x="153" y="175" class="sl" text-anchor="middle">own tokens (DP)</text>
+<rect x="314" y="158" width="204" height="26" rx="3" fill="var(--red-bg)" stroke="var(--red)"/>
+<text x="416.0" y="175" class="sl" text-anchor="middle">E4 E5 (hot)</text>
+<rect x="520" y="158" width="4" height="26" rx="3" fill="var(--surface2)"/>
+<rect x="610" y="158" width="150" height="26" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/>
+<text x="685" y="175" class="sl" text-anchor="middle">attention</text>
+<text x="0" y="228" class="st">GPU 3</text>
+<rect x="78" y="212" width="150" height="26" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/>
+<text x="153" y="229" class="sl" text-anchor="middle">own tokens (DP)</text>
+<rect x="314" y="212" width="130" height="26" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/>
+<text x="379.0" y="229" class="sl" text-anchor="middle">E6 E7</text>
+<rect x="446" y="212" width="78" height="26" rx="3" fill="var(--surface2)"/>
+<text x="485.0" y="229" class="sl" text-anchor="middle">wait</text>
+<rect x="610" y="212" width="150" height="26" rx="3" fill="var(--accent-bg)" stroke="var(--accent-border)"/>
+<text x="685" y="229" class="sl" text-anchor="middle">attention</text>
+<rect x="236" y="44" width="70" height="194" rx="3" fill="var(--surface)"/>
+<line x1="240" y1="63" x2="302" y2="117" stroke="var(--faint)" stroke-width="1.2"/>
+<line x1="240" y1="63" x2="302" y2="171" stroke="var(--faint)" stroke-width="1.2"/>
+<line x1="240" y1="63" x2="302" y2="225" stroke="var(--faint)" stroke-width="1.2"/>
+<line x1="240" y1="117" x2="302" y2="63" stroke="var(--faint)" stroke-width="1.2"/>
+<line x1="240" y1="117" x2="302" y2="171" stroke="var(--faint)" stroke-width="1.2"/>
+<line x1="240" y1="117" x2="302" y2="225" stroke="var(--faint)" stroke-width="1.2"/>
+<line x1="240" y1="171" x2="302" y2="63" stroke="var(--faint)" stroke-width="1.2"/>
+<line x1="240" y1="171" x2="302" y2="117" stroke="var(--faint)" stroke-width="1.2"/>
+<line x1="240" y1="171" x2="302" y2="225" stroke="var(--faint)" stroke-width="1.2"/>
+<line x1="240" y1="225" x2="302" y2="63" stroke="var(--faint)" stroke-width="1.2"/>
+<line x1="240" y1="225" x2="302" y2="117" stroke="var(--faint)" stroke-width="1.2"/>
+<line x1="240" y1="225" x2="302" y2="171" stroke="var(--faint)" stroke-width="1.2"/>
+<rect x="532" y="44" width="70" height="194" rx="3" fill="var(--surface)"/>
+<line x1="536" y1="63" x2="598" y2="117" stroke="var(--faint)" stroke-width="1.2"/>
+<line x1="536" y1="63" x2="598" y2="171" stroke="var(--faint)" stroke-width="1.2"/>
+<line x1="536" y1="63" x2="598" y2="225" stroke="var(--faint)" stroke-width="1.2"/>
+<line x1="536" y1="117" x2="598" y2="63" stroke="var(--faint)" stroke-width="1.2"/>
+<line x1="536" y1="117" x2="598" y2="171" stroke="var(--faint)" stroke-width="1.2"/>
+<line x1="536" y1="117" x2="598" y2="225" stroke="var(--faint)" stroke-width="1.2"/>
+<line x1="536" y1="171" x2="598" y2="63" stroke="var(--faint)" stroke-width="1.2"/>
+<line x1="536" y1="171" x2="598" y2="117" stroke="var(--faint)" stroke-width="1.2"/>
+<line x1="536" y1="171" x2="598" y2="225" stroke="var(--faint)" stroke-width="1.2"/>
+<line x1="536" y1="225" x2="598" y2="63" stroke="var(--faint)" stroke-width="1.2"/>
+<line x1="536" y1="225" x2="598" y2="117" stroke="var(--faint)" stroke-width="1.2"/>
+<line x1="536" y1="225" x2="598" y2="171" stroke="var(--faint)" stroke-width="1.2"/>
+<line x1="524" y1="40" x2="524" y2="244" stroke="var(--red)" stroke-dasharray="4 3"/>
+<text x="524" y="262" class="sl" text-anchor="middle">the combine waits for the busiest GPU</text>
+<text x="0" y="284" class="sl">Block widths are illustrative. Green = useful compute, grey = communication and waiting, red = the overloaded GPU.</text>
+</svg>
+<p class="cap">One MoE layer on four GPUs. The router is small and is copied onto every GPU, so each GPU picks its own tokens' top-8 experts and knows where to send them.</p>
+
+<div class="mathbox">
+<math display="block">
+  <msub><mi>T</mi><mtext>MoE layer</mtext></msub><mo>&#8776;</mo>
+  <munder class="t3"><msub><mi>T</mi><mtext>dispatch</mtext></msub><mtext class="lab">all-to-all out</mtext></munder>
+  <mo>+</mo>
+  <munder class="t2"><mrow><munder><mo movablelimits="true">max</mo><mi>g</mi></munder><mspace width="0.2em"/><msub><mi>T</mi><mtext>experts</mtext></msub><mo stretchy="false">(</mo><mi>g</mi><mo stretchy="false">)</mo></mrow><mtext class="lab">busiest GPU</mtext></munder>
+  <mo>+</mo>
+  <munder class="t3"><msub><mi>T</mi><mtext>combine</mtext></msub><mtext class="lab">all-to-all back</mtext></munder>
+</math>
+<div class="legend">
+  <span class="sym">T<sub>dispatch</sub></span><span>send each token's hidden vector to its experts' GPUs</span><span class="v">FP8 in DeepSeek</span>
+  <span class="sym">max<sub>g</sub></span><span>the step waits for the most loaded GPU g, not the average one</span><span class="v">EPLB shrinks this</span>
+  <span class="sym">T<sub>combine</sub></span><span>return each expert output to the token's home GPU and take the gate-weighted sum</span><span class="v">BF16 in DeepSeek</span>
+</div>
+</div>
+<p class="cap">Same thing in plain text: layer time ≈ dispatch + slowest GPU's expert work + combine, with no overlap. Overlap (below) hides the two communication terms behind another micro-batch's compute.</p>
+
+<h2>The parts, each with two examples</h2>
+<p>Think of a sorting office: letters (tokens) arrive at every branch, get sent to the specialist who handles them, and come back to the branch they came from.</p>
+<table class="parts">
+  <tr><th>Part</th><th class="what">What actually happens</th><th>Example A: prefill</th><th>Example B: decode</th></tr>
+  <tr><td>Dispatch</td><td class="what">Each GPU sends each of its tokens to up to 8 other GPUs. Every GPU sends to every GPU, and each pair gets a different amount.</td>
+      <td class="ex"><b>4,096 tokens × 56 KiB</b><span>≈ 235 MB per layer per GPU (DeepEP normal test)</span></td>
+      <td class="ex"><b>128 tokens × 7,392 B × 8</b><span>= 7.57 MB per layer per GPU (DeepEP low-latency test)</span></td></tr>
+  <tr><td>Expert GEMMs</td><td class="what">Each GPU runs its experts on whatever tokens arrived. More tokens per expert means a more efficient matmul.</td>
+      <td class="ex"><b>EP32, 9 experts per GPU</b><span>"each expert processes a sufficiently large batch size" (V3 §3.4.1)</span></td>
+      <td class="ex"><b>EP320, 1 expert per GPU</b><span>"usually within 256 tokens", memory-bound (§3.4.2)</span></td></tr>
+  <tr><td>Combine</td><td class="what">Expert outputs go back to the token's home GPU and are summed with the gate weights.</td>
+      <td class="ex"><b>112 KiB per token</b><span>8 BF16 copies of 7,168 values</span></td>
+      <td class="ex"><b>14.68 MB per call</b><span>128 tokens × 8 × 14,336 B</span></td></tr>
+  <tr><td>Redundant expert</td><td class="what">An extra copy of a hot expert on another GPU, so its tokens are split between the copies.</td>
+      <td class="ex"><b>32 extra copies on 32 GPUs</b><span>8 + 1 per GPU; reshuffled "every 10 minutes"</span></td>
+      <td class="ex"><b>32 extra copies on 144 GPUs</b><span>2 routed + 1 shared per GPU (Day 6 post)</span></td></tr>
+  <tr><td>Node-limited routing</td><td class="what">A token may use experts on at most 4 nodes, so it crosses the slow network at most 4 times.</td>
+      <td class="ex"><b>≤ 4 IB copies</b><span>then NVLink forwards within each node</span></td>
+      <td class="ex"><b>8 NVLink copies</b><span>the other hops stay inside a node</span></td></tr>
+</table>
+
+<h2>Why all-to-all, not all-reduce</h2>
+<p>Tensor parallelism splits every expert across GPUs. Each GPU computes a <b>partial sum</b> for every token, so everyone needs the total: that's an all-reduce. Under EP, a token's hidden vector has to go to <b>specific</b> GPUs, and each token picks different ones. That's a personalised scatter where each (sender, receiver) pair exchanges its own data, which is what AllToAll means. The combine is the same pattern in reverse. Only the token's home GPU needs the result, so nobody pays to broadcast a sum to everyone.</p>
+<div class="formula">bytes per token per MoE layer (DeepSeek-V3: hidden d = 7,168, top-k = 8)
+dispatch  8 × 7,168 × 1 B (FP8)  =  57,344 B = 56 KiB
+          (+ 56 FP32 scales per copy → 59,136 B)
+combine   8 × 7,168 × 2 B (BF16) = 114,688 B = 112 KiB
+round trip                       = 172,032 B = 168 KiB per token per layer
+                                   (× 58 MoE layers)
+over IB, node-limited to ≤ 4 nodes:
+  dispatch ≤ 4 × 7,168 = 28,672 B · combine ≤ 4 × 14,336 = 57,344 B</div>
+<p class="cap">Our recomputation. FP8 dispatch and BF16 combine are the paper's (§3.3.3) and DeepEP's settings. The scale format (one FP32 per 1×128 tile) is our assumption, but it reproduces DeepEP's bandwidth column almost exactly (table below).</p>
+
+<h3 class="m">NVLink vs InfiniBand, and why node-limited routing exists</h3>
+<table>
+<tr><th>GPU</th><th class="num">NVLink, per GPU</th><th class="num">IB, per GPU</th><th class="num">Ratio</th><th>Source</th></tr>
+<tr><td>H800 (DeepSeek)</td><td class="num">160 GB/s</td><td class="num">50 GB/s</td><td class="num">3.2×</td><td>measured, V3 §3.2.2</td></tr>
+<tr><td>H100 SXM</td><td class="num">450 GB/s per direction</td><td class="num">50 GB/s (400 Gb/s NIC)</td><td class="num">9×</td><td>spec (course facts)</td></tr>
+</table>
+<p style="margin-top:10px">A cross-node copy is 3.2× slower than an in-node one on H800. So V3 sends a token over IB <b>once per target node</b>, to the GPU with the same in-node index, which then forwards it over NVLink to the experts it needs there. IB and NVLink transfers overlap. The paper says this lets a token pick "an average of 3.2 experts per node" at no extra NVLink cost. That 3.2 is the bandwidth ratio 160/50, not a routing setting: the router itself scores each node by its top 8/4 = 2 experts.</p>
+
+<h2>DeepEP: two kernel families for two phases</h2>
+<p>DeepEP is DeepSeek's open all-to-all library. The H800 numbers below come from its V1 documentation (now docs/legacy.md). DeepEP has since been rewritten (V2).</p>
+<h3 class="m">Normal kernels, for prefill and training <span>· 4,096 tokens per batch, top-8, FP8 dispatch / BF16 combine</span></h3>
+<table>
+<tr><th>Type</th><th class="num">EP</th><th class="num">Dispatch bottleneck bw</th><th class="num">Combine bottleneck bw</th><th>Link</th></tr>
+<tr><td>Intranode</td><td class="num">8</td><td class="num hi">153 GB/s</td><td class="num hi">158 GB/s</td><td>NVLink (~160 max)</td></tr>
+<tr><td>Internode</td><td class="num">16</td><td class="num lo">43 GB/s</td><td class="num lo">43 GB/s</td><td>RDMA (~50 max)</td></tr>
+<tr><td>Internode</td><td class="num">32</td><td class="num">58 GB/s</td><td class="num">57 GB/s</td><td>RDMA</td></tr>
+<tr><td>Internode</td><td class="num">64</td><td class="num">51 GB/s</td><td class="num">50 GB/s</td><td>RDMA</td></tr>
+</table>
+<p class="cap">Both links run close to their maximum. They forward NVLink ↔ RDMA like the paper describes, and they take a configurable number of SMs (the paper uses 20 of the H800's 132). Not monotonic in EP: that's how it was measured.</p>
+
+<h3 class="m">Low-latency kernels, for decode <span>· 128 tokens per batch, pure RDMA</span></h3>
+<table>
+<tr><th class="num">EP</th><th class="num">Dispatch</th><th class="num">Table bw</th><th class="num">7.57 MB ÷ time</th><th class="num">Combine</th><th class="num">Table bw</th><th class="num">14.68 MB ÷ time</th><th class="num">× 58 layers</th></tr>
+<tr><td class="num">8</td><td class="num hi">77 µs</td><td class="num">98</td><td class="num">98.3</td><td class="num hi">114 µs</td><td class="num">127</td><td class="num">128.8</td><td class="num">11.1 ms</td></tr>
+<tr><td class="num">16</td><td class="num">118 µs</td><td class="num">63</td><td class="num">64.1</td><td class="num">195 µs</td><td class="num">74</td><td class="num">75.3</td><td class="num">18.2 ms</td></tr>
+<tr><td class="num">32</td><td class="num">155 µs</td><td class="num">48</td><td class="num">48.8</td><td class="num">273 µs</td><td class="num">53</td><td class="num">53.8</td><td class="num">24.8 ms</td></tr>
+<tr><td class="num">64</td><td class="num">173 µs</td><td class="num">43</td><td class="num">43.8</td><td class="num">314 µs</td><td class="num">46</td><td class="num">46.8</td><td class="num">28.2 ms</td></tr>
+<tr><td class="num">128</td><td class="num">192 µs</td><td class="num">39</td><td class="num">39.4</td><td class="num">369 µs</td><td class="num">39</td><td class="num">39.8</td><td class="num">32.5 ms</td></tr>
+<tr><td class="num">256</td><td class="num lo">194 µs</td><td class="num">39</td><td class="num">39.0</td><td class="num lo">360 µs</td><td class="num">40</td><td class="num">40.8</td><td class="num">32.1 ms</td></tr>
+</table>
+<p class="cap">Bandwidth in GB/s. The "÷ time" columns (ours) reproduce DeepEP's bandwidth column to within 2%, so its bandwidth is simply bytes moved ÷ latency. That's logical bandwidth: at EP8/16 it exceeds the 50 GB/s NIC because some traffic stays local (our inference). From EP8 to EP256, dispatch grows 2.5× and combine 3.2×, then both flatten past EP128. The last column (ours) is (dispatch + combine) × 58 MoE layers <b>if nothing overlapped</b>: 11–33 ms per decode step. DeepSeek's service averages 20–22 tok/s per user, about 45–50 ms per token, so without overlap communication alone would take a large share of that.</p>
+
+<h3 class="m">Overlap without spending SMs</h3>
+<p>Normal kernels move data with SMs, like V3 training's 20 SMs. The low-latency kernels add a <b>receive hook</b>: <code>low_latency_dispatch(..., return_recv_hook=True)</code> starts the RDMA transfer and returns at once. The data arrives "in the background, without costing any GPU SMs", and only calling <code>hook()</code> waits for it. With two micro-batches, one computes attention or experts while the other's dispatch or combine is in flight. The four parts "may not have the exact same execution time", so the stages are tuned per workload. DeepSeek's production decode goes further, with a 5-stage pipeline that splits attention in two.</p>
+
+<h2>Stragglers, redundant experts and EPLB</h2>
+<p>Routing is uneven: some experts are hot for a given workload. A GPU that holds a hot expert gets more tokens, and every other GPU waits for it at the combine. The fix is to <b>duplicate the hot experts</b> and <b>pack</b> the copies so every GPU carries about the same load. EPLB is DeepSeek's open implementation, and it runs on predicted loads (for example a moving average). It greedily gives each extra slot to the expert with the highest load per copy, then sorts the copies heaviest first and puts each one on the lightest GPU that still has a free slot.</p>
+<ul>
+<li><b>Hierarchical</b> (used when the number of nodes divides the number of expert groups; prefill, smaller EP): first pack whole expert <b>groups onto nodes</b> evenly, then replicate inside each node, then pack onto GPUs. Tokens routed to one group stay on one node, which saves IB traffic.</li>
+<li><b>Global</b> (otherwise; decode, larger EP): replicate and pack across all GPUs, ignoring groups. In the code, it's just the hierarchical policy with 1 group and 1 node.</li>
+</ul>
+
+<h3 class="m">The README example, traced by hand <span>· layer 0 of 2 · 12 experts, 4 groups of 3, 4 redundant → 16 copies on 2 nodes × 4 GPUs</span></h3>
+<div class="formula">expert loads E0..E11 = 90 132 40 61 104 165 39 4 73 56 183 86
+total 1,033 → ideal per GPU 1,033 ÷ 8 = 129.1
+1. groups → nodes    g0 262 · g1 330 · g2 116 · g3 325
+                     node 0 = g1 + g2 = 446 · node 1 = g3 + g0 = 587
+2. replicate         node 0: E5 165 → 2 × 82.5, then E4 104 → 2 × 52
+                     node 1: E10 183 → 2 × 91.5, then E1 132 → 2 × 66
+3. pack onto GPUs    node 1: E0 90 + E1 66 = 156 · E11 86 + E1 66 = 152
+                             E10 91.5 + E9 56 = 147.5 · E10 91.5 + E2 40 = 131.5
+result               phy2log = [5,6,5,7,8,4,3,4,10,9,10,2,0,1,11,1]
+                     (identical to the README)
+busiest GPU          156 ÷ 129.1 = 1.21× ideal
+                     → the expert phase runs 21% longer than perfect balance</div>
+<svg viewBox="0 0 760 300" role="img" aria-label="Per-GPU load for the EPLB README example. Hierarchical policy: loads 121.5, 86.5, 125, 113 on node 0 and 147.5, 131.5, 156, 152 on node 1; the busiest GPU carries 156 against an ideal 129.1. Global policy: busiest GPU 138.5.">
+<text x="0" y="16" class="st" font-weight="600">Hierarchical (prefill)</text>
+<text x="0" y="32" class="sl">groups stay on one node; max 156 = 1.21× ideal</text>
+<text x="0" y="59" class="sl">GPU 0 · E5+E6</text>
+<rect x="118" y="48" width="144.3" height="15" rx="2" fill="var(--accent)"/>
+<text x="267.3" y="60" class="sl">121.5</text>
+<text x="0" y="83" class="sl">GPU 1 · E5+E7</text>
+<rect x="118" y="72" width="102.7" height="15" rx="2" fill="var(--accent)"/>
+<text x="225.7" y="84" class="sl">86.5</text>
+<text x="0" y="107" class="sl">GPU 2 · E8+E4</text>
+<rect x="118" y="96" width="148.4" height="15" rx="2" fill="var(--accent)"/>
+<text x="271.4" y="108" class="sl">125</text>
+<text x="0" y="131" class="sl">GPU 3 · E3+E4</text>
+<rect x="118" y="120" width="134.2" height="15" rx="2" fill="var(--accent)"/>
+<text x="257.2" y="132" class="sl">113</text>
+<text x="0" y="165" class="sl">GPU 4 · E10+E9</text>
+<rect x="118" y="154" width="175.2" height="15" rx="2" fill="var(--accent)"/>
+<text x="298.2" y="166" class="sl">147.5</text>
+<text x="0" y="189" class="sl">GPU 5 · E10+E2</text>
+<rect x="118" y="178" width="156.2" height="15" rx="2" fill="var(--accent)"/>
+<text x="279.2" y="190" class="sl">131.5</text>
+<text x="0" y="213" class="sl">GPU 6 · E0+E1</text>
+<rect x="118" y="202" width="185.2" height="15" rx="2" fill="var(--red)"/>
+<text x="308.2" y="214" class="sl">156</text>
+<text x="0" y="237" class="sl">GPU 7 · E11+E1</text>
+<rect x="118" y="226" width="180.5" height="15" rx="2" fill="var(--accent)"/>
+<text x="303.5" y="238" class="sl">152</text>
+<line x1="0" x2="360" y1="145" y2="145" stroke="var(--border)"/>
+<line x1="271.3" x2="271.3" y1="44" y2="250" stroke="var(--muted)" stroke-dasharray="4 3"/>
+<text x="271.3" y="264" class="sl" text-anchor="middle">ideal 129.1</text>
+<text x="0" y="282" class="sl">node 0: 446 · node 1: 587 (of 1,033)</text>
+<text x="390" y="16" class="st" font-weight="600">Global (decode)</text>
+<text x="390" y="32" class="sl">groups ignored; max 138.5 = 1.07× ideal</text>
+<text x="390" y="59" class="sl">GPU 0 · E10+E6</text>
+<rect x="508" y="48" width="155.0" height="15" rx="2" fill="var(--accent)"/>
+<text x="668.0" y="60" class="sl">130.5</text>
+<text x="390" y="83" class="sl">GPU 1 · E10+E7</text>
+<rect x="508" y="72" width="113.4" height="15" rx="2" fill="var(--accent)"/>
+<text x="626.4" y="84" class="sl">95.5</text>
+<text x="390" y="107" class="sl">GPU 2 · E0+E2</text>
+<rect x="508" y="96" width="154.4" height="15" rx="2" fill="var(--accent)"/>
+<text x="667.4" y="108" class="sl">130</text>
+<text x="390" y="131" class="sl">GPU 3 · E11+E4</text>
+<rect x="508" y="120" width="163.9" height="15" rx="2" fill="var(--accent)"/>
+<text x="676.9" y="132" class="sl">138</text>
+<text x="390" y="165" class="sl">GPU 4 · E5+E9</text>
+<rect x="508" y="154" width="164.5" height="15" rx="2" fill="var(--red)"/>
+<text x="677.5" y="166" class="sl">138.5</text>
+<text x="390" y="189" class="sl">GPU 5 · E5+E4</text>
+<rect x="508" y="178" width="159.7" height="15" rx="2" fill="var(--accent)"/>
+<text x="672.7" y="190" class="sl">134.5</text>
+<text x="390" y="213" class="sl">GPU 6 · E8+E3</text>
+<rect x="508" y="202" width="159.1" height="15" rx="2" fill="var(--accent)"/>
+<text x="672.1" y="214" class="sl">134</text>
+<text x="390" y="237" class="sl">GPU 7 · E1+E1</text>
+<rect x="508" y="226" width="156.8" height="15" rx="2" fill="var(--accent)"/>
+<text x="669.8" y="238" class="sl">132</text>
+<line x1="390" x2="750" y1="145" y2="145" stroke="var(--border)"/>
+<line x1="661.3" x2="661.3" y1="44" y2="250" stroke="var(--muted)" stroke-dasharray="4 3"/>
+<text x="661.3" y="264" class="sl" text-anchor="middle">ideal 129.1</text>
+<text x="390" y="282" class="sl">node 0: 494 · node 1: 539 (of 1,033)</text>
+</svg>
+<p class="cap">Loads from the lab's exact numpy port of eplb.py. Hierarchical: node 1 carries 587 of 1,033 (57%) because 4 coarse groups can't be split evenly across 2 nodes. Within node 1 the GPUs are close to that node's own mean, 146.75. Global balances better (138.5 = 1.07×) but spreads every group across both nodes, and in this run the packer put both copies of E1 on the same GPU. Without any copies, the GPU holding E10 alone would carry at least 183 = 1.42× ideal.</p>
+
+<p><a class="lab-link" href="https://github.com/seyonv/explainers/blob/main/perf-6-scaling-out/labs/eplb.py">Run it: labs/eplb.py</a> A calculator plus an exact numpy port of eplb.py (under a second). It prints the bytes per token, reproduces DeepEP's bandwidth column from the latencies, and gives the no-overlap cost per decode step and the EP-vs-TP byte table. It reproduces the README's phy2log for both layers and shows per-GPU loads for hierarchical vs global. It then runs a skewed 256-expert load (illustrative, lognormal, max/mean 8.4): EP32 with no copies is 1.80× the mean, and with 32 copies 1.016× (hierarchical, each group on 1 node) or 1.005× (global, each group on 4 nodes). Try this: raise the skew and count how many copies decode EP144 needs.</p>
+
+<h2>EP vs TP for a MoE model</h2>
+<p>Kiely (<i>Inference Engineering</i> §5.4, pp. 143–147): "Tensor Parallelism is generally best for low-latency model inference within a single node, while Expert Parallelism improves throughput for MoE LLMs." EP "requires less inter-GPU communication": unlike TP, "it is not required to collect the results of each layer", so it "scales well to multi-node deployments". Over InfiniBand he suggests TP8PP2 for dense models and trying <b>EP16</b> for MoE. For MoE, "TP8PP2 will generally offer lower latency per user and EP16 will yield higher overall system throughput."</p>
+<table>
+<tr><th class="num">GPUs n</th><th class="num">TP: ring all-reduce of the layer output, BF16</th><th class="num">EP: top-8 dispatch FP8 + combine BF16</th><th class="num">EP ÷ TP</th></tr>
+<tr><td class="num">8</td><td class="num">200.7 kB</td><td class="num">150.5 kB</td><td class="num">0.75</td></tr>
+<tr><td class="num">16</td><td class="num lo">430.1 kB</td><td class="num">161.3 kB</td><td class="num">0.38</td></tr>
+<tr><td class="num">32</td><td class="num lo">888.8 kB</td><td class="num">166.7 kB</td><td class="num">0.19</td></tr>
+<tr><td class="num">64</td><td class="num lo">1,806.3 kB</td><td class="num hi">169.3 kB</td><td class="num hi">0.09</td></tr>
+</table>
+<p class="cap">Our recomputation, total bytes on the wire per token per MoE layer. TP = n × 2(n−1)/n × 14,336 B. EP = 8 × (n−1)/n × (7,168 + 14,336) B, because a copy is free when the expert sits on the token's own GPU. TP's all-reduce grows with n. EP's traffic is capped by top-k, which is why it scales across nodes. At n = 8 the gap comes entirely from the FP8 dispatch: with BF16 in both directions the two would tie at 200.7 kB.</p>
+
+<h2>Why it beats the alternatives</h2>
+<div class="grid2">
+  <div class="cell"><h3><span class="x">&#10007;</span> TP across the experts</h3><p>Slices every expert over every GPU. Each GPU's matmuls get tiny, and the all-reduce grows with the GPU count (430 kB vs 161 kB per token at 16 GPUs), which is too much for InfiniBand.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Plain EP, fixed placement</h3><p>The step waits for the busiest GPU. In the README example the hot expert alone is 1.42× the ideal load. In the lab's skewed 256-expert case, EP32 without copies runs at 1.80× the mean.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Drop the overflow tokens</h3><p>Switch-style capacity limits skip tokens that overflow an expert, which costs quality. DeepSeek-V3 drops no tokens in training or inference and balances by bias and placement instead.</p></div>
+  <div class="cell win"><h3><span class="ok">&#10003;</span> EP + DeepEP + EPLB</h3><p>Whole experts per GPU give big per-expert batches. Two all-to-alls, capped at 168 KiB per token, overlap with a second micro-batch. Redundant copies bring the busiest GPU to within about 1.2× of ideal, or better.</p></div>
+</div>
+
+<h2>Is EP always the right way to serve a MoE?</h2>
+<div class="note">
+  <p>No. EP pays off when the batch is large enough that every expert gets real work, and when the model is too big for one node. It isn't the right choice when:</p>
+  <ul>
+    <li><b>The model fits in one node and you care about per-user latency.</b> Kiely: TP8PP2 gives lower latency per user and EP16 more total throughput. Small MoEs like Mixtral are commonly served with TP (general practice, not from these sources).</li>
+    <li><b>You can't fill it.</b> DeepSeek calls its own deployment unit (320 GPUs for decode) "a burden for small-sized teams". At small batch, each expert gets a handful of tokens and the all-to-all latency (77–360 µs per call) dominates.</li>
+    <li><b>You assume "less communication" means cheap.</b> In training, DeepSeek measured a computation-to-communication ratio of "approximately 1:1" for cross-node EP. It needed custom kernels, 20 SMs and DualPipe to hide it. EP avoids the per-layer all-reduce, but at scale its all-to-all is still the bottleneck.</li>
+  </ul>
+  <p>The load balancer also only predicts. EPLB balances the <i>estimated</i> loads, so a sudden shift in traffic unbalances things until the next rebalance (DeepSeek adjusts about every 10 minutes).</p>
+</div>
+
+<div class="foot">
+<p><b>Read next:</b> DeepEP V1 docs (<a href="https://raw.githubusercontent.com/deepseek-ai/DeepEP/main/docs/legacy.md">docs/legacy.md</a>): intro, Performance and the low-latency example with the hook, ~10 min. Then <a href="https://github.com/deepseek-ai/DeepEP">the current README</a> to see what changed in V2. <a href="https://github.com/deepseek-ai/EPLB">EPLB README</a>, all of it plus a skim of eplb.py, ~5 min. DeepSeek-V3 report (<a href="https://arxiv.org/abs/2412.19437">arXiv 2412.19437</a>) §3.4 "Inference and Deployment", all of it, ~10 min, and §3.2.2 for the IB→NVLink forwarding, ~5 min.</p>
+<p><b>Related:</b> <a href="moe-basics.html">MoE basics: routers, top-k and imbalance</a> · <a href="collectives.html">collectives and interconnects</a> · <a href="deepseek-v3-architecture.html">DeepSeek-V3 I: architecture</a> · <a href="deepseek-v3-infrastructure.html">DeepSeek-V3 II: infrastructure</a> · <a href="megatron-scaling.html">what TP costs</a> · <a href="megascale-infer-design.html">MegaScale-Infer: attention vs experts</a> · <a href="sizing-deployment.html">sizing a deployment</a> · <a href="_overview.html">overview</a> · <a href="../llm-latency/moe.html">MoE (LLM speed and reliability)</a> · <a href="../perf-3-kernels/tensor-cores-low-precision.html">FP8 on tensor cores</a></p>
+<p><b>Sources:</b> DeepEP V1 H800 tables and hook quotes: <a href="https://raw.githubusercontent.com/deepseek-ai/DeepEP/main/docs/legacy.md">DeepEP docs/legacy.md</a>. EPLB policies, README example and algorithm: <a href="https://github.com/deepseek-ai/EPLB">github.com/deepseek-ai/EPLB</a> (README + eplb.py). NVLink 160 / IB 50 GB/s, node-limited forwarding, 20 SMs, FP8 dispatch / BF16 combine, prefill and decode units, 10-minute rebalance, 1:1 ratio, no token dropping: DeepSeek-V3 report v2, §2.1.2, §3.2, §3.3.3, §3.4, §3.5, §6. EP144, 2 routed + 1 shared per GPU, 20–22 tok/s, 5-stage pipeline: <a href="https://raw.githubusercontent.com/deepseek-ai/open-infra-index/main/202502OpenSourceWeek/day_6_one_more_thing_deepseekV3R1_inference_system_overview.md">DeepSeek Day 6 inference overview</a>. EP vs TP quotes: P. Kiely, <i>Inference Engineering</i>, pp. 143–147. H100 450 / 50 GB/s: course facts. Bytes per token, DeepEP bandwidth check, per-step cost and EP-vs-TP bytes are our recomputation; the 256-expert skewed load is illustrative.</p>
+</div>
+</article>
+<!-- series-nav:bottom -->
+<div class="snx"><a class="nx" href="index.html#deepseek-v3-architecture" target="_top">
+<span class="mini" aria-hidden="true"><span class="m1">DeepSeek-V3 I: an architecture built for serving</span><span class="m2">Also called DeepSeekMoE, fine-grained and shared experts, sigmoid gating, node-limited routing, auxiliary-loss-free load balancing, and multi-token prediction (MTP). This card walks the DeepSeek-V3…</span><span class="m3">In one breath</span><span class="m4">DeepSeek-V3 is a 671B-parameter transformer where each token uses only 37B. In 58 of its 61 layers the feed-forward block is split into 256 small routed experts plus 1 shared expert, and a sigmoid router picks 8 of the 256, drawn from at most 4 nodes. Load is kept even by nudging a per-expert bias instead of adding a loss, so no…</span></span>
+<span class="tx"><span class="lab">Next up · 08 / 15</span><span class="tt">DeepSeek-V3 I: an architecture built for serving</span><span class="ds">DeepSeekMoE, loss-free balancing, MTP</span><span class="nd">Builds on: Mixture of experts: routers, top-k and imbalance, Multi-head latent attention (DeepSeek).</span><span class="go">Continue →</span></span></a><div class="aux"><span><a href="index.html#moe-basics" target="_top">← Mixture of experts: routers, top-k and imbalance</a></span><a href="index.html" target="_top">All cards in 6 · Serving across GPUs</a></div></div>
+<!-- /series-nav:bottom -->
+</body>
+</html>

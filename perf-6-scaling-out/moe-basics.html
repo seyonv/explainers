@@ -1,0 +1,391 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mixture of experts: routers, top-k and imbalance</title>
+<style>
+:root{
+  --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
+  --text:#1c1f23; --muted:#6b7068; --faint:#b9b9b3;
+  --accent:#4a9d77; --accent-bg:#dcefdf; --accent-border:#8cc79c;
+  --red:#c0492b; --red-bg:#fbeceb;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#15171a; --surface:#1d2024; --surface2:#24282d; --border:#32373d;
+    --text:#e6e8ea; --muted:#9aa1a9; --faint:#4a5057;
+    --accent:#5fb37f; --accent-bg:#1c2b22; --accent-border:#3f7a55;
+    --red:#e57368; --red-bg:#2e1f1e;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text)}
+.card{max-width:820px;margin:0 auto;padding:28px 32px;font-family:-apple-system,"Inter",system-ui,sans-serif;line-height:1.45}
+h1{font-size:26px;font-weight:600;margin:0 0 6px;letter-spacing:-0.01em}
+.sub{font-size:15px;color:var(--muted);margin:0 0 20px}
+h2{font-size:17px;font-weight:600;margin:26px 0 10px}
+h3.s{font-size:15px;font-weight:600;margin:16px 0 6px}
+p{font-size:15px;margin:0 0 10px}
+ul,ol{font-size:15px;margin:0 0 10px;padding-left:20px} li{margin-bottom:4px}
+.cap{font-size:13px;color:var(--muted);margin:8px 0 14px;text-align:center}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+
+/* Tables and formulas */
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border)}
+th{font-size:12px;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:none}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+.hi{color:var(--accent);font-weight:600} .lo{color:var(--red)}
+.formula{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin:10px 0;white-space:pre;overflow-x:auto;line-height:1.55}
+.tw{overflow-x:auto}
+
+/* MathML */
+.mathbox{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px 16px 12px;margin:10px 0;overflow-x:auto}
+.mathbox math{font-size:21px;color:var(--text);font-family:"STIX Two Math","Latin Modern Math","Cambria Math",math}
+.mathbox .t1{color:var(--text)} .mathbox .t2{color:var(--accent)} .mathbox .t3{color:var(--muted)}
+.mathbox .lab{font-size:12px;font-family:-apple-system,"Inter",system-ui,sans-serif;padding-top:3px;border-top:1.5px solid currentColor;margin-top:2px}
+.legend{display:grid;grid-template-columns:auto 1fr auto;column-gap:14px;row-gap:5px;font-size:13px;margin-top:12px;align-items:baseline}
+.legend .sym{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;text-align:right}
+.legend .v{color:var(--muted);text-align:right;font-variant-numeric:tabular-nums}
+
+/* Two examples per term */
+.parts td{vertical-align:top} .parts td:first-child{font-weight:600}
+.parts .ex{font-size:13px} .parts .ex span{display:block;color:var(--muted)}
+
+/* inline meter */
+.mt{display:flex;align-items:center;gap:8px;white-space:nowrap}
+.mt em{display:block;width:90px;flex:none;height:8px;border-radius:2px;background:var(--surface2)}
+.mt i{display:block;height:8px;border-radius:2px;background:var(--accent)}
+
+/* 2x2 grid */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.cell{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.cell.win{background:var(--accent-bg);border-color:var(--accent-border)}
+.cell h3{font-size:16px;font-weight:600;margin:0 0 5px;display:flex;gap:8px;align-items:baseline}
+.cell p{font-size:14px;margin:0;color:var(--text)}
+.cell.win h3,.cell.win p{color:var(--accent)}
+.x{color:var(--red)} .ok{color:var(--accent)}
+
+/* Clarification box */
+.note{border:1px solid var(--border);border-radius:10px;padding:14px 18px;font-size:14px}
+.note p{font-size:14px} .note p:last-child{margin-bottom:0}
+.ours{border-left:3px solid var(--accent-border);padding:2px 0 2px 14px;margin:10px 0}
+
+.foot{margin-top:22px;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+.foot p{font-size:13px;margin:0 0 6px}
+svg{display:block;max-width:100%;height:auto;margin:6px 0}
+.sl{font-size:12px;fill:var(--muted)} .st{font-size:13px;fill:var(--text)}
+a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+@media (max-width:560px){
+  .card{padding:22px 16px}
+  .grid2{grid-template-columns:1fr}
+  .legend{grid-template-columns:auto 1fr}.legend .v{display:none}
+  .parts .what{display:none}
+  th,td{padding:6px 6px}
+  .mt em{width:50px}
+}
+/* series-nav */
+.sn{max-width:820px;margin:0 auto;padding:16px 32px 0;font-family:-apple-system,"Inter",system-ui,sans-serif;font-size:13px;line-height:1.5;color:var(--muted)}
+.sn a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
+.sn .crumbs{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 7px}
+.sn .crumbs b{color:var(--text);font-weight:600}
+.sn .sep{color:var(--faint,var(--border))}
+.sn .step{margin-left:auto;white-space:nowrap}
+.sn .dep{margin-top:5px;padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface)}
+.sn .dep .ok{color:var(--accent);font-weight:600}
+.snx{max-width:820px;margin:0 auto;padding:6px 32px 44px;font-family:-apple-system,"Inter",system-ui,sans-serif}
+.snx .nx{display:grid;grid-template-columns:280px 1fr;text-decoration:none;color:var(--text);background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.snx .nx:hover,.snx .nx:focus-visible{border-color:var(--accent-border,var(--accent));outline:none}
+.snx .mini{position:relative;height:210px;overflow:hidden;background:var(--bg);border-right:1px solid var(--border);padding:14px 16px}
+.snx .mini span{display:block}
+.snx .mini .m1{font-size:12.5px;font-weight:600;margin:0 0 4px;line-height:1.3}
+.snx .mini .m2{font-size:9px;color:var(--muted);margin:0 0 8px;line-height:1.4}
+.snx .mini .m3{font-size:8.5px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;margin:0 0 3px}
+.snx .mini .m4{font-size:9.5px;margin:0;line-height:1.45}
+.snx .tx{padding:16px 20px}
+.snx .lab{font-size:12px;font-weight:600;color:var(--accent);letter-spacing:.04em;text-transform:uppercase}
+.snx .tt{display:block;font-size:20px;font-weight:600;margin:5px 0 4px;line-height:1.25}
+.snx .ds{display:block;font-size:14px;color:var(--muted)}
+.snx .nd{display:block;font-size:13px;color:var(--muted);margin-top:10px}
+.snx .go{display:block;margin-top:12px;font-size:14px;font-weight:600;color:var(--accent)}
+.snx .aux{display:flex;justify-content:space-between;gap:12px;margin-top:10px;font-size:13px;color:var(--muted)}
+.snx .aux a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
+@media (max-width:560px){.sn,.snx{padding-left:16px;padding-right:16px}.snx .nx{grid-template-columns:1fr}.snx .mini{display:none}.sn .step{margin-left:0}}
+/* /series-nav */
+</style>
+</head>
+<body>
+<!-- series-nav:top -->
+<nav class="sn" aria-label="Course navigation"><div class="crumbs"><a href="../perf-0-map/index.html" target="_top">Fast LLM inference</a><span class="sep">›</span><a href="index.html" target="_top">6 · Serving across GPUs</a><span class="sep">›</span><b>06 / 15</b><span class="step"><a href="index.html#pipeline-data-parallel" target="_top">← prev</a> · <a href="index.html#expert-parallel" target="_top">next →</a></span></div>
+<div class="dep"><b>Before this:</b> <a href="../perf-2-scaling-book-inference/index.html#critical-batch-size" target="_top">Linear layers and the critical batch size</a> (perf-2)</div></nav>
+<!-- /series-nav:top -->
+<article class="card">
+<h1>Mixture of experts: routers, top-k and imbalance</h1>
+<p class="sub">Also called MoE, sparse MoE (SMoE), "total vs active parameters"; the router is also called the gate or gating network, and Switch Transformer calls its top-1 version a "Switch layer". This card opens the router: Shazeer et al. 2017 §2.1 (noisy top-k gating), Switch Transformer §2 (top-1, expert capacity, dropped tokens, the auxiliary loss, Table 1), Mixtral §2 (8 experts, top-2) and DeepSeek-V3's sigmoid gate, then asks what it all means for a serving batch. The consumer view (why a 30B-A3B model is fast on a laptop) is on <a href="../llm-latency/moe.html">the hub's Mixture of experts card</a>; this card doesn't repeat it.</p>
+
+<h2>In one breath</h2>
+<p>An MoE layer replaces a transformer's single MLP with E smaller MLPs ("experts") and a tiny linear layer, the router, that scores all E for each token and sends the token to only the top k. So the model stores E experts' worth of weights but computes only k per token. The price: tokens don't spread evenly, so some experts overflow while others idle, and at serving time a batch of tokens scatters over almost every expert, so each expert does little work per weight it reads.</p>
+
+<h2>The layer, drawn</h2>
+<svg viewBox="0 0 760 250" role="img" aria-label="One token enters the router, which scores 8 experts; the top 2 run and their outputs are summed with the gate weights and added to the residual stream">
+  <text x="20" y="20" class="st" font-weight="600">One MoE layer, Mixtral-shaped: 8 experts, top-2 (every FFN in Mixtral is one of these)</text>
+  <rect x="20" y="104" width="92" height="40" rx="6" fill="var(--surface)" stroke="var(--border)"/>
+  <text x="66" y="128" class="st" text-anchor="middle">token x</text>
+  <line x1="112" y1="124" x2="150" y2="124" stroke="var(--muted)" stroke-width="1.5"/>
+  <rect x="150" y="96" width="112" height="56" rx="6" fill="var(--surface)" stroke="var(--border)"/>
+  <text x="206" y="120" class="st" text-anchor="middle">router</text>
+  <text x="206" y="138" class="sl" text-anchor="middle">logits x·W_g (8)</text>
+  <!-- experts -->
+  <g>
+    <rect x="330" y="36" width="130" height="20" rx="4" fill="var(--accent-bg)" stroke="var(--accent-border)"/><text x="340" y="50" class="st" style="fill:var(--accent)">expert 0 · gate 0.599</text>
+    <rect x="330" y="60" width="130" height="20" rx="4" fill="var(--surface2)" stroke="var(--border)"/><text x="340" y="74" class="sl">expert 1 · skipped</text>
+    <rect x="330" y="84" width="130" height="20" rx="4" fill="var(--surface2)" stroke="var(--border)"/><text x="340" y="98" class="sl">expert 2 · skipped</text>
+    <rect x="330" y="108" width="130" height="20" rx="4" fill="var(--surface2)" stroke="var(--border)"/><text x="340" y="122" class="sl">expert 3 · skipped</text>
+    <rect x="330" y="132" width="130" height="20" rx="4" fill="var(--accent-bg)" stroke="var(--accent-border)"/><text x="340" y="146" class="st" style="fill:var(--accent)">expert 4 · gate 0.401</text>
+    <rect x="330" y="156" width="130" height="20" rx="4" fill="var(--surface2)" stroke="var(--border)"/><text x="340" y="170" class="sl">expert 5 · skipped</text>
+    <rect x="330" y="180" width="130" height="20" rx="4" fill="var(--surface2)" stroke="var(--border)"/><text x="340" y="194" class="sl">expert 6 · skipped</text>
+    <rect x="330" y="204" width="130" height="20" rx="4" fill="var(--surface2)" stroke="var(--border)"/><text x="340" y="218" class="sl">expert 7 · skipped</text>
+  </g>
+  <line x1="262" y1="118" x2="330" y2="46" stroke="var(--accent)" stroke-width="1.8"/>
+  <line x1="262" y1="130" x2="330" y2="142" stroke="var(--accent)" stroke-width="1.8"/>
+  <line x1="460" y1="46" x2="530" y2="116" stroke="var(--accent)" stroke-width="1.8"/>
+  <line x1="460" y1="142" x2="530" y2="128" stroke="var(--accent)" stroke-width="1.8"/>
+  <rect x="530" y="100" width="100" height="44" rx="6" fill="var(--surface)" stroke="var(--border)"/>
+  <text x="580" y="119" class="st" text-anchor="middle">Σ gate · out</text>
+  <text x="580" y="136" class="sl" text-anchor="middle">+ residual x</text>
+  <line x1="630" y1="122" x2="668" y2="122" stroke="var(--muted)" stroke-width="1.5"/>
+  <text x="674" y="126" class="st">next layer</text>
+  <text x="206" y="178" class="sl" text-anchor="middle">~4096 × 8 weights:</text>
+  <text x="206" y="193" class="sl" text-anchor="middle">tiny next to one expert</text>
+  <text x="395" y="244" class="sl" text-anchor="middle">all 8 held in memory; 2 computed</text>
+</svg>
+<p class="cap">Green: the experts this token actually computes. Grey: weights at rest that this token skips but some other token in the batch probably needs. Gate values are the lab's illustrative example below. The router is one 4096 × 8 matrix per layer in Mixtral (our count), about 0.02% of one 176M-parameter expert.</p>
+
+<h2>The words, with two real models side by side</h2>
+<p>Think of a hospital triage desk: every patient gets a quick look (the router), then sees two specialists out of eight (top-2), and a specialist with a full waiting room turns people away (capacity).</p>
+<div class="tw"><table class="parts">
+  <tr><th>Part</th><th class="what">What actually happens</th><th>Example A: Mixtral 8×7B</th><th>Example B: DeepSeek-V3</th></tr>
+  <tr><td>Expert</td><td class="what">An ordinary FFN (SwiGLU in both). One MoE layer holds E of them in place of one dense MLP.</td>
+      <td class="ex"><b>8</b> per layer, width 14,336<span>176.2M params each (our count)</span></td>
+      <td class="ex"><b>256 routed + 1 shared</b>, width 2,048<span>≈ 44M each (our count); 58 of 61 layers</span></td></tr>
+  <tr><td>Router (gate)</td><td class="what">A linear layer giving one score per expert for each token. Tiny, trained with the model.</td>
+      <td class="ex"><b>x·W_g → softmax over top-2</b><span>Mixtral §2</span></td>
+      <td class="ex"><b>sigmoid(u·e_i), per expert</b><span>V3 §2.1.2, Eq. 13–15</span></td></tr>
+  <tr><td>Top-k</td><td class="what">How many experts each token uses. Sets the compute per token.</td>
+      <td class="ex"><b>k = 2 of 8</b><span>25% of experts per token</span></td>
+      <td class="ex"><b>k = 8 of 256</b><span>3.1% of routed experts, max 4 nodes</span></td></tr>
+  <tr><td>Total vs active</td><td class="what">Total = every weight you must store; active = the weights one token computes with.</td>
+      <td class="ex"><b>47B total / 13B active</b><span>paper; our recount 46.70B / 12.88B</span></td>
+      <td class="ex"><b>671B total / 37B active</b><span>paper abstract; 5.5% active</span></td></tr>
+  <tr><td>Load balancing</td><td class="what">Whatever stops the router sending most tokens to a few experts.</td>
+      <td class="ex"><b>not described in the paper</b><span>it notes EP "load balancing" challenges</span></td>
+      <td class="ex"><b>per-expert bias, γ = 0.001</b><span>plus a tiny aux loss, α = 0.0001</span></td></tr>
+  <tr><td>Token dropping</td><td class="what">Tokens beyond an expert's capacity skip it and ride the residual connection.</td>
+      <td class="ex"><b>not in the paper</b><span>Megablocks kernels handle uneven loads</span></td>
+      <td class="ex"><b>none</b><span>"does not drop any tokens" in training or inference</span></td></tr>
+</table></div>
+
+<h2>Gating, as the 2017 paper wrote it</h2>
+<p>Shazeer et al. start from a softmax gate over all experts, <i>G</i>(x) = Softmax(x·W<sub>g</sub>), then add two things: noise (to spread load) and sparsity (keep only the top k, set the rest to −∞ so their gates are exactly 0 and those experts never run).</p>
+<div class="mathbox">
+<math display="block">
+  <mi>y</mi><mo>=</mo><munder><mo>&#8721;</mo><mi>i</mi></munder><mi>G</mi><msub><mrow><mo stretchy="false">(</mo><mi>x</mi><mo stretchy="false">)</mo></mrow><mi>i</mi></msub><msub><mi>E</mi><mi>i</mi></msub><mo stretchy="false">(</mo><mi>x</mi><mo stretchy="false">)</mo>
+  <mspace width="1.2em"/>
+  <mi>G</mi><mo stretchy="false">(</mo><mi>x</mi><mo stretchy="false">)</mo><mo>=</mo>
+  <munder class="t2"><mrow><mtext>Softmax</mtext><mo stretchy="false">(</mo><mtext>KeepTopK</mtext><mo stretchy="false">(</mo><mi>H</mi><mo stretchy="false">(</mo><mi>x</mi><mo stretchy="false">)</mo><mo>,</mo><mi>k</mi><mo stretchy="false">)</mo><mo stretchy="false">)</mo></mrow><mtext class="lab">sparsity: only k gates are non-zero</mtext></munder>
+</math>
+<math display="block" style="margin-top:14px">
+  <mi>H</mi><msub><mrow><mo stretchy="false">(</mo><mi>x</mi><mo stretchy="false">)</mo></mrow><mi>i</mi></msub><mo>=</mo>
+  <munder class="t1"><msub><mrow><mo stretchy="false">(</mo><mi>x</mi><mo>&#183;</mo><msub><mi>W</mi><mi>g</mi></msub><mo stretchy="false">)</mo></mrow><mi>i</mi></msub><mtext class="lab">clean score</mtext></munder>
+  <mo>+</mo>
+  <munder class="t3"><mrow><mtext>StandardNormal</mtext><mo stretchy="false">(</mo><mo stretchy="false">)</mo><mo>&#183;</mo><mtext>Softplus</mtext><mo stretchy="false">(</mo><msub><mrow><mo stretchy="false">(</mo><mi>x</mi><mo>&#183;</mo><msub><mi>W</mi><mtext>noise</mtext></msub><mo stretchy="false">)</mo></mrow><mi>i</mi></msub><mo stretchy="false">)</mo></mrow><mtext class="lab">learned per-expert noise</mtext></munder>
+</math>
+<div class="legend">
+  <span class="sym">E_i(x)</span><span>output of expert i (an FFN)</span><span class="v">skipped wherever G(x)_i = 0</span>
+  <span class="sym">W_g</span><span>router weights, d_model × E</span><span class="v">4096 × 8 in Mixtral</span>
+  <span class="sym">W_noise</span><span>a second trainable matrix: how much noise each expert gets</span><span class="v">Shazeer only</span>
+  <span class="sym">KeepTopK</span><span>keep the k largest entries, set the rest to −∞</span><span class="v">Eq. 5</span>
+  <span class="sym">k</span><span>experts per token</span><span class="v">Shazeer k &gt; 1 · Switch 1 · Mixtral 2 · V3 8</span>
+</div>
+</div>
+<p class="cap">Shazeer §2.1, Eq. 1 and 3–5. "The noise term helps with load balancing." Mixtral uses the same form without the noise: <i>G</i>(x) = Softmax(TopK(x·W<sub>g</sub>)).</p>
+
+<h3 class="s">The same logits, three gating orders</h3>
+<p>Papers disagree on <i>when</i> to normalise, and it changes the gate values. One illustrative token with router logits [2.0, 1.2, 0.3, −0.5, 1.6, −1.0, 0.1, 0.7] (lab section 1):</p>
+<div class="tw"><table>
+  <tr><th>Who</th><th>Order</th><th>Experts picked</th><th class="num">Gate values</th><th class="num">Sum</th></tr>
+  <tr><td>Shazeer 2017, Mixtral</td><td>top-k, <b>then</b> softmax over the kept logits</td><td>0 and 4</td><td class="num">0.599, 0.401</td><td class="num">1.000</td></tr>
+  <tr><td>Switch Transformer</td><td>softmax over all N, <b>then</b> pick the top 1</td><td>0</td><td class="num">0.350</td><td class="num lo">0.350</td></tr>
+  <tr><td>DeepSeek-V3</td><td>sigmoid per expert, top-k, <b>then</b> divide by the kept sum</td><td>0 and 4</td><td class="num">0.514, 0.486</td><td class="num">1.000</td></tr>
+</table></div>
+<p class="cap">Sigmoids 0.881 and 0.832 → 0.881 / 1.713 = 0.514. V3 really picks 8 of 256; top-2 of 8 here only so the rows compare. Switch keeps the un-renormalised 0.350 as the multiplier (its Eq. 2), which is what lets the gradient reach the router with k = 1. V3's sigmoid scores each expert independently, so one expert scoring high doesn't push the others' scores down.</p>
+
+<h2>Switch Transformer §2: top-1, capacity and dropped tokens</h2>
+<p>Shazeer had conjectured that k &gt; 1 was needed for the router to learn anything. Switch routes each token to <b>one</b> expert and reports three wins: less router compute, expert batch "at least halved", simpler code with less communication. Because TPUs need static shapes, every expert gets a fixed number of slots:</p>
+<div class="mathbox">
+<math display="block">
+  <mtext>expert capacity</mtext><mo>=</mo>
+  <mfrac><mtext>tokens per batch</mtext><mtext>number of experts</mtext></mfrac>
+  <mo>&#215;</mo><munder class="t2"><mtext>capacity factor</mtext><mtext class="lab">buffer for imbalance</mtext></munder>
+</math>
+</div>
+<p class="cap">Switch Eq. 3. Filled in for the lab: 4,096 tokens / 8 experts × 1.25 = 640 slots per expert.</p>
+<p>A token that arrives at a full expert is a <b>dropped token</b>: "computation is skipped and the token representation is passed directly to the next layer through the residual connection." A larger factor drops less but pads more empty slots, which is wasted compute and memory. With the aux loss below, Switch reports drops "typically &lt; 1%". Our lab routes 4,096 tokens top-1 to 8 experts with a deliberately skewed router (Zipf, s = 1, illustrative):</p>
+<svg viewBox="0 0 760 290" role="img" aria-label="Tokens per expert for a skewed router: expert 1 gets 1,544 and expert 2 764, above the 640-slot capacity at factor 1.25; the overflow is dropped">
+  <text x="20" y="18" class="sl">tokens routed to each expert (skewed router, T = 4,096, seed 0)</text>
+  <line x1="273.6" y1="30" x2="273.6" y2="252" stroke="var(--faint)" stroke-width="1.2" stroke-dasharray="4 3"/>
+  <line x1="312" y1="30" x2="312" y2="252" stroke="var(--red)" stroke-width="1.6" stroke-dasharray="5 3"/>
+  <line x1="427.2" y1="30" x2="427.2" y2="252" stroke="var(--faint)" stroke-width="1.2" stroke-dasharray="4 3"/>
+  <text x="273.6" y="266" class="sl" text-anchor="middle">512</text><text x="273.6" y="280" class="sl" text-anchor="middle">cf 1.0</text>
+  <text x="312" y="266" class="sl" text-anchor="middle" style="fill:var(--red)">640</text><text x="316" y="280" class="sl" style="fill:var(--red)">cf 1.25</text>
+  <text x="427.2" y="266" class="sl" text-anchor="middle">1,024</text><text x="427.2" y="280" class="sl" text-anchor="middle">cf 2.0</text>
+  <g font-variant-numeric="tabular-nums">
+    <text x="110" y="49" class="st" text-anchor="end">expert 1</text><rect x="120" y="36" width="192" height="18" rx="2" fill="var(--accent)"/><rect x="312" y="36" width="271.2" height="18" rx="2" fill="var(--red)"/><text x="590" y="49" class="st">1,544 · 904 dropped</text>
+    <text x="110" y="75" class="st" text-anchor="end">expert 2</text><rect x="120" y="62" width="192" height="18" rx="2" fill="var(--accent)"/><rect x="312" y="62" width="37.2" height="18" rx="2" fill="var(--red)"/><text x="356" y="75" class="st">764 · 124 dropped</text>
+    <text x="110" y="101" class="st" text-anchor="end">expert 3</text><rect x="120" y="88" width="152.4" height="18" rx="2" fill="var(--accent)"/><text x="280.4" y="101" class="sl">508</text>
+    <text x="110" y="127" class="st" text-anchor="end">expert 4</text><rect x="120" y="114" width="106.2" height="18" rx="2" fill="var(--accent)"/><text x="234.2" y="127" class="sl">354</text>
+    <text x="110" y="153" class="st" text-anchor="end">expert 5</text><rect x="120" y="140" width="81.6" height="18" rx="2" fill="var(--accent)"/><text x="209.6" y="153" class="sl">272</text>
+    <text x="110" y="179" class="st" text-anchor="end">expert 6</text><rect x="120" y="166" width="70.2" height="18" rx="2" fill="var(--accent)"/><text x="198.2" y="179" class="sl">234</text>
+    <text x="110" y="205" class="st" text-anchor="end">expert 7</text><rect x="120" y="192" width="69.3" height="18" rx="2" fill="var(--accent)"/><text x="197.3" y="205" class="sl">231</text>
+    <text x="110" y="231" class="st" text-anchor="end">expert 8</text><rect x="120" y="218" width="56.7" height="18" rx="2" fill="var(--accent)"/><text x="184.7" y="231" class="sl">189</text>
+  </g>
+  <text x="600" y="150" class="sl">mean 512 per expert</text>
+  <text x="600" y="166" class="sl">max / mean = 3.02</text>
+  <text x="600" y="182" class="sl" style="fill:var(--red)">1,028 of 4,096 dropped</text>
+  <text x="600" y="198" class="sl" style="fill:var(--red)">at cf 1.25 (25.1%)</text>
+</svg>
+<p class="cap">Green: tokens the expert computes. Red: tokens past the 640-slot capacity at factor 1.25, which skip this layer's FFN. Dashed grey lines: capacity at factors 1.0 and 2.0. Scale: 1,600 tokens = 480 px. Illustrative skew; lab section 3.</p>
+<div class="tw"><table>
+  <tr><th>Router (lab, 4,096 tokens, 8 experts)</th><th class="num">max / mean</th><th class="num">cf 1.0: dropped · empty</th><th class="num">cf 1.25: dropped · empty</th><th class="num">cf 2.0: dropped · empty</th></tr>
+  <tr><td>Balanced (what the aux loss aims for)</td><td class="num">1.05</td><td class="num"><span class="lo">1.4%</span> · 1.4%</td><td class="num">0.0% · 20.0%</td><td class="num">0.0% · 50.0%</td></tr>
+  <tr><td>Skewed, Zipf s = 1 (illustrative)</td><td class="num lo">3.02</td><td class="num"><span class="lo">31.3%</span> · 31.3%</td><td class="num"><span class="lo">25.1%</span> · 40.1%</td><td class="num"><span class="lo">12.7%</span> · 56.3%</td></tr>
+</table></div>
+<p class="cap">"Empty" = unused slots as a share of all slots (compute you pay for and waste). Even a perfectly balanced router drops 1.4% at factor 1.0: 512 is only the <i>average</i> load, and random counts scatter around it (the largest here is 538). With skew, no buffer fixes it: doubling capacity still drops 12.7% while half the slots sit empty.</p>
+
+<h3 class="s">What Switch measured (Table 1)</h3>
+<div class="tw"><table>
+  <tr><th>Model (128 experts, every other FFN, 32 TPUv3 cores)</th><th class="num">Capacity factor</th><th class="num">Quality at 100k steps ↑</th><th class="num">Hours to −1.50 ↓</th><th class="num">Examples/s ↑</th></tr>
+  <tr><td>T5-Base (dense)</td><td class="num">–</td><td class="num">−1.731</td><td class="num lo">not achieved</td><td class="num">1600</td></tr>
+  <tr><td>T5-Large (dense)</td><td class="num">–</td><td class="num">−1.550</td><td class="num lo">131.1</td><td class="num">470</td></tr>
+  <tr><td>MoE-Base (top-2)</td><td class="num">2.0</td><td class="num">−1.547</td><td class="num">68.7</td><td class="num">840</td></tr>
+  <tr><td>Switch-Base (top-1)</td><td class="num">2.0</td><td class="num">−1.554</td><td class="num">72.8</td><td class="num">860</td></tr>
+  <tr><td>MoE-Base</td><td class="num">1.25</td><td class="num">−1.559</td><td class="num">80.7</td><td class="num">790</td></tr>
+  <tr><td>Switch-Base</td><td class="num">1.25</td><td class="num">−1.553</td><td class="num">65.0</td><td class="num">910</td></tr>
+  <tr><td>MoE-Base</td><td class="num">1.0</td><td class="num">−1.572</td><td class="num">80.1</td><td class="num">860</td></tr>
+  <tr><td>Switch-Base</td><td class="num">1.0</td><td class="num">−1.561</td><td class="num hi">62.8</td><td class="num hi">1000</td></tr>
+  <tr><td>Switch-Base+ (bigger, speed-matched to MoE)</td><td class="num">1.0</td><td class="num hi">−1.534</td><td class="num">67.6</td><td class="num">780</td></tr>
+</table></div>
+<p class="cap">Quality is negative log perplexity (higher is better). Switch reached the threshold fastest at factor 1.0 (62.8 h, 1,000 examples/s): per the paper, "Switch Transformers perform better at lower capacity factors (1.0, 1.25)". The paper flags one oddity itself: MoE got <i>slower</i> going from factor 2.0 to 1.25 (840 → 790).</p>
+
+<h2>The auxiliary loss that keeps the router honest</h2>
+<p>Left alone, a router can collapse onto a few favourite experts, which then overflow. Switch adds one loss term per Switch layer:</p>
+<div class="mathbox">
+<math display="block">
+  <mtext>loss</mtext><mo>=</mo><mi>&#945;</mi><mo>&#183;</mo><mi>N</mi><mo>&#183;</mo>
+  <munderover><mo>&#8721;</mo><mrow><mi>i</mi><mo>=</mo><mn>1</mn></mrow><mi>N</mi></munderover>
+  <munder class="t1"><msub><mi>f</mi><mi>i</mi></msub><mtext class="lab">share of tokens sent</mtext></munder>
+  <mo>&#183;</mo>
+  <munder class="t2"><msub><mi>P</mi><mi>i</mi></msub><mtext class="lab">share of router probability</mtext></munder>
+</math>
+<div class="legend">
+  <span class="sym">f_i</span><span>fraction of the batch's T tokens whose argmax is expert i (Eq. 5; not differentiable)</span><span class="v">counts</span>
+  <span class="sym">P_i</span><span>mean router probability p_i(x) over the batch (Eq. 6; differentiable, so gradients flow through it)</span><span class="v">soft</span>
+  <span class="sym">N</span><span>number of experts; multiplying by N keeps the minimum at α for any N</span><span class="v">8 in the lab</span>
+  <span class="sym">α</span><span>coefficient</span><span class="v">10⁻² (swept 10⁻¹…10⁻⁵)</span>
+</div>
+</div>
+<div class="formula">Uniform:  f_i = P_i = 1/8
+          loss = 0.01 × 8 × 8·(1/8 · 1/8) = 0.01 × 8 × 0.1250 = 0.0100
+Skewed (Zipf s = 1): f_i = P_i = 0.368, 0.184, 0.123, 0.092,
+                                 0.074, 0.061, 0.053, 0.046
+          loss = 0.01 × 8 × Σ w_i² = 0.01 × 8 × 0.2068 = 0.0165 (1.65×)
+Lab, simulated: balanced 0.01 × 8 × 0.1251 = 0.0100
+                skewed   0.01 × 8 × 0.1851 = 0.0148</div>
+<p class="cap">The simulated skewed value is below the analytic one because a token's soft probabilities P spread wider than its hard argmax f. Either way the loss is smallest when load is even, and α = 10⁻² was, per Switch, "sufficiently large to ensure load balancing while small enough to not to overwhelm the primary cross-entropy objective". DeepSeek-V3 replaces most of this with a per-expert bias nudged by γ = 0.001 each step and keeps only a tiny sequence-wise loss (α = 0.0001); the <a href="deepseek-v3-architecture.html">V3 architecture card</a> covers it.</p>
+
+<h2>Total vs active: memory pays for one, FLOPs for the other</h2>
+<div class="tw"><table>
+  <tr><th>Model</th><th>Experts, top-k</th><th class="num">Total</th><th class="num">Active</th><th class="num">Active share</th></tr>
+  <tr><td>Mixtral 8×7B</td><td>8, top-2, every layer</td><td class="num">47B</td><td class="num">13B</td><td class="num">28%</td></tr>
+  <tr><td>Qwen3-235B-A22B (Kiely p.53)</td><td>128, top-8, 94 layers</td><td class="num">235B</td><td class="num">22B</td><td class="num">9.4%</td></tr>
+  <tr><td>DeepSeek-V3</td><td>256 routed + 1 shared, top-8</td><td class="num">671B</td><td class="num">37B</td><td class="num hi">5.5%</td></tr>
+</table></div>
+<p>"8×7B" is not 56B: the experts are only the FFNs, and attention and embeddings are shared. Our recount from Mixtral's Table 1 shapes gives one expert = 3 × 4,096 × 14,336 = 176.2M, total 32 × (8 × 176.2M + 41.9M attention) + embeddings = <b>46.70B</b>, active with 2 experts = <b>12.88B</b>. Mixtral's own framing: active parameters are "directly proportional to the inference compute cost", while "the memory costs for serving Mixtral are proportional to its sparse parameter count, 47B".</p>
+<div class="formula">DeepSeek-V3, FP8 (1 byte/param):
+  memory to hold it  = 671B × 1 B = 671 GB   &gt; 640 GB of one 8×H100 node  (course facts)
+  FLOPs per token    = 2 × 37B    = 74 GFLOP  (like a 37B dense model; attention FLOPs extra)</div>
+
+<h2>The serving catch: a batch splits across experts</h2>
+<p>This is where MoE meets the roofline from <a href="../perf-2-scaling-book-inference/critical-batch-size.html">course 2, The math of serving an LLM</a>. A dense layer is compute-bound once the batch passes B<sub>crit</sub> ≈ 295 tokens on an H100. In an MoE layer each expert only sees its share of the batch. Shazeer's "shrinking batch problem" (§3.1): with k of E experts, each gets about B·k/E tokens. So every expert only reaches B<sub>crit</sub> when</p>
+<div class="mathbox">
+<math display="block">
+  <munder class="t1"><mfrac><mrow><mi>B</mi><mo>&#183;</mo><mi>k</mi></mrow><mi>E</mi></mfrac><mtext class="lab">tokens per expert</mtext></munder>
+  <mo>&#8805;</mo><msub><mi>B</mi><mtext>crit</mtext></msub>
+  <mspace width="0.8em"/><mo>&#8660;</mo><mspace width="0.8em"/>
+  <mi>B</mi><mo>&#8805;</mo>
+  <munder class="t2"><mrow><msub><mi>B</mi><mtext>crit</mtext></msub><mo>&#183;</mo><mfrac><mi>E</mi><mi>k</mi></mfrac></mrow><mtext class="lab">MoE critical batch</mtext></munder>
+</math>
+</div>
+<p class="cap">DeepSeek-V3 on H100, BF16: 295 × 256/8 = 295 × 32 = <b>9,440 tokens</b> per decode step. At B = 256 each expert sees 8 tokens on average; at B = 1,024, 32.</p>
+<div class="tw"><table>
+  <tr><th>Hardware and precision</th><th class="num">Dense B<sub>crit</sub></th><th class="num">Mixtral (E/k = 4)</th><th class="num">DeepSeek-V3 (E/k = 32)</th><th>Source</th></tr>
+  <tr><td>H100 SXM, BF16 weights and math</td><td class="num">295</td><td class="num">1,180</td><td class="num lo">9,440</td><td>course facts × E/k</td></tr>
+  <tr><td>H100 SXM, FP8 weights and FP8 math</td><td class="num">295</td><td class="num">1,180</td><td class="num">9,440</td><td>our recomputation: 1,979 T / (2 × 3.35 T)</td></tr>
+  <tr><td>H100 SXM, FP8 weights, BF16 math</td><td class="num">148</td><td class="num">590</td><td class="num">4,724</td><td>our recomputation: 989 T / (2 × 3.35 T)</td></tr>
+  <tr><td>TPU v5e, BF16</td><td class="num">240</td><td class="num">960</td><td class="num">7,680</td><td>Scaling Book × E/k</td></tr>
+  <tr><td>TPU v5e, int8 weights, BF16 math</td><td class="num">120</td><td class="num">480</td><td class="num hi">3,840</td><td>Scaling Book Part 4, Q8</td></tr>
+</table></div>
+<p class="cap">The 3,840 in <a href="../perf-2-scaling-book-inference/worked-problems.html">course 2's worked problems</a> is the TPU int8 row, not a contradiction of 9,440: half the bytes per weight halves B<sub>crit</sub>, and the TPU's ratio is lower. Its H100 analogue (FP8 weights, BF16 math) is 4,724. Mixtral H100 with FP8 weights: 147.6 × 4 = 590.</p>
+
+<h3 class="s">And almost every expert gets read anyway</h3>
+<p>Kiely (<i>Inference Engineering</i>, pp.53–54): "in batched inference on production servers, different requests activate different experts, and you should expect almost all of the model parameters to be active at any given time unless sparsity is achieved in large-scale Expert Parallelism." With uniform routing, a token misses a given expert with probability 1 − k/E, so</p>
+<div class="mathbox">
+<math display="block">
+  <mi>P</mi><mo stretchy="false">(</mo><mtext>expert untouched by a batch of&#160;</mtext><mi>B</mi><mo stretchy="false">)</mo><mo>=</mo>
+  <msup><mrow><mo stretchy="true" minsize="2.2em">(</mo><mn>1</mn><mo>&#8722;</mo><mfrac><mi>k</mi><mi>E</mi></mfrac><mo stretchy="true" minsize="2.2em">)</mo></mrow><mi>B</mi></msup>
+</math>
+</div>
+<div class="tw"><table>
+  <tr><th>DeepSeek-V3, batch B</th><th>Routed experts touched, uniform (formula)</th><th class="num">Skewed Zipf s = 1 (sim)</th><th class="num">GB read per step (FP8)</th><th class="num">GB per token</th></tr>
+  <tr><td>1</td><td><div class="mt"><em><i style="width:3.1%"></i></em>3.1%</div></td><td class="num">3.1%</td><td class="num hi">37</td><td class="num">37.44</td></tr>
+  <tr><td>8</td><td><div class="mt"><em><i style="width:22.4%"></i></em>22.4%</div></td><td class="num">16.4%</td><td class="num">164</td><td class="num">20.46</td></tr>
+  <tr><td>32</td><td><div class="mt"><em><i style="width:63.8%"></i></em>63.8%</div></td><td class="num">41.5%</td><td class="num">434</td><td class="num">13.57</td></tr>
+  <tr><td>64</td><td><div class="mt"><em><i style="width:86.9%"></i></em>86.9%</div></td><td class="num">59.7%</td><td class="num">585</td><td class="num">9.14</td></tr>
+  <tr><td>128</td><td><div class="mt"><em><i style="width:98.3%"></i></em>98.3%</div></td><td class="num">78.5%</td><td class="num lo">660</td><td class="num">5.15</td></tr>
+  <tr><td>256</td><td><div class="mt"><em><i style="width:100%"></i></em>99.97%</div></td><td class="num">92.9%</td><td class="num lo">671</td><td class="num">2.62</td></tr>
+</table></div>
+<p class="cap">Per MoE layer, uniform routing: (1 − 8/256)<sup>64</sup> = 0.131, so 86.9% of experts are touched at B = 64. Bytes read = the ~17B always-on parameters (attention, shared experts, dense layers, embeddings) + touched share × 654B routed, 1 byte each; our inference, lab section 6. Mixtral saturates sooner: 1 − (0.75)<sup>8</sup> = 90.0% touched at B = 8.</p>
+<div class="ours"><p>Put the two tables together (our inference). By B ≈ 128 the step already reads nearly all 671 GB, like a dense model, but each expert still has only 4 tokens of work on average, about 74× short of B<sub>crit</sub> (295 / 4). That gap is why DeepSeek's decode deployment runs expert parallelism over 320 GPUs fed by 80 attention replicas (DP80): gathering tokens from many replicas is the only way to give each expert enough of them. The <a href="expert-parallel.html">expert parallelism card</a> does the plumbing.</p></div>
+
+<h2>Why it beats the alternatives</h2>
+<div class="grid2">
+  <div class="cell"><h3><span class="x">&#10007;</span> Dense, same total size</h3><p>Every one of 671B parameters computes for every token: 18× the FLOPs of 37B active (671/37). Same memory bill, far more compute per token.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Dense, same active size</h3><p>Same FLOPs per token, but far fewer parameters. Mixtral with 13B active beats Llama 2 70B "across most categories" per its paper; a 13B dense model has no such claim.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> MoE with no balancing</h3><p>The router piles tokens on favourites. In the lab a skewed router drops 25.1% of tokens at capacity factor 1.25, and a big buffer mostly buys empty slots.</p></div>
+  <div class="cell win"><h3><span class="ok">&#10003;</span> Top-k MoE, balanced</h3><p>Knowledge scales with total parameters, compute with active ones. Balancing (an aux loss or V3's bias) keeps load near the mean, so capacity 1.0–1.25 is enough and drops stay small.</p></div>
+</div>
+
+<h2>Is MoE cheaper to serve?</h2>
+<div class="note">
+  <p>Per token of compute, yes. Per GPU at small batch, often no. You pay memory for all 671B (DeepSeek-V3 doesn't fit one 8×H100 node in FP8), and at batch 64 a decode step already reads 585 GB, yet no expert is anywhere near compute-bound until about 9,440 tokens per step on an H100. Mixtral's paper says the same in one line: MoE is "more suitable for batched workloads where one can reach a good degree of arithmetic intensity". So MoE pays off at large scale with expert parallelism. For one user on one box (the laptop case on <a href="../llm-latency/moe.html">the hub card</a>) it pays off because only the active weights are read. In between, a dense model is simpler: Kiely notes models under 32B, and especially under 8B, "tend to use traditional dense architectures efficiently".</p>
+  <p>Token dropping is mostly a training-on-TPUs artefact of static shapes. DeepSeek-V3 drops none in training or inference, and the Mixtral paper points to Megablocks kernels, which handle "a variable number of tokens" per expert. Whether a given engine can ever drop tokens at inference, check its docs; none of our sources says vLLM or SGLang do.</p>
+</div>
+
+<h2>Run it yourself</h2>
+<p><a href="https://github.com/seyonv/explainers/blob/main/perf-6-scaling-out/labs/moe-router.py">Run it: labs/moe-router.py</a> <b>[L]</b> runs on your Mac in a few seconds with numpy (seed 0). It prints the three gating orders for one token, the Mixtral 46.70B / 12.88B recount, per-expert loads, drops and empty slots at capacity factors 1.0 / 1.25 / 2.0 with the aux loss for a balanced and a skewed router, B<sub>crit</sub> × E/k for three models, and experts touched and GB read against batch size. Try <code>ZIPF_S = 2.0</code> (one expert takes 65.5%, drops at factor 2.0 reach 40.7%, aux loss 0.0299), <code>T = 512</code> (fewer tokens per expert, so even the balanced router drops more at factor 1.0) or k = 1 for DeepSeek in section 5.</p>
+
+<div class="foot">
+<p><b>Read next:</b> Fedus, Zoph and Shazeer, <a href="https://arxiv.org/pdf/2101.03961">"Switch Transformers"</a>: §2 "Switch Transformer", all of it (2.1–2.4, with Figure 3 and Table 1), ~15 min. Jiang et al., <a href="https://arxiv.org/pdf/2401.04088">"Mixtral of Experts"</a>: §2 "Architectural details" and §2.1 "Sparse Mixture of Experts", ~5 min. Shazeer et al., <a href="https://arxiv.org/pdf/1701.06538">"Outrageously Large Neural Networks"</a>: §2.1 "Gating Network" only (Eq. 2–5), ~5 min; §3.1 "The shrinking batch problem" if you want the serving catch in its original form, ~3 min.</p>
+<p><b>Related:</b> <a href="expert-parallel.html">Expert parallelism: dispatch, combine and EPLB</a> · <a href="deepseek-v3-architecture.html">DeepSeek-V3 I: an architecture built for serving</a> · <a href="deepseek-v3-infrastructure.html">DeepSeek-V3 II: infrastructure, FP8 and deployment</a> · <a href="megascale-infer-design.html">MegaScale-Infer I: splitting attention from the experts</a> · <a href="sizing-deployment.html">Sizing a deployment</a> · <a href="collectives.html">How GPUs talk: collectives and interconnects</a> · <a href="../llm-latency/moe.html">Mixture of experts (hub card)</a> · <a href="../perf-2-scaling-book-inference/critical-batch-size.html">Linear layers and the critical batch size</a> · <a href="../perf-2-scaling-book-inference/worked-problems.html">The chapter's worked problems</a> · <a href="../perf-5-engines/quantization-serving.html">Quantization for serving</a></p>
+<p><b>Sources:</b> Noisy top-k gating (Eq. 1, 3–5), "helps with load balancing", shrinking batch b·k/n: Shazeer et al. 2017, <a href="https://arxiv.org/pdf/1701.06538">arXiv 1701.06538</a> §2.1, §3.1. Top-1 routing, Eq. 1–6, expert capacity, dropped tokens via the residual, "typically &lt; 1%", α = 10⁻² and its sweep, Table 1: Switch Transformer, <a href="https://arxiv.org/pdf/2101.03961">arXiv 2101.03961</a> §2. Mixtral 8 experts, top-2, G(x) = Softmax(TopK(x·W<sub>g</sub>)), 47B / 13B, Table 1 shapes, Megablocks, the memory vs compute quotes: <a href="https://arxiv.org/pdf/2401.04088">arXiv 2401.04088</a> v1 §2–3. DeepSeek-V3 671B / 37B, 256 routed + 1 shared, top-8, ≤ 4 nodes, sigmoid-then-normalise gate, γ = 0.001, α = 0.0001, no token dropping, DP80 / EP320 decode: <a href="https://arxiv.org/pdf/2412.19437">arXiv 2412.19437</a> v2 §2.1.2, §3.4 (via the course facts). Qwen3-235B-A22B and the "almost all of the model parameters" and "under 32B" quotes: Kiely, <i>Inference Engineering</i> (book), pp.53–54. H100 B<sub>crit</sub> 295, 1,979 TFLOPS FP8, 640 GB per node, ~44M per V3 expert and 654B routed: course facts. TPU v5e 240 / 120 and DeepSeek 3,840: <a href="https://jax-ml.github.io/scaling-book/transformers/">Scaling Book Part 4</a>, Q8, as used in course 2. Every gate value, load, drop rate, aux-loss value, touched share, GB-read figure and the Mixtral recount is our computation with <code>labs/moe-router.py</code>; the skewed router is illustrative.</p>
+</div>
+</article>
+<!-- series-nav:bottom -->
+<div class="snx"><a class="nx" href="index.html#expert-parallel" target="_top">
+<span class="mini" aria-hidden="true"><span class="m1">Expert parallelism: dispatch, combine and EPLB</span><span class="m2">Also called EP, "MoE all-to-all", or dispatch/combine; the load balancer is EPLB (expert-parallel load balancer). DeepSeek-V3 serves its 256 routed experts per layer this way: prefill on 32 GPUs…</span><span class="m3">In one breath</span><span class="m4">Put whole experts on different GPUs. At every MoE layer, each token is sent to the GPUs that hold its chosen experts (dispatch), those experts run, and the results are sent back and summed (combine). Two all-to-all exchanges per layer replace the all-reduce of tensor parallelism. The layer can only finish when the busiest GPU…</span></span>
+<span class="tx"><span class="lab">Next up · 07 / 15</span><span class="tt">Expert parallelism: dispatch, combine and EPLB</span><span class="ds">DeepEP's all-to-all and balancing hot experts</span><span class="nd">Builds directly on this card.</span><span class="go">Continue →</span></span></a><div class="aux"><span><a href="index.html#pipeline-data-parallel" target="_top">← Pipeline and data parallelism when serving</a></span><a href="index.html" target="_top">All cards in 6 · Serving across GPUs</a></div></div>
+<!-- /series-nav:bottom -->
+</body>
+</html>

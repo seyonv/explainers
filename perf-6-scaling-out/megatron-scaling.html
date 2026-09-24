@@ -1,0 +1,440 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Megatron II: embeddings, the fused loss, and what TP costs</title>
+<style>
+:root{
+  --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
+  --text:#1c1f23; --muted:#6b7068; --faint:#b9b9b3;
+  --accent:#4a9d77; --accent-bg:#dcefdf; --accent-border:#8cc79c;
+  --red:#c0492b; --red-bg:#fbeceb;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#15171a; --surface:#1d2024; --surface2:#24282d; --border:#32373d;
+    --text:#e6e8ea; --muted:#9aa1a9; --faint:#4a5057;
+    --accent:#5fb37f; --accent-bg:#1c2b22; --accent-border:#3f7a55;
+    --red:#e57368; --red-bg:#2e1f1e;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text)}
+.card{max-width:820px;margin:0 auto;padding:28px 32px;font-family:-apple-system,"Inter",system-ui,sans-serif;line-height:1.45}
+h1{font-size:26px;font-weight:600;margin:0 0 6px;letter-spacing:-0.01em}
+.sub{font-size:15px;color:var(--muted);margin:0 0 20px}
+h2{font-size:17px;font-weight:600;margin:26px 0 10px}
+h2 small{font-size:13px;font-weight:400;color:var(--muted)}
+h3.sm{font-size:15px;font-weight:600;margin:18px 0 8px}
+p{font-size:15px;margin:0 0 10px}
+ul{font-size:15px;margin:0 0 10px;padding-left:20px}
+li{margin-bottom:4px}
+.cap{font-size:13px;color:var(--muted);margin:8px 0 0;text-align:center}
+.cap + p,.cap + h3.sm{margin-top:14px}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+blockquote{margin:10px 0;padding:8px 14px;border-left:3px solid var(--border);color:var(--muted);font-size:14px}
+.take{border-left:3px solid var(--accent-border);background:var(--surface);padding:8px 14px;margin:12px 0;font-size:14px;border-radius:0 6px 6px 0}
+.take b{color:var(--accent)}
+
+/* Tables and formulas */
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border)}
+th{font-size:12px;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:none}
+.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.num small{color:var(--muted);font-size:12px}
+.hi{color:var(--accent);font-weight:600} .lo{color:var(--red);font-weight:600} .mu{color:var(--muted)}
+.formula{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin:10px 0;white-space:pre;overflow-x:auto;line-height:1.55}
+.formula .c{color:var(--muted)} .formula .g{color:var(--accent);font-weight:600} .formula .r{color:var(--red);font-weight:600}
+.tw{overflow-x:auto}
+.tw table{min-width:620px}
+
+/* MathML */
+.mathbox{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px 16px 12px;margin:10px 0;overflow-x:auto}
+.mathbox math{font-size:21px;color:var(--text);font-family:"STIX Two Math","Latin Modern Math","Cambria Math",math}
+.mathbox .t1{color:var(--text)} .mathbox .t2{color:var(--accent)} .mathbox .t3{color:var(--muted)}
+.mathbox .lab{font-size:12px;font-family:-apple-system,"Inter",system-ui,sans-serif;padding-top:3px;border-top:1.5px solid currentColor;margin-top:2px}
+.legend{display:grid;grid-template-columns:auto 1fr auto;column-gap:14px;row-gap:5px;font-size:13px;margin-top:12px;align-items:baseline}
+.legend .sym{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;text-align:right}
+.legend .v{color:var(--muted);text-align:right;font-variant-numeric:tabular-nums}
+@media (max-width:560px){.legend{grid-template-columns:auto 1fr}.legend .v{display:none}}
+
+/* Two examples per term */
+.parts td{vertical-align:top} .parts td:first-child{font-weight:600}
+.parts .ex{font-size:13px} .parts .ex span{display:block;color:var(--muted)}
+.parts .what{font-size:13px}
+@media (max-width:560px){.parts .what{display:none}}
+
+/* Bars */
+.bars{display:grid;grid-template-columns:150px 1fr 70px;column-gap:12px;row-gap:9px;align-items:center;font-size:14px}
+.bars .hd{font-size:12px;color:var(--muted);font-weight:600}
+.bars .hd.r,.bars .v{text-align:right;font-variant-numeric:tabular-nums}
+.bars .nm small{display:block;font-size:12px;color:var(--muted)}
+.bars .track{display:flex;height:20px;align-items:center}
+.bars .seg{height:20px}
+.bars .w{background:var(--accent);border-radius:3px 0 0 3px}
+.bars .solo{border-radius:3px}
+.bars .lat{background:var(--faint)}
+.bars .bw{background:var(--muted);border-radius:0 3px 3px 0}
+.bars .v.l{color:var(--red);font-weight:600}
+.key{display:flex;flex-wrap:wrap;gap:6px 18px;font-size:13px;color:var(--muted);margin:10px 0 0}
+.key i{display:inline-block;width:12px;height:12px;border-radius:2px;margin-right:6px;vertical-align:-1px}
+.key .kw{background:var(--accent)} .key .kl{background:var(--faint)} .key .kb{background:var(--muted)}
+
+/* 2x2 grid */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.cell{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.cell.win{background:var(--accent-bg);border-color:var(--accent-border)}
+.cell h3{font-size:16px;font-weight:600;margin:0 0 5px;display:flex;gap:8px;align-items:baseline}
+.cell p{font-size:14px;margin:0;color:var(--text)}
+.cell.win h3,.cell.win p{color:var(--accent)}
+.x{color:var(--red)} .ok{color:var(--accent)}
+
+/* Clarification box */
+.note{border:1px solid var(--border);border-radius:10px;padding:14px 18px;font-size:14px}
+.note p,.note li{font-size:14px} .note p:last-child{margin-bottom:0}
+.note ul{padding-left:18px}
+
+.foot{margin-top:22px;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+.foot p{font-size:13px}
+.lab-link{display:inline-block;font-size:13px;border:1px solid var(--accent-border);background:var(--accent-bg);color:var(--accent);border-radius:6px;padding:4px 10px;margin:2px 0 10px;text-decoration:none}
+
+/* SVG */
+svg{display:block;max-width:100%;height:auto;margin-top:6px;font-family:-apple-system,"Inter",system-ui,sans-serif}
+.sl{font-size:12px;fill:var(--muted)} .st{font-size:13px;fill:var(--text)} .sh{font-size:13px;font-weight:600;fill:var(--text)}
+.sla{font-size:12px;fill:var(--accent);font-weight:600} .slr{font-size:12px;fill:var(--red);font-weight:600}
+.bn{fill:var(--bg);stroke:var(--muted);stroke-width:1}
+.bd{fill:var(--accent-bg);stroke:var(--accent);stroke-width:1.2}
+.bp{fill:var(--surface2);stroke:var(--muted);stroke-width:1}
+.bub{fill:var(--red-bg);stroke:var(--red);stroke-width:1.2;stroke-dasharray:4 3}
+.srv{fill:var(--surface);stroke:var(--border);stroke-width:1}
+.gq{fill:var(--bg);stroke:var(--muted);stroke-width:1}
+.ga{fill:var(--accent);stroke:var(--accent);stroke-width:1}
+.mpg{fill:none;stroke:var(--text);stroke-width:1.4}
+.ln{stroke:var(--muted);stroke-width:1.2;fill:none}
+.lr{stroke:var(--red);stroke-width:1.4;fill:none;stroke-dasharray:5 3}
+.la{stroke:var(--accent);stroke-width:1.6;fill:none}
+.dp{stroke:var(--accent);stroke-width:1.4;fill:none;stroke-dasharray:4 3}
+@media (max-width:560px){.grid2{grid-template-columns:1fr}.card{padding:20px 16px}.bars{grid-template-columns:96px 1fr 58px}}
+a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+/* series-nav */
+.sn{max-width:820px;margin:0 auto;padding:16px 32px 0;font-family:-apple-system,"Inter",system-ui,sans-serif;font-size:13px;line-height:1.5;color:var(--muted)}
+.sn a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
+.sn .crumbs{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 7px}
+.sn .crumbs b{color:var(--text);font-weight:600}
+.sn .sep{color:var(--faint,var(--border))}
+.sn .step{margin-left:auto;white-space:nowrap}
+.sn .dep{margin-top:5px;padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface)}
+.sn .dep .ok{color:var(--accent);font-weight:600}
+.snx{max-width:820px;margin:0 auto;padding:6px 32px 44px;font-family:-apple-system,"Inter",system-ui,sans-serif}
+.snx .nx{display:grid;grid-template-columns:280px 1fr;text-decoration:none;color:var(--text);background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.snx .nx:hover,.snx .nx:focus-visible{border-color:var(--accent-border,var(--accent));outline:none}
+.snx .mini{position:relative;height:210px;overflow:hidden;background:var(--bg);border-right:1px solid var(--border);padding:14px 16px}
+.snx .mini span{display:block}
+.snx .mini .m1{font-size:12.5px;font-weight:600;margin:0 0 4px;line-height:1.3}
+.snx .mini .m2{font-size:9px;color:var(--muted);margin:0 0 8px;line-height:1.4}
+.snx .mini .m3{font-size:8.5px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;margin:0 0 3px}
+.snx .mini .m4{font-size:9.5px;margin:0;line-height:1.45}
+.snx .tx{padding:16px 20px}
+.snx .lab{font-size:12px;font-weight:600;color:var(--accent);letter-spacing:.04em;text-transform:uppercase}
+.snx .tt{display:block;font-size:20px;font-weight:600;margin:5px 0 4px;line-height:1.25}
+.snx .ds{display:block;font-size:14px;color:var(--muted)}
+.snx .nd{display:block;font-size:13px;color:var(--muted);margin-top:10px}
+.snx .go{display:block;margin-top:12px;font-size:14px;font-weight:600;color:var(--accent)}
+.snx .aux{display:flex;justify-content:space-between;gap:12px;margin-top:10px;font-size:13px;color:var(--muted)}
+.snx .aux a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
+@media (max-width:560px){.sn,.snx{padding-left:16px;padding-right:16px}.snx .nx{grid-template-columns:1fr}.snx .mini{display:none}.sn .step{margin-left:0}}
+/* /series-nav */
+</style>
+</head>
+<body>
+<!-- series-nav:top -->
+<nav class="sn" aria-label="Course navigation"><div class="crumbs"><a href="../perf-0-map/index.html" target="_top">Fast LLM inference</a><span class="sep">›</span><a href="index.html" target="_top">6 · Serving across GPUs</a><span class="sep">›</span><b>04 / 15</b><span class="step"><a href="index.html#megatron-mlp-attention" target="_top">← prev</a> · <a href="index.html#pipeline-data-parallel" target="_top">next →</a></span></div>
+<div class="dep"><b>Before this:</b> <a href="index.html#megatron-mlp-attention" target="_top">Megatron I: splitting the MLP and attention</a></div></nav>
+<!-- /series-nav:top -->
+<article class="card">
+<h1>Megatron II: embeddings, the fused loss, and what TP costs</h1>
+<p class="sub">Also called vocab-parallel embedding, parallel cross-entropy, or "the cost of tensor parallelism". Part two of Megatron-LM (Shoeybi et al., 2019, arXiv 1909.08053): the rest of §3, Appendix B's GPU groups, the §5 scaling results on 512 V100s, and then the serving question they set up: what 2, 4 or 8-way TP does to one Llama-3.1-70B decode step. The paper says "intra-layer model parallel"; "tensor parallelism" (TP) is the later name.</p>
+
+<h2>In one breath</h2>
+<p>Megatron splits the model's two ends the way it splits the layers: each GPU keeps a slice of the vocabulary, only small tensors (b × s × H activations or b × s losses) ever cross GPUs, and cheap work like layernorm and dropout is simply repeated on every GPU. That kept an 8-way split at 77% efficiency inside one server. For serving, the same all-reduces are a fixed cost per layer that doesn't shrink as you add GPUs, so TP stops paying once the weight read gets small or the all-reduce has to leave the NVLink node.</p>
+
+<p style="margin-top:14px">The <a href="megatron-mlp-attention.html">first Megatron card</a> covers §2.3 and how the MLP and attention are split (two all-reduces per layer in the forward pass). This card picks up where §3 turns to the embeddings.</p>
+
+<h2>Worked example 1: the two ends of the model <small>§3, the embedding paragraphs</small></h2>
+<p>GPT-2's vocabulary is 50,257 tokens and its output layer reuses the input embedding matrix (weights "tied"). The table E is H × v, so it's too big to copy onto every GPU. Megatron splits it along the vocabulary: GPU r holds the rows for its range of token ids.</p>
+
+<svg viewBox="0 0 780 330" role="img" aria-label="Vocab-parallel input embedding with an all-reduce, and the output layer where logits stay sharded and a fused cross-entropy sends only b times s values">
+  <text class="sh" x="10" y="18">1 · Input embedding: E split by vocabulary rows, 8 ways</text>
+  <rect class="bn" x="10" y="62" width="120" height="44" rx="6"/>
+  <text class="st" x="70" y="81" text-anchor="middle">token ids</text>
+  <text class="sl" x="70" y="97" text-anchor="middle">b × s, on every GPU</text>
+  <rect class="bn" x="175" y="32" width="210" height="26" rx="5"/><text class="st" x="185" y="50">GPU 1 · E₁: ids 0–6,399</text>
+  <rect class="bn" x="175" y="64" width="210" height="26" rx="5"/><text class="st" x="185" y="82">GPU 2 · E₂: ids 6,400–12,799</text>
+  <text class="st" x="280" y="104" text-anchor="middle">⋮</text>
+  <rect class="bn" x="175" y="110" width="210" height="26" rx="5"/><text class="st" x="185" y="128">GPU 8 · E₈: ids 44,800–51,199</text>
+  <path class="ln" d="M130 84 L175 45 M130 84 L175 77 M130 84 L175 123"/>
+  <text class="sl" x="280" y="150" text-anchor="middle">each GPU looks up its own ids and writes 0 for the rest</text>
+  <path class="ln" d="M385 45 L430 84 M385 77 L430 84 M385 123 L430 84"/>
+  <rect class="bp" x="430" y="62" width="165" height="44" rx="6"/>
+  <text class="st" x="512" y="81" text-anchor="middle">all-reduce (g), sum</text>
+  <text class="sl" x="512" y="97" text-anchor="middle">b × s × H values</text>
+  <path class="ln" d="M595 84 L630 84"/>
+  <rect class="bn" x="630" y="62" width="140" height="44" rx="6"/>
+  <text class="st" x="700" y="81" text-anchor="middle">embeddings X</text>
+  <text class="sl" x="700" y="97" text-anchor="middle">identical on every GPU</text>
+
+  <text class="sh" x="10" y="186">2 · Output layer (same E): logits stay split</text>
+  <rect class="bn" x="10" y="232" width="120" height="44" rx="6"/>
+  <text class="st" x="70" y="251" text-anchor="middle">X</text>
+  <text class="sl" x="70" y="267" text-anchor="middle">b × s × H</text>
+  <rect class="bn" x="175" y="200" width="210" height="26" rx="5"/><text class="st" x="185" y="218">Y₁ = X·E₁ᵀ  [b, s, 6,400]</text>
+  <rect class="bn" x="175" y="232" width="210" height="26" rx="5"/><text class="st" x="185" y="250">Y₂ = X·E₂ᵀ  [b, s, 6,400]</text>
+  <text class="st" x="280" y="272" text-anchor="middle">⋮</text>
+  <rect class="bn" x="175" y="278" width="210" height="26" rx="5"/><text class="st" x="185" y="296">Y₈ = X·E₈ᵀ  [b, s, 6,400]</text>
+  <path class="ln" d="M130 254 L175 213 M130 254 L175 245 M130 254 L175 291"/>
+  <path class="lr" d="M385 213 L430 218"/>
+  <rect class="bub" x="430" y="198" width="165" height="42" rx="6"/>
+  <text class="slr" x="512" y="215" text-anchor="middle">✗ all-gather the logits</text>
+  <text class="sl" x="512" y="231" text-anchor="middle">b × s × v values</text>
+  <path class="la" d="M385 245 L430 272 M385 291 L430 272"/>
+  <rect class="bd" x="430" y="252" width="165" height="42" rx="6"/>
+  <text class="sla" x="512" y="269" text-anchor="middle">✓ fused cross-entropy</text>
+  <text class="sl" x="512" y="285" text-anchor="middle">b × s values cross</text>
+  <path class="la" d="M595 273 L630 273"/>
+  <rect class="bd" x="630" y="251" width="140" height="44" rx="6"/>
+  <text class="sla" x="700" y="270" text-anchor="middle">loss per token</text>
+  <text class="sl" x="700" y="286" text-anchor="middle">b × s scalars</text>
+</svg>
+<p class="cap">Split 8 ways, as in the paper's 8.3B run. The padded vocabulary (51,200) is split into 8 slices of 6,400 ids.</p>
+
+<div class="formula"><span class="c">Megatron's MP runs: b = 8, s = 1,024, v = 51,200 (padded)</span>
+all-gather logits  b × s × v = 8 × 1,024 × 51,200 = <span class="r">419,430,400 values</span>
+                   <span class="c">≈ 839 MB in fp16</span>
+fused loss         b × s     = 8 × 1,024          = <span class="g">8,192 values</span>
+                   → v = 51,200× less traffic
+
+<span class="c">Vocab padding (§5.1): each GPU's slice a multiple of 128, up to 8-way</span>
+50,257 → next multiple of 128 × 8 = 1,024 → <span class="g">51,200</span> = 50 × 1,024
+                   <span class="c">+943 rows, 1.9%</span>
+per GPU at 8-way:  51,200 / 8 = 6,400 = 50 × 128
+Llama-3.1 128,256: / 8 = 16,032 = 125.25 × 128 → would pad to 129,024
+                   <span class="c">(our recomputation)</span></div>
+<p class="cap">The paper: "Communicating scalar losses instead of logits is a huge reduction in communication". It says only that the fusion "reduces the dimension to b × s". To keep the softmax exact, each GPU needs the per-token max and sum of exponentials over all slices, plus the target token's logit from whichever GPU holds it. That's three all-reduces of b × s values, still tiny (our inference; the lab checks it matches the unsplit loss).</p>
+
+<h3 class="sm">Every term in §3's ending and Appendix B, with two examples</h3>
+<p>Think of a dictionary torn into 8 volumes: everyone looks up their own words, and the results get merged.</p>
+<div class="tw"><table class="parts">
+<tr><th>Term</th><th class="what">What actually happens</th><th>Example A: Megatron 8.3B training</th><th>Example B: Llama-3.1-70B, TP8 serving</th></tr>
+<tr><td>Vocab-parallel embedding</td><td class="what">E is split by vocabulary rows. Each GPU embeds the tokens it owns, writes zeros for the rest, then one all-reduce (g) sums the partial results.</td>
+<td class="ex"><b>6,400 rows per GPU</b><span>one all-reduce of b × s × 3,072 after the embedding</span></td>
+<td class="ex"><b>16,032 rows per GPU</b><span>one extra all-reduce of B × 8,192 per step, 16 kB at B = 1 (our inference)</span></td></tr>
+<tr><td>Fused cross-entropy</td><td class="what">The output GEMM gives each GPU a slice of the logits. The loss is computed on the slices, so only per-token scalars are exchanged.</td>
+<td class="ex"><b class="ok">8,192 values</b> instead of 419M<span>b = 8, s = 1,024</span></td>
+<td class="ex"><b>No loss when serving</b><span>the analogue is gathering B × 128,256 logits to sample: 65.7 MB at B = 256, ≈ 128 µs on NVLink, once per step (our recomputation)</span></td></tr>
+<tr><td>Duplicated layernorm, dropout, residual</td><td class="what">Rather than one GPU computing them and broadcasting, every GPU repeats them on the full activation. Layernorm weights are copied everywhere, so nothing has to be sent after an optimizer step.</td>
+<td class="ex"><b>Repeated on all 8 GPUs</b><span>3,072-wide layernorm, dropout 0.1</span></td>
+<td class="ex"><b>160 RMSNorms repeated on 8 GPUs</b><span>8,192 weights each; no dropout at inference</span></td></tr>
+<tr><td>Model-parallel group</td><td class="what">The GPUs that together hold one copy of the model. Their all-reduces run inside the group (App B.1).</td>
+<td class="ex"><b>GPUs 1–8</b><span>2 groups per 16-GPU DGX-2H, on NVSwitch</span></td>
+<td class="ex"><b>The 8 H100s of one node</b><span>one TP8 replica</span></td></tr>
+<tr><td>Data-parallel group</td><td class="what">GPUs at the same position in every model-parallel group. They hold identical weights and all-reduce gradients with each other.</td>
+<td class="ex"><b>GPUs 1, 9, …, 505</b><span>64 of them; 8 × 64 = 512 GPUs</span></td>
+<td class="ex"><b>Serving replicas</b><span>they share no gradients, so there's no all-reduce: a router just spreads requests</span></td></tr>
+<tr><td>Model-parallel RNG (App B.2)</td><td class="what">Dropout outside the split regions must match on every GPU, and dropout inside them must differ. So there are two random number generators.</td>
+<td class="ex"><b>Same seed</b> for residual dropout<span>a separate seed per worker inside model-parallel regions</span></td>
+<td class="ex"><b>No dropout</b><span>if each GPU samples the next token itself, they need the same seed to agree (our inference)</span></td></tr>
+</table></div>
+
+<h2>Worked example 2: how the 512 GPUs are grouped <small>Appendix B.1</small></h2>
+<svg viewBox="0 0 780 172" role="img" aria-label="32 DGX-2H servers with 16 GPUs each; each row of 8 is a model-parallel group; GPUs 1, 9, 17 and so on to 505 form a data-parallel group">
+  <rect class="srv" x="10" y="22" width="232" height="102" rx="8"/><text class="sl" x="20" y="16">server 1 (DGX-2H, NVSwitch)</text>
+  <rect class="srv" x="262" y="22" width="232" height="102" rx="8"/><text class="sl" x="272" y="16">server 2</text>
+  <text class="st" x="521" y="76" text-anchor="middle">…</text>
+  <rect class="srv" x="548" y="22" width="232" height="102" rx="8"/><text class="sl" x="558" y="16">server 32</text>
+  <g>
+    <rect class="ga" x="20" y="36" width="22" height="22" rx="3"/><rect class="gq" x="47" y="36" width="22" height="22" rx="3"/><rect class="gq" x="74" y="36" width="22" height="22" rx="3"/><rect class="gq" x="101" y="36" width="22" height="22" rx="3"/><rect class="gq" x="128" y="36" width="22" height="22" rx="3"/><rect class="gq" x="155" y="36" width="22" height="22" rx="3"/><rect class="gq" x="182" y="36" width="22" height="22" rx="3"/><rect class="gq" x="209" y="36" width="22" height="22" rx="3"/>
+    <rect class="ga" x="20" y="82" width="22" height="22" rx="3"/><rect class="gq" x="47" y="82" width="22" height="22" rx="3"/><rect class="gq" x="74" y="82" width="22" height="22" rx="3"/><rect class="gq" x="101" y="82" width="22" height="22" rx="3"/><rect class="gq" x="128" y="82" width="22" height="22" rx="3"/><rect class="gq" x="155" y="82" width="22" height="22" rx="3"/><rect class="gq" x="182" y="82" width="22" height="22" rx="3"/><rect class="gq" x="209" y="82" width="22" height="22" rx="3"/>
+    <rect class="mpg" x="16" y="32" width="219" height="30" rx="5"/>
+    <text class="sl" x="31" y="69" text-anchor="middle">1</text><text class="sl" x="220" y="69" text-anchor="middle">8</text>
+    <text class="sl" x="31" y="118" text-anchor="middle">9</text><text class="sl" x="220" y="118" text-anchor="middle">16</text>
+  </g>
+  <g>
+    <rect class="ga" x="272" y="36" width="22" height="22" rx="3"/><rect class="gq" x="299" y="36" width="22" height="22" rx="3"/><rect class="gq" x="326" y="36" width="22" height="22" rx="3"/><rect class="gq" x="353" y="36" width="22" height="22" rx="3"/><rect class="gq" x="380" y="36" width="22" height="22" rx="3"/><rect class="gq" x="407" y="36" width="22" height="22" rx="3"/><rect class="gq" x="434" y="36" width="22" height="22" rx="3"/><rect class="gq" x="461" y="36" width="22" height="22" rx="3"/>
+    <rect class="ga" x="272" y="82" width="22" height="22" rx="3"/><rect class="gq" x="299" y="82" width="22" height="22" rx="3"/><rect class="gq" x="326" y="82" width="22" height="22" rx="3"/><rect class="gq" x="353" y="82" width="22" height="22" rx="3"/><rect class="gq" x="380" y="82" width="22" height="22" rx="3"/><rect class="gq" x="407" y="82" width="22" height="22" rx="3"/><rect class="gq" x="434" y="82" width="22" height="22" rx="3"/><rect class="gq" x="461" y="82" width="22" height="22" rx="3"/>
+    <text class="sl" x="283" y="69" text-anchor="middle">17</text><text class="sl" x="472" y="69" text-anchor="middle">24</text>
+    <text class="sl" x="283" y="118" text-anchor="middle">25</text><text class="sl" x="472" y="118" text-anchor="middle">32</text>
+  </g>
+  <g>
+    <rect class="ga" x="558" y="36" width="22" height="22" rx="3"/><rect class="gq" x="585" y="36" width="22" height="22" rx="3"/><rect class="gq" x="612" y="36" width="22" height="22" rx="3"/><rect class="gq" x="639" y="36" width="22" height="22" rx="3"/><rect class="gq" x="666" y="36" width="22" height="22" rx="3"/><rect class="gq" x="693" y="36" width="22" height="22" rx="3"/><rect class="gq" x="720" y="36" width="22" height="22" rx="3"/><rect class="gq" x="747" y="36" width="22" height="22" rx="3"/>
+    <rect class="ga" x="558" y="82" width="22" height="22" rx="3"/><rect class="gq" x="585" y="82" width="22" height="22" rx="3"/><rect class="gq" x="612" y="82" width="22" height="22" rx="3"/><rect class="gq" x="639" y="82" width="22" height="22" rx="3"/><rect class="gq" x="666" y="82" width="22" height="22" rx="3"/><rect class="gq" x="693" y="82" width="22" height="22" rx="3"/><rect class="gq" x="720" y="82" width="22" height="22" rx="3"/><rect class="gq" x="747" y="82" width="22" height="22" rx="3"/>
+    <text class="sl" x="569" y="69" text-anchor="middle">497</text><text class="sl" x="758" y="69" text-anchor="middle">504</text>
+    <text class="sl" x="569" y="118" text-anchor="middle">505</text><text class="sl" x="758" y="118" text-anchor="middle">512</text>
+  </g>
+  <path class="dp" d="M31 136 L569 136"/>
+  <text class="sla" x="10" y="152">green: one data-parallel group, GPUs 1, 9, 17, …, 505 (64 GPUs; gradient all-reduce crosses servers)</text>
+  <text class="sl" x="10" y="168">outlined row: one model-parallel group, GPUs 1–8 (all its all-reduces stay on NVSwitch)</text>
+</svg>
+<p class="cap">8-way model parallel × 64-way data parallel = 512 GPUs. A DGX-2H holds 16 GPUs, so each server hosts two complete model-parallel groups and every model-parallel all-reduce stays on NVSwitch. Only the data-parallel gradient all-reduces cross InfiniBand. "All communication is implemented in PyTorch by Python calls to NCCL."</p>
+
+<h2>What it scaled to <small>§4–5 and Appendix D, on V100s</small></h2>
+<p>Setup (§4): 174 GB of deduplicated text, mixed precision with dynamic loss scaling, activation checkpointing after every layer, sequence length 1,024. Hardware (§5): "up to 32 DGX-2H servers (a total of 512 Tesla V100 SXM3 32GB GPUs)", with "300 GB/sec bandwidth between GPUs inside a server via NVSwitch and 100 GB/sec of interconnect bandwidth between servers using 8 InfiniBand adapters per server." The same inside-vs-outside gap still exists on an H100 node:</p>
+<table>
+<tr><th>Link</th><th>Megatron's DGX-2H (V100)</th><th>H100 node (course facts)</th></tr>
+<tr><td>GPUs per NVLink domain</td><td class="num">16</td><td class="num">8</td></tr>
+<tr><td>Inside the node, per GPU</td><td class="num">300 GB/s <small>both directions, our reading</small></td><td class="num">450 GB/s each way <small>("900" both)</small></td></tr>
+<tr><td>Leaving the node</td><td class="num">100 GB/s per server = 6.25 GB/s per GPU</td><td class="num">400 GB/s per node = 50 GB/s per GPU</td></tr>
+<tr><td>Inside ÷ outside, per GPU</td><td class="num lo">≈ 48×</td><td class="num lo">≈ 9×</td></tr>
+</table>
+<p class="cap">The paper states the per-server figure only; dividing by 16 GPUs and the 48× ratio are our arithmetic. Don't mix the V100 and H100 columns.</p>
+
+<h3 class="sm">Table 1 and Figure 5: weak scaling (model grows with GPU count, hidden per head fixed at 96)</h3>
+<div class="tw"><table>
+<tr><th>Hidden</th><th class="num">Heads</th><th class="num">Layers</th><th class="num">Params</th><th class="num">Model-parallel GPUs</th><th class="num">Efficiency</th><th class="num">Model + data parallel GPUs</th><th class="num">Efficiency</th></tr>
+<tr><td>1,536</td><td class="num">16</td><td class="num">40</td><td class="num">1.2B</td><td class="num">1</td><td class="num">100%</td><td class="num">64</td><td class="num">96%</td></tr>
+<tr><td>1,920</td><td class="num">20</td><td class="num">54</td><td class="num">2.5B</td><td class="num">2</td><td class="num">95%</td><td class="num">128</td><td class="num">83%</td></tr>
+<tr><td>2,304</td><td class="num">24</td><td class="num">64</td><td class="num">4.2B</td><td class="num">4</td><td class="num">82%</td><td class="num">256</td><td class="num">79%</td></tr>
+<tr><td>3,072</td><td class="num">32</td><td class="num">72</td><td class="num">8.3B</td><td class="num">8</td><td class="num hi">77%</td><td class="num">512</td><td class="num hi">74%</td></tr>
+</table></div>
+<div class="bars" style="margin-top:14px">
+  <span class="hd">GPUs</span><span class="hd">efficiency vs perfect linear scaling (bar = 100%)</span><span class="hd r"></span>
+  <span class="nm">1 <small>MP only</small></span><span class="track"><span class="seg w solo" style="width:100%"></span></span><span class="v">100%</span>
+  <span class="nm">2 <small>MP only</small></span><span class="track"><span class="seg w solo" style="width:95%"></span></span><span class="v">95%</span>
+  <span class="nm">4 <small>MP only</small></span><span class="track"><span class="seg w solo" style="width:82%"></span></span><span class="v">82%</span>
+  <span class="nm">8 <small>MP only</small></span><span class="track"><span class="seg w solo" style="width:77%"></span></span><span class="v">77%</span>
+  <span class="nm">64 <small>+ 64-way DP</small></span><span class="track"><span class="seg w solo" style="width:96%"></span></span><span class="v">96%</span>
+  <span class="nm">128</span><span class="track"><span class="seg w solo" style="width:83%"></span></span><span class="v">83%</span>
+  <span class="nm">256</span><span class="track"><span class="seg w solo" style="width:79%"></span></span><span class="v">79%</span>
+  <span class="nm">512</span><span class="track"><span class="seg w solo" style="width:74%"></span></span><span class="v">74%</span>
+</div>
+<p class="cap">Model-parallel runs use batch 8; model + data parallel runs use global batch 512 (64-way DP). The DP rows are lower because they also all-reduce gradients across servers. The 8.3B row has 32 heads here but 24 in the trained model (Table 2); the paper says so.</p>
+
+<div class="formula"><span class="c">Quirk: two different "efficiency at 512 GPUs" numbers</span>
+abstract: 15.1 PF ÷ (512 × 39 TF = 19.97 PF) = <span class="g">75.6% → "76%"</span>
+          <span class="c">sustained over the whole application</span>
+Fig 5:    weak-scaling bar at 512 GPUs      = <span class="g">74%</span>
+          <span class="c">74% × 512 × 39 TF = 14.78 PF</span>
+baseline: 1.2B on one V100 = 39 TF = "30% of peak"
+          <span class="c">→ implies ≈ 130 TF peak (our arithmetic)</span>
+<span class="c">77% is a third number: 8 GPUs, model parallel only.</span></div>
+
+<h3 class="sm">Appendix D: more heads cost a little, and strong scaling flattens fast</h3>
+<div class="tw"><table>
+<tr><th>Table 7 · 8.3B, 8-way</th><th class="num">Hidden per head</th><th class="num">Efficiency</th><th style="width:24px"></th><th>Table 8 · 1.2B, batch 8</th><th class="num">Speedup</th><th class="num">Per GPU <small>(ours)</small></th></tr>
+<tr><td>16 heads</td><td class="num">192</td><td class="num hi">82%</td><td></td><td>1 GPU</td><td class="num">1.0×</td><td class="num">100%</td></tr>
+<tr><td>24 heads</td><td class="num">128</td><td class="num">80%</td><td></td><td>2 GPUs</td><td class="num">1.64×</td><td class="num">82%</td></tr>
+<tr><td>32 heads</td><td class="num">96</td><td class="num">77%</td><td></td><td>4 GPUs</td><td class="num">2.34×</td><td class="num">58%</td></tr>
+<tr><td></td><td></td><td></td><td></td><td>8 GPUs</td><td class="num">2.98×</td><td class="num lo">37%</td></tr>
+</table></div>
+<p class="cap">More heads mean smaller GEMMs and more softmax elements, so the paper sees "a slight decrease in scaling efficiency". Table 8 is the paper's closest thing to latency-oriented serving: a fixed model and batch spread over more GPUs. "Using two GPUs makes training 64% faster. Above that we see diminishing returns as the per-GPU computation decreases and the memory bandwidth and communication overheads begin to dominate."</p>
+
+<h2>Worked example 3: what TP costs a 70B decode step <small>our model, H100</small></h2>
+<p>Llama-3.1-70B in BF16 is 141.1 GB, too big for one 80 GB H100. Splitting it n ways divides the weight read by n. But every layer still does 2 all-reduces of the B × 8,192 activation (160 per step, our inference from Megatron's forward pass), and the message size doesn't depend on n. So the communication cost doesn't shrink (its latency part even grows with n) while the thing it's added to gets smaller.</p>
+<div class="mathbox">
+<math display="block">
+  <msub><mi>T</mi><mtext>step</mtext></msub><mo>&#8776;</mo>
+  <munder class="t2"><mfrac><mi>W</mi><mrow><mi>n</mi><mo>&#183;</mo><msub><mi>BW</mi><mtext>HBM</mtext></msub></mrow></mfrac><mtext class="lab">weight read, shrinks with n</mtext></munder>
+  <mo>+</mo><mn>160</mn><mo>&#215;</mo>
+  <mo stretchy="true" form="prefix" minsize="2.6em">(</mo>
+  <munder class="t3"><mi>&#945;</mi><mtext class="lab">latency</mtext></munder>
+  <mo>+</mo>
+  <munder class="t3"><mrow><mfrac><mrow><mn>2</mn><mo>(</mo><mi>n</mi><mo>&#8722;</mo><mn>1</mn><mo>)</mo></mrow><mi>n</mi></mfrac><mo>&#183;</mo><mfrac><mrow><mn>2</mn><mi>B</mi><mi>D</mi></mrow><msub><mi>W</mi><mtext>link</mtext></msub></mfrac></mrow><mtext class="lab">ring all-reduce bandwidth</mtext></munder>
+  <mo stretchy="true" form="postfix" minsize="2.6em">)</mo>
+</math>
+<div class="legend">
+  <span class="sym">W</span><span>weight bytes (BF16)</span><span class="v">141.1 GB</span>
+  <span class="sym">n</span><span>TP degree (GPUs per replica)</span><span class="v">2 · 4 · 8 · 16</span>
+  <span class="sym">BW_HBM</span><span>H100 memory bandwidth</span><span class="v">3.35 TB/s</span>
+  <span class="sym">160</span><span>all-reduces per step: 80 layers × 2 (attention out, MLP out)</span><span class="v">our inference</span>
+  <span class="sym">&#945;</span><span>fixed cost per all-reduce, 2(n−1) ring hops × 1 µs inside a node, 28 µs across nodes. <b>Illustrative</b>: the course's shared value, derived on the <a href="collectives.html">collectives card</a>; NVIDIA publishes none. The lab takes it as a parameter.</span><span class="v">2 · 6 · 14 µs (TP2/4/8) · 28 µs</span>
+  <span class="sym">B, D</span><span>batch (sequences decoding), hidden size; 2 bytes each</span><span class="v">1 · 64 · 256; 8,192</span>
+  <span class="sym">W_link</span><span>per-GPU bandwidth, one direction</span><span class="v">450 GB/s NVLink · 50 GB/s IB</span>
+</div>
+</div>
+<div class="formula">message per all-reduce  B × 8,192 × 2 bytes
+   B=1 <span class="g">16 kB</span> · B=64 1.05 MB · B=256 4.19 MB
+bandwidth term, TP8 NVLink  1.75 × msg ÷ 450 GB/s
+   0.06 µs · 4.08 µs · 16.31 µs    × 160 = 0.01 · 0.65 · 2.61 ms
+latency term (illustrative)  160 × 2(n−1) × 1 µs, the same at every B
+   TP2 0.32 · TP4 0.96 · TP8 <span class="r">2.24 ms</span> · across nodes 160 × 28 µs = 4.48 ms
+TP8, B=1:  5.27 (weights) + 2.24 + 0.01 = 7.52 ms
+   → 133 tok/s per user, not the 190 the weight read alone allows</div>
+<p class="cap">At B = 1 the message is so small that only the latency term matters. The Scaling Book puts the latency-bound line at "total bytes &lt; W × 1 µs" (Part 7, App C, TPU); with 450 GB/s that's ≈ 450 kB, far above 16 kB (our recomputation). FLOPs and KV-cache reads are left out: at B = 256 the math takes 36.5 ms ÷ n, still under the 42.12 ms ÷ n weight read.</p>
+
+<h3 class="sm">One step at batch 64, split into its parts (0–24 ms)</h3>
+<div class="bars">
+  <span class="hd">Layout</span><span class="hd">weights · latency · bandwidth</span><span class="hd r">step</span>
+  <span class="nm">TP2 <small>NVLink</small></span><span class="track"><span class="seg w" style="width:87.75%"></span><span class="seg lat" style="width:1.33%"></span><span class="seg bw" style="width:1.54%"></span></span><span class="v">21.75 ms</span>
+  <span class="nm">TP4 <small>NVLink</small></span><span class="track"><span class="seg w" style="width:43.88%"></span><span class="seg lat" style="width:4%"></span><span class="seg bw" style="width:2.33%"></span></span><span class="v">12.05 ms</span>
+  <span class="nm">TP8 <small>NVLink, one node</small></span><span class="track"><span class="seg w" style="width:21.96%"></span><span class="seg lat" style="width:9.33%"></span><span class="seg bw" style="width:2.71%"></span></span><span class="v" style="color:var(--accent);font-weight:600">8.16 ms</span>
+  <span class="nm">TP8 <small>over IB (hypothetical)</small></span><span class="track"><span class="seg w" style="width:21.96%"></span><span class="seg lat" style="width:18.67%"></span><span class="seg bw" style="width:24.46%"></span></span><span class="v l">15.62 ms</span>
+  <span class="nm">TP16 <small>2 nodes</small></span><span class="track"><span class="seg w" style="width:10.96%"></span><span class="seg lat" style="width:18.67%"></span><span class="seg bw" style="width:4.46%"></span></span><span class="v">8.18 ms</span>
+</div>
+<div class="key"><span><i class="kw"></i>weight read (useful)</span><span><i class="kl"></i>all-reduce latency, 160 × α</span><span><i class="kb"></i>all-reduce bandwidth</span></div>
+
+<div class="tw" style="margin-top:14px"><table>
+<tr><th>Layout</th><th class="num">B = 1</th><th class="num">B = 64</th><th class="num">B = 256</th><th class="num">tok/s per user, B = 1</th><th class="num">tok/s per GPU, B = 256</th></tr>
+<tr><td>TP2, NVLink</td><td class="num">21.39 <small>2%</small></td><td class="num">21.75 <small>3%</small></td><td class="num">22.87 <small>8%</small></td><td class="num">46.8</td><td class="num hi">5,596</td></tr>
+<tr><td>TP4, NVLink</td><td class="num">11.50 <small>8%</small></td><td class="num">12.05 <small>13%</small></td><td class="num">13.73 <small>23%</small></td><td class="num">87.0</td><td class="num">4,662</td></tr>
+<tr><td>TP8, NVLink (one node)</td><td class="num">7.52 <small>30%</small></td><td class="num hi">8.16 <small>35%</small></td><td class="num hi">10.11 <small>48%</small></td><td class="num">133.1</td><td class="num">3,164</td></tr>
+<tr><td>TP8, every all-reduce on IB <small class="mu">hypothetical</small></td><td class="num">9.84 <small>46%</small></td><td class="num">15.62 <small>66%</small></td><td class="num lo">33.23 <small>84%</small></td><td class="num">101.7</td><td class="num lo">963</td></tr>
+<tr><td>TP16, 2 nodes × 8</td><td class="num hi">7.13 <small>63%</small></td><td class="num">8.18 <small>68%</small></td><td class="num">11.40 <small>77%</small></td><td class="num hi">140.3</td><td class="num">1,404</td></tr>
+</table></div>
+<p class="cap">Step time in ms, with the share spent in all-reduces in small type. TP1 would be 42.12 ms (23.7 tok/s), but 141.1 GB doesn't fit in 80 GB. TP16 is modelled as a reduce-scatter inside each node, an all-reduce of 1/8 of the message over each GPU's own 50 GB/s NIC, and an all-gather inside the node. "IB (hypothetical)" puts a flat ring over 50 GB/s links, to isolate the link. Both rows that leave the node use the 28 µs cross-node α. All α values are illustrative (shared course values from the <a href="collectives.html">collectives card</a>), so every percentage here moves with them. KV memory is ignored too: at TP2 in BF16 only 18.8 GB is free for KV (≈ 57k tokens), so B = 256 there would mean ≈ 224-token contexts.</p>
+
+<div class="formula"><span class="c">Why TP beyond one NVLink node rarely pays</span>
+weight read saved:  TP1→2 <span class="g">21.06 ms</span> · 2→4 10.53 · 4→8 5.27 · 8→16 <span class="r">2.63</span>
+all-reduce cost:    160 per step at every n, and worse once it leaves the node
+TP16 beats TP8 only if α_cross &lt; 30.4 µs (B=1) · 27.8 (B=64) · 20.0 (B=256)
+                    <span class="c">break-even values from the lab; the shared value is 28 µs</span></div>
+<p>With the shared illustrative values, TP16 over two nodes is about 5% faster at B = 1 (7.13 vs 7.52 ms), ties at B = 64 (8.18 vs 8.16) and loses at B = 256 (11.40 vs 10.11). The break-even cross-node latency sits right around the assumed 28 µs, so the latency verdict hinges on a number nobody publishes; measure it before trusting either answer. What doesn't hinge on it: at best, twice the GPUs buy 5%. Throughput per GPU falls the whole way: 5,596 tokens/s per GPU at TP2, 3,164 at TP8 and 1,404 at TP16 (B = 256). That's the serving version of Table 8's 82% → 37%. More TP buys latency for one user, paid for in GPUs.</p>
+
+<h2>How far TP can go, in the sources' own words</h2>
+<ul>
+<li><b>Scaling Book, GPU chapter (training, compute-bound).</b> With T<sub>math</sub> = 4BDF/(Y·C) and T<sub>comms</sub> = 4BD/W, TP stays compute-bound while Y &lt; F·W/C. "Within a node, this gives us about F / 2200 or F / 2475 beyond a node. For F=28000 like LLaMA-3, this is about 11-way TP (or rounding down, about 8-way, which is how large a node is)." Its TLDR: "Tensor parallelism is compute-bound up to about 8-ways but we lack the bandwidth to scale much beyond this before becoming comms-bound. This mostly limits us to a single NVLink domain". It also says 16-way across exactly 2 nodes is possible.</li>
+<li><b>Scaling Book, Part 7 (generation).</b> When decode is bound by the weight read, "we can increase model sharding beyond this point and improve latency at a minimal throughput cost", until the link time exceeds the weight read: Y &lt; F / (B·β), β = W<sub>HBM</sub> / W<sub>link</sub>.</li>
+<li><b>Kiely, <i>Inference Engineering</i> §5.4 (pp.142–147).</b> "Tensor Parallelism should be your default strategy for multi-GPU model inference." TP "Requires synchronization across GPUs, not suitable for multi-node", and it "generally requires too much communication across GPUs to be a good fit for multi-node inference". For dense models: TP inside the node, PP across nodes ("TP8PP2").</li>
+</ul>
+<div class="formula"><span class="c">Recomputed for our setup (the book's formulas, H100 numbers)</span>
+C/W = 990e12 / 450e9 = 2,200  ·  990e12 / 400e9 = 2,475
+Llama-3.1-70B, F = 28,672:  F/2200 = 13.0-way · F/2475 = 11.6-way
+   <span class="c">the book's "11-way" matches F/2475 with its F = 28,000 (11.3)</span>
+generation, Y &lt; F/(B·β)       B=1       B=64     B=256
+  NVLink β = 3.35T/450G = 7.4  <span class="g">3,851</span>     <span class="g">60</span>       <span class="g">15</span>
+  IB     β = 3.35T/50G  = 67   428       <span class="r">7</span>        <span class="r">2</span></div>
+<p class="cap">The book's formula counts bandwidth only. At B = 1 it allows hundreds of ways, and it's the per-all-reduce latency above (and Llama's 8 KV heads) that stops you well before that. Over IB at B = 256, even 2-way TP would be link-bound.</p>
+
+<h2>Why it beats the alternatives</h2>
+<div class="grid2">
+  <div class="cell"><h3><span class="x">&#10007;</span> Gather the logits, then take the loss</h3><p>The simple output layer all-gathers b × s × v values: 419M per step in Megatron's runs, v = 51,200 times more than the fused loss needs.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Compute layernorm and dropout once, broadcast</h3><p>It saves a little arithmetic but adds a broadcast per op, and the paper's goal is "reducing communication and keeping the GPUs compute bound". Repeating cheap work is cheaper than sending it.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Stretch TP across nodes</h3><p>Only 2.63 ms of weight read is left to save (TP8 to TP16 for 70B), and all 160 all-reduces now pay cross-node latency and 9× less bandwidth. Best case in our model: 5% faster at B = 1 for twice the GPUs. Kiely: "not suitable for multi-node".</p></div>
+  <div class="cell win"><h3><span class="ok">&#10003;</span> Megatron's recipe: small messages, TP inside the node</h3><p>Only activations and scalars cross GPUs. The TP group sits on NVSwitch and anything bigger (DP then, PP or replicas now) goes across nodes. That's how 8.3B hit 77% on 8 GPUs, and why Kiely makes TP inside one node the default for serving.</p></div>
+</div>
+
+<h2>Is more TP always faster for serving?</h2>
+<div class="note">
+  <p>For one user's latency, usually yes up to 8 inside one node. In our model TP8 is 2.8× faster than TP2 at B = 1. But it isn't free, and it isn't always the right choice:</p>
+  <ul>
+    <li><b>Throughput per GPU drops.</b> In our model it falls from 5,596 to 3,164 tokens/s per GPU going from TP2 to TP8 at B = 256, if the KV cache fits. In BF16 it barely does at TP2: 18.8 GB free ≈ 57k tokens, about 224 per sequence. That is one reason to look at FP8, which halves the weights and frees room on fewer GPUs. Course 2's <a href="../perf-2-scaling-book-inference/serving-llama-70b.html">serving-llama-70b</a> card has the full numbers, and <a href="pipeline-data-parallel.html">pipeline and data parallelism</a> compares the layouts.</li>
+    <li><b>Latency, not bandwidth, is the small-batch cost.</b> 16 kB messages don't care about 450 vs 370 GB/s. The per-all-reduce fixed cost does matter, and it's the one number here that is illustrative. Measure it with nccl-tests on the node you rent (the sizing card's [H] script does this).</li>
+    <li><b>Past 8 ways for Llama-3.1-70B</b>, the 8 KV heads have to be copied onto several GPUs, so KV memory per GPU stops shrinking (our inference). Engines also overlap all-reduces with compute, which this model ignores.</li>
+    <li><b>Megatron is a training paper.</b> Its f operator (the backward all-reduce) doesn't exist in inference, and its efficiency numbers are for V100 training throughput, not decode latency. Use it for the mechanism, not the percentages.</li>
+  </ul>
+</div>
+
+<div class="foot">
+<p><a class="lab-link" href="https://github.com/seyonv/explainers/blob/main/perf-6-scaling-out/labs/tp-latency.py">Run it: labs/tp-latency.py</a> Checks in numpy that the vocab-parallel embedding and the fused vocab-parallel cross-entropy equal the unsplit versions. Recomputes the paper's padding, 76% vs 74%, and strong-scaling arithmetic. Then prints the 70B decode step for TP 1/2/4/8/16 at B = 1/64/256 over NVLink and IB, the α break-even and the Scaling Book limits. Numpy, under a second. Try this: <code>python3 labs/tp-latency.py 3 2</code> (3 µs per hop) and watch the latency term take over the TP8 step.</p>
+<p><b>Read next:</b> Shoeybi et al., <a href="https://arxiv.org/pdf/1909.08053">"Megatron-LM" (arXiv 1909.08053)</a>: §3 from "The transformer language model has an output embedding" to the end of the section, §5.1 with Table 1 and Fig 5, Appendix B (B.1, B.2) and Appendix D (D.1, D.2). About 15 min. Then Kiely, <i>Inference Engineering</i>, §5.4 "Model Parallelism", pp.142–147, about 10 min. Optional: Scaling Book, <a href="https://jax-ml.github.io/scaling-book/gpus/">"How to Think About GPUs"</a>, the "Tensor Parallelism" section and the TLDR, about 5 min.</p>
+<p><b>Related:</b> <a href="megatron-mlp-attention.html">Megatron I: splitting the MLP and attention</a> · <a href="collectives.html">How GPUs talk: collectives and interconnects</a> · <a href="pipeline-data-parallel.html">Pipeline and data parallelism when serving</a> · <a href="sizing-deployment.html">Sizing a deployment</a> · <a href="_overview.html">Choosing a parallelism layout</a> · <a href="../perf-2-scaling-book-inference/serving-llama-70b.html">Serving Llama 70B</a> · <a href="../perf-2-scaling-book-inference/sharding-prefill-generation.html">Sharding for prefill and generation</a> · <a href="../perf-2-scaling-book-inference/step-time.html">The step-time formula</a> · <a href="../llm-latency/memory-bandwidth.html">Memory-bandwidth-bound decoding</a></p>
+<p><b>Sources:</b> Megatron-LM v4, <a href="https://arxiv.org/pdf/1909.08053">arxiv.org/pdf/1909.08053</a>: abstract and §1 (15.1 PF, 76%, 39 TF, 30% of peak), §3 (vocab-parallel embedding, all-gather of b × s × v, fusion to b × s, duplicated layernorm/dropout/residual), §4, §5 (DGX-2H, 300 and 100 GB/s, Table 1, padding to 51,200, batch 8 and 512, Fig 5: 100/95/82/77% and 96/83/79/74%), App B.1 (GPUs 1, 9, …, 505; 8 × 64 = 512), B.2 (RNG), App D Tables 7–8. Scaling Book, <a href="https://jax-ml.github.io/scaling-book/gpus/">jax-ml.github.io/scaling-book/gpus/</a> (TP roofline, F/2200 and F/2475, TLDR) and <a href="https://jax-ml.github.io/scaling-book/inference/">/inference/</a> ("Note on ICI bounds for generation", Y &gt; F/(B·β); App C latency-bound rule). Kiely, <i>Inference Engineering</i>, §5.4, pp.142–147. Llama-3.1-70B shapes, 141.1 GB, 42.12/21.06/10.53/5.27 ms weight reads, 160 all-reduces and the bandwidth terms are the course's shared facts (H100 3.35 TB/s, NVLink 450 GB/s per direction, IB 50 GB/s per GPU). All step times, percentages, break-even α and the recomputed limits are our model from labs/tp-latency.py. <b>Illustrative:</b> the course's shared all-reduce latency, 1 µs per ring hop (the Scaling Book's TPU ICI figure) × 2(n−1) hops = 2 / 6 / 14 µs at TP2 / TP4 / TP8, and 28 µs across nodes (see <a href="collectives.html">collectives</a>); NVIDIA publishes no collective latency.</p>
+</div>
+</article>
+<!-- series-nav:bottom -->
+<div class="snx"><a class="nx" href="index.html#pipeline-data-parallel" target="_top">
+<span class="mini" aria-hidden="true"><span class="m1">Pipeline and data parallelism when serving</span><span class="m2">Also called PP (pipeline model parallelism, inter-layer or inter-op parallelism) and DP (replicas, horizontal scaling), usually combined with TP as layouts written like "TP8PP2". This card follows…</span><span class="m3">In one breath</span><span class="m4">A pipeline stage owns a contiguous block of layers. Each token still passes through every stage one after another, so pipelining adds throughput, not speed: it lets more GPUs hold one model while sending only a single activation between stages. Data parallelism runs independent replicas that never talk to each other. Tensor…</span></span>
+<span class="tx"><span class="lab">Next up · 05 / 15</span><span class="tt">Pipeline and data parallelism when serving</span><span class="ds">Stages add throughput, not speed</span><span class="nd">Builds directly on this card.</span><span class="go">Continue →</span></span></a><div class="aux"><span><a href="index.html#megatron-mlp-attention" target="_top">← Megatron I: splitting the MLP and attention</a></span><a href="index.html" target="_top">All cards in 6 · Serving across GPUs</a></div></div>
+<!-- /series-nav:bottom -->
+</body>
+</html>

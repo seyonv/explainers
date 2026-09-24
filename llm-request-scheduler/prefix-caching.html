@@ -1,0 +1,408 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Prefix caching: never prefill the same tokens twice</title>
+<style>
+:root{
+  --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
+  --text:#1c1f23; --muted:#6b7068; --faint:#b9b9b3;
+  --accent:#4a9d77; --accent-bg:#dcefdf; --accent-border:#8cc79c;
+  --red:#c0492b; --red-bg:#fbeceb;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#15171a; --surface:#1d2024; --surface2:#24282d; --border:#32373d;
+    --text:#e6e8ea; --muted:#9aa1a9; --faint:#4a5057;
+    --accent:#5fb37f; --accent-bg:#1c2b22; --accent-border:#3f7a55;
+    --red:#e57368; --red-bg:#2e1f1e;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text)}
+.card{max-width:820px;margin:0 auto;padding:28px 32px;font-family:-apple-system,"Inter",system-ui,sans-serif;line-height:1.45}
+h1{font-size:26px;font-weight:600;margin:0 0 6px;letter-spacing:-0.01em}
+.sub{font-size:15px;color:var(--muted);margin:0 0 20px}
+h2{font-size:17px;font-weight:600;margin:26px 0 10px}
+h2 small{font-size:13px;font-weight:400;color:var(--muted)}
+h3.sm{font-size:15px;font-weight:600;margin:18px 0 8px}
+h3.sm small{font-size:13px;font-weight:400;color:var(--muted)}
+p{font-size:15px;margin:0 0 10px}
+ul{font-size:15px;margin:0 0 10px;padding-left:20px}
+li{margin-bottom:4px}
+.cap{font-size:13px;color:var(--muted);margin:8px 0 0;text-align:center}
+.cap + p{margin-top:14px}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+
+/* Tables and formulas */
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border)}
+th{font-size:12px;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:none}
+.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.hi{color:var(--accent);font-weight:600} .lo{color:var(--red)} .mu{color:var(--muted)}
+tr.pick td{background:var(--accent-bg)}
+.formula{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin:10px 0;white-space:pre;overflow-x:auto;line-height:1.55}
+.formula .c{color:var(--muted)}
+.formula .g{color:var(--accent);font-weight:600}
+.formula .r{color:var(--red);font-weight:600}
+.tw{overflow-x:auto}
+.tw table{min-width:600px}
+
+/* MathML */
+.mathbox{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px 16px 12px;margin:10px 0;overflow-x:auto}
+.mathbox math{font-size:21px;color:var(--text);font-family:"STIX Two Math","Latin Modern Math","Cambria Math",math}
+.mathbox .t1{color:var(--text)} .mathbox .t2{color:var(--accent)} .mathbox .t3{color:var(--muted)}
+.mathbox .lab{font-size:12px;font-family:-apple-system,"Inter",system-ui,sans-serif;padding-top:3px;border-top:1.5px solid currentColor;margin-top:2px}
+.mathbox math + math{margin-top:14px}
+.legend{display:grid;grid-template-columns:auto 1fr auto;column-gap:14px;row-gap:5px;font-size:13px;margin-top:12px;align-items:baseline}
+.legend .sym{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;text-align:right}
+.legend .v{color:var(--muted);text-align:right;font-variant-numeric:tabular-nums}
+@media (max-width:560px){.legend{grid-template-columns:auto 1fr}.legend .v{display:none}}
+
+/* Two examples per term */
+.parts td{vertical-align:top} .parts td:first-child{font-weight:600}
+.parts .ex{font-size:13px} .parts .ex span{display:block;color:var(--muted)}
+.parts .what{font-size:13px}
+@media (max-width:560px){.parts .what{display:none}}
+
+/* Bar charts */
+.bars{display:grid;grid-template-columns:150px 1fr 110px;column-gap:10px;row-gap:9px;align-items:center;font-size:13px}
+.bars .nm{font-size:13px}
+.bars .track{display:flex;align-items:center}
+.bars .bar{height:18px;border-radius:3px;background:var(--faint)}
+.bars .bar.w{background:var(--accent)}
+.bars .bar.l{background:var(--red)}
+.bars .v{text-align:right;font-variant-numeric:tabular-nums}
+.bars .v.w{color:var(--accent);font-weight:600}
+.bars .v.l{color:var(--red)}
+
+/* 2x2 grid */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.cell{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.cell.win{background:var(--accent-bg);border-color:var(--accent-border)}
+.cell h3{font-size:16px;font-weight:600;margin:0 0 5px;display:flex;gap:8px;align-items:baseline}
+.cell p{font-size:14px;margin:0;color:var(--text)}
+.cell.win h3,.cell.win p{color:var(--accent)}
+.x{color:var(--red)} .ok{color:var(--accent)}
+
+/* Clarification box */
+.note{border:1px solid var(--border);border-radius:10px;padding:14px 18px;font-size:14px}
+.note p,.note li{font-size:14px} .note p:last-child{margin-bottom:0}
+
+.foot{margin-top:22px;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+.foot p{font-size:13px}
+.lab-link{display:inline-block;font-size:13px;border:1px solid var(--accent-border);background:var(--accent-bg);color:var(--accent);border-radius:6px;padding:4px 10px;margin:2px 0 10px;text-decoration:none}
+
+/* SVG */
+svg{display:block;max-width:100%;height:auto;margin-top:6px}
+.sl{font-size:12px;fill:var(--muted)} .st{font-size:13px;fill:var(--text)} .sh{font-size:13px;font-weight:600;fill:var(--text)}
+.slr{font-size:12px;fill:var(--red)}
+.bx{fill:var(--surface2);stroke:var(--faint);stroke-width:1}
+.bxa{fill:var(--accent-bg);stroke:var(--accent);stroke-width:1.2}
+.band{fill:var(--accent)}
+.dv{stroke:var(--border);stroke-width:1}
+@media (max-width:560px){.grid2{grid-template-columns:1fr}.card{padding:20px 16px}.bars{grid-template-columns:96px 1fr 80px}}
+a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+/* This card */
+.bars .grp{grid-column:1/-1;font-size:12px;font-weight:600;color:var(--muted);margin-top:6px}
+.bars .bar{min-width:3px}
+.impl{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:8px}
+.impl .box{border:1px solid var(--border);border-radius:10px;padding:12px 12px 8px;background:var(--surface)}
+.impl h3{font-size:15px;font-weight:600;margin:0 0 2px}
+.impl .by{font-size:13px;color:var(--muted);margin:0 0 4px}
+.impl ul{font-size:14px;margin:6px 0 4px}
+.chipsrow{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0 10px}
+.chipsrow span{font-size:13px;padding:3px 9px;border-radius:12px;border:1px solid var(--accent-border);background:var(--accent-bg);color:var(--accent)}
+.chipsrow span.g{border-color:var(--border);background:var(--surface2);color:var(--muted)}
+.cmp td{vertical-align:top;font-size:13px}
+.cmp td:first-child{font-weight:600;font-size:14px}
+.pit li{margin-bottom:8px}
+.tag{font-size:12px;color:var(--muted);border:1px solid var(--border);border-radius:4px;padding:0 5px;margin-left:4px;white-space:nowrap}
+@media (max-width:620px){.impl{grid-template-columns:1fr}}
+/* series-nav */
+.sn{max-width:820px;margin:0 auto;padding:16px 32px 0;font-family:-apple-system,"Inter",system-ui,sans-serif;font-size:13px;line-height:1.5;color:var(--muted)}
+.sn a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
+.sn .crumbs{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 7px}
+.sn .crumbs b{color:var(--text);font-weight:600}
+.sn .sep{color:var(--faint,var(--border))}
+.sn .step{margin-left:auto;white-space:nowrap}
+.sn .dep{margin-top:5px;padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface)}
+.sn .dep .ok{color:var(--accent);font-weight:600}
+.snx{max-width:820px;margin:0 auto;padding:6px 32px 44px;font-family:-apple-system,"Inter",system-ui,sans-serif}
+.snx .nx{display:grid;grid-template-columns:280px 1fr;text-decoration:none;color:var(--text);background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.snx .nx:hover,.snx .nx:focus-visible{border-color:var(--accent-border,var(--accent));outline:none}
+.snx .mini{position:relative;height:210px;overflow:hidden;background:var(--bg);border-right:1px solid var(--border);padding:14px 16px}
+.snx .mini span{display:block}
+.snx .mini .m1{font-size:12.5px;font-weight:600;margin:0 0 4px;line-height:1.3}
+.snx .mini .m2{font-size:9px;color:var(--muted);margin:0 0 8px;line-height:1.4}
+.snx .mini .m3{font-size:8.5px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;margin:0 0 3px}
+.snx .mini .m4{font-size:9.5px;margin:0;line-height:1.45}
+.snx .tx{padding:16px 20px}
+.snx .lab{font-size:12px;font-weight:600;color:var(--accent);letter-spacing:.04em;text-transform:uppercase}
+.snx .tt{display:block;font-size:20px;font-weight:600;margin:5px 0 4px;line-height:1.25}
+.snx .ds{display:block;font-size:14px;color:var(--muted)}
+.snx .nd{display:block;font-size:13px;color:var(--muted);margin-top:10px}
+.snx .go{display:block;margin-top:12px;font-size:14px;font-weight:600;color:var(--accent)}
+.snx .aux{display:flex;justify-content:space-between;gap:12px;margin-top:10px;font-size:13px;color:var(--muted)}
+.snx .aux a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
+@media (max-width:560px){.sn,.snx{padding-left:16px;padding-right:16px}.snx .nx{grid-template-columns:1fr}.snx .mini{display:none}.sn .step{margin-left:0}}
+/* /series-nav */
+</style>
+</head>
+<body>
+<!-- series-nav:top -->
+<nav class="sn" aria-label="Course navigation"><div class="crumbs"><a href="../index.html" target="_top">All explainers</a><span class="sep">›</span><a href="index.html" target="_top">Build an LLM request scheduler</a><span class="sep">›</span><b>18 / 25</b><span class="step"><a href="index.html#concurrency" target="_top">← prev</a> · <a href="index.html#reference-solution" target="_top">next →</a></span></div>
+</nav>
+<!-- /series-nav:top -->
+<article class="card">
+<h1>Prefix caching: never prefill the same tokens twice</h1>
+<p class="sub">Also called automatic prefix caching (APC, vLLM's name), RadixAttention (SGLang's name), prompt caching, or KV reuse. This card sets vLLM's block hashing next to SGLang's radix tree, as both engines' source code describes them, and walks the prefix-caching code in the course's reference scheduler. Every time on the card is from our simulator (<code>labs/scheduler.py</code>, a 100%-of-peak cost model for Llama-3.1-8B on one H100 SXM), so treat it as a floor, not a measurement.</p>
+
+<h2>In one breath</h2>
+<p>If two requests start with the same tokens, the keys and values those tokens produce in every layer are identical too. So when a request finishes, keep its KV blocks. Index them by the exact token prefix they came from, and when a new request arrives, look up the longest prefix that is already cached. Only the tokens after that point need prefill. The scheduler's side of the job is to <b>order</b> requests and <b>route</b> them to replicas so that the prefix they need is still in memory.</p>
+
+<p>Where the same opening repeats in practice:</p>
+<div class="chipsrow"><span>system prompts</span><span>few-shot examples</span><span>chat history (turn n+1 starts with turns 1…n)</span><span>agent loops (each tool call re-sends the whole trace)</span><span>many questions about one long document</span><span class="g">one-off prompts: nothing to reuse</span></div>
+
+<h2>Worked example: four system prompts, 800 requests <small>· our simulation, E7</small></h2>
+<p>Each request picks one of 4 shared system prompts of 2,048 tokens and adds a unique suffix (median 128 tokens), arriving at 20 req/s. The same trace runs twice through the same scheduler: once with <code>prefix_caching=False</code> and once with it on.</p>
+<div class="bars">
+  <div class="grp">TTFT p50 · 209× lower</div>
+  <div class="nm">no cache</div><div class="track"><div class="bar l" style="width:100%"></div></div><div class="v l">3,344 ms</div>
+  <div class="nm">prefix cache</div><div class="track"><div class="bar w" style="width:0.48%"></div></div><div class="v w">16.0 ms</div>
+  <div class="grp">TTFT p99 · 269× lower</div>
+  <div class="nm">no cache</div><div class="track"><div class="bar l" style="width:100%"></div></div><div class="v l">9,482 ms</div>
+  <div class="nm">prefix cache</div><div class="track"><div class="bar w" style="width:0.37%"></div></div><div class="v w">35.2 ms</div>
+  <div class="grp">Prefill tokens actually computed · 11.9× fewer</div>
+  <div class="nm">no cache</div><div class="track"><div class="bar l" style="width:100%"></div></div><div class="v l">1,779,902</div>
+  <div class="nm">prefix cache</div><div class="track"><div class="bar w" style="width:8.41%"></div></div><div class="v w">149,694</div>
+  <div class="grp">Output throughput · 1.29× higher</div>
+  <div class="nm">no cache</div><div class="track"><div class="bar" style="width:77.3%"></div></div><div class="v">3,733 tok/s</div>
+  <div class="nm">prefix cache</div><div class="track"><div class="bar w" style="width:100%"></div></div><div class="v w">4,830 tok/s</div>
+</div>
+<p class="cap">Linear scale inside each pair. Red: the worse value. Green: the prefix-cached run. From labs/experiments.py E7 (our simulation).</p>
+
+<div class="mathbox">
+<math display="block">
+  <mtext>hit rate</mtext><mo>=</mo>
+  <mfrac><munder class="t2"><mrow><mo>&#8721;</mo><msub><mi>c</mi><mi>i</mi></msub></mrow><mtext class="lab">served from cache</mtext></munder><munder class="t1"><mrow><mo>&#8721;</mo><msub><mi>L</mi><mi>i</mi></msub></mrow><mtext class="lab">all prompt tokens</mtext></munder></mfrac>
+  <mo>=</mo><mn>1</mn><mo>&#8722;</mo>
+  <mfrac><mn>149,694</mn><mn>1,779,902</mn></mfrac>
+  <mo>=</mo><mn class="t2">91.6%</mn>
+</math>
+<div class="legend">
+  <span class="sym">L_i</span><span>prompt length of request i</span><span class="v">2,048 + suffix here</span>
+  <span class="sym">c_i</span><span>its tokens found in the cache (whole blocks only)</span><span class="v">2,048 on a hit, 0 on the first use</span>
+</div>
+</div>
+<div class="formula">suffix tokens  = 1,779,902 − 800 × 2,048   = 141,502
+best possible  = 141,502 + 4 × 2,048      = <span class="g">149,694</span>
+                 <span class="c">(each shared prompt once: exactly what the sim computed)</span>
+prefill floor  = 1,779,902 × 16.2 ms/1k   = <span class="r">28.8 s</span> of GPU time
+arrivals span  = 39.9 s                   → <span class="r">72%</span> of the GPU on prefill
+with the cache = 149,694 × 16.2 ms/1k     = <span class="g">2.4 s</span> (6%)</div>
+<p>So 91.6% is the ceiling for this workload: every shared prompt is prefilled exactly once and never evicted, because 30,469 blocks is plenty of room for 4 × 128 of them. Without the cache, prefill alone eats 72% of the GPU (by the 16.2 ms per 1,000 tokens floor), the queue builds, and the median wait for a first token is 3.3 s. With it, prefill drops to 6% of the GPU and the queue never builds. Output throughput rises only 1.29× because the run can't finish before the last request arrives (39.9 s): the no-cache run takes 58.1 s to drain its backlog, the cached run 44.9 s, and both emit the same output tokens.</p>
+
+<h2>Two ways to find the longest cached prefix</h2>
+<div class="impl">
+<div class="box">
+<h3>(a) Block hashing</h3>
+<p class="by">vLLM (and our <code>BlockManager</code>)</p>
+<svg viewBox="0 0 380 330" role="img" aria-label="Request A's 13 tokens fill three full blocks whose chained hashes 4697, 1652 and 5474 go into a dict; request B shares the first 8 tokens, so it hits blocks 0 and 1, then misses on hash 12ac.">
+  <text x="4" y="16" class="sh">Request A: tokens 1–13, block size 4</text>
+  <g class="bxa"><rect x="4" y="26" width="84" height="26" rx="3"/><rect x="94" y="26" width="84" height="26" rx="3"/><rect x="184" y="26" width="84" height="26" rx="3"/></g>
+  <rect x="274" y="26" width="84" height="26" rx="3" class="bx"/>
+  <text x="46" y="44" class="st" text-anchor="middle">1 2 3 4</text><text x="136" y="44" class="st" text-anchor="middle">5 6 7 8</text><text x="226" y="44" class="st" text-anchor="middle">9 … 12</text><text x="316" y="44" class="sl" text-anchor="middle">13 (partial)</text>
+  <text x="46" y="70" class="sl" text-anchor="middle">h₀ = 4697</text><text x="136" y="70" class="sl" text-anchor="middle">h₁ = 1652</text><text x="226" y="70" class="sl" text-anchor="middle">h₂ = 5474</text><text x="316" y="70" class="sl" text-anchor="middle">not hashed</text>
+  <text x="4" y="90" class="sl">h₁ = H(h₀, tokens 5–8): a hash names the whole prefix</text>
+
+  <text x="4" y="120" class="sh">Request B: tokens 1–8, then 40–45</text>
+  <g class="bxa"><rect x="4" y="130" width="84" height="26" rx="3"/><rect x="94" y="130" width="84" height="26" rx="3"/></g>
+  <rect x="184" y="130" width="84" height="26" rx="3" fill="var(--red-bg)" stroke="var(--red)"/>
+  <rect x="274" y="130" width="84" height="26" rx="3" class="bx"/>
+  <text x="46" y="148" class="st" text-anchor="middle">1 2 3 4</text><text x="136" y="148" class="st" text-anchor="middle">5 6 7 8</text><text x="226" y="148" class="st" text-anchor="middle">40 … 43</text><text x="316" y="148" class="sl" text-anchor="middle">44 45</text>
+  <text x="46" y="174" class="sl" text-anchor="middle" style="fill:var(--accent)">hit → block 0</text><text x="136" y="174" class="sl" text-anchor="middle" style="fill:var(--accent)">hit → block 1</text><text x="226" y="174" class="slr" text-anchor="middle">12ac: miss, stop</text>
+
+  <text x="4" y="204" class="sh">hash_to_block (a dict)</text>
+  <rect x="4" y="212" width="250" height="72" rx="4" class="bx"/>
+  <text x="14" y="232" class="st">4697 → block 0 · ref 2</text>
+  <text x="14" y="252" class="st">1652 → block 1 · ref 2</text>
+  <text x="14" y="272" class="st">5474 → block 2 · ref 1</text>
+  <text x="264" y="232" class="sl">ref = requests</text><text x="264" y="248" class="sl">using the block</text>
+  <text x="4" y="306" class="sl">ref 0 → block joins the evictable LRU, hash kept:</text>
+  <text x="4" y="322" class="sl">still a hit until its memory is reused</text>
+</svg>
+<ul>
+  <li>Hash = H(parent hash, this block's tokens, extra keys). Only <b>full</b> blocks.</li>
+  <li>Lookup: walk the hashes until the first miss. O(L/B) dict lookups for L tokens and block size B; hashing reads each token once.</li>
+  <li>Eviction: freed hashed blocks go to the back of the free queue, which is the LRU; a request's blocks are freed tail first.</li>
+</ul>
+</div>
+<div class="box">
+<h3>(b) Radix tree</h3>
+<p class="by">SGLang (RadixAttention)</p>
+<svg viewBox="0 0 380 330" role="img" aria-label="A radix tree. The root has one child whose compressed edge holds the shared system prompt; it was split when a second request matched only part of the old edge. Two leaves hang below: Translate, locked by a running request, and Summarize, unlocked and in the eviction heap.">
+  <circle cx="190" cy="22" r="13" class="bx"/><text x="190" y="26" class="sl" text-anchor="middle">root</text>
+  <line x1="190" y1="35" x2="190" y2="92" stroke="var(--accent)" stroke-width="2"/>
+  <rect x="20" y="48" width="162" height="38" rx="4" class="bxa"/>
+  <text x="28" y="64" class="st">edge: "You are a helpful</text><text x="28" y="79" class="st">assistant. …" (2,048 tok)</text>
+  <circle cx="190" cy="104" r="12" class="bxa"/>
+  <text x="210" y="100" class="sl">lock_ref 1: a running</text><text x="210" y="114" class="sl">request uses this path</text>
+  <line x1="182" y1="114" x2="92" y2="176" stroke="var(--accent)" stroke-width="2"/>
+  <line x1="198" y1="114" x2="288" y2="176" stroke="var(--faint)" stroke-width="2" stroke-dasharray="5 3"/>
+  <text x="128" y="140" class="sl" text-anchor="end">"Translate: …"</text>
+  <text x="252" y="140" class="sl">"Summarize: …"</text>
+  <circle cx="92" cy="188" r="12" class="bxa"/>
+  <circle cx="288" cy="188" r="12" class="bx"/>
+  <text x="92" y="218" class="sl" text-anchor="middle" style="fill:var(--accent)">lock_ref 1</text>
+  <text x="92" y="232" class="sl" text-anchor="middle">protected</text>
+  <text x="288" y="218" class="sl" text-anchor="middle">lock_ref 0, a leaf</text>
+  <text x="288" y="232" class="sl" text-anchor="middle">→ eviction heap</text>
+  <text x="4" y="262" class="sl">The shared node exists because a request matched only</text>
+  <text x="4" y="278" class="sl">part of an older edge: _split_node cut the edge there.</text>
+  <text x="4" y="302" class="sl">evict(): pop the leaf with the oldest last_access_time;</text>
+  <text x="4" y="318" class="sl">a parent is pushed only once it becomes an unlocked leaf.</text>
+</svg>
+<ul>
+  <li>Keys are token sequences on compressed edges, at token or page granularity (<code>page_size</code>).</li>
+  <li>Lookup: walk from the root comparing tokens. O(prefix length); partial edge matches split the node.</li>
+  <li>Eviction: a heap of evictable leaves (LRU by default; LFU, FIFO, priority and others exist). O(E log E) per call. A prefix never goes before its extensions.</li>
+</ul>
+</div>
+</div>
+<p class="cap">Left: the hashes are the first 4 hex digits that our <code>_chain_hashes</code> actually produces for these token ids (block size 4 for drawing; the course uses 16). After B's lookup the refs are [2, 2, 1] exactly as shown. Right: the words are illustrative; the structure and field names are SGLang's <code>radix_cache.py</code>.</p>
+
+<table class="parts">
+  <tr><th>Term</th><th class="what">What it means</th><th>Example A</th><th>Example B</th></tr>
+  <tr><td>Chain hash</td><td class="what">A block's key includes its parent's key, so equal hashes mean an equal prefix, not just an equal block.</td>
+      <td class="ex"><b class="ok">hit</b><span>tokens 5–8 after tokens 1–4 → 1652 in both A and B</span></td>
+      <td class="ex"><b>miss</b><span>tokens 5–8 after other tokens → a different hash, correctly, because their K and V differ</span></td></tr>
+  <tr><td>Ref count</td><td class="what">How many live requests point at a block. Shared blocks are read-only.</td>
+      <td class="ex"><b>2</b><span>A and B both read block 0</span></td>
+      <td class="ex"><b>0</b><span>A and B finished: block cached but evictable</span></td></tr>
+  <tr><td>lock_ref</td><td class="what">SGLang's version: a counter on each tree node, raised along the whole path to the root while a request runs.</td>
+      <td class="ex"><b>1</b><span>"Translate" path, in use: never evicted</span></td>
+      <td class="ex"><b>0</b><span>"Summarize" leaf: first in line to go</span></td></tr>
+  <tr><td>Last-token rule</td><td class="what">Even a 100% match must run one prompt token through the model to get logits for the first output token.</td>
+      <td class="ex"><b>12-token prompt = A's first 12</b><span>3 blocks match, our code drops one: 8 cached, 4 recomputed</span></td>
+      <td class="ex"><b>vLLM</b><span>caps the hit at num_tokens − 1 ("we must recompute the last token")</span></td></tr>
+</table>
+
+<h2>The code <small>· labs/scheduler.py, methods of BlockManager</small></h2>
+<p><code>step()</code> calls <code>match_prefix</code> on a waiting request before sizing its prefill, so <code>req.remaining</code> already excludes the cached tokens. <code>finish_step()</code> calls <code>cache_full_blocks</code> after every chunk, so a prompt becomes reusable as soon as its blocks fill, even mid-prefill.</p>
+<pre class="formula">def _chain_hashes(self, req: Request) -> list[str]:
+    if req.block_hashes is not None:    # computed once per request
+        return req.block_hashes
+    hashes, parent = [], ""
+    bs = self.block_size
+    for i in range(req.prompt_len // bs):
+        chunk = req.prompt_tokens[i * bs:(i + 1) * bs]
+        parent = hashlib.sha1(
+            (parent + ",".join(map(str, chunk))).encode()
+        ).hexdigest()
+        hashes.append(parent)
+    req.block_hashes = hashes
+    return hashes
+
+def match_prefix(self, req: Request) -> None:
+    """Reuse cached full blocks for the longest matching
+    prompt prefix."""
+    if not (self.prefix_caching and req.prompt_tokens) or req.blocks:
+        return
+    hits = []
+    for h in self._chain_hashes(req):
+        b = self.hash_to_block.get(h)
+        if b is None:
+            break
+        hits.append(b)
+    # never reuse the very last prompt token: we need a forward pass
+    # to get logits
+    while hits and len(hits) * self.block_size >= req.prompt_len:
+        hits.pop()
+    for b in hits:
+        if self.ref[b] == 0:
+            self.evictable.pop(b)
+        self.ref[b] += 1
+    req.blocks = hits
+    req.num_computed = req.num_cached = len(hits) * self.block_size
+
+def cache_full_blocks(self, req: Request) -> None:
+    """After a prefill chunk, publish newly filled full prompt blocks."""
+    if not (self.prefix_caching and req.prompt_tokens):
+        return
+    full = min(req.num_computed, req.prompt_len) // self.block_size
+    for i, h in enumerate(self._chain_hashes(req)[:full]):
+        b = req.blocks[i]
+        if b not in self.block_hash and h not in self.hash_to_block:
+            self.block_hash[b] = h
+            self.hash_to_block[h] = b</pre>
+<p>The eviction half lives in <code>_take()</code> (use a never-used block first, else <code>evictable.popitem(last=False)</code>, the least recently freed cached block, and delete its hash) and <code>free_request()</code> (walk <code>reversed(req.blocks)</code>, so a shared head outlives its tail). Our <code>evictable</code> is an <code>OrderedDict</code>, so hit, free and evict are all O(1) per block; vLLM gets the same with a doubly linked free queue.</p>
+
+<h2>Block hashing vs radix tree</h2>
+<div class="tw"><table class="cmp">
+  <tr><th></th><th>Block hashing</th><th>Radix tree</th></tr>
+  <tr><td>Granularity</td><td>Full blocks (16 tokens in vLLM). A partial last block is never shared.</td><td>Tokens or pages; with <code>page_size</code> 1 every shared token counts.</td></tr>
+  <tr><td>Lookup cost</td><td>O(L) to hash (once per request) + O(L/B) dict lookups</td><td>O(prefix length) token compares, plus node splits</td></tr>
+  <tr><td>Eviction</td><td>LRU through the free queue, lazily when a block is reused; tail first</td><td>Heap of unlocked leaves; O(E log E) per eviction call; leaf-only by construction</td></tr>
+  <tr><td>Extra keys</td><td>LoRA ID, multimodal hashes and a cache salt go into the hash</td><td>Keyed by token sequence (we did not check other keys)</td></tr>
+  <tr><td>Good for</td><td>A flat O(1) map beside the block allocator; fits a paged design</td><td>Cache-aware ordering: LPM and DFS-weight read the tree directly</td></tr>
+  <tr><td>Who uses it</td><td>vLLM V1 (on by default), nano-vllm (xxhash chain, compares tokens against collisions), our <code>BlockManager</code></td><td>SGLang, TGI's <code>RadixAllocator</code>, Character.AI's host-memory cache ("similar to RadixAttention"), Dynamo's fleet-wide router</td></tr>
+</table></div>
+<p class="cap">vLLM says prefix caching costs "less than 1% decrease in throughput even when the cache hit rate is 0%", which is why it is on by default.</p>
+
+<h2>The scheduler's half: order and route for hits</h2>
+<p><b>Ordering on one replica.</b> A cache only helps if the prefix is still there when the next request that needs it runs. SGLang's LPM policy sorts the waiting queue by longest cached prefix, and DFS-weight walks the tree so requests that share a prefix run next to each other. Both are opt-in (the default at the commit studied is <code>fcfs</code>), and SGLang drops back to FCFS when more than 128 requests wait, because re-sorting costs O(W log W) plus a match per request. In <i>Attention and the KV cache</i>, a 64-request batch over 8 templates with room for 3 reaches a <b>84.7%</b> hit rate with longest-shared-prefix-first against <b>30.2%</b> for FCFS on shuffled arrivals (that course's recomputation). The cost is fairness: a request whose prefix is cold can wait behind a stream of warm ones.</p>
+<p><b>Routing across replicas.</b> With N replicas and round robin, the next turn of a conversation lands on the replica holding its history only 1 time in N (simple arithmetic), and every replica ends up caching every prefix. Cache-aware routers fix that:</p>
+<div class="tw"><table>
+  <tr><th>System</th><th>How it routes</th><th>Reported result</th></tr>
+  <tr><td>Character.AI</td><td>Sticky sessions: a conversation stays on one server; tree LRU cache in host memory</td><td class="num">95% hit rate</td></tr>
+  <tr><td>SGLang router (v0.4)</td><td>Keeps "an approximate radix tree" of each worker's tree</td><td class="num">hit 20% → 75%; 1.9× throughput</td></tr>
+  <tr><td>llm-d (precise prefix)</td><td>Live index of vLLM KVEvents; 8 pods, 16 H100s, Qwen-32B</td><td class="num">P90 TTFT 31.1 s → 0.54 s (57×)</td></tr>
+  <tr><td>GKE Inference Gateway (Vertex AI)</td><td>Weighted score prefix : queue : KV use = 3 : 3 : 2 (chat used 3 : 5 : 2)</td><td class="num">hit 35% → 70%</td></tr>
+  <tr><td>DeepSeek (V3/R1 service)</td><td>On-disk KV cache across the fleet</td><td class="num">56.3% of input tokens hit</td></tr>
+</table></div>
+<p class="cap">Each row is that team's own report on its own workload, so the rows are not comparable with each other. Routing, load balance and the tension between them are on <a href="routing-autoscaling.html">many replicas: routing, admission and autoscaling</a>.</p>
+
+<h2>Pitfalls</h2>
+<ul class="pit">
+  <li><b>A prefix only matches from token 0.</b> One changed token invalidates every block after it. Put the stable parts first (system prompt, tools, documents) and the variable parts (date, user name, the question) last. Rerunning E7 with the unique suffix moved <i>in front of</i> the shared prompt gives a <b class="lo">0.0%</b> hit rate and results identical to having no cache (3,344 ms TTFT p50) <span class="tag">our simulation, computed for this card</span></li>
+  <li><b>Sharing across tenants.</b> A shared cache means one tenant's request can hit on another tenant's prompt, and a hit is faster than a miss. Timing that difference could in principle reveal what another tenant sent. vLLM's hash accepts a cache salt among its extra keys, which can keep tenants' blocks apart at the price of their hit rate <span class="tag">the timing risk is our inference; the kit has no source for it</span></li>
+  <li><b>Eviction competes with running requests.</b> Cached blocks with ref 0 count as free memory, so under pressure new allocations evict them first and the hit rate falls exactly when load is highest. Blocks with ref &gt; 0 (or lock_ref &gt; 0) can't be evicted, so a big shared prefix held by running requests shrinks room for everything else. The upside: a preempted vLLM request frees its blocks with hashes intact, so its recompute often hits the cache.</li>
+  <li><b>Hit rate is not speedup.</b> A 91.6% token hit rate here saved 91.6% of prefill compute, but TTFT fell 209× because the unloaded queue vanished. At low load the same hit rate saves only the prefill time itself, 2,048 × 16.2 µs ≈ 33 ms per request on this model.</li>
+</ul>
+
+<h2>Why it beats the alternatives</h2>
+<div class="grid2">
+  <div class="cell"><h3><span class="x">✗</span> No cache</h3><p>Every request prefills its whole prompt: 1,779,902 tokens in E7, 72% of the GPU, 3.3 s median TTFT.</p></div>
+  <div class="cell"><h3><span class="x">✗</span> Cache whole prompts by exact match</h3><p>Only identical prompts hit. Any unique suffix, which is almost every real request, misses everything (our reasoning).</p></div>
+  <div class="cell"><h3><span class="x">✗</span> Hash each block on its own</h3><p>Two blocks with the same tokens after different prefixes would collide, yet their K and V differ, because every layer mixes in earlier tokens. Wrong KV means wrong output.</p></div>
+  <div class="cell win"><h3><span class="ok">✓</span> Prefix-keyed cache (chain hash or tree)</h3><p>Reuses the longest shared opening, whatever follows it: 91.6% hit, 11.9× fewer prefill tokens, TTFT 3,344 → 16.0 ms here.</p></div>
+</div>
+
+<h2>Is this the same as the provider "prompt caching" discount?</h2>
+<div class="note">
+<p><b>Same mechanism, sold as a product.</b> When an API provider bills cached input tokens at a lower price, it is reusing prefill KV for a prefix it has seen, as on this card. From the caller's side it adds rules this card doesn't cover: some APIs need an explicit cache marker, a minimum prefix length, or a time-to-live, and all of them depend on routing you to a replica that still holds the prefix. See <a href="../llm-latency/prompt-caching.html">prompt caching</a> in the latency course.</p>
+<p><b>When it doesn't help:</b> one-off prompts with nothing shared, short prompts where prefill was already a few milliseconds, and memory-starved servers where cached blocks are evicted before reuse. It also does nothing for decode, so an output-heavy workload gains little throughput (1.29× here even with a 91.6% hit rate). The cost when it misses is small in vLLM (under 1% throughput), so engines leave it on anyway.</p>
+</div>
+
+<h2>Go deeper</h2>
+<ul>
+  <li><i>Attention and the KV cache</i>: <a href="../perf-4-attention-kv/radixattention.html">RadixAttention I: the radix tree</a> · <a href="../perf-4-attention-kv/cache-aware-scheduling.html">RadixAttention II: cache-aware scheduling</a> · <a href="../perf-4-attention-kv/paged-sharing.html">PagedAttention II: sharing</a></li>
+</ul>
+
+<div class="foot">
+<p><a class="lab-link" href="https://github.com/seyonv/explainers/blob/main/llm-request-scheduler/labs/experiments.py">Run it: labs/experiments.py</a> E7 is <code>e7_prefix()</code>; the code is <code>BlockManager</code> in <a href="https://github.com/seyonv/explainers/blob/main/llm-request-scheduler/labs/scheduler.py">labs/scheduler.py</a>.</p>
+<p><b>Read next:</b> <a href="reference-solution.html">The reference solution, end to end</a></p>
+<p><b>Related:</b> <a href="kv-cache.html">The KV cache</a> · <a href="block-manager.html">A paged KV block manager</a> · <a href="policies.html">Who goes next: FCFS, SJF, priority, fairness</a> · <a href="routing-autoscaling.html">Many replicas: routing, admission and autoscaling</a> · <a href="../perf-4-attention-kv/radixattention.html">Attention and the KV cache: RadixAttention</a> · <a href="../perf-4-attention-kv/cache-aware-scheduling.html">cache-aware scheduling</a> · <a href="../llm-latency/prompt-caching.html">Prompt caching (latency course)</a></p>
+<p><b>Sources:</b> vLLM block hashing, find_longest_cache_hit, last-token cap, free queue as LRU, cache salt in extra_keys; SGLang radix_cache.py (split, lock_ref, leaf-heap eviction), LPM/DFS-weight, FCFS fallback above 128 waiting; TGI RadixAllocator; nano-vllm: engine source as summarised in the course research kit. "Less than 1%": <a href="https://vllm.ai/blog/2025-01-27-v1-alpha-release">vLLM V1 blog</a>. <a href="https://lmsys.org/blog/2024-01-17-sglang/">SGLang RadixAttention</a> · <a href="https://lmsys.org/blog/2024-12-04-sglang-v0-4/">SGLang v0.4 router</a> · <a href="https://blog.character.ai/optimizing-ai-inference-at-character-ai-2/">Character.AI</a> · <a href="https://llm-d.ai/blog/kvcache-wins-you-can-see">llm-d KV-cache wins</a> · <a href="https://cloud.google.com/blog/products/containers-kubernetes/how-gke-inference-gateway-improved-latency-for-vertex-ai">GKE Inference Gateway for Vertex AI</a> · <a href="https://github.com/deepseek-ai/open-infra-index/blob/main/202502OpenSourceWeek/day_6_one_more_thing_deepseekV3R1_inference_system_overview.md">DeepSeek inference system overview</a>. LSPF 84.7% vs FCFS 30.2%: <i>Attention and the KV cache</i>, cache-aware scheduling card. Our simulation: <a href="https://github.com/seyonv/explainers/blob/main/llm-request-scheduler/labs/experiments.py">labs/experiments.py</a> (100%-of-peak cost model, a floor); the variable-first rerun reorders E7's prompt tokens and reuses the same scheduler.</p>
+</div>
+</article>
+<!-- series-nav:bottom -->
+<div class="snx"><a class="nx" href="index.html#reference-solution" target="_top">
+<span class="mini" aria-hidden="true"><span class="m1">The reference solution, end to end</span><span class="m2">Also called: a minimal continuous-batching scheduler, a toy vLLM. This card is where the build section pays off. It walks through labs/mini_scheduler.py, a complete solution in 176 lines of…</span><span class="m3">In one breath</span><span class="m4">Three containers and one rule. There's a waiting deque, a running list and a free list of KV blocks. Every step, the running requests go first: each gets one decode token, or the next chunk of its prompt. Then new requests are admitted from the head of the queue while the token budget, the seat cap and the free blocks allow. If…</span></span>
+<span class="tx"><span class="lab">Next up · 19 / 25</span><span class="tt">The reference solution, end to end</span><span class="ds">The full code, the tests, and the follow-ups</span><span class="go">Continue →</span></span></a><div class="aux"><span><a href="index.html#concurrency" target="_top">← Handling concurrent requests</a></span><a href="index.html" target="_top">All cards in Build an LLM request scheduler</a></div></div>
+<!-- /series-nav:bottom -->
+</body>
+</html>

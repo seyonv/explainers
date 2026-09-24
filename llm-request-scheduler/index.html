@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>0 · Start here: the map of fast LLM inference</title>
+<title>Build an LLM request scheduler</title>
 <style>
 :root{
   --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
@@ -73,12 +73,9 @@ h2{font-size:13px;font-weight:600;color:var(--muted);letter-spacing:.03em;text-t
 </head>
 <body>
 <main class="wrap">
-<!-- series-nav -->
-<nav class="series" aria-label="Courses in the series"><a href="../perf-0-map/index.html" class="cur" aria-current="page">0 · Start here</a><a href="../perf-1-foundations/index.html">1 · How a GPU runs an LLM</a><a href="../perf-2-scaling-book-inference/index.html">2 · The math of serving</a><a href="../perf-3-kernels/index.html">3 · Writing fast kernels</a><a href="../perf-4-attention-kv/index.html">4 · Attention &amp; KV cache</a><a href="../perf-5-engines/index.html">5 · Inside inference engines</a><a href="../perf-6-scaling-out/index.html">6 · Serving across GPUs</a><span title="Coming later">7 · Training &amp; cost per token</span></nav>
-<!-- /series-nav -->
-<h1>0 · Start here: the map of fast LLM inference</h1>
-<p class="sub">Start here for the Fast LLM inference series: 8 courses covering the 80/20 of GPU and inference performance, built on the <a href="https://github.com/wafer-ai/gpu-perf-engineering-resources">wafer-ai resource list</a>. Published so far: <a href="../perf-1-foundations/index.html">1 · How a GPU runs a language model</a>, <a href="../perf-2-scaling-book-inference/index.html">2 · The math of serving an LLM</a>, <a href="../perf-3-kernels/index.html">3 · Writing fast GPU kernels</a>, <a href="../perf-4-attention-kv/index.html">4 · Attention and the KV cache</a>, <a href="../perf-5-engines/index.html">5 · Inside an inference engine</a> and <a href="../perf-6-scaling-out/index.html">6 · Serving across many GPUs</a>. Click a card to read it; ← → to page.</p>
-<!-- series-nav --><p class="needs"><b>Prerequisites:</b> Read anytime. Each card says what it builds on, so you can see where it's safe to jump around.</p><!-- /series-nav -->
+<!-- series-nav --><a class="back" href="../index.html">← All explainers</a><!-- /series-nav -->
+<h1>Build an LLM request scheduler</h1>
+<p class="sub">25 cards that start at one forward step and end at a full serving system: why decode is memory-bound, what the KV cache is for, the batching strategies (static, dynamic, continuous, chunked prefill), a working scheduler in Python (its data structures, <code>step()</code>, a paged KV block manager, preemption, scheduling policies, concurrency, prefix caching) with the complexity of each part, the throughput levers ranked, and the whole architecture drawn from gateway to GPU. Every number comes from a runnable simulator in <a href="https://github.com/seyonv/explainers/tree/main/llm-request-scheduler/labs">labs/</a> (Llama-3.1-8B on one H100, a 100%-of-peak cost model) or from a cited engineering post (vLLM, SGLang, Anyscale, Character.AI, DeepSeek, llm-d, ByteByteGo and more). For depth, the cards link into the <a href="../perf-0-map/index.html">Fast LLM inference</a> series. Click a card to read it; ← → to page.</p>
 <button class="start" data-go="0">Read all in order →</button>
 <div id="sections"></div>
 </main>
@@ -102,12 +99,41 @@ h2{font-size:13px;font-weight:600;color:var(--muted);letter-spacing:.03em;text-t
 // Overview cards go in the first group with bigTiles = true.
 const GROUPS = [
   ["Start here", true, [
-    ["_overview.html", "The map: 8 courses", "$/token as the one formula, the path through the series, and what matters most"],
+    ["_overview.html", "The scheduler on one page", "The formula, the whole system, and every lever ranked"],
   ]],
-  ["Plan and reference", false, [
-    ["reading-plan.html", "Reading plan", "Every resource triaged DEEP / SKIM / SKIP, with sections and hours"],
-    ["stack.html", "The inference stack in one picture", "From API request to tensor core, and which course covers each layer"],
-    ["glossary.html", "Glossary", "The words of the field, each linked to the card that teaches it"],
+  ["1 · Why serving is hard", false, [
+    ["token-loop.html", "The token loop: prefill, then decode", "One pass for the prompt, one step per output token"],
+    ["kv-cache.html", "The KV cache: what it stores and why generation needs it", "128 KiB per token, and why it caps the batch"],
+    ["bottlenecks.html", "The bottlenecks: bandwidth, compute, memory, and the CPU", "What limits each phase, with the number that proves it"],
+    ["metrics-slos.html", "Measuring a server: TTFT, TPOT, throughput, goodput", "What to measure, and why averages lie"],
+  ]],
+  ["2 · Batching strategies", false, [
+    ["why-batch.html", "Why batching works: one weight read, many tokens", "205 → 9,973 tok/s from the same step"],
+    ["static-batching.html", "Static batching and its padding tax", "Wait for a full batch, run to the longest"],
+    ["dynamic-batching.html", "Dynamic batching: wait a little, batch a lot", "A time window, and why it still fails for generation"],
+    ["continuous-batching.html", "Continuous batching: join and leave every step", "Iteration-level scheduling, about 10× the throughput"],
+    ["chunked-prefill.html", "Chunked prefill and the token budget", "Stop long prompts stalling everyone else"],
+  ]],
+  ["3 · Building the scheduler", false, [
+    ["problem-spec.html", "The build-it problem: interface and constraints", "What to build, and how to scope it"],
+    ["request-state.html", "Request lifecycle and the data structures", "States, queues, and the Big-O of each operation"],
+    ["step-algorithm.html", "step(), line by line", "The whole loop, traced on 8 requests"],
+    ["block-manager.html", "A paged KV block manager", "Free list, block tables, ref counts, O(1) alloc"],
+    ["admission-preemption.html", "Admission, preemption and thrashing", "What to do when KV memory runs out"],
+    ["policies.html", "Who goes next: FCFS, SJF, priority, fairness", "Each policy's win and its starvation risk"],
+    ["concurrency.html", "Handling concurrent requests", "Async front-end, one engine loop, streaming, backpressure"],
+    ["prefix-caching.html", "Prefix caching: never prefill the same tokens twice", "Block hashing, radix trees, 91.6% hits"],
+    ["reference-solution.html", "The reference solution, end to end", "The full code, the tests, and the follow-ups"],
+  ]],
+  ["4 · Increasing throughput", false, [
+    ["throughput-levers.html", "Every way to raise throughput, ranked", "Batching, memory, quantization, speculation, parallelism"],
+    ["disaggregation.html", "Splitting prefill and decode", "Separate machines for the two phases, and the KV handoff"],
+  ]],
+  ["5 · The full system", false, [
+    ["routing-autoscaling.html", "Many replicas: routing, admission and autoscaling", "KV-aware routing, 429s and scaling on queue depth"],
+    ["full-system.html", "The whole system, drawn", "Every component from gateway to GPU, and one request's path"],
+    ["real-systems.html", "What real companies built", "vLLM, SGLang, TGI, TensorRT-LLM, Character.AI, Mooncake, DeepSeek"],
+    ["explain-it-back.html", "Explain it back: the three big questions", "Bottlenecks, the KV cache, and throughput, with numbers"],
   ]],
 ];
 const CARDS = GROUPS.flatMap(g => g[2]);
@@ -172,7 +198,7 @@ frame.addEventListener("load", () => frame.blur());
 const start = CARDS.findIndex(c => "#" + c[0].replace(".html", "") === location.hash);
 if (start >= 0) show(start);
 // series-nav
-const SERIES = [{"slug":"perf-0-map","label":"0 · Start here","built":true},{"slug":"perf-1-foundations","label":"1 · How a GPU runs an LLM","built":true},{"slug":"perf-2-scaling-book-inference","label":"2 · The math of serving","built":true},{"slug":"perf-3-kernels","label":"3 · Writing fast kernels","built":true},{"slug":"perf-4-attention-kv","label":"4 · Attention & KV cache","built":true},{"slug":"perf-5-engines","label":"5 · Inside inference engines","built":true},{"slug":"perf-6-scaling-out","label":"6 · Serving across GPUs","built":true},{"slug":"perf-7-training-economics","label":"7 · Training & cost per token","built":false}], HERE = "perf-0-map";
+const SERIES = [{"slug":"perf-0-map","label":"Fast LLM inference","built":true},{"slug":"cs-0-map","label":"CS interview cheat sheet","built":true},{"slug":"llm-latency","label":"LLM speed and reliability","built":true},{"slug":"llm-request-scheduler","label":"Build an LLM request scheduler","built":true},{"slug":"paper-2107-03374","label":"Evaluating Large Language Models Trained on Code","built":true},{"slug":"paper-2305-01210","label":"Is Your Code Generated by ChatGPT Really Correct? Rigorous Evaluation of Large Language Models for Code Generation","built":true},{"slug":"structured-outputs","label":"Structured outputs from language models","built":true}], HERE = "llm-request-scheduler";
 const side = document.getElementById("side");
 {
   let h = "", n = 0;

@@ -1,0 +1,416 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DeepSeek-V3 II: infrastructure, FP8 and deployment</title>
+<style>
+:root{
+  --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
+  --text:#1c1f23; --muted:#6b7068; --faint:#b9b9b3;
+  --accent:#4a9d77; --accent-bg:#dcefdf; --accent-border:#8cc79c;
+  --red:#c0492b; --red-bg:#fbeceb;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#15171a; --surface:#1d2024; --surface2:#24282d; --border:#32373d;
+    --text:#e6e8ea; --muted:#9aa1a9; --faint:#4a5057;
+    --accent:#5fb37f; --accent-bg:#1c2b22; --accent-border:#3f7a55;
+    --red:#e57368; --red-bg:#2e1f1e;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text)}
+.card{max-width:820px;margin:0 auto;padding:28px 32px;font-family:-apple-system,"Inter",system-ui,sans-serif;line-height:1.45}
+h1{font-size:26px;font-weight:600;margin:0 0 6px;letter-spacing:-0.01em}
+.sub{font-size:15px;color:var(--muted);margin:0 0 20px}
+h2{font-size:17px;font-weight:600;margin:28px 0 10px}
+h2 small{font-size:13px;font-weight:400;color:var(--muted)}
+h3.sm{font-size:15px;font-weight:600;margin:18px 0 8px}
+p{font-size:15px;margin:0 0 10px}
+ul{font-size:15px;margin:0 0 10px;padding-left:20px}
+li{margin-bottom:4px}
+.cap{font-size:13px;color:var(--muted);margin:8px 0 0;text-align:center}
+.cap + p{margin-top:14px}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+.take{border-left:3px solid var(--accent-border);background:var(--surface);padding:8px 14px;margin:12px 0;font-size:14px;border-radius:0 6px 6px 0}
+.take b{color:var(--accent)}
+
+/* Tables and formulas */
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border)}
+th{font-size:12px;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:none}
+.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.hi{color:var(--accent);font-weight:600} .lo{color:var(--red)} .mu{color:var(--muted)}
+.formula{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin:10px 0;white-space:pre;overflow-x:auto;line-height:1.55}
+.formula .c{color:var(--muted)}
+.formula .g{color:var(--accent);font-weight:600}
+.formula .r{color:var(--red);font-weight:600}
+.tw{overflow-x:auto}
+.tw table{min-width:640px}
+.small td,.small th{font-size:13px;padding:6px 8px}
+
+/* MathML */
+.mathbox{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px 16px 12px;margin:10px 0;overflow-x:auto}
+.mathbox math{font-size:21px;color:var(--text);font-family:"STIX Two Math","Latin Modern Math","Cambria Math",math}
+.mathbox .t1{color:var(--text)} .mathbox .t2{color:var(--accent)} .mathbox .t3{color:var(--muted)}
+.mathbox .lab{font-size:12px;font-family:-apple-system,"Inter",system-ui,sans-serif;padding-top:3px;border-top:1.5px solid currentColor;margin-top:2px}
+.legend{display:grid;grid-template-columns:auto 1fr auto;column-gap:14px;row-gap:5px;font-size:13px;margin-top:12px;align-items:baseline}
+.legend .sym{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;text-align:right}
+.legend .v{color:var(--muted);text-align:right;font-variant-numeric:tabular-nums}
+@media (max-width:560px){.legend{grid-template-columns:auto 1fr}.legend .v{display:none}}
+
+/* Two examples per term */
+.parts td{vertical-align:top} .parts td:first-child{font-weight:600}
+.parts .ex{font-size:13px} .parts .ex span{display:block;color:var(--muted)}
+.parts .what{font-size:13px}
+@media (max-width:560px){.parts .what{display:none}}
+
+/* 2x2 grid */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.cell{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.cell.win{background:var(--accent-bg);border-color:var(--accent-border)}
+.cell h3{font-size:16px;font-weight:600;margin:0 0 5px;display:flex;gap:8px;align-items:baseline}
+.cell p{font-size:14px;margin:0;color:var(--text)}
+.cell.win h3,.cell.win p{color:var(--accent)}
+.x{color:var(--red)} .ok{color:var(--accent)}
+
+/* Clarification box */
+.note{border:1px solid var(--border);border-radius:10px;padding:14px 18px;font-size:14px}
+.note p,.note li{font-size:14px} .note p:last-child{margin-bottom:0}
+.note ul{padding-left:18px}
+
+.foot{margin-top:22px;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+.foot p{font-size:13px}
+
+/* SVG */
+svg{display:block;max-width:100%;height:auto;margin-top:6px;font-family:-apple-system,"Inter",system-ui,sans-serif}
+.sl{font-size:12px;fill:var(--muted)} .st{font-size:13px;fill:var(--text)} .sh{font-size:13px;font-weight:600;fill:var(--text)}
+.sa{font-size:13px;fill:var(--accent);font-weight:600} .slr{font-size:12px;fill:var(--red)}
+.bt{font-size:12px;fill:var(--text);font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.bd{fill:var(--accent-bg);stroke:var(--accent);stroke-width:1.2}
+.bp{fill:var(--surface2);stroke:var(--muted);stroke-width:1}
+.idle{fill:var(--surface);stroke:var(--faint);stroke-width:1;stroke-dasharray:3 3}
+.nd{fill:var(--surface);stroke:var(--border);stroke-width:1.2}
+.gp{fill:var(--bg);stroke:var(--muted);stroke-width:1}
+.gs{fill:var(--bg);stroke:var(--text);stroke-width:1.8}
+.ge{fill:var(--accent-bg);stroke:var(--accent);stroke-width:1.4}
+.lr{stroke:var(--red);stroke-width:2;fill:none} .lm{stroke:var(--muted);stroke-width:1.6;fill:none}
+.la{stroke:var(--accent);stroke-width:1.6;fill:none} .lt{stroke:var(--text);stroke-width:1.4;fill:none}
+.ax{stroke:var(--faint);stroke-width:1}
+@media (max-width:560px){.grid2{grid-template-columns:1fr}.card{padding:20px 16px}}
+a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+/* series-nav */
+.sn{max-width:820px;margin:0 auto;padding:16px 32px 0;font-family:-apple-system,"Inter",system-ui,sans-serif;font-size:13px;line-height:1.5;color:var(--muted)}
+.sn a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
+.sn .crumbs{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 7px}
+.sn .crumbs b{color:var(--text);font-weight:600}
+.sn .sep{color:var(--faint,var(--border))}
+.sn .step{margin-left:auto;white-space:nowrap}
+.sn .dep{margin-top:5px;padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface)}
+.sn .dep .ok{color:var(--accent);font-weight:600}
+.snx{max-width:820px;margin:0 auto;padding:6px 32px 44px;font-family:-apple-system,"Inter",system-ui,sans-serif}
+.snx .nx{display:grid;grid-template-columns:280px 1fr;text-decoration:none;color:var(--text);background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.snx .nx:hover,.snx .nx:focus-visible{border-color:var(--accent-border,var(--accent));outline:none}
+.snx .mini{position:relative;height:210px;overflow:hidden;background:var(--bg);border-right:1px solid var(--border);padding:14px 16px}
+.snx .mini span{display:block}
+.snx .mini .m1{font-size:12.5px;font-weight:600;margin:0 0 4px;line-height:1.3}
+.snx .mini .m2{font-size:9px;color:var(--muted);margin:0 0 8px;line-height:1.4}
+.snx .mini .m3{font-size:8.5px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;margin:0 0 3px}
+.snx .mini .m4{font-size:9.5px;margin:0;line-height:1.45}
+.snx .tx{padding:16px 20px}
+.snx .lab{font-size:12px;font-weight:600;color:var(--accent);letter-spacing:.04em;text-transform:uppercase}
+.snx .tt{display:block;font-size:20px;font-weight:600;margin:5px 0 4px;line-height:1.25}
+.snx .ds{display:block;font-size:14px;color:var(--muted)}
+.snx .nd{display:block;font-size:13px;color:var(--muted);margin-top:10px}
+.snx .go{display:block;margin-top:12px;font-size:14px;font-weight:600;color:var(--accent)}
+.snx .aux{display:flex;justify-content:space-between;gap:12px;margin-top:10px;font-size:13px;color:var(--muted)}
+.snx .aux a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
+@media (max-width:560px){.sn,.snx{padding-left:16px;padding-right:16px}.snx .nx{grid-template-columns:1fr}.snx .mini{display:none}.sn .step{margin-left:0}}
+/* /series-nav */
+</style>
+</head>
+<body>
+<!-- series-nav:top -->
+<nav class="sn" aria-label="Course navigation"><div class="crumbs"><a href="../perf-0-map/index.html" target="_top">Fast LLM inference</a><span class="sep">›</span><a href="index.html" target="_top">6 · Serving across GPUs</a><span class="sep">›</span><b>09 / 15</b><span class="step"><a href="index.html#deepseek-v3-architecture" target="_top">← prev</a> · <a href="index.html#distserve-interference" target="_top">next →</a></span></div>
+<div class="dep"><b>Before this:</b> <a href="index.html#deepseek-v3-architecture" target="_top">DeepSeek-V3 I: an architecture built for serving</a> · <a href="index.html#expert-parallel" target="_top">Expert parallelism: dispatch, combine and EPLB</a></div></nav>
+<!-- /series-nav:top -->
+<article class="card">
+<h1>DeepSeek-V3 II: infrastructure, FP8 and deployment</h1>
+<p class="sub">Also called DualPipe, cross-node all-to-all, fine-grained FP8 training, and DeepSeek's prefill/decode units. This card walks §3 of the DeepSeek-V3 report (arXiv 2412.19437 v2) section by section: the H800 cluster, the training framework, FP8, the inference deployment and the hardware wish list. It then checks the training bill and the Day 6 production numbers. Card 2 of 2. The architecture (MLA, DeepSeekMoE, node-limited routing, MTP) is <a href="deepseek-v3-architecture.html">card 1</a>. Every number below is for DeepSeek-V3 on H800s, as the paper or post gives it. Numbers marked "ours" are our recomputation or inference.</p>
+
+<h2>In one breath</h2>
+<p>DeepSeek-V3 activates only 37B of its 671B parameters per token, so the math per token is cheap. The expensive part is <b>moving tokens to experts on other nodes</b> over InfiniBand, which is 3.2× slower than NVLink on their H800s. Almost everything in §3 is a way to hide or shrink that traffic. Training pairs a forward chunk with a backward chunk so each one's communication runs under the other's compute (DualPipe), caps each token at 4 nodes, and sends activations in FP8. Serving uses large, separate prefill and decode units so every expert still sees a big enough batch.</p>
+
+<h2>§3.1 · The cluster: 2,048 H800s, two very different links</h2>
+<p>2,048 NVIDIA H800 GPUs, 8 per node (256 nodes, ours). Inside a node, NVLink + NVSwitch. Between nodes, InfiniBand (IB), with all GPUs fully interconnected. The paper states the one ratio that shapes everything else: "NVLink offers a bandwidth of 160 GB/s, roughly 3.2 times that of IB (50 GB/s)." The H800 is the export version of the H100: same compute, cut-down NVLink.</p>
+<table class="small">
+<tr><th>Per GPU</th><th class="num">H800 (DeepSeek, as stated)</th><th class="num">H100 SXM (this course)</th><th>Note</th></tr>
+<tr><td>Scale-up: NVLink</td><td class="num">160 GB/s</td><td class="num">450 GB/s per direction</td><td class="mu">DeepSeek's measured figure vs NVIDIA's spec. Not the same kind of number.</td></tr>
+<tr><td>Scale-out: IB</td><td class="num">50 GB/s</td><td class="num">50 GB/s</td><td class="mu">one 400 Gb/s NIC per GPU (bits ÷ 8)</td></tr>
+<tr><td>NVLink ÷ IB</td><td class="num lo">3.2×</td><td class="num">9×</td><td class="mu">on the H800 the in-node link is only 3.2× the network</td></tr>
+<tr><td>Dense FP8 compute</td><td class="num">same as H100</td><td class="num">1,979 TFLOPS</td><td class="mu">132 SMs (§3.5.1)</td></tr>
+</table>
+<p class="cap">Every cross-node expert hop costs a 50 GB/s IB transfer. With 256 routed experts per layer spread over many nodes, that hop is on every MoE layer, forward and backward.</p>
+
+<h2>§3.2 · The training framework: PP16 × EP64 × ZeRO-1, no tensor parallelism</h2>
+<p>DeepSeek trained with their own framework, HAI-LLM, using three kinds of parallelism and deliberately <b>no tensor parallelism</b> ("without using costly Tensor Parallelism"). TP would put two all-reduces per layer on the critical path. The memory tricks in §3.2.3 are what make it possible to skip TP.</p>
+<div class="tw"><table class="parts">
+<tr><th>Axis</th><th class="what">What it splits</th><th>Example A: training (§3.2)</th><th>Example B: serving (§3.4, paper)</th></tr>
+<tr><td>Pipeline (PP)</td><td class="what">The layers, into sequential stages. Micro-batches keep the stages busy.</td>
+  <td class="ex"><b>PP16</b><span>61 layers ÷ 16 ≈ 3.8 layers per stage (ours)</span></td>
+  <td class="ex"><b>none described</b><span>the units are built from TP, DP and EP only</span></td></tr>
+<tr><td>Expert (EP)</td><td class="what">Each MoE layer's routed experts across GPUs. Tokens travel to their experts (dispatch) and back (combine).</td>
+  <td class="ex"><b>EP64 over 8 nodes</b><span>256 ÷ 64 = 4 experts per GPU, 32 per node</span></td>
+  <td class="ex"><b>EP32 prefill · EP320 decode</b><span>9 experts per GPU vs 1</span></td></tr>
+<tr><td>Data (DP)</td><td class="what">Replicas that process different data. ZeRO-1 shards only the optimizer states across the replicas.</td>
+  <td class="ex"><b>ZeRO-1 DP</b><span>degree not stated; 2,048 ÷ 16 = 128 GPUs per stage (ours)</span></td>
+  <td class="ex"><b>attention DP8 · DP80</b><span>each replica serves different requests</span></td></tr>
+<tr><td>Tensor (TP)</td><td class="what">Each weight matrix across GPUs, with an all-reduce per split layer.</td>
+  <td class="ex"><b class="lo">not used</b><span>"costly"</span></td>
+  <td class="ex"><b>TP4 + SP, attention only</b><span>"small TP size of 4 limits the overhead"</span></td></tr>
+</table></div>
+
+<h3 class="sm">§3.2.1 · DualPipe: why it exists</h3>
+<p>Cross-node expert parallelism gives "an inefficient computation-to-communication ratio of approximately 1:1". Run naively, the GPU computes for half the time and waits on all-to-all for the other half. DualPipe splits each chunk into <b>attention, all-to-all dispatch, MLP, all-to-all combine</b> (plus PP communication), and splits backward into "backward for input" and "backward for weights" (as in ZeroBubble). It then interleaves one <b>forward</b> chunk with one <b>backward</b> chunk. Each chunk's communication runs while the other chunk computes. The share of SMs given to communication is tuned by hand, so "both all-to-all and PP communication can be fully hidden."</p>
+<svg viewBox="0 0 780 330" role="img" aria-label="Schematic. Top: one forward chunk run alone alternates compute and communication, leaving the compute lane idle half the time. Middle: a forward chunk paired with a backward chunk keeps the compute lane full while the communication lane carries the other chunk's dispatch and combine. Bottom: eight pipeline ranks with micro-batches entering from both ends.">
+  <text x="0" y="16" class="sh">A · one forward chunk alone (about 1:1 compute : communication)</text>
+  <text x="0" y="46" class="sl">compute</text><text x="0" y="78" class="sl">comm</text>
+  <rect x="70" y="30" width="110" height="26" rx="3" class="bd"/><text x="125" y="47" class="bt" text-anchor="middle">attn F</text>
+  <rect x="180" y="30" width="110" height="26" rx="3" class="idle"/><text x="235" y="47" class="sl" text-anchor="middle">idle</text>
+  <rect x="290" y="30" width="110" height="26" rx="3" class="bd"/><text x="345" y="47" class="bt" text-anchor="middle">mlp F</text>
+  <rect x="400" y="30" width="110" height="26" rx="3" class="idle"/><text x="455" y="47" class="sl" text-anchor="middle">idle</text>
+  <rect x="180" y="62" width="110" height="26" rx="3" class="bp"/><text x="235" y="79" class="bt" text-anchor="middle">dispatch F</text>
+  <rect x="400" y="62" width="110" height="26" rx="3" class="bp"/><text x="455" y="79" class="bt" text-anchor="middle">combine F</text>
+  <text x="525" y="47" class="slr">compute busy 50%</text>
+  <text x="525" y="79" class="sl">backward chunk would add as much again</text>
+
+  <text x="0" y="124" class="sh">B · DualPipe: one forward chunk paired with one backward chunk</text>
+  <text x="0" y="154" class="sl">compute</text><text x="0" y="186" class="sl">comm</text>
+  <rect x="70" y="138" width="110" height="26" rx="3" class="bd"/><text x="125" y="155" class="bt" text-anchor="middle">attn F</text>
+  <rect x="180" y="138" width="110" height="26" rx="3" class="bd"/><text x="235" y="155" class="bt" text-anchor="middle">mlp B</text>
+  <rect x="290" y="138" width="110" height="26" rx="3" class="bd"/><text x="345" y="155" class="bt" text-anchor="middle">mlp F</text>
+  <rect x="400" y="138" width="110" height="26" rx="3" class="bd"/><text x="455" y="155" class="bt" text-anchor="middle">attn B</text>
+  <rect x="70" y="170" width="110" height="26" rx="3" class="bp"/><text x="125" y="187" class="bt" text-anchor="middle">combine B</text>
+  <rect x="180" y="170" width="110" height="26" rx="3" class="bp"/><text x="235" y="187" class="bt" text-anchor="middle">dispatch F</text>
+  <rect x="290" y="170" width="110" height="26" rx="3" class="bp"/><text x="345" y="187" class="bt" text-anchor="middle">dispatch B</text>
+  <rect x="400" y="170" width="110" height="26" rx="3" class="bp"/><text x="455" y="187" class="bt" text-anchor="middle">combine F</text>
+  <text x="525" y="155" class="sa">compute busy ~100%</text>
+  <text x="525" y="187" class="sl">each chunk's traffic hides under</text>
+  <text x="525" y="203" class="sl">the other chunk's compute</text>
+
+  <text x="0" y="226" class="sh">C · bidirectional: micro-batches enter from both ends of the pipeline</text>
+  <g>
+    <rect x="70" y="256" width="70" height="26" rx="3" class="gp"/><text x="105" y="273" class="bt" text-anchor="middle">rank 0</text>
+    <rect x="150" y="256" width="70" height="26" rx="3" class="gp"/><text x="185" y="273" class="bt" text-anchor="middle">rank 1</text>
+    <rect x="230" y="256" width="70" height="26" rx="3" class="gp"/><text x="265" y="273" class="bt" text-anchor="middle">rank 2</text>
+    <rect x="310" y="256" width="70" height="26" rx="3" class="gp"/><text x="345" y="273" class="bt" text-anchor="middle">…</text>
+    <rect x="390" y="256" width="70" height="26" rx="3" class="gp"/><text x="425" y="273" class="bt" text-anchor="middle">rank 6</text>
+    <rect x="470" y="256" width="70" height="26" rx="3" class="gp"/><text x="505" y="273" class="bt" text-anchor="middle">rank 7</text>
+  </g>
+  <path d="M70 296 H530" class="la"/><path d="M522 291 L530 296 L522 301" class="la"/>
+  <text x="70" y="314" class="sl">forward direction: micro-batches enter at rank 0</text>
+  <path d="M540 246 H80" class="lt"/><path d="M88 241 L80 246 L88 251" class="lt"/>
+  <text x="555" y="273" class="sl">reverse direction enters at rank 7,</text>
+  <text x="555" y="289" class="sl">so both ends have work early</text>
+</svg>
+<p class="cap">Schematic of the idea in Figs 4–5, not to scale. Block sizes are equal to show the paper's ~1:1 ratio. Real backward chunks are longer than forward ones. Fig 4 also splits backward into input and weight parts and adds PP traffic. Fig 5 uses 8 PP ranks and 20 micro-batches in two directions. Idle cells are grey: waiting time.</p>
+<p>The bidirectional schedule also shrinks the pipeline bubble. Table 2 of the paper, filled in for their PP = 16 (ours):</p>
+<table class="small">
+<tr><th>Method</th><th>Bubble (paper, Table 2)</th><th class="num">Multiplier at PP = 16</th><th class="num">Params held</th><th class="num">Activation memory</th></tr>
+<tr><td>1F1B</td><td class="mono">(PP−1)(F+B)</td><td class="num lo">15 × (F+B)</td><td class="num">1×</td><td class="num">PP</td></tr>
+<tr><td>ZB1P</td><td class="mono">(PP−1)(F+B−2W)</td><td class="num">15 × (F+B−2W)</td><td class="num">1×</td><td class="num">PP</td></tr>
+<tr><td>DualPipe</td><td class="mono">(PP/2−1)(F&amp;B+B−3W)</td><td class="num hi">7 × (F&amp;B+B−3W)</td><td class="num">2×</td><td class="num">PP+1</td></tr>
+</table>
+<p class="cap">F = forward chunk time, B = full backward, W = "backward for weights", F&amp;B = an overlapped forward+backward pair. DualPipe keeps two copies of the parameters. The paper says this is cheap because EP is large, so each GPU holds few experts. It needs stages and micro-batches divisible by 2, and "neither the bubbles nor activation memory will increase as the number of micro-batches grows."</p>
+
+<h3 class="sm">§3.2.2 · Cross-node all-to-all: 20 SMs, at most 4 nodes per token</h3>
+<svg viewBox="0 0 780 230" role="img" aria-label="A token leaves GPU 3 on the source node, crosses InfiniBand once to GPU 3 on each target node, then is forwarded over NVLink to the GPUs that hold its experts.">
+  <rect x="10" y="30" width="200" height="170" rx="8" class="nd"/><text x="110" y="22" class="sh" text-anchor="middle">source node</text>
+  <g>
+    <rect x="30" y="50" width="70" height="26" rx="3" class="gp"/><text x="65" y="67" class="bt" text-anchor="middle">GPU 0</text>
+    <rect x="120" y="50" width="70" height="26" rx="3" class="gp"/><text x="155" y="67" class="bt" text-anchor="middle">GPU 1</text>
+    <rect x="30" y="90" width="70" height="26" rx="3" class="gp"/><text x="65" y="107" class="bt" text-anchor="middle">GPU 2</text>
+    <rect x="120" y="90" width="70" height="26" rx="3" class="gs"/><text x="155" y="107" class="bt" text-anchor="middle">GPU 3</text>
+    <text x="110" y="150" class="sl" text-anchor="middle">… GPUs 4–7</text>
+    <text x="110" y="180" class="sl" text-anchor="middle">token routed here</text>
+  </g>
+  <rect x="470" y="10" width="300" height="100" rx="8" class="nd"/><text x="620" y="102" class="sl" text-anchor="middle">target node 1</text>
+  <rect x="490" y="24" width="70" height="26" rx="3" class="gs"/><text x="525" y="41" class="bt" text-anchor="middle">GPU 3</text>
+  <rect x="600" y="24" width="70" height="26" rx="3" class="ge"/><text x="635" y="41" class="bt" text-anchor="middle">GPU 1</text>
+  <rect x="600" y="62" width="70" height="26" rx="3" class="ge"/><text x="635" y="79" class="bt" text-anchor="middle">GPU 6</text>
+  <rect x="690" y="24" width="70" height="26" rx="3" class="gp"/><text x="725" y="41" class="bt" text-anchor="middle">…</text>
+  <path d="M560 37 H600" class="lm"/><path d="M560 37 L600 75" class="lm"/>
+  <rect x="470" y="125" width="300" height="100" rx="8" class="nd"/><text x="620" y="217" class="sl" text-anchor="middle">target node 2 (up to 4 nodes)</text>
+  <rect x="490" y="139" width="70" height="26" rx="3" class="gs"/><text x="525" y="156" class="bt" text-anchor="middle">GPU 3</text>
+  <rect x="600" y="139" width="70" height="26" rx="3" class="ge"/><text x="635" y="156" class="bt" text-anchor="middle">GPU 5</text>
+  <rect x="690" y="139" width="70" height="26" rx="3" class="gp"/><text x="725" y="156" class="bt" text-anchor="middle">…</text>
+  <path d="M560 152 H600" class="lm"/>
+  <path d="M190 103 C330 103 360 37 490 37" class="lr"/>
+  <path d="M190 103 C330 103 360 152 490 152" class="lr"/>
+  <text x="340" y="170" class="slr" text-anchor="middle">IB, 50 GB/s</text>
+  <text x="340" y="186" class="slr" text-anchor="middle">once per target node</text>
+  <text x="580" y="116" class="sl" text-anchor="middle">NVLink 160 GB/s</text>
+</svg>
+<p class="cap">A token crosses IB once per target node, to the GPU with the <b>same in-node index</b>. That GPU forwards it over NVLink to the GPUs that hold its experts (green). Red is the bottleneck link. GPU and expert positions are illustrative.</p>
+<div class="formula">IB is the bottleneck, so cap it:     ≤ 4 target nodes per token (M = 4)
+NVLink ÷ IB = 160 ÷ 50               = 3.2
+while one IB copy arrives, NVLink can forward about 3.2 copies inside the node
+→ 3.2 experts per node "without incurring additional overhead from NVLink"
+max experts at the same comm cost    = 4 nodes × 3.2  = 12.8 → "a maximum of 13"
+experts actually used                = 8 routed      <span class="c"># headroom, not a routing parameter</span>
+SMs spent on communication           = 20 of 132     = 15.2%  <span class="c"># ours</span></div>
+<ul>
+<li><b>20 SMs → 10 channels, with warp specialization.</b> For dispatch, separate warps do (1) IB sending, (2) IB-to-NVLink forwarding, (3) NVLink receiving. For combine, they do (1) NVLink sending, (2) NVLink-to-IB forwarding + accumulation, (3) IB receiving + accumulation. Warp counts adjust to the actual load.</li>
+<li><b>Tokens never queue behind later arrivals.</b> Forwarding starts on arrival, so the IB and NVLink transfers fully overlap.</li>
+<li><b>Custom PTX and an auto-tuned chunk size.</b> These cut L2-cache use and interference with the compute kernels running beside the communication kernels. For DeepSeek's open-source EP kernels (DeepEP), see <a href="expert-parallel.html">expert parallelism</a>.</li>
+</ul>
+
+<h3 class="sm">§3.2.3 · Memory savings (why no TP was needed)</h3>
+<ul>
+<li><b>Recompute all RMSNorm and MLA up-projections</b> in the backward pass instead of storing their outputs: "minor overhead", large activation saving.</li>
+<li><b>EMA of the parameters in CPU memory</b>, updated asynchronously after each step. The EMA is a smoothed copy used for early quality checks, and it costs no GPU memory or time.</li>
+<li><b>Embedding and output head on the same PP rank.</b> DualPipe places the shallowest and deepest layers together, so the MTP module physically shares the embedding and head (parameters and gradients) with the main model.</li>
+</ul>
+
+<h2>§3.3 · FP8 training: small scaling groups and FP32 every 128</h2>
+<p>The three GEMMs of every Linear layer run in FP8: Fprop (forward), Dgrad (activation gradient) and Wgrad (weight gradient). That "theoretically doubles the computational speed compared with the original BF16 method". FP8 has very little range (E4M3's largest value is 448; see <a href="../perf-3-kernels/tensor-cores-low-precision.html">tensor cores and low precision</a>), so one outlier in a tensor-wide scale crushes every other value toward zero. DeepSeek's fix has two parts. The first gives each <b>small group</b> its own scale. The second stops the Tensor Core's short accumulator from losing bits over a long dot product.</p>
+<div class="mathbox">
+<math display="block">
+  <msub><mi>y</mi><mrow><mi>t</mi><mo>,</mo><mi>j</mi></mrow></msub><mo>=</mo>
+  <munderover><mo>&#8721;</mo><mrow><mi>g</mi><mo>=</mo><mn>1</mn></mrow><mrow><mi>K</mi><mo>/</mo><mn>128</mn></mrow></munderover>
+  <munder class="t1"><mrow><msubsup><mi>s</mi><mrow><mi>t</mi><mo>,</mo><mi>g</mi></mrow><mtext>act</mtext></msubsup><mo>&#8901;</mo><msubsup><mi>s</mi><mrow><mi>g</mi><mo>,</mo><mi>j</mi></mrow><mtext>wt</mtext></msubsup></mrow><mtext class="lab">FP32 on CUDA cores</mtext></munder>
+  <mo>&#8901;</mo>
+  <munder class="t2"><mrow><mo stretchy="true" form="prefix" minsize="2.2em">(</mo><munder><mo>&#8721;</mo><mrow><mi>k</mi><mo>&#8712;</mo><mi>g</mi></mrow></munder><msub><mover><mi>a</mi><mo>^</mo></mover><mrow><mi>t</mi><mo>,</mo><mi>k</mi></mrow></msub><msub><mover><mi>w</mi><mo>^</mo></mover><mrow><mi>k</mi><mo>,</mo><mi>j</mi></mrow></msub><mo stretchy="true" form="postfix" minsize="2.2em">)</mo></mrow><mtext class="lab">128 FP8 products on Tensor Cores</mtext></munder>
+</math>
+<div class="legend">
+  <span class="sym">â, ŵ</span><span>activation and weight values stored as FP8 E4M3</span><span class="v">E4M3 on all tensors</span>
+  <span class="sym">s_act</span><span>one scale per <b>1×128 activation tile</b> ("per token per 128 channels")</span><span class="v">7168 channels → 56 tiles/token</span>
+  <span class="sym">s_wt</span><span>one scale per <b>128×128 weight block</b> (128 input × 128 output channels)</span><span class="v">7168×2048 → 896 blocks</span>
+  <span class="sym">K/128</span><span>number of groups along the inner dimension = FP32 promotions per output</span><span class="v">K = 7168 → 56</span>
+  <span class="sym">N_C</span><span>promotion interval: 128 elements = 4 WGMMA instructions</span><span class="v">128</span>
+</div>
+</div>
+<p class="cap">Our notation for §3.3.2 and Fig 7. Plain text: each 128-long piece of the dot product is summed on the Tensor Core, copied to FP32 registers, multiplied by its two scales and added to a running FP32 total. Tile, block and promotion counts for K = 7168 (the hidden size) are ours.</p>
+<div class="formula">Why promote?  H800 FP8 GEMM accumulation keeps "around 14 bits"
+              (FP32 has a 24-bit significand)
+paper's test: K = 4096 random matrices → "maximum relative error of nearly 2%"
+fix: every N_C = 128 elements copy partial sums to FP32 on CUDA cores
+     two warpgroups alternate, so one promotes while the other runs MMA
+scale overhead (ours): activation tile  4 B FP32 scale / 128 B of FP8 = 3.1%
+                       weight block     4 B / 16,384 B               = 0.02%</div>
+<div class="tw"><table class="small">
+<tr><th>Kept in</th><th>What (§3.3.1, §3.3.3)</th></tr>
+<tr><td class="hi">FP8 (E4M3)</td><td>Inputs of all three Linear GEMMs · activations cached for backward · activations dispatched to experts (power-of-2 scales)</td></tr>
+<tr><td>FP8, special</td><td>Inputs of the Linear after attention: custom <b>E5M6</b> with power-of-2 scales, because they feed attention's backward pass and are re-tiled 1×128 → 128×1 · SwiGLU inputs cached in FP8, output recomputed</td></tr>
+<tr><td>BF16</td><td>GEMM outputs (BF16 or FP32) · AdamW first and second moments · all-to-all <b>combine</b>, forward and backward</td></tr>
+<tr><td>BF16 / FP32 (original)</td><td>Embedding · output head · MoE gating · normalization · attention</td></tr>
+<tr><td>FP32</td><td>Master weights · weight gradients · the accumulation every 128 elements</td></tr>
+</table></div>
+<ul>
+<li><b>E4M3 everywhere.</b> Earlier recipes used E4M3 for Fprop and E5M2 (more range, less precision) for gradients. Small scaling groups share the exponent range across 128 values, so E4M3 is enough.</li>
+<li><b>Online scaling.</b> The max-abs of each tile or block is computed on the fly, not guessed from past iterations ("delayed" scaling).</li>
+<li><b>Validation.</b> At ~V2-Lite and ~V2 scale for about 1T tokens, the loss stays within "0.25%" (relative error) of BF16. App B.2: 128×128 <i>block</i> scaling of activation gradients made a ~16B MoE diverge after ~300B tokens, which is why activations use 1×128 tiles.</li>
+<li>The same format serves inference: Day 6 runs GEMMs and dispatch in FP8, and core MLA and combine in BF16, "consistent with training".</li>
+</ul>
+
+<h2>§3.4 · Inference: separate prefill and decode units</h2>
+<p>Prefill and decode run on different GPUs (see <a href="distserve-interference.html">DistServe I</a>), each with its own layout. The paper's layout and the one in the Day 6 post (Mar 2025) <b>differ</b>, so here are both:</p>
+<div class="tw"><table class="small">
+<tr><th></th><th>Prefill · paper</th><th>Prefill · Day 6</th><th>Decode · paper</th><th>Decode · Day 6</th></tr>
+<tr><td>Minimum unit</td><td>4 nodes · 32 GPUs</td><td>4 nodes · 32 GPUs</td><td>40 nodes · 320 GPUs</td><td class="hi">18 nodes · 144 GPUs</td></tr>
+<tr><td>Attention</td><td>TP4 + SP, DP8</td><td>DP32</td><td>TP4 + SP, DP80</td><td>DP144</td></tr>
+<tr><td>Routed experts</td><td>EP32</td><td>EP32</td><td>EP320</td><td>EP144</td></tr>
+<tr><td>Experts per GPU</td><td>8 + 1 redundant</td><td>9 routed + 1 shared</td><td>1 (64 GPUs hold redundant + shared)</td><td>2 routed + 1 shared</td></tr>
+<tr><td>Slot check (ours)</td><td>32 × 9 = 288 = 256 + 32</td><td>same</td><td>320 = 256 + 64</td><td>144 × 2 = 288 = 256 + 32</td></tr>
+<tr><td>Expert weights per GPU, FP8 (ours)</td><td>9 × 58 × 44.0M ≈ 23.0 GB</td><td>≈ 23.0 GB</td><td>58 × 44.0M ≈ 2.55 GB</td><td>≈ 5.11 GB</td></tr>
+<tr><td>All-to-all</td><td>IB then NVLink, as in training</td><td>–</td><td>direct point-to-point over IB + IBGDA</td><td>–</td></tr>
+<tr><td>Overlap</td><td>two micro-batches</td><td>dual-batch overlap</td><td>"exploring" two micro-batches</td><td>5-stage pipeline, attention split in two</td></tr>
+</table></div>
+<p class="cap">One routed expert = 3 × 7168 × 2048 ≈ 44.0M params (ours, from card 1). "–" = not stated. Routed-expert bytes ignore the shared expert and attention, which every GPU also holds.</p>
+<ul>
+<li><b>Prefill: EP32 "ensures that each expert processes a sufficiently large batch size".</b> Dense MLPs in the first layers use TP1 to save communication. Two micro-batches of similar work alternate: one's attention and MoE overlap the other's dispatch and combine.</li>
+<li><b>Redundant experts.</b> High-load experts, found from online statistics, are duplicated and refreshed periodically ("e.g., every 10 minutes"). In prefill, experts are rearranged within a node, so cross-node traffic doesn't grow. In decode each GPU has one expert, so there is nothing to rearrange. DeepSeek is also exploring dynamic redundancy: 16 experts per GPU, 9 active, with optimal routing computed each layer. For the algorithm, see <a href="expert-parallel.html">EPLB</a>.</li>
+<li><b>Decode: the shared expert is treated as a routed one that is always picked</b>, so each token selects 9. Dispatch and combine use point-to-point IB plus <b>IBGDA</b> (InfiniBand GPUDirect Async), which lets the GPU itself post the network operations (our gloss; the paper only cites NVIDIA) for lower latency.</li>
+<li><b>Decode is memory-bound per expert.</b> Tokens per expert are "usually within 256" and "the bottleneck is memory access rather than computation". So dispatch + MoE + combine get only a small share of SMs, and attention keeps the rest. Compare the H100's critical batch ≈ 295 (course 2): 256 &lt; 295 agrees (ours, assuming the H800 has the H100's HBM bandwidth).</li>
+</ul>
+
+<h2>§3.5 · What they asked hardware vendors for <small>(brief)</small></h2>
+<ul>
+<li><b>Take communication off the SMs.</b> 20 of the H800's 132 SMs do forwarding, RDMA-buffer copies, combine reductions and memory layout, while "tensor cores remain entirely under-utilized". They ask for a co-processor (like NVIDIA SHARP) and one interface that unifies IB (scale-out) and NVLink (scale-up), with read, write, multicast and reduce primitives.</li>
+<li><b>Fix FP8 math in the Tensor Core.</b> Hopper aligns 32 mantissa products and keeps the top 14 bits, so they want higher-precision accumulation. They also want native tile/block scaling (Tensor Cores that take scale factors), FP8 cast fused with TMA loads (or near-memory casting, "roughly 50%" less off-chip access), and transposed GEMM reads for the 1×128 → 128×1 re-tiling.</li>
+</ul>
+
+<h2>The training bill <small>(Table 1, §3–4)</small></h2>
+<table>
+<tr><th>Stage</th><th class="num">H800 GPU-hours</th><th class="num">At $2 / GPU-hour</th><th class="num">Wall-clock on 2,048 GPUs (ours)</th></tr>
+<tr><td>Pre-training (14.8T tokens)</td><td class="num">2,664K</td><td class="num">$5.328M</td><td class="num">54.2 days</td></tr>
+<tr><td>Context extension (32K → 128K)</td><td class="num">119K</td><td class="num">$0.238M</td><td class="num">2.4 days</td></tr>
+<tr><td>Post-training</td><td class="num">5K</td><td class="num">$0.01M</td><td class="num">0.1 days</td></tr>
+<tr><td><b>Total</b></td><td class="num"><b>2,788K</b></td><td class="num hi">$5.576M</td><td class="num">56.7 days</td></tr>
+</table>
+<div class="formula">per trillion tokens: 180K GPU-h ÷ 2,048 GPUs = 87.9 h = 3.66 days   <span class="c"># paper: "3.7 days"</span>
+check: 180K × 14.8T tokens = 2,664K GPU-h = the pre-training row
+rough utilization (ours): 6 × 37B active × 14.8T = 3.29e24 FLOPs
+   ÷ (2,664K h × 3,600 s) = 343 TFLOP/s per GPU ≈ 17% of FP8 peak, 35% of BF16 peak
+   <span class="c"># 6·N·D ignores attention FLOPs and MTP, so the true figure is somewhat higher</span></div>
+<div class="take"><b>What $5.576M is not.</b> It is a rental-price conversion of the final run only. The report: the costs "include only the official training of DeepSeek-V3, excluding the costs associated with prior research and ablation experiments on architectures, algorithms, or data". DeepSeek owns the cluster, so $2/GPU-hour is an assumed lease price, not what they paid.</div>
+
+<h2>Day 6: the same system in production <small>(open-infra-index, 24 h from 27 Feb 2025 12:00 UTC+8)</small></h2>
+<p>Serving V3 and R1 together on H800s, one day: peak 278 nodes, average <b>226.75 nodes</b>. Nodes are scaled down at night and lent to research and training. Input 608B tokens, of which 342B (56.3%) hit the on-disk KV cache. Output 168B tokens at 20–22 tok/s per user, with an average KV length of 4,989 tokens per output token. Per H800 node: <b>~73.7k input tok/s</b> during prefill (including cache hits) or <b>~14.8k output tok/s</b> during decode.</p>
+<div class="formula">daily cost    226.75 nodes × 8 GPUs × 24 h × $2         = $87,072          <span class="g">matches</span>
+revenue if all tokens billed at R1 prices:
+  342B hit × $0.14/M + 266B miss × $0.55/M + 168B out × $2.19/M
+  = $47.9k + $146.3k + $367.9k                            = $562.1k   <span class="c"># post: $562,027</span>
+margin        (562,027 − 87,072) ÷ 87,072               = 5.45 = 545%
+node check (ours):
+  prefill  608B ÷ 86,400 s = 7.04M tok/s ÷ 73.7k        =  95.5 nodes
+  decode   168B ÷ 86,400 s = 1.94M tok/s ÷ 14.8k        = 131.4 nodes
+  total                                                 = 226.9  vs 226.75 <span class="g">reported</span></div>
+<p class="cap">The node check matches to within 0.1%, which suggests the per-node figures are the day's token totals divided by the average node count (our inference). They are day-long averages, not peak capacity. At 20–22 tok/s per user, 1.94M output tok/s is about 88k–97k concurrent streams, or ~84–93 per decode GPU (ours).</p>
+<div class="take"><b>Caveats the post itself gives about "545%".</b> It's theoretical. Actual revenue is "substantially lower": V3 is priced well below R1, "web and APP access remain free", and night discounts apply. The cost side is only the assumed GPU lease ($2 per H800-hour). Our reading: anything outside that lease, such as staff or R&amp;D, isn't in the $87,072.</div>
+
+<h3 class="sm">Against our running example (different models, so read with care)</h3>
+<div class="tw"><table class="small">
+<tr><th>System</th><th>Model</th><th class="num">Output tok/s per GPU</th><th class="num">Per user</th><th>Kind of number</th></tr>
+<tr><td>1 H100, batch 1</td><td>Llama-3.1-8B, BF16, 8.03B dense</td><td class="num">≈ 209</td><td class="num">≈ 209</td><td class="mu">computed ceiling (course 1)</td></tr>
+<tr><td>1 H100, B = 238, 2k context</td><td>Llama-3.1-8B, BF16</td><td class="num">9,973</td><td class="num">41.9</td><td class="mu">computed ceiling (course 2 step-time model)</td></tr>
+<tr><td>DeepSeek decode, Day 6</td><td>V3/R1: 671B total, 37B active, FP8 + BF16</td><td class="num">14.8k ÷ 8 = 1,850</td><td class="num">20–22</td><td class="mu">measured 24 h production average on H800</td></tr>
+</table></div>
+<div class="formula">raw per-GPU ratio                 9,973 ÷ 1,850      = 5.4× in the 8B ceiling's favour
+active params per token           37B ÷ 8.03B        = 4.6× more work per DeepSeek token
+active-param·tokens per GPU-s     1,850 × 37B = 68 T  vs  9,973 × 8.03B = 80 T   <span class="c"># ours</span></div>
+<p class="cap">Our rough comparison, not like for like. The models differ, the chips differ (H800 vs H100), the average context differs (4,989 vs 2k tokens), and one number is a real day-long average including load swings while the others are ideal ceilings. The takeaway is only that a 671B MoE, spread over 144 GPUs, delivers per-GPU work of the same order as an ideal single-GPU 8B deployment.</p>
+
+<h2>Why it beats the alternatives</h2>
+<div class="grid2">
+  <div class="cell"><h3><span class="x">&#10007;</span> Megatron-style TP across nodes</h3><p>Two all-reduces per layer over 50 GB/s IB, on the critical path of every step. DeepSeek avoids TP in training entirely and uses TP4 only inside a node for serving attention.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> 1F1B pipeline, all-to-all run serially</h3><p>With a ~1:1 compute:communication ratio, compute sits idle about half the time, and the bubble is (PP−1)(F+B) = 15(F+B) at PP16.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Per-tensor FP8, delayed scaling, 14-bit accumulation</h3><p>One outlier sets the scale for the whole tensor, gradients need E5M2, and long dot products drift: the paper measured nearly 2% error at K = 4096.</p></div>
+  <div class="cell win"><h3><span class="ok">&#10003;</span> Co-design: routing, kernels, schedule and format</h3><p>At most 4 nodes per token, 20-SM all-to-all kernels, forward/backward pairing, and 1×128 / 128×128 FP8 with FP32 every 128. The result: 2.788M H800-hours and "no irrecoverable loss spikes".</p></div>
+</div>
+
+<h2>Should everyone copy this layout?</h2>
+<div class="note">
+  <p>No. It fits DeepSeek's problem: a huge sparse model, a cluster with a weak NVLink-to-IB ratio (3.2×), and hundreds of H800 nodes of traffic. Cases where it's the wrong choice:</p>
+  <ul>
+    <li><b>Small teams or low traffic.</b> The paper's §6 says it outright: "the recommended deployment unit … is relatively large, which might pose a burden for small-sized teams." A 320-GPU (or 144-GPU) decode unit only pays off if there are enough concurrent users to give every expert a batch. At low volume, the ~671 GB of FP8 weights fit on one 8×H200 node (1,128 GB), which is much simpler (course facts; see <a href="sizing-deployment.html">sizing a deployment</a>).</li>
+    <li><b>Dense models.</b> DualPipe's pairing and the 20-SM all-to-all exist because of expert traffic. A dense 70B has no dispatch/combine; TP inside a node is the standard answer (<a href="megatron-scaling.html">Megatron II</a>).</li>
+    <li><b>Reading the headline numbers.</b> $5.576M is the final run at an assumed rental price, and 545% is a hypothetical margin. Neither is DeepSeek's total cost or real profit.</li>
+  </ul>
+</div>
+
+<div class="foot">
+<p><strong>Read next:</strong> DeepSeek-V3 Technical Report §3 "Infrastructures", all of it (3.1–3.5, Figs 4–7, Table 2), ~30 min, plus the Table 1 paragraph in §1 for the cost caveat: <a href="https://arxiv.org/abs/2412.19437">arXiv 2412.19437</a> · Day 6 "DeepSeek-V3/R1 Inference System Overview", all of it, ~10 min: <a href="https://github.com/deepseek-ai/open-infra-index/blob/main/202502OpenSourceWeek/day_6_one_more_thing_deepseekV3R1_inference_system_overview.md">open-infra-index Day 6</a>.</p>
+<p><strong>Related:</strong> <a href="deepseek-v3-architecture.html">DeepSeek-V3 I: an architecture built for serving</a> · <a href="expert-parallel.html">Expert parallelism: dispatch, combine and EPLB</a> · <a href="moe-basics.html">Mixture of experts: routers, top-k and imbalance</a> · <a href="pipeline-data-parallel.html">Pipeline and data parallelism when serving</a> · <a href="collectives.html">How GPUs talk: collectives and interconnects</a> · <a href="distserve-interference.html">DistServe I</a> · <a href="disaggregation-in-production.html">Disaggregation in production</a> · <a href="sizing-deployment.html">Sizing a deployment</a> · <a href="../perf-3-kernels/tensor-cores-low-precision.html">Tensor cores and low precision</a> (course 3) · <a href="../perf-2-scaling-book-inference/step-time.html">Step time</a> (course 2, the 9,973 tok/s ceiling) · <a href="../perf-4-attention-kv/mla.html">MLA</a> (course 4) · <a href="../perf-5-engines/quantization-serving.html">Quantization in serving</a> (course 5) · <a href="../llm-latency/moe.html">Mixture of experts</a> (consumer view)</p>
+<p><strong>Sources:</strong> DeepSeek-AI, "DeepSeek-V3 Technical Report", <a href="https://arxiv.org/abs/2412.19437">arXiv 2412.19437</a> v2 (18 Feb 2025): abstract ("no irrecoverable loss spikes"), Table 1 and its paragraph (cost, 180K GPU-hours per trillion tokens, exclusions), §3.1–3.5 (cluster, 160/50 GB/s, PP16/EP64/ZeRO-1, DualPipe and Table 2, 20 SMs and 10 channels, 4 nodes and 3.2 experts per node, memory saving, FP8 tiles/blocks, 14-bit accumulation and 2% error, N_C = 128, E4M3, E5M6, 0.25%, prefill/decode units, ≤ 256 tokens per expert, 20 of 132 SMs, hardware asks), §6 (deployment-unit limitation), App B.2. DeepSeek, "Day 6: One More Thing, DeepSeek-V3/R1 Inference System Overview", <a href="https://github.com/deepseek-ai/open-infra-index/blob/main/202502OpenSourceWeek/day_6_one_more_thing_deepseekV3R1_inference_system_overview.md">github.com/deepseek-ai/open-infra-index</a> (EP32/EP144 units, overlap, FP8/BF16 split, 24 h statistics, R1 prices, $87,072, $562,027, 545%, and the revenue caveats). E4M3 max 448: <a href="../perf-3-kernels/tensor-cores-low-precision.html">course 3</a> (OFP8 spec). H100 figures, B<sub>crit</sub> ≈ 295, 209 tok/s and 9,973 tok/s at B = 238: this curriculum's shared facts (computed, not measured). Everything marked "ours" (node, slot and byte checks, wall-clock days, 6·N·D utilization, the node-count check, concurrent streams, the running-example ratios): our recomputation with a short Python script, 2026-09-24.</p>
+</div>
+</article>
+<!-- series-nav:bottom -->
+<div class="snx"><a class="nx" href="index.html#distserve-interference" target="_top">
+<span class="mini" aria-hidden="true"><span class="m1">DistServe I: why prefill and decode want different GPUs</span><span class="m2">Also called prefill–decode (P/D) disaggregation, disaggregated serving, or goodput-optimized serving. Card 1 of 2 on DistServe (Zhong et al., OSDI '24, arXiv 2401.09670 v3). It walks §1–3 in order:…</span><span class="m3">In one breath</span><span class="m4">Prefill is one long, compute-heavy burst per request. Decode is many short, memory-bound steps. If one GPU does both, each new prompt freezes every stream in progress, and one set of GPUs has to be sized for whichever latency target is harder. DistServe puts the two phases on separate GPUs (instances), sizes and parallelizes…</span></span>
+<span class="tx"><span class="lab">Next up · 10 / 15</span><span class="tt">DistServe I: why prefill and decode want different GPUs</span><span class="ds">Goodput, interference and the queueing model</span><span class="nd">Builds on: Sarathi-Serve II: chunked prefill and stall-free batching.</span><span class="go">Continue →</span></span></a><div class="aux"><span><a href="index.html#deepseek-v3-architecture" target="_top">← DeepSeek-V3 I: an architecture built for serving</a></span><a href="index.html" target="_top">All cards in 6 · Serving across GPUs</a></div></div>
+<!-- /series-nav:bottom -->
+</body>
+</html>

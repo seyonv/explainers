@@ -1,0 +1,389 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Disaggregation in production: Splitwise, Mooncake and Dynamo</title>
+<style>
+:root{
+  --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
+  --text:#1c1f23; --muted:#6b7068; --faint:#b9b9b3;
+  --accent:#4a9d77; --accent-bg:#dcefdf; --accent-border:#8cc79c;
+  --red:#c0492b; --red-bg:#fbeceb;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#15171a; --surface:#1d2024; --surface2:#24282d; --border:#32373d;
+    --text:#e6e8ea; --muted:#9aa1a9; --faint:#4a5057;
+    --accent:#5fb37f; --accent-bg:#1c2b22; --accent-border:#3f7a55;
+    --red:#e57368; --red-bg:#2e1f1e;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text)}
+.card{max-width:820px;margin:0 auto;padding:28px 32px;font-family:-apple-system,"Inter",system-ui,sans-serif;line-height:1.45}
+h1{font-size:26px;font-weight:600;margin:0 0 6px;letter-spacing:-0.01em}
+.sub{font-size:15px;color:var(--muted);margin:0 0 20px}
+h2{font-size:17px;font-weight:600;margin:26px 0 10px}
+h2 small{font-size:13px;font-weight:400;color:var(--muted)}
+h3.sm{font-size:15px;font-weight:600;margin:18px 0 8px}
+h3.sm small{font-size:13px;font-weight:400;color:var(--muted)}
+p{font-size:15px;margin:0 0 10px}
+ul{font-size:15px;margin:0 0 10px;padding-left:20px}
+li{margin-bottom:4px}
+.cap{font-size:13px;color:var(--muted);margin:8px 0 0;text-align:center}
+.cap + p{margin-top:14px}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+blockquote{margin:10px 0;padding:8px 14px;border-left:3px solid var(--accent-border);background:var(--surface);font-size:14px;border-radius:0 6px 6px 0}
+blockquote cite{display:block;font-style:normal;font-size:12px;color:var(--muted);margin-top:4px}
+
+/* Tables and formulas */
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border)}
+th{font-size:12px;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:none}
+.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.hi{color:var(--accent);font-weight:600} .lo{color:var(--red)} .mu{color:var(--muted)}
+tr.pick td{background:var(--accent-bg)}
+.formula{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin:10px 0;white-space:pre;overflow-x:auto;line-height:1.55}
+.formula .c{color:var(--muted)}
+.formula .g{color:var(--accent);font-weight:600}
+.formula .r{color:var(--red);font-weight:600}
+.tw{overflow-x:auto}
+.tw table{min-width:600px}
+
+/* MathML */
+.mathbox{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px 16px 12px;margin:10px 0;overflow-x:auto}
+.mathbox math{font-size:21px;color:var(--text);font-family:"STIX Two Math","Latin Modern Math","Cambria Math",math}
+.mathbox .t1{color:var(--text)} .mathbox .t2{color:var(--accent)} .mathbox .t3{color:var(--muted)}
+.mathbox .lab{font-size:12px;font-family:-apple-system,"Inter",system-ui,sans-serif;padding-top:3px;border-top:1.5px solid currentColor;margin-top:2px}
+.mathbox math + math{margin-top:14px}
+.mathbox .eqn{font-size:12px;color:var(--muted);font-family:-apple-system,"Inter",system-ui,sans-serif;margin:14px 0 2px}
+.mathbox .eqn:first-child{margin-top:0}
+.legend{display:grid;grid-template-columns:auto 1fr auto;column-gap:14px;row-gap:5px;font-size:13px;margin-top:12px;align-items:baseline}
+.legend .sym{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;text-align:right}
+.legend .v{color:var(--muted);text-align:right;font-variant-numeric:tabular-nums}
+@media (max-width:560px){.legend{grid-template-columns:auto 1fr}.legend .v{display:none}}
+
+/* Two examples per term */
+.parts td{vertical-align:top} .parts td:first-child{font-weight:600}
+.parts .ex{font-size:13px} .parts .ex span{display:block;color:var(--muted)}
+.parts .what{font-size:13px}
+@media (max-width:560px){.parts .what{display:none}}
+
+/* Bar charts */
+.bars{display:grid;grid-template-columns:190px 1fr 120px;column-gap:10px;row-gap:9px;align-items:center;font-size:13px}
+.bars .nm{font-size:13px}
+.bars .track{display:flex;align-items:center}
+.bars .bar{height:18px;border-radius:3px;background:var(--faint)}
+.bars .bar.w{background:var(--accent)}
+.bars .bar.l{background:var(--red)}
+.bars .v{text-align:right;font-variant-numeric:tabular-nums}
+.bars .v.w{color:var(--accent);font-weight:600}
+.bars .v.l{color:var(--red)}
+
+/* 2x2 grid */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.cell{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.cell.win{background:var(--accent-bg);border-color:var(--accent-border)}
+.cell h3{font-size:16px;font-weight:600;margin:0 0 5px;display:flex;gap:8px;align-items:baseline}
+.cell p{font-size:14px;margin:0;color:var(--text)}
+.cell.win h3,.cell.win p{color:var(--accent)}
+.x{color:var(--red)} .ok{color:var(--accent)}
+.side .cell h3{font-size:15px}
+
+/* Clarification box */
+.note{border:1px solid var(--border);border-radius:10px;padding:14px 18px;font-size:14px}
+.note p,.note li{font-size:14px} .note p:last-child{margin-bottom:0}
+
+.foot{margin-top:22px;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+.foot p{font-size:13px}
+.lab-link{display:inline-block;font-size:13px;border:1px solid var(--accent-border);background:var(--accent-bg);color:var(--accent);border-radius:6px;padding:4px 10px;margin:2px 0 10px;text-decoration:none}
+
+/* SVG */
+svg{display:block;max-width:100%;height:auto;margin-top:6px}
+.sl{font-size:12px;fill:var(--muted)} .st{font-size:13px;fill:var(--text)} .sh{font-size:13px;font-weight:600;fill:var(--text)}
+.slr{font-size:12px;fill:var(--red)} .slg{font-size:12px;fill:var(--accent)}
+.bx{fill:var(--surface2);stroke:var(--faint);stroke-width:1}
+.bxa{fill:var(--accent-bg);stroke:var(--accent);stroke-width:1.2}
+.bxr{fill:var(--red-bg);stroke:var(--red);stroke-width:1.2}
+.dv{stroke:var(--border);stroke-width:1}
+.ax{stroke:var(--muted);stroke-width:1}
+.c1{fill:none;stroke:var(--faint);stroke-width:2.5}
+.c2{fill:none;stroke:var(--text);stroke-width:2.5}
+.c3{fill:none;stroke:var(--accent);stroke-width:2.5}
+.cut{stroke:var(--red);stroke-width:1.2;stroke-dasharray:4 3}
+.dot{fill:var(--red)}
+@media (max-width:560px){.grid2{grid-template-columns:1fr}.card{padding:20px 16px}.bars{grid-template-columns:110px 1fr 86px}}
+a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+/* series-nav */
+.sn{max-width:820px;margin:0 auto;padding:16px 32px 0;font-family:-apple-system,"Inter",system-ui,sans-serif;font-size:13px;line-height:1.5;color:var(--muted)}
+.sn a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
+.sn .crumbs{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 7px}
+.sn .crumbs b{color:var(--text);font-weight:600}
+.sn .sep{color:var(--faint,var(--border))}
+.sn .step{margin-left:auto;white-space:nowrap}
+.sn .dep{margin-top:5px;padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface)}
+.sn .dep .ok{color:var(--accent);font-weight:600}
+.snx{max-width:820px;margin:0 auto;padding:6px 32px 44px;font-family:-apple-system,"Inter",system-ui,sans-serif}
+.snx .nx{display:grid;grid-template-columns:280px 1fr;text-decoration:none;color:var(--text);background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.snx .nx:hover,.snx .nx:focus-visible{border-color:var(--accent-border,var(--accent));outline:none}
+.snx .mini{position:relative;height:210px;overflow:hidden;background:var(--bg);border-right:1px solid var(--border);padding:14px 16px}
+.snx .mini span{display:block}
+.snx .mini .m1{font-size:12.5px;font-weight:600;margin:0 0 4px;line-height:1.3}
+.snx .mini .m2{font-size:9px;color:var(--muted);margin:0 0 8px;line-height:1.4}
+.snx .mini .m3{font-size:8.5px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;margin:0 0 3px}
+.snx .mini .m4{font-size:9.5px;margin:0;line-height:1.45}
+.snx .tx{padding:16px 20px}
+.snx .lab{font-size:12px;font-weight:600;color:var(--accent);letter-spacing:.04em;text-transform:uppercase}
+.snx .tt{display:block;font-size:20px;font-weight:600;margin:5px 0 4px;line-height:1.25}
+.snx .ds{display:block;font-size:14px;color:var(--muted)}
+.snx .nd{display:block;font-size:13px;color:var(--muted);margin-top:10px}
+.snx .go{display:block;margin-top:12px;font-size:14px;font-weight:600;color:var(--accent)}
+.snx .aux{display:flex;justify-content:space-between;gap:12px;margin-top:10px;font-size:13px;color:var(--muted)}
+.snx .aux a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
+@media (max-width:560px){.sn,.snx{padding-left:16px;padding-right:16px}.snx .nx{grid-template-columns:1fr}.snx .mini{display:none}.sn .step{margin-left:0}}
+/* /series-nav */
+</style>
+</head>
+<body>
+<!-- series-nav:top -->
+<nav class="sn" aria-label="Course navigation"><div class="crumbs"><a href="../perf-0-map/index.html" target="_top">Fast LLM inference</a><span class="sep">›</span><a href="index.html" target="_top">6 · Serving across GPUs</a><span class="sep">›</span><b>12 / 15</b><span class="step"><a href="index.html#distserve-placement" target="_top">← prev</a> · <a href="index.html#megascale-infer-design" target="_top">next →</a></span></div>
+<div class="dep"><b>Before this:</b> <a href="index.html#distserve-placement" target="_top">DistServe II: placement, KV transfer and results</a> · <a href="../perf-4-attention-kv/index.html#mooncake-scheduling" target="_top">Mooncake II: KV-centric scheduling</a> (perf-4)</div></nav>
+<!-- /series-nav:top -->
+<article class="card">
+<h1>Disaggregation in production: Splitwise, Mooncake and Dynamo</h1>
+<p class="sub">Also called P/D disaggregation, disaggregated serving, split-phase serving, or xPyD serving. This card skims three systems that came after the idea: Splitwise (Patel et al., Microsoft + UW, ISCA '24, arXiv 2311.18677 v2) §III–VI, a three-line recap of Mooncake (course 4 has two cards on it), and NVIDIA Dynamo (README, docs and the March 2025 launch blog, fetched 2026-09-24). It ends with Kiely's <i>Inference Engineering</i> §4.4 and §5.5 on when splitting is worth it. The idea itself, and DistServe's version of it, are in <a href="distserve-interference.html">DistServe I</a> and <a href="distserve-placement.html">DistServe II</a>. This card doesn't repeat them.</p>
+
+<h2>In one breath</h2>
+<p>Once prefill and decode run on separate GPUs, three practical questions follow. Which hardware should each phase get? Splitwise's answer is that the token phase doesn't need the newest or most power-hungry GPU. Where does the KV cache live? Mooncake's answer is a shared pool in every node's spare DRAM and SSD. How does a real cluster decide, request by request, where work goes and how many GPUs each pool gets? Dynamo's answer is a router that scores cache hits against load, and a planner that resizes the pools. The honest answer to the fourth question, whether to do this at all, is often no.</p>
+
+<h2>Splitwise: characterize the two phases first <small>§III, Llama2-70B and BLOOM-176B on DGX-A100 and DGX-H100</small></h2>
+<p>Splitwise calls the phases the <b>prompt phase</b> and the <b>token phase</b>, not prefill and decode. It profiles both on production traces from two Azure services (coding and conversation, 20 minutes each, November 2023) and draws seven "insights" before it designs anything. The four that drive the design:</p>
+<table class="parts">
+<tr><th>Property</th><th class="what">What the paper measured</th><th>Prompt phase</th><th>Token phase</th></tr>
+<tr><td>Bottleneck</td><td class="what">Insight V: "Batching during the prompt phase is compute-bound", and the token phase is limited by memory capacity</td>
+  <td class="ex"><b>compute</b><span>all prompt tokens go through the model in parallel</span></td>
+  <td class="ex"><b>memory</b><span>one token per request per step, and every step reads the weights and KV</span></td></tr>
+<tr><td>Batching</td><td class="what">Insight IV: throughput as the batch grows</td>
+  <td class="ex"><b class="lo">drops past 2,048</b><span>batched prompt tokens, so the machine-level scheduler caps prompt batches there</span></td>
+  <td class="ex"><b class="ok">rises to batch 64</b><span>then runs out of memory. "Batching the token generation phase yields high throughput without any downside"</span></td></tr>
+<tr><td>Power</td><td class="what">Insight VI, Fig 8–9: draw vs batch size, and latency under a power cap</td>
+  <td class="ex"><b>rises with batch</b><span>and latency "increases substantially" when capped</span></td>
+  <td class="ex"><b class="ok">flat</b><span>"almost no latency impact when power capping by over 50% (i.e., 700 to 350W)"</span></td></tr>
+<tr><td>Hardware</td><td class="what">Insight VII, Table IV: the same request on A100 vs H100</td>
+  <td class="ex"><b>H100 ≈ 2× faster</b><span>TTFT 185 → 95 ms (coding)</span></td>
+  <td class="ex"><b class="ok">A100 is enough</b><span>"Token generation can be run on less compute-capable hardware for better Perf/W and Perf/$ efficiencies"</span></td></tr>
+</table>
+<p class="cap">Two more insights set the scene. Insight II: with mixed continuous batching, the conversation service spends 60–70% of its time running 20 or fewer tokens. Insight III: most end-to-end time is token phase. For BLOOM-176B, a 1,500-token prompt phase "takes the same time as token phase with only 6 output tokens".</p>
+
+<p style="margin-top:14px">Table IV is the evidence for the hardware split: Llama-70B, P50, no batching, one DGX-A100 vs one DGX-H100.</p>
+<div class="tw"><table>
+<tr><th>Trace</th><th>Metric</th><th class="num">A100</th><th class="num">H100</th><th class="num">H100 ÷ A100 (paper)</th><th class="num">our recomputation</th></tr>
+<tr><td rowspan="5">Coding<br><span class="mu" style="font-size:12px">median 1,500 in / 13 out</span></td><td>TTFT (prompt)</td><td class="num">185 ms</td><td class="num">95 ms</td><td class="num">0.51×</td><td class="num">0.514</td></tr>
+<tr><td>TBT (token)</td><td class="num">52 ms</td><td class="num">31 ms</td><td class="num lo">0.70×</td><td class="num lo">0.596</td></tr>
+<tr><td>E2E</td><td class="num">856 ms</td><td class="num">493 ms</td><td class="num">0.58×</td><td class="num">0.576</td></tr>
+<tr><td>Cost per request</td><td class="num hi">$0.42</td><td class="num">$0.52</td><td class="num">1.24×</td><td class="num">1.238</td></tr>
+<tr><td>Energy</td><td class="num">1.37 Whr</td><td class="num">1.37 Whr</td><td class="num">1×</td><td class="num">1.000</td></tr>
+<tr><td rowspan="5">Conversation<br><span class="mu" style="font-size:12px">median 1,020 in / 129 out</span></td><td>TTFT (prompt)</td><td class="num">155 ms</td><td class="num">84 ms</td><td class="num">0.54×</td><td class="num">0.542</td></tr>
+<tr><td>TBT (token)</td><td class="num">40 ms</td><td class="num">28 ms</td><td class="num">0.70×</td><td class="num">0.700</td></tr>
+<tr><td>E2E</td><td class="num">4,957 ms</td><td class="num">3,387 ms</td><td class="num">0.68×</td><td class="num">0.683</td></tr>
+<tr><td>Cost per request</td><td class="num hi">$2.4</td><td class="num">$3.6</td><td class="num">1.5×</td><td class="num">1.500</td></tr>
+<tr><td>Energy</td><td class="num hi">7.9 Whr</td><td class="num">9.4 Whr</td><td class="num">1.2×</td><td class="num">1.190</td></tr>
+</table></div>
+<p class="cap">The H100 roughly halves the prompt phase (0.51–0.54×) but only takes about 30–40% off the token phase, while costing more per request ($17.6 vs $38 per hour, Table I). The paper's conclusion: "A100 has better or equal inference cost and energy overall." One printed ratio is off. The coding TBT is 31/52 = 0.60, not the 0.70× the table prints (red), which is our recomputation from the table's own values.</p>
+
+<h3 class="sm">Four cluster designs, plus two baselines</h3>
+<p>A Splitwise cluster has a <b>prompt pool</b>, a <b>token pool</b> and a <b>mixed pool</b> that absorbs overflow and runs both phases when load is high. A two-level scheduler runs it. The cluster-level scheduler routes each request to the prompt and token machines with the fewest pending tokens (join-the-shortest-queue) and picks both at arrival, so the KV transfer can start early. The machine-level scheduler batches: prompts first-come-first-served up to 2,048 tokens, token requests until memory is full.</p>
+<table class="parts">
+<tr><th>Design</th><th class="what">Idea</th><th>Prompt machines</th><th>Token machines</th></tr>
+<tr><td>Baseline-A100 / -H100</td><td class="what">No split. Every machine runs mixed continuous batching</td><td class="ex"><b>all A100, or all H100</b><span>mixed</span></td><td class="ex"><b>same machines</b><span>mixed</span></td></tr>
+<tr><td>Splitwise-AA, -HH</td><td class="what">Homogeneous: split the phases on one GPU type</td><td class="ex"><b>DGX-A100 or DGX-H100</b><span>e.g. HH coding, iso-power: 35 prompt</span></td><td class="ex"><b>same type</b><span>… and 5 token machines</span></td></tr>
+<tr><td>Splitwise-HA</td><td class="what">Heterogeneous: the newest GPU only where compute matters</td><td class="ex"><b class="ok">DGX-H100</b><span>fast TTFT</span></td><td class="ex"><b class="ok">DGX-A100</b><span>cheaper, and TBT barely suffers (Table IV)</span></td></tr>
+<tr><td>Splitwise-HHcap</td><td class="what">Heterogeneous by power, not by chip</td><td class="ex"><b>DGX-H100</b><span>full power</span></td><td class="ex"><b class="ok">DGX-H100, capped</b><span>machine at 70% of rated power, each GPU capped by 50%</span></td></tr>
+</table>
+
+<h3 class="sm">Layer-wise KV transfer over InfiniBand <small>§IV-C, §VI-A</small></h3>
+<p>The prompt machine has to send the KV cache it just built to the token machine. Sending it after the whole prompt phase (<b>serialized</b>) puts the full transfer on the critical path. Splitwise instead sends each layer's KV as soon as that layer finishes (<b>layer-wise</b>), overlapping the transfer with the next layer's compute. Only the tail is exposed. The implementation is on vLLM, using MSCCL++'s zero-copy one-sided put over InfiniBand (200 Gbps on the A100 setup, 400 Gbps on the H100 one), with a semaphore per request. Prompts under 512 tokens on H100 still go serialized, because their KV is small.</p>
+<svg viewBox="0 0 760 170" role="img" aria-label="Serialized versus layer-wise KV transfer timelines">
+  <text x="0" y="16" class="sh">Serialized</text>
+  <rect x="120" y="4" width="400" height="18" rx="2" class="bxa"/><text x="320" y="17" text-anchor="middle" class="slg">prompt phase: layers 1…80</text>
+  <rect x="520" y="4" width="110" height="18" rx="2" class="bx"/><text x="575" y="17" text-anchor="middle" class="sl">send all KV</text>
+  <rect x="630" y="4" width="36" height="18" rx="2" class="bxa"/><text x="700" y="17" class="sl">token 2</text>
+  <line x1="520" y1="30" x2="630" y2="30" class="cut"/><text x="575" y="44" text-anchor="middle" class="slr">whole transfer exposed</text>
+
+  <text x="0" y="86" class="sh">Layer-wise</text>
+  <g>
+    <rect x="120" y="74" width="50" height="18" rx="2" class="bxa"/><rect x="170" y="74" width="50" height="18" rx="2" class="bxa"/><rect x="220" y="74" width="50" height="18" rx="2" class="bxa"/><rect x="270" y="74" width="50" height="18" rx="2" class="bxa"/>
+    <rect x="320" y="74" width="50" height="18" rx="2" class="bxa"/><rect x="370" y="74" width="50" height="18" rx="2" class="bxa"/><rect x="420" y="74" width="50" height="18" rx="2" class="bxa"/><rect x="470" y="74" width="50" height="18" rx="2" class="bxa"/>
+    <rect x="170" y="96" width="14" height="10" class="bx"/><rect x="220" y="96" width="14" height="10" class="bx"/><rect x="270" y="96" width="14" height="10" class="bx"/><rect x="320" y="96" width="14" height="10" class="bx"/>
+    <rect x="370" y="96" width="14" height="10" class="bx"/><rect x="420" y="96" width="14" height="10" class="bx"/><rect x="470" y="96" width="14" height="10" class="bx"/><rect x="520" y="96" width="14" height="10" class="bx"/>
+    <rect x="534" y="74" width="36" height="18" rx="2" class="bxa"/><text x="580" y="87" class="sl">token 2</text>
+  </g>
+  <text x="340" y="122" text-anchor="middle" class="sl">grey = each group's KV on the wire, hidden under the next group's compute</text>
+  <line x1="520" y1="112" x2="534" y2="112" class="cut"/><text x="534" y="140" text-anchor="middle" class="slr">only the tail is exposed: ~5 ms (H100), ~8 ms (A100) measured</text>
+  <text x="380" y="164" text-anchor="middle" class="sl">Illustrative widths, 8 groups of 10 layers. Measured values from §VI-A.</text>
+</svg>
+<table style="margin-top:10px">
+<tr><th>Measured (§VI-A, coding trace, 2 machines, no batching)</th><th class="num">Serialized</th><th class="num">Layer-wise</th></tr>
+<tr><td>Transfer vs prompt compute time</td><td class="num" colspan="2" style="text-align:center">"minimal (&lt; 7%)"</td></tr>
+<tr><td>Non-overlapped transfer time</td><td class="num">grows linearly with prompt</td><td class="num hi">~8 ms A100 · ~5 ms H100, constant</td></tr>
+<tr><td>Added to end-to-end latency</td><td class="num lo">up to 3%</td><td class="num hi">0.8%</td></tr>
+<tr><td>Added to the second token's latency</td><td class="num lo">64%</td><td class="num hi">16.5%</td></tr>
+</table>
+<div class="formula"><span class="c">Our recomputation, Llama-70B shapes (L 80, K 8, H 128, BF16)</span>
+KV per token  = 2 · 80 · 8 · 128 · 2 B = 320 KiB  <span class="c">(course facts)</span>
+1,500 tokens  = 1,500 × 327,680 B      = 491.5 MB <span class="c">(coding median)</span>
+serialized    = 491.5 MB / 50 GB/s     = <span class="r">9.83 ms</span>  <span class="c">(400 Gb/s)</span>
+                491.5 MB / 25 GB/s     = <span class="r">19.66 ms</span> <span class="c">(200 Gb/s)</span>
+one layer     = 491.5 MB / 80 = 6.14 MB → <span class="g">0.12 ms</span> at 50 GB/s
+prefill floor = 2 · 70.55e9 · 1,500 / (8 · 989e12)
+              = 26.8 ms <span class="c">(8×H100 at 100% of peak)</span></div>
+<p class="cap">The last layer's wire time (0.12 ms) is far below the ~5 ms Splitwise measured, so our inference is that per-transfer overheads (synchronization, the semaphore handshake, the first token's own work) set the exposed tail, not bandwidth. The paper doesn't break the 5 ms down. Splitwise ran Llama2-70B, which has the same 8 KV heads × 128 × 80 layers, so the 320 KiB/token applies to it too.</p>
+
+<h3 class="sm">The headline claims, and where they do and don't appear</h3>
+<table>
+<tr><th>Where in the paper</th><th>Exact words</th><th>Baseline and conditions</th></tr>
+<tr><td>Abstract and §I</td><td>"up to 1.4× higher throughput at 20% lower cost. Alternatively, they can deliver 2.35× more throughput under the same power and cost budgets."</td><td class="mu">not stated in the abstract</td></tr>
+<tr><td>§IX conclusion</td><td>"1.76× better throughput with 15% lower power at the same cost, or 2.35× better throughput with same the cost and power"</td><td class="mu">"than existing designs"</td></tr>
+<tr><td>§VI-B text, iso-power</td><td>Splitwise-AA "delivers 2.15× more throughput at the same power and cost"; Splitwise-HA "1.18× more throughput at 10% lower cost"</td><td class="mu">vs Baseline-A100, conversation trace</td></tr>
+<tr><td>§VI-C text, iso-cost</td><td>Splitwise-AA gives "1.4× more throughput than Baseline-H100, running at 25% more power, and 2× the space"</td><td class="mu">vs Baseline-H100</td></tr>
+<tr><td>§VI-C text, iso-throughput</td><td>Splitwise-HHcap: same throughput as Baseline-H100 "at 25% lower power"; AA: same throughput at 25% lower cost</td><td class="mu">vs Baseline-H100</td></tr>
+</table>
+<p class="cap">The pairings in the abstract and conclusion (1.4× at 20% lower cost, 1.76× at 15% less power, 2.35×) don't appear in §VI's text, which gives 2.15×, 1.18×, and 1.4× at 25% <i>more</i> power. They presumably come from the Fig 18–19 summary bars. The only 2.35× in the body is Table V's cost of a DGX-H100 relative to a DGX-A100. We can't tell from the text whether the two are related. Quote the abstract as the abstract, and quote §VI for anything you'll act on. "Throughput" here means the highest request rate at which all nine P50/P90/P99 SLOs on TTFT, TBT and E2E still hold. Splitwise never uses the word goodput.</p>
+
+<h2>Mooncake, in three lines <small>course 4 has the full treatment</small></h2>
+<div class="note">
+<p><b>KV-centric.</b> Kimi's serving system (Moonshot AI; FAST '25) splits prefill and decode pools and pools every node's spare CPU DRAM and SSD into one RDMA-connected KV store, so a reused prefix is loaded instead of recomputed. <a href="../perf-4-attention-kv/mooncake-store.html">Mooncake I</a> shows that the needed bandwidth is only a few GB/s.</p>
+<p><b>Scheduling around the cache.</b> The Conductor sends each request to the prefill node with the earliest estimated first token (transfer + queue + uncached prefill), then streams KV layer by layer into the decode node's DRAM, and rejects requests up front if the SLOs can't be met. That's <a href="../perf-4-attention-kv/mooncake-scheduling.html">Mooncake II</a>.</p>
+<p><b>Ratio.</b> In FAST '25 §5.5 (16 nodes, synthetic trace, TTFT ≤ 10 s, TBT ≤ 100 ms) effective capacity peaks when "the P/D ratio is approximately 1:1". Mooncake keeps the ratio fixed and switches node roles only "when significant load fluctuations occur". Compare DistServe's 2 prefill : 1 decode in its Fig 1 and the Scaling Book's P ≈ 3G. The ratio comes from the workload, not from the method.</p>
+</div>
+
+<h2>NVIDIA Dynamo: the ideas, packaged <small>docs on GitHub main, fetched 2026-09-24</small></h2>
+<p>Dynamo isn't an engine. It's an orchestration layer (Rust runtime, Apache 2.0) that runs vLLM, SGLang or TensorRT-LLM workers and adds disaggregation, routing, autoscaling, KV transfer and KV offload across nodes. Kiely §4.4 dates it to "NVIDIA GTC in March 2025". A request's path, from the architecture doc:</p>
+<svg viewBox="0 0 760 250" role="img" aria-label="Dynamo request flow: frontend, router, prefill workers, NIXL transfer, decode workers, with planner and KVBM tiers">
+  <rect x="4" y="96" width="100" height="44" rx="6" class="bx"/><text x="54" y="114" text-anchor="middle" class="st">Frontend</text><text x="54" y="130" text-anchor="middle" class="sl">API + tokenize</text>
+  <rect x="120" y="96" width="112" height="44" rx="6" class="bx"/><text x="176" y="114" text-anchor="middle" class="sh">Router</text><text x="176" y="130" text-anchor="middle" class="sl">KV-aware cost</text>
+  <line x1="104" y1="118" x2="120" y2="118" class="ax"/>
+  <rect x="270" y="64" width="160" height="108" rx="8" class="bx"/><text x="350" y="82" text-anchor="middle" class="sh">x prefill workers</text>
+  <rect x="284" y="92" width="40" height="22" rx="3" class="bxa"/><rect x="330" y="92" width="40" height="22" rx="3" class="bxa"/><rect x="376" y="92" width="40" height="22" rx="3" class="bxa"/>
+  <rect x="284" y="120" width="40" height="22" rx="3" class="bxa"/><rect x="330" y="120" width="40" height="22" rx="3" class="bxa"/>
+  <text x="350" y="162" text-anchor="middle" class="sl">compute KV + first token</text>
+  <line x1="232" y1="112" x2="270" y2="112" class="ax"/>
+  <rect x="528" y="64" width="160" height="108" rx="8" class="bx"/><text x="608" y="82" text-anchor="middle" class="sh">y decode workers</text>
+  <rect x="542" y="92" width="40" height="22" rx="3" class="bxa"/><rect x="588" y="92" width="40" height="22" rx="3" class="bxa"/><rect x="634" y="92" width="40" height="22" rx="3" class="bxa"/>
+  <text x="608" y="162" text-anchor="middle" class="sl">larger TP, big batches</text>
+  <line x1="430" y1="118" x2="528" y2="118" class="c1"/><text x="479" y="110" text-anchor="middle" class="sl">NIXL</text><text x="479" y="134" text-anchor="middle" class="sl">GPU → GPU KV</text>
+  <path d="M608 172 L608 190 L50 190 L50 140" fill="none" class="ax" stroke-dasharray="3 3"/><text x="330" y="204" text-anchor="middle" class="sl">tokens stream back to the client</text>
+  <path d="M176 96 L176 50 L608 50 L608 64" fill="none" class="ax" stroke-dasharray="3 3"/><text x="392" y="44" text-anchor="middle" class="sl">conditional: short or cached prompt → decode worker prefills it locally</text>
+  <rect x="200" y="2" width="488" height="26" rx="6" class="bx"/><text x="444" y="20" text-anchor="middle" class="st">Planner: resizes x and y ("xPyD") to hit TTFT and ITL targets</text>
+  <text x="4" y="236" class="sl">KVBM tiers under every worker:</text>
+  <rect x="200" y="222" width="100" height="22" rx="3" class="bx"/><text x="250" y="237" text-anchor="middle" class="st">G1 GPU HBM</text>
+  <rect x="316" y="222" width="110" height="22" rx="3" class="bx"/><text x="371" y="237" text-anchor="middle" class="sl">G2 pinned host</text>
+  <rect x="442" y="222" width="90" height="22" rx="3" class="bx"/><text x="487" y="237" text-anchor="middle" class="sl">G3 disk</text>
+  <rect x="548" y="222" width="140" height="22" rx="3" class="bx"/><text x="618" y="237" text-anchor="middle" class="sl">G4 object storage</text>
+</svg>
+<p class="cap">Our drawing of Dynamo's architecture and disaggregated-serving docs. Green = GPUs doing model work; grey = transfer, control and storage. Discovery (etcd or Kubernetes), the request plane and the KV-event plane are left out. In the doc's flow the prefill worker returns its KV handles and the decode worker pulls the KV over NIXL.</p>
+
+<table class="parts" style="margin-top:12px">
+<tr><th>Part</th><th class="what">What it does, per the docs</th><th>Example A</th><th>Example B</th></tr>
+<tr><td>xPyD</td><td class="what">x prefill workers and y decode workers per model. "Runtime-reconfigurable": workers join or drain while it runs</td>
+  <td class="ex"><b>5P3D</b><span>Kiely's example: "five prefill and three decode engines"</span></td>
+  <td class="ex"><b>context TP2DP4 + generation TP8</b><span>launch blog's Llama-70B config. Prefill uses smaller TP than decode, as the docs recommend</span></td></tr>
+<tr><td>KV-aware router</td><td class="what">Scores every eligible worker and picks the lowest cost: uncached prompt blocks (reduced by cache-hit credits) × a scale, plus active decode blocks, plus an optional per-request charge. "A cache-hot worker can lose to a colder worker when its active load makes the total cost higher"</td>
+  <td class="ex"><b>cache hit wins</b><span>idle worker holds the system prompt, so its prefill term is near zero</span></td>
+  <td class="ex"><b>load wins</b><span>the cache-hot worker is already busy with long prompts, so a cold one scores lower. Same trade-off as Mooncake's Conductor</span></td></tr>
+<tr><td>Planner</td><td class="what">Autoscaler that sets prefill and decode replica counts separately, targeting TTFT and ITL. It can scale on predicted throughput (ARIMA, Prophet, Kalman or constant predictors) or on live load</td>
+  <td class="ex"><b>predict, don't react</b><span>"Spinning up a GPU worker takes minutes, not seconds"</span></td>
+  <td class="ex"><b>long prompts arrive</b><span>prefill queue grows, so it adds P workers, not D</span></td></tr>
+<tr><td>NIXL</td><td class="what">NVIDIA's transfer library: point-to-point, non-blocking, noncontiguous copies over NVLink, InfiniBand, RoCE or Ethernet, with storage back-ends too. Kiely: it includes "a kernel to transpose KV blocks between layouts when the engines have different TP configurations"</td>
+  <td class="ex"><b>TP2 → TP8</b><span>a prefill worker's KV shards get re-laid-out for a decode worker with 4× more ranks</span></td>
+  <td class="ex"><b>per backend</b><span>SGLang starts decode while the transfer is in flight. vLLM passes block IDs and waits</span></td></tr>
+<tr><td>KVBM</td><td class="what">KV block manager: offloads blocks down the tiers G1 → G2 → G3 → G4 so evicted prefixes can come back without prefill</td>
+  <td class="ex"><b>CPU cache ≥ 100 GB</b><span>and bigger than the GPU KV cache, "or KVBM churns"</span></td>
+  <td class="ex"><b>G4</b><span>S3-compatible object store, the slowest and largest tier</span></td></tr>
+</table>
+<div class="formula"><span class="c">Router cost from routing-concepts.md, two names shortened (course 7 goes deeper)</span>
+prefill = max(0, active_prefill_blocks
+                 + incoming_prompt_blocks
+                 − overlap_credit_blocks)
+decode  = active_decode_blocks + incoming_active_blocks
+cost    = prefill_load_scale × prefill + decode
+          + decode_active_request_weight × active_requests
+          <span class="c">(that weight defaults to 0; lowest cost wins)</span></div>
+
+<h3 class="sm">Dynamo's numbers: which document says what</h3>
+<table>
+<tr><th>Claim</th><th>Document</th><th>Exact wording and conditions</th></tr>
+<tr><td class="lo">"up to 30x"</td><td>Launch blog, Mar 18 2025</td><td>"When serving the open-source DeepSeek-R1 model on NVIDIA GB200 NVL72, NVIDIA Dynamo, using disaggregated serving, increased the number of requests served by up to 30x." Fig 2 fine print: TensorRT-LLM, FP4, ISL/OSL 32K/8K; baseline in-flight batching TEP16PP4DP4; Dynamo context EP4DP16, generation EP64DP3. "<b>Projected performance subject to change</b>."</td></tr>
+<tr><td>"more than doubled"</td><td>Launch blog, same figure</td><td>"NVIDIA Dynamo more than doubled the throughput performance when serving the Llama 70B model on NVIDIA Hopper." vLLM, FP8, ISL/OSL 3K/50; aggregated TP8DP2 vs context TP2DP4 + generation TP8.</td></tr>
+<tr><td>7x</td><td>README "Key Results", main</td><td>"7x higher throughput per GPU | DeepSeek R1 on GB200 NVL72 w/ Dynamo vs B200 without (InferenceX)"</td></tr>
+<tr><td>2x</td><td>README "Key Results"</td><td>"2x faster time to first token | KV-aware routing, Qwen3-Coder 480B (Baseten benchmark)"</td></tr>
+<tr><td>750x</td><td>README "Key Results"</td><td>"750x higher throughput | DeepSeek-R1 on GB300 NVL72 (InferenceXv2)". The README doesn't name the baseline.</td></tr>
+</table>
+<p class="cap">NVIDIA's launch blog projected the 30×, and it's no longer in the README. It mixes disaggregation, wide expert parallelism, FP4 and the NVL72 rack into one number against a baseline laid out differently, so it doesn't isolate what disaggregation alone buys. The same goes for the README's 7× (different GPU, with vs without Dynamo). The README also lists "7x faster model startup" and "80% fewer SLA breaches … at 5% lower TCO (Alibaba)", which aren't about disaggregation. The docs live on the main branch and will drift, so this card cites the 2026-09-24 fetch.</p>
+
+<h3 class="sm">Dynamo's own docs on when disaggregation doesn't pay</h3>
+<blockquote>"Disaggregation changes where compute and memory are consumed; it does not make either phase free."<cite>disaggregated-serving doc, "Performance Characteristics"</cite></blockquote>
+<ul>
+<li>"At low concurrency, an aggregated worker often avoids transfer and pool-fragmentation overhead."</li>
+<li>"When decode KV capacity is the bottleneck, adding prefill replicas can reduce total serving capacity unless the latency benefit compensates for the GPUs removed from decode."</li>
+<li>The prefill/decode boundary depends on model, quantization, GPU, backend and request lengths, and "should not be encoded as a universal token threshold".</li>
+</ul>
+
+<h2>Kiely's rule of thumb: when to split <small><i>Inference Engineering</i> §5.5.2, pp.149–150</small></h2>
+<p>"You should reach for disaggregation only when" all three hold. If 1 or 2 fails, "you're likely wasting money on extra hardware for minimal performance gains". If 3 fails, "you may be better off using the extra GPUs to scale replicas horizontally".</p>
+<table>
+<tr><th>Condition (Kiely)</th><th>Converted</th><th>Llama-3.1-70B (course example)</th><th>DeepSeek-V3/R1 at DeepSeek</th></tr>
+<tr><td>1. "a large volume of traffic, starting at one hundred million to one billion tokens per day depending on model size"</td><td class="num">1,157 – 11,574 tok/s averaged over a day</td><td>depends on you</td><td class="ok">776B tokens/day (Day 6 post: 608B in + 168B out), ~776× the upper threshold</td></tr>
+<tr><td>2. "a larger model, at least a hundred billion parameters"</td><td class="num">≥ 100B</td><td class="lo">70.55B: fails</td><td class="ok">671B total</td></tr>
+<tr><td>3. "prefill-heavy with long input sequences"</td><td class="num">long ISL, few output tokens</td><td>depends on the workload</td><td class="ok">608B in vs 168B out, 3.6 : 1</td></tr>
+</table>
+<p class="cap">100e6 / 86,400 s = 1,157 tok/s; 1e9 / 86,400 = 11,574 tok/s; 608 / 168 = 3.6 (our arithmetic). By this rule our 70B running example wouldn't be disaggregated, though Dynamo's launch blog still reported more than 2× for Llama 70B on Hopper at ISL/OSL 3K/50, a prefill-heavy shape. Kiely's "textbook workload": "Tons of tokens, mostly prefill, on a trillion-parameter LLM", such as a frontier model behind a code editor. Mooncake reports "over 100 billion tokens daily" for Kimi.</p>
+<p style="margin-top:14px"><b>Conditional disaggregation</b> (§5.5.1): the request goes to the decode engine first. If its input "is already cached or is short enough to handle locally", the decode engine prefills it itself; otherwise it hands off to a prefill engine. Kiely: "Conditional disaggregation is better for real-world traffic." Dynamo implements it with thresholds on "ISL after prefix cache and prefill queue size" (§5.5.3). The two new bottlenecks, per Kiely, are prefill-queue growth (lower the local-prefill threshold or shift xPyD toward P) and running out of KV on decode engines (quantize the KV or offload it).</p>
+
+<h2>Five systems side by side</h2>
+<div class="tw"><table>
+<tr><th>System</th><th>What's split</th><th>What moves the KV</th><th>What it optimizes</th></tr>
+<tr><td><b>DistServe</b><br><span class="mu" style="font-size:12px">OSDI '24, A100</span></td><td>Prefill and decode instances, each with its own parallelism, found by search</td><td>Pull over NVLink inside a node (placement keeps stages co-located) or cross-node</td><td>Goodput per GPU under TTFT + TPOT SLOs</td></tr>
+<tr><td><b>Splitwise</b><br><span class="mu" style="font-size:12px">ISCA '24, A100/H100</span></td><td>Prompt pool, token pool, mixed overflow pool, possibly on different GPUs or power caps</td><td>MSCCL++ one-sided put over InfiniBand, layer by layer</td><td>Throughput per dollar and per watt under P50/P90/P99 TTFT, TBT, E2E SLOs</td></tr>
+<tr><td><b>Mooncake</b><br><span class="mu" style="font-size:12px">FAST '25, A800/H800</span></td><td>Prefill pool, decode pool, and a pooled DRAM/SSD KV store</td><td>Transfer Engine over multi-NIC RDMA, streamed per layer into decode DRAM</td><td>Effective request capacity under TTFT/TBT SLOs, via cache reuse</td></tr>
+<tr><td><b>Dynamo</b><br><span class="mu" style="font-size:12px">GTC Mar 2025, any NVIDIA</span></td><td>xPyD workers of any engine, resized at runtime; optional conditional local prefill</td><td>NIXL (NVLink, IB, RoCE, Ethernet), with a TP-layout transpose</td><td>TTFT and ITL targets at scale, through routing, planning and KV tiers</td></tr>
+<tr><td><b>SGLang / vLLM P/D</b><br><span class="mu" style="font-size:12px">engine features</span></td><td>Separate prefill and decode server processes (SGLang <code>--disaggregation-mode prefill|decode</code>; vLLM "experimental")</td><td>SGLang: Mooncake Transfer Engine by default, or NIXL. vLLM: KV connectors such as NixlConnector, MooncakeConnector, LMCache</td><td>Decode latency: SGLang cites prefill interrupting decode; vLLM says it helps tail ITL and "DOES NOT improve throughput"</td></tr>
+</table></div>
+
+<h2>The words people use</h2>
+<div class="grid2">
+  <div class="cell"><h3>TPOT <span class="mu" style="font-size:13px;font-weight:400">DistServe</span></h3><p>Time per output token: a request's average time per token after the first. One number per request.</p></div>
+  <div class="cell"><h3>TBT <span class="mu" style="font-size:13px;font-weight:400">Splitwise, Mooncake</span></h3><p>Time between tokens: each gap in the stream, so P99 TBT catches one stalled token that an average hides. Splitwise's SLO: P50/P90/P99 at 1.25/1.5/5× an unloaded A100.</p></div>
+  <div class="cell"><h3>ITL / TPS <span class="mu" style="font-size:13px;font-weight:400">Dynamo, vLLM / Kiely</span></h3><p>Inter-token latency is the same gap as TBT. Kiely uses TPS, "tokens per second per user" for latency or "total TPS" for throughput. "An ITL of 10 milliseconds equates to 100 tokens per second per user."</p></div>
+  <div class="cell win"><h3>Goodput <span style="font-size:13px;font-weight:400">means three things</span></h3><p>DistServe: the highest request rate per GPU that meets an SLO-attainment target, found by search. vLLM bench <code>--goodput</code>: requests per second that met the SLOs at the load you offered. Networking: useful bits per second. Splitwise never says goodput, but its "throughput" (the highest rate at which every SLO holds) is close to DistServe's.</p></div>
+</div>
+
+<h2>How the production versions differ from the paper idea</h2>
+<div class="grid2">
+  <div class="cell"><h3><span class="x">&#10007;</span> Disaggregate every request</h3><p>Short or already-cached prompts pay a KV transfer and a second queue for nothing. Kiely and Dynamo both prefill those locally on the decode engine (conditional disaggregation).</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Size xPyD once</h3><p>The best ratio moves with the traffic: 1:1 for Mooncake's trace, 2:1 in DistServe's Fig 1, 3:1 in the Scaling Book. A fixed split lets the prefill queue grow or decode run out of KV. Dynamo's planner resizes both pools.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Route on load alone, or on cache alone</h3><p>Load-only recomputes prefixes that another worker already holds. Cache-only piles work on the hot worker. Mooncake's Conductor and Dynamo's router both add cache hits and load into one cost.</p></div>
+  <div class="cell win"><h3><span class="ok">&#10003;</span> Split, route by cache and load, resize</h3><p>Split only the requests that benefit, pick workers by cost, move KV layer by layer or non-blocking so it hides under compute (Splitwise: 0.8% of E2E), and put each phase on the cheapest hardware that meets its SLO.</p></div>
+</div>
+
+<h2>So should you disaggregate?</h2>
+<div class="note">
+<p>Usually not at first. Every source here says so in its own words. Below roughly 100M–1B tokens a day, under about 100B parameters, or with short prompts, a pool of ordinary replicas with chunked prefill and prefix caching wins: no transfer, no idle prefill memory, no second queue (Kiely §5.5.2; Dynamo's "at low concurrency" note; DistServe §7). Kiely's §4.4 is blunter about Dynamo itself: "Unless you're operating with enough volume for disaggregation and KV-aware routing to matter, Dynamo will be unnecessary work and excess overhead."</p>
+<p>Treat the big multipliers carefully. Splitwise's abstract pairs don't match its §VI text, and Dynamo's 30× was a projection that bundles FP4, wide EP and a rack-scale NVLink domain. The effects the sources do measure are smaller and more useful: layer-wise transfer costs 0.8% of E2E, and a token phase on A100s costs the same or less per request than on H100s, at 1.4–1.7× the TBT (Table IV: 40/28, 52/31).</p>
+</div>
+
+<div class="foot">
+<p><b>Read next:</b> Patel et al., <a href="https://arxiv.org/abs/2311.18677">"Splitwise: Efficient Generative LLM Inference Using Phase Splitting"</a> (arXiv v2): §III with Insights I–VII and Table IV, then §IV-A to IV-C for the pools, schedulers and layer-wise transfer, about 15 min. Dynamo docs: the <a href="https://docs.nvidia.com/dynamo/dev/knowledge-base/concepts/system-architecture/disaggregated-serving">disaggregated-serving page</a>, especially "Performance Characteristics", and the <a href="https://docs.nvidia.com/dynamo/components/router">KV router page</a> with its cost calculation, about 10 min. Kiely, <i>Inference Engineering</i> §5.5 (pp.148–151), about 10 min.</p>
+<p><b>Related:</b> <a href="distserve-interference.html">DistServe I: why prefill and decode want different GPUs</a> · <a href="distserve-placement.html">DistServe II: placement, KV transfer and results</a> · <a href="megascale-infer-design.html">MegaScale-Infer I: splitting attention from the experts</a> · <a href="deepseek-v3-infrastructure.html">DeepSeek-V3 II: infrastructure, FP8 and deployment</a> · <a href="collectives.html">How GPUs talk: collectives and interconnects</a> · <a href="sizing-deployment.html">Sizing a deployment</a> · <a href="../perf-4-attention-kv/mooncake-store.html">course 4: Mooncake I</a> · <a href="../perf-4-attention-kv/mooncake-scheduling.html">course 4: Mooncake II</a> · <a href="../perf-4-attention-kv/cache-aware-scheduling.html">course 4: cache-aware scheduling</a> · <a href="../perf-5-engines/sarathi-chunked-prefill.html">course 5: Sarathi-Serve II, chunked prefill</a> · <a href="../perf-2-scaling-book-inference/inference-engine-design.html">course 2: inference engine design (P = 3G)</a> · <a href="../perf-1-foundations/serving-metrics.html">course 1: serving metrics</a>. Course 7, "Training and the cost of a token", will cover routing in depth.</p>
+<p><b>Sources:</b> Splitwise phase names, Insights II–VII, Table IV, Table V, cluster designs, schedulers, MSCCL++/IB transfer, the &lt; 7% / 8 ms / 5 ms / 0.8% / 3% / 16.5% / 64% figures, the abstract, §VI and §IX claims: <a href="https://arxiv.org/abs/2311.18677">arXiv 2311.18677 v2</a>. Mooncake P/D ≈ 1:1 (§5.5) and "over 100 billion tokens daily": FAST '25 paper, as summarized in the course 4 cards. Dynamo README Key Results (7x, 2x, 750x, 7x startup, 80%): <a href="https://github.com/ai-dynamo/dynamo/blob/main/README.md">github.com/ai-dynamo/dynamo README</a>, fetched 2026-09-24. 30× and "more than doubled" with Fig 2 fine print: <a href="https://developer.nvidia.com/blog/introducing-nvidia-dynamo-a-low-latency-distributed-inference-framework-for-scaling-reasoning-ai-models/">NVIDIA launch blog, Mar 18 2025</a>. Router cost, planner, KVBM tiers and advice, xPyD, "Performance Characteristics" quotes: Dynamo docs on GitHub main (disaggregated-serving, routing-concepts, planner overview, kvbm-configuration), fetched 2026-09-24. SGLang flags and backends: <a href="https://docs.sglang.io/advanced_features/pd_disaggregation.html">SGLang PD Disaggregation docs</a>. vLLM connectors and "DOES NOT improve throughput": <a href="https://docs.vllm.ai/en/latest/features/disagg_prefill.html">vLLM Disaggregated Prefilling (experimental)</a>, both fetched 2026-09-24. Kiely, <i>Inference Engineering</i>: §1 (TPS, ITL), §4.4 pp.111–112, §5.5 pp.148–151. DeepSeek 608B/168B tokens per day: DeepSeek-V3/R1 Inference System Overview (open-infra-index Day 6). Llama 70B KV per token, 70.55B params and H100 989 TF: the course's shared facts. KV sizes, transfer times, prefill floor, tokens-per-second conversions and the Table IV ratio recomputation are our arithmetic.</p>
+</div>
+</article>
+<!-- series-nav:bottom -->
+<div class="snx"><a class="nx" href="index.html#megascale-infer-design" target="_top">
+<span class="mini" aria-hidden="true"><span class="m1">MegaScale-Infer I: splitting attention from the experts</span><span class="m2">Also called attention–FFN disaggregation (AFD) or, in the paper's words, disaggregated expert parallelism. Card 1 of 2 on MegaScale-Infer (Zhu et al., ByteDance Seed and Peking University, arXiv…</span><span class="m3">In one breath</span><span class="m4">In a MoE model each expert sees only a small slice of the decode batch (top-k of E), so its matrix multiplies stay memory-bound and the GPU's compute sits idle. MegaScale-Infer moves attention and the experts onto different GPUs. Many attention replicas (data parallel, each holding its own requests' KV cache) all send their…</span></span>
+<span class="tx"><span class="lab">Next up · 13 / 15</span><span class="tt">MegaScale-Infer I: splitting attention from the experts</span><span class="ds">Why MoE experts idle in decode</span><span class="nd">Builds on: Expert parallelism: dispatch, combine and EPLB, DistServe I: why prefill and decode want different GPUs.</span><span class="go">Continue →</span></span></a><div class="aux"><span><a href="index.html#distserve-placement" target="_top">← DistServe II: placement, KV transfer and results</a></span><a href="index.html" target="_top">All cards in 6 · Serving across GPUs</a></div></div>
+<!-- /series-nav:bottom -->
+</body>
+</html>
