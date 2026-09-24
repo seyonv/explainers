@@ -1,0 +1,358 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Autoscaling, cold starts and scale to zero</title>
+<style>
+:root{
+  --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
+  --text:#1c1f23; --muted:#6b7068; --faint:#b9b9b3;
+  --accent:#4a9d77; --accent-bg:#dcefdf; --accent-border:#8cc79c;
+  --red:#c0492b; --red-bg:#fbeceb;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#15171a; --surface:#1d2024; --surface2:#24282d; --border:#32373d;
+    --text:#e6e8ea; --muted:#9aa1a9; --faint:#4a5057;
+    --accent:#5fb37f; --accent-bg:#1c2b22; --accent-border:#3f7a55;
+    --red:#e57368; --red-bg:#2e1f1e;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text)}
+.card{max-width:820px;margin:0 auto;padding:28px 32px;font-family:-apple-system,"Inter",system-ui,sans-serif;line-height:1.45}
+h1{font-size:26px;font-weight:600;margin:0 0 6px;letter-spacing:-0.01em}
+.sub{font-size:15px;color:var(--muted);margin:0 0 20px}
+h2{font-size:17px;font-weight:600;margin:26px 0 10px}
+p{font-size:15px;margin:0 0 10px}
+ul{margin:4px 0 10px;padding-left:20px} li{font-size:15px;margin:0 0 4px}
+.cap{font-size:13px;color:var(--muted);margin:8px 0 0;text-align:center}
+.cap + p,.cap + h2{margin-top:14px}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border)}
+th{font-size:12px;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:none}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+.hi{color:var(--accent);font-weight:600} .lo{color:var(--red)} .mu{color:var(--muted)}
+.formula{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin:10px 0;white-space:pre;overflow-x:auto;line-height:1.55}
+.tw{overflow-x:auto}
+
+.mathbox{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px 16px 12px;margin:10px 0;overflow-x:auto}
+.mathbox math{font-size:21px;color:var(--text);font-family:"STIX Two Math","Latin Modern Math","Cambria Math",math}
+.mathbox .t1{color:var(--text)} .mathbox .t2{color:var(--accent)} .mathbox .t3{color:var(--muted)}
+.mathbox .lab{font-size:12px;font-family:-apple-system,"Inter",system-ui,sans-serif;padding-top:3px;border-top:1.5px solid currentColor;margin-top:2px}
+.legend{display:grid;grid-template-columns:auto 1fr auto;column-gap:14px;row-gap:5px;font-size:13px;margin-top:12px;align-items:baseline}
+.legend .sym{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;text-align:right}
+.legend .v{color:var(--muted);text-align:right;font-variant-numeric:tabular-nums}
+
+.parts td{vertical-align:top} .parts td:first-child{font-weight:600}
+.parts .ex{font-size:13px} .parts .ex span{display:block;color:var(--muted)}
+.knobs td{vertical-align:top;font-size:13px} .knobs td:first-child{font-weight:600;white-space:nowrap;font-size:14px}
+
+.wf{display:grid;grid-template-columns:200px 1fr 64px;column-gap:12px;row-gap:10px;align-items:center;font-size:13px;margin:8px 0}
+.wf .nm{color:var(--text)} .wf .nm small{display:block;color:var(--muted);font-size:12px}
+.wf .bar{display:flex;height:22px;border-radius:3px;gap:2px}
+.wf .bar i{display:block;height:100%;border-radius:2px}
+.wf .t{text-align:right;font-variant-numeric:tabular-nums;font-weight:600}
+.c-gpu{background:var(--faint)} .c-img{background:var(--surface2);box-shadow:inset 0 0 0 1px var(--muted)} .c-wt{background:var(--muted)} .c-eng{background:var(--text)}
+.key{display:flex;flex-wrap:wrap;gap:6px 18px;font-size:12px;color:var(--muted);margin:6px 0 0}
+.key span{display:inline-flex;align-items:center;gap:6px}
+.key i{display:inline-block;width:14px;height:11px;border-radius:2px}
+.key .kdem{background:var(--accent)} .key .kcap{background:var(--surface2);border:1px solid var(--faint)} .key .kpeak{border-top:2px dashed var(--red);height:0;width:16px;border-radius:0}
+
+svg{display:block;max-width:100%;height:auto;margin:6px 0}
+svg .sl{font-size:11px;fill:var(--muted)}
+svg .gl{stroke:var(--border);stroke-width:1}
+svg .capb{fill:var(--surface2);stroke:var(--faint);stroke-width:1}
+svg .dem{fill:var(--accent)}
+svg .peak{stroke:var(--red);stroke-width:1.5;stroke-dasharray:5 4}
+
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.cell{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.cell.win{background:var(--accent-bg);border-color:var(--accent-border)}
+.cell h3{font-size:16px;font-weight:600;margin:0 0 5px;display:flex;gap:8px;align-items:baseline}
+.cell p{font-size:14px;margin:0;color:var(--text)}
+.cell.win h3,.cell.win p{color:var(--accent)}
+.x{color:var(--red)} .ok{color:var(--accent)}
+
+.note{border:1px solid var(--border);border-radius:10px;padding:14px 18px;font-size:14px}
+.note p,.note li{font-size:14px} .note p:last-child{margin-bottom:0}
+.ours{border-left:3px solid var(--accent-border);padding:2px 0 2px 14px;margin:10px 0}
+blockquote{margin:8px 0;padding:2px 0 2px 14px;border-left:3px solid var(--border);color:var(--muted);font-size:14px}
+
+.foot{margin-top:22px;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+.foot p{font-size:13px;margin:0 0 6px}
+a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+@media (max-width:560px){
+  .card{padding:22px 16px}
+  .grid2{grid-template-columns:1fr}
+  .legend{grid-template-columns:auto 1fr}.legend .v{display:none}
+  .parts .what{display:none}
+  .wf{grid-template-columns:1fr 56px}.wf .nm{grid-column:1 / -1}
+  th,td{padding:6px 6px}
+}
+/* series-nav */
+.sn{max-width:820px;margin:0 auto;padding:16px 32px 0;font-family:-apple-system,"Inter",system-ui,sans-serif;font-size:13px;line-height:1.5;color:var(--muted)}
+.sn a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
+.sn .crumbs{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 7px}
+.sn .crumbs b{color:var(--text);font-weight:600}
+.sn .sep{color:var(--faint,var(--border))}
+.sn .step{margin-left:auto;white-space:nowrap}
+.sn .dep{margin-top:5px;padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface)}
+.sn .dep .ok{color:var(--accent);font-weight:600}
+.snx{max-width:820px;margin:0 auto;padding:6px 32px 44px;font-family:-apple-system,"Inter",system-ui,sans-serif}
+.snx .nx{display:grid;grid-template-columns:280px 1fr;text-decoration:none;color:var(--text);background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.snx .nx:hover,.snx .nx:focus-visible{border-color:var(--accent-border,var(--accent));outline:none}
+.snx .mini{position:relative;height:210px;overflow:hidden;background:var(--bg);border-right:1px solid var(--border);padding:14px 16px}
+.snx .mini span{display:block}
+.snx .mini .m1{font-size:12.5px;font-weight:600;margin:0 0 4px;line-height:1.3}
+.snx .mini .m2{font-size:9px;color:var(--muted);margin:0 0 8px;line-height:1.4}
+.snx .mini .m3{font-size:8.5px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;margin:0 0 3px}
+.snx .mini .m4{font-size:9.5px;margin:0;line-height:1.45}
+.snx .tx{padding:16px 20px}
+.snx .lab{font-size:12px;font-weight:600;color:var(--accent);letter-spacing:.04em;text-transform:uppercase}
+.snx .tt{display:block;font-size:20px;font-weight:600;margin:5px 0 4px;line-height:1.25}
+.snx .ds{display:block;font-size:14px;color:var(--muted)}
+.snx .nd{display:block;font-size:13px;color:var(--muted);margin-top:10px}
+.snx .go{display:block;margin-top:12px;font-size:14px;font-weight:600;color:var(--accent)}
+.snx .aux{display:flex;justify-content:space-between;gap:12px;margin-top:10px;font-size:13px;color:var(--muted)}
+.snx .aux a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
+@media (max-width:560px){.sn,.snx{padding-left:16px;padding-right:16px}.snx .nx{grid-template-columns:1fr}.snx .mini{display:none}.sn .step{margin-left:0}}
+/* /series-nav */
+</style>
+</head>
+<body>
+<!-- series-nav:top -->
+<nav class="sn" aria-label="Course navigation"><div class="crumbs"><a href="../perf-0-map/index.html" target="_top">Fast LLM inference</a><span class="sep">›</span><a href="index.html" target="_top">7 · Training &amp; cost per token</a><span class="sep">›</span><b>10 / 13</b><span class="step"><a href="index.html#choosing-hardware" target="_top">← prev</a> · <a href="index.html#kv-aware-routing" target="_top">next →</a></span></div>
+<div class="dep"><b>Before this:</b> <a href="index.html#cost-per-token" target="_top">$ per million tokens and the batch dial</a></div></nav>
+<!-- /series-nav:top -->
+<article class="card">
+<h1>Autoscaling, cold starts and scale to zero</h1>
+<p class="sub">Also called replica autoscaling or horizontal scaling; a cold start is also "startup latency" or "time to first token after scale-up"; scale to zero is also "serverless inference". This card follows Philip Kiely's <i>Inference Engineering</i> §7.2 (book pages 183–192) for the knobs and the four parts of a cold start, and ServerlessLLM (OSDI '24) for how fast loading can get. The running example is Llama-3.1-8B in BF16 (16 GB of weights) on H100s at $3.99 per GPU-hour.</p>
+
+<h2>In one breath</h2>
+<p>Traffic rises and falls, but a GPU you rent costs the same whether it is busy or idle. So you add replicas when load rises and remove them when it falls. You can only safely remove them if a new one can start quickly. A cold start is GPU, then container image, then 16–140 GB of weights, then engine warm-up. It can take seconds or ten minutes, and that time decides how few warm replicas you can get away with.</p>
+
+<h2>Why autoscale: idle GPUs multiply your $ per token</h2>
+<p><a href="cost-per-token.html">$ per million tokens and the batch dial</a> worked out the price of a token on a GPU that is always busy. The honest price divides by how busy the fleet actually is:</p>
+<div class="mathbox">
+<math display="block">
+  <msub><mi>$</mi><mtext>per M</mtext></msub><mo>=</mo>
+  <mfrac>
+    <munder class="t3"><mrow><mi>p</mi><mo>&#183;</mo><msub><mi>G</mi><mtext>hours</mtext></msub></mrow><mtext class="lab">what you paid</mtext></munder>
+    <munder class="t2"><mrow><mi>T</mi><mo>/</mo><msup><mn>10</mn><mn>6</mn></msup></mrow><mtext class="lab">tokens you served</mtext></munder>
+  </mfrac>
+  <mo>=</mo>
+  <mfrac>
+    <mrow><mi>p</mi><mo>&#183;</mo><msup><mn>10</mn><mn>6</mn></msup></mrow>
+    <mrow><mn>3600</mn><mo>&#183;</mo><msub><mi>c</mi><mtext>replica</mtext></msub><mo>&#183;</mo><munder class="t2"><mi>u</mi><mtext class="lab">utilization</mtext></munder></mrow>
+  </mfrac>
+</math>
+<div class="legend">
+  <span class="sym">p</span><span>price per GPU-hour</span><span class="v">$3.99 (Lambda 8×H100)</span>
+  <span class="sym">G</span><span>GPU-hours you kept running, busy or not</span><span class="v">replicas × hours</span>
+  <span class="sym">T</span><span>output tokens actually served</span><span class="v">from traffic</span>
+  <span class="sym">c</span><span>tokens/s one replica can make when full</span><span class="v">6,450 at batch 64 (our model)</span>
+  <span class="sym">u</span><span>fraction of that capacity that was used</span><span class="v">0–1</span>
+</div>
+</div>
+<p class="cap">At u = 1 the 8B costs $3.99 ÷ (6,450 × 3,600 / 10⁶) = $0.172/M, the batch-64 row of the course's cost table. At u = 0.36 it costs $0.48/M. Autoscaling exists to push u up without breaking the latency target.</p>
+
+<h2>Kiely's autoscaling knobs</h2>
+<p>Kiely sets the goal as "enough resources to serve all incoming requests while maintaining your latency SLAs without wasting money on idle GPUs" (p.183). He names two signals (p.185). <b>Utilization</b> is GPU memory or compute usage. <b>Traffic</b> is the number of requests in the system. They can disagree. His example: a few prefill requests with "hundreds of thousands of uncached input tokens" load the GPU far more than many small, cache-hitting ones. His advice (p.186): "Traffic-based scaling decisions can be made proactively, while utilization is a lagging indicator. Use both in combination." A traffic-based autoscaler then has five settings (p.186):</p>
+<div class="tw"><table class="knobs">
+<tr><th>Knob</th><th>Kiely's question</th><th>What it trades</th></tr>
+<tr><td>Min replicas</td><td>"the minimum number of replicas that stay running, regardless of traffic"</td><td>Idle $ at night vs cold starts for the first users. 0 is scale to zero.</td></tr>
+<tr><td>Max replicas</td><td>"the maximum number of replicas that you can allocate when traffic is high"</td><td>A spend cap vs queueing at the peak.</td></tr>
+<tr><td>Autoscaling window</td><td>"How long is the sliding timeframe that you use to measure traffic"</td><td>A short window reacts fast but chases noise.</td></tr>
+<tr><td>Scale-down delay</td><td>"How long after a scale down is suggested do you wait in case of another traffic spike?"</td><td>Longer "prevents premature scale-downs for spikey traffic, but could result in unnecessary spend" (p.186).</td></tr>
+<tr><td>Concurrency target</td><td>"How many requests can each replica handle at once?"</td><td>Set it equal to the engine's batch size (p.188). Bigger means cheaper tokens but slower ones for each user.</td></tr>
+</table></div>
+<p style="margin-top:10px">The scale rule that follows (p.188): "Once every active replica reaches its maximum concurrency, the autoscaling system knows to spin up more replicas. If enough replicas are kicking off half-full batches, it's time to scale back down." Kiely gives no default numbers for any knob, and says nothing more about min replicas than its definition. The trade-off below is our worked example, not his.</p>
+
+<h2>The four parts of a cold start</h2>
+<p>"A cold start is the time it takes to spin up a new replica of a model" (p.188). It matters because "If you can't spin up replicas fast, it's hard to confidently scale down, leading to over-provisioning." Kiely splits it into four steps that add up one after another (Fig. 7.9, p.189), and says "Each of these factors needs to be optimized separately." Think of opening a restaurant for a rush: you rent the room, bring in the kitchen equipment, stock the pantry, then heat the ovens.</p>
+<div class="tw"><table class="parts">
+<tr><th>Part</th><th class="what">What happens, and what dominates it</th><th>Example A: fast</th><th>Example B: slow</th></tr>
+<tr><td>GPU procurement</td><td class="what">Get a GPU node into the cluster and assign it. "Unless you have a pool of warm nodes that you're flexing between models, GPU procurement speed is mostly a function of your cloud provider"; node start time is negotiable in a contract (p.189).</td><td class="ex"><b class="ok">≈ 0 s</b><span>a warm node already in your pool (illustrative)</span></td><td class="ex"><b>minutes</b><span>a fresh cloud instance boots; we use 300 s (illustrative)</span></td></tr>
+<tr><td>Image loading</td><td class="what">Pull the container (CUDA, Python packages, engine) onto the node. Its size is the lever: images are "often many gigabytes", so "only include strictly necessary dependencies" (p.182).</td><td class="ex"><b class="ok">≈ 0 s</b><span>image layers already cached on the node</span></td><td class="ex"><b>8 s</b><span>a 10 GB image over 10 Gbps (illustrative size)</span></td></tr>
+<tr><td>Model loading</td><td class="what">Copy the weights onto the GPU. This is bytes ÷ bandwidth: "make them smaller or get more bandwidth" (p.189). Quantizing helps here too. "The weights dwarf the image and are better loaded separately" (p.190).</td><td class="ex"><b class="ok">0.25 s</b><span>16 GB from host DRAM over PCIe 5</span></td><td class="ex"><b class="lo">128 s</b><span>16 GB from Hugging Face / S3 over 1 Gbps</span></td></tr>
+<tr><td>Engine startup</td><td class="what">Start vLLM, SGLang or TensorRT-LLM: allocate the KV cache, compile, capture CUDA graphs. "vLLM and SGLang are fast to start up", but TensorRT-LLM and compiled PyTorch builds "often take several minutes" unless cached (p.190).</td><td class="ex"><b>seconds</b><span>cached compile artifacts; we use 10–30 s (illustrative)</span></td><td class="ex"><b class="lo">minutes</b><span>uncached build; we use 180 s (illustrative)</span></td></tr>
+</table></div>
+
+<p style="margin-top:14px">Stacked together for the 8B, in three setups. Each bar is 100% of that setup's own cold start, so you can see which part dominates. The weight times are bytes ÷ bandwidth. <b>Every other component time is illustrative</b>, because Kiely gives no second counts and we found no source that does.</p>
+<div class="wf">
+  <div class="nm">Naive<small>new cloud node, 1 Gbps weights, uncached compile</small></div>
+  <div class="bar"><i class="c-gpu" style="width:48.7%"></i><i class="c-img" style="width:1.3%"></i><i class="c-wt" style="width:20.8%"></i><i class="c-eng" style="width:29.2%"></i></div>
+  <div class="t lo">616 s</div>
+  <div class="nm">Tuned<small>warm node pool, cached image, 5 GB/s in-region weights</small></div>
+  <div class="bar"><i class="c-wt" style="width:9.6%"></i><i class="c-eng" style="width:90.4%"></i></div>
+  <div class="t">33.2 s</div>
+  <div class="nm">Best<small>weights already in host DRAM (ServerlessLLM-style)</small></div>
+  <div class="bar"><i class="c-wt" style="width:2.4%"></i><i class="c-eng" style="width:97.6%"></i></div>
+  <div class="t hi">10.3 s</div>
+</div>
+<div class="key"><span><i class="c-gpu"></i>GPU procurement 300 s</span><span><i class="c-img"></i>image 8 s</span><span><i class="c-wt"></i>weights 128 / 3.2 / 0.25 s</span><span><i class="c-eng"></i>engine 180 / 30 / 10 s</span></div>
+<div class="formula">naive  300 + 10 GB ÷ 1.25 GB/s + 16 GB ÷ 0.125 GB/s + 180 = 300 + 8 + 128 + 180 = 616 s
+tuned    0 +                0 + 16 GB ÷ 5 GB/s     +  30 =                3.2 + 30 = 33.2 s
+best     0 +                0 + 16 GB ÷ 64 GB/s    +  10 =               0.25 + 10 = 10.3 s
+then the first request's prefill: 2 × 8.03e9 × 1,000 tokens ÷ 989e12 = 16 ms  (noise)</div>
+<p class="ours">Our reading: once the weights come from somewhere close, the engine's own startup is most of what's left. That's why caching compiled engines and CUDA graphs matters as much as fast storage.</p>
+
+<h2>Weight-load math: bytes ÷ bandwidth, tier by tier</h2>
+<p>The weight load is the one part you can compute exactly. It's a floor, because real loaders also deserialize tensors and take page faults (see ServerlessLLM below). The table shows how much the storage tier matters:</p>
+<div class="tw"><table>
+<tr><th>Where the weights come from</th><th class="num">GB/s</th><th class="num">8B BF16, 16 GB</th><th class="num">8B FP8, 8 GB</th><th class="num">70B BF16, 140 GB</th></tr>
+<tr><td>Hugging Face or S3 over 1 Gbps</td><td class="num">0.125</td><td class="num lo">128 s</td><td class="num">64 s</td><td class="num lo">1,120 s</td></tr>
+<tr><td>Registry or object store over 10 Gbps</td><td class="num">1.25</td><td class="num">12.8 s</td><td class="num">6.4 s</td><td class="num">112 s</td></tr>
+<tr><td>In-region object store, "5GB/s" (ServerlessLLM)</td><td class="num">5</td><td class="num">3.2 s</td><td class="num">1.6 s</td><td class="num">28 s</td></tr>
+<tr><td>Local NVMe, RAID 0 (ServerlessLLM's test disk)</td><td class="num">12</td><td class="num">1.3 s</td><td class="num">0.67 s</td><td class="num">11.7 s</td></tr>
+<tr><td>Host DRAM → GPU, PCIe 5 (512 GB/s ÷ 8 GPUs)</td><td class="num">64</td><td class="num hi">0.25 s</td><td class="num hi">0.13 s</td><td class="num hi">0.27 s*</td></tr>
+</table></div>
+<p class="cap">GB = 10⁹ bytes; 1 Gbps = 0.125 GB/s. *The 70B is split across 8 GPUs, each with its own PCIe link, so it loads at 512 GB/s aggregate. Two checks against the paper: 130 GB at 5 GB/s = 26 s, which matches ServerlessLLM's "a minimum of 26 seconds" for LLaMA-2-70B. OPT-6.7B's ~13.4 GB at 1 Gbps = 107 s, against the 114 s KServe actually took. The exact 8B is 16.06 GB, which takes 128.5 s at 1 Gbps.</p>
+<p>That's why Kiely says a public hub is limited "by their egress speed", S3 adds "network latency and data transfer costs", and multi-hundred-billion-parameter models need "gigabytes per second of bandwidth". The fix he gives is loading "from a source cached physically near the GPU instance within the same datacenter" (p.190). FP8 halves every row, because it halves the bytes.</p>
+
+<h2>Engine startup: compile and CUDA graph capture</h2>
+<p>Before it serves a request, an engine allocates the KV cache, may run <code>torch.compile</code> (with kernel auto-tuning), and captures one CUDA graph per batch size (<a href="../perf-3-kernels/fusion-cuda-graphs.html">Kernel fusion, launch overhead and CUDA graphs</a>). The vLLM docs promise that "all the compilation finishes before we serve any requests", so all of it lands inside the cold start. They also say auto-tuning "takes quite a long time (from seconds to minutes, depending on the model size and the batch size)". The cure is the same as for weights: cache it. vLLM writes to <code>~/.cache/vllm/torch_compile_cache</code>, which you can "directly copy … in your deployment scenario to save a great amount of compilation time". Kiely adds the catch: a cached engine only runs on "exactly the GPU type, CUDA version, and software dependencies" it was built with (p.190). How long engine startup takes varies with engine, model and settings. We didn't find a published end-to-end number, so the 10–180 s above is illustrative.</p>
+
+<h2>ServerlessLLM: making the cold start mostly a local read</h2>
+<p>Fu et al. (OSDI '24) start from two observations. First, even from local NVMe, "loading LLaMA-2-70B into 8 GPUs takes 84 seconds" with PyTorch (OPT-30B into 4 GPUs takes 34 s), while generating a token usually takes "less than 100ms". Second, GPU servers have lots of unused DRAM and SSD. An 8-GPU PCIe 5.0 server moves "512 GB/s between the host memory and GPUs, and around 60 GB/s from NVMe SSDs (RAID 0)". Their system has three parts:</p>
+<ul>
+<li><b>Loading-optimized checkpoints and multi-tier loading.</b> Tensors are regrouped into one binary partition per GPU, read sequentially in large chunks (16 MB), with a tensor index for "direct tensor addressing". Loading then streams through a pinned-memory chunk pool, pipelined across SSD → DRAM → GPU. On a 12 GB/s NVMe RAID 0 it is "3.6 - 8.2X faster" than Safetensors and PyTorch: 6× / 3.6× for OPT-2.7B and 8.2× / 4.7× for LLaMA-2-70B. Safetensors took "112K" page faults on LLaMA-2-7B. LoRA adapters load 4.4× faster.</li>
+<li><b>Live migration that moves tokens, not KV.</b> Suppose the server holding a model's checkpoint is busy. ServerlessLLM loads the model on that server anyway, then moves the running request somewhere else. It sends the request's "tokens (typically 10-100s KB) instead of the large KV-Cache (typically 1-10s GB)", and the destination recomputes the KV. That works because "recompute the KV-Cache for 1000 tokens equals to the time to generate about 100 new tokens". It runs in rounds until the source's new tokens are caught up. For our 8B, a 2,000-token request is 8 KB of token ids vs 0.26 GB of KV (our arithmetic, 128 KiB/token).</li>
+<li><b>Locality-aware (startup-time-optimized) scheduling.</b> Cost models estimate load time from each tier on each server, plus migration time. The scheduler picks the server with the lowest estimated startup.</li>
+</ul>
+<div class="tw"><table>
+<tr><th>Published result</th><th class="num">Baseline</th><th class="num">ServerlessLLM</th><th class="num">Ratio</th></tr>
+<tr><td>OPT-6.7B, GSM8K, mean model start (Ray Serve / with SSD cache)</td><td class="num">12.1 s / 8.2 s</td><td class="num hi">0.8 s</td><td class="num">15× / 10×</td></tr>
+<tr><td>OPT-30B, GSM8K (Ray Serve / with cache)</td><td class="num lo">213 s / 199.2 s</td><td class="num hi">7.5 s</td><td class="num">28× / 27×</td></tr>
+<tr><td>OPT-30B, requests done within the 300 s timeout</td><td class="num">26% (with cache)</td><td class="num hi">89%</td><td class="num">–</td></tr>
+<tr><td>KServe, OPT-6.7B first token (114 s is the S3 download over 1 Gbps)</td><td class="num lo">128 s</td><td class="num">–</td><td class="num">–</td></tr>
+<tr><td>What-if: Ray Serve on a 100 Gbps network</td><td class="num">3.8 s</td><td class="num">≈ 0.8 s</td><td class="num">"still 4.7 times slower"</td></tr>
+</table></div>
+<p class="cap">The headline is "reducing latency by 10 - 200X". The caveat: the testbeds are old, small GPUs on slow links, an 8×A5000 server on a 1 Gbps storage network and 4 servers × 4 A40s on 10 Gbps Ethernet. At 1 Gbps the baseline is mostly a download, so the ratio balloons. The paper's own 100 Gbps what-if cuts the gap to 4.7×. On H100 nodes with 100+ Gbps links, expect gains nearer that end (our inference). Newer systems attack the same step, for example NVIDIA Dynamo's ModelExpress, which streams weights GPU-to-GPU for "7x faster cold-start" (README claim).</p>
+
+<h2>Worked example: keep replicas warm, or pay the cold start?</h2>
+<p>An <b>illustrative</b> bursty day for the 8B: zero traffic from 23:00 to 05:00, a ramp through the morning, and a 25,000 tok/s peak at noon. That comes to 0.79B output tokens. Each replica is one H100 serving at most 6,450 tok/s (batch 64, "our model" ceiling) at $3.99/hr. Green bars are demand. Grey blocks are the capacity an autoscaler with min replicas 1 would keep (y-axis in replicas). The dashed red line is provisioning for the peak (4 replicas all day).</p>
+<svg viewBox="0 0 710 196" role="img" aria-label="Illustrative hourly demand against autoscaled capacity and peak provisioning">
+<line x1="40" x2="700" y1="131.8" y2="131.8" class="gl"/><text class="sl" x="34" y="135.8" text-anchor="end">1</text>
+<line x1="40" x2="700" y1="93.6" y2="93.6" class="gl"/><text class="sl" x="34" y="97.6" text-anchor="end">2</text>
+<line x1="40" x2="700" y1="55.3" y2="55.3" class="gl"/><text class="sl" x="34" y="59.3" text-anchor="end">3</text>
+<line x1="40" x2="700" y1="17.1" y2="17.1" class="gl"/><text class="sl" x="34" y="21.1" text-anchor="end">4</text>
+<rect class="capb" x="41.0" y="131.8" width="25.5" height="38.2"/>
+<rect class="capb" x="68.5" y="131.8" width="25.5" height="38.2"/>
+<rect class="capb" x="96.0" y="131.8" width="25.5" height="38.2"/>
+<rect class="capb" x="123.5" y="131.8" width="25.5" height="38.2"/>
+<rect class="capb" x="151.0" y="131.8" width="25.5" height="38.2"/>
+<rect class="capb" x="178.5" y="131.8" width="25.5" height="38.2"/>
+<rect class="dem" x="181.5" y="168.2" width="19.5" height="1.8"/>
+<rect class="capb" x="206.0" y="131.8" width="25.5" height="38.2"/>
+<rect class="dem" x="209.0" y="161.1" width="19.5" height="8.9"/>
+<rect class="capb" x="233.5" y="131.8" width="25.5" height="38.2"/>
+<rect class="dem" x="236.5" y="140.4" width="19.5" height="29.6"/>
+<rect class="capb" x="261.0" y="93.6" width="25.5" height="76.4"/>
+<rect class="dem" x="264.0" y="98.9" width="19.5" height="71.1"/>
+<rect class="capb" x="288.5" y="55.3" width="25.5" height="114.7"/>
+<rect class="dem" x="291.5" y="63.3" width="19.5" height="106.7"/>
+<rect class="capb" x="316.0" y="17.1" width="25.5" height="152.9"/>
+<rect class="dem" x="319.0" y="45.6" width="19.5" height="124.4"/>
+<rect class="capb" x="343.5" y="17.1" width="25.5" height="152.9"/>
+<rect class="dem" x="346.5" y="27.8" width="19.5" height="142.2"/>
+<rect class="capb" x="371.0" y="17.1" width="25.5" height="152.9"/>
+<rect class="dem" x="374.0" y="21.9" width="19.5" height="148.1"/>
+<rect class="capb" x="398.5" y="17.1" width="25.5" height="152.9"/>
+<rect class="dem" x="401.5" y="33.7" width="19.5" height="136.3"/>
+<rect class="capb" x="426.0" y="17.1" width="25.5" height="152.9"/>
+<rect class="dem" x="429.0" y="51.5" width="19.5" height="118.5"/>
+<rect class="capb" x="453.5" y="55.3" width="25.5" height="114.7"/>
+<rect class="dem" x="456.5" y="63.3" width="19.5" height="106.7"/>
+<rect class="capb" x="481.0" y="55.3" width="25.5" height="114.7"/>
+<rect class="dem" x="484.0" y="75.2" width="19.5" height="94.8"/>
+<rect class="capb" x="508.5" y="55.3" width="25.5" height="114.7"/>
+<rect class="dem" x="511.5" y="93.0" width="19.5" height="77.0"/>
+<rect class="capb" x="536.0" y="93.6" width="25.5" height="76.4"/>
+<rect class="dem" x="539.0" y="110.7" width="19.5" height="59.3"/>
+<rect class="capb" x="563.5" y="93.6" width="25.5" height="76.4"/>
+<rect class="dem" x="566.5" y="128.5" width="19.5" height="41.5"/>
+<rect class="capb" x="591.0" y="131.8" width="25.5" height="38.2"/>
+<rect class="dem" x="594.0" y="146.3" width="19.5" height="23.7"/>
+<rect class="capb" x="618.5" y="131.8" width="25.5" height="38.2"/>
+<rect class="dem" x="621.5" y="158.1" width="19.5" height="11.9"/>
+<rect class="capb" x="646.0" y="131.8" width="25.5" height="38.2"/>
+<rect class="dem" x="649.0" y="165.3" width="19.5" height="4.7"/>
+<rect class="capb" x="673.5" y="131.8" width="25.5" height="38.2"/>
+<line x1="40" x2="700" y1="17.1" y2="17.1" class="peak"/>
+<text class="sl" x="53.8" y="186" text-anchor="middle">00:00</text>
+<text class="sl" x="218.8" y="186" text-anchor="middle">06:00</text>
+<text class="sl" x="383.8" y="186" text-anchor="middle">12:00</text>
+<text class="sl" x="548.8" y="186" text-anchor="middle">18:00</text>
+<text class="sl" x="686.2" y="186" text-anchor="middle">23:00</text>
+</svg>
+<div class="key"><span><i class="kdem"></i>demand, output tok/s (illustrative)</span><span><i class="kcap"></i>capacity kept, min replicas 1 (idle = grey above green)</span><span><i class="kpeak"></i>provision for the peak: 4 replicas</span></div>
+
+<div class="tw" style="margin-top:12px"><table>
+<tr><th>Policy</th><th class="num">GPU-hours</th><th class="num">$/day</th><th class="num">$/M output</th><th class="num">Utilization</th><th class="num">Cold starts/day</th><th class="num">Hours a user waits a full cold start</th></tr>
+<tr><td>Provision for the peak</td><td class="num">96</td><td class="num lo">383.04</td><td class="num lo">0.482</td><td class="num">35.6%</td><td class="num">0</td><td class="num">0</td></tr>
+<tr><td>Autoscale, min replicas 2</td><td class="num">62</td><td class="num">247.38</td><td class="num">0.311</td><td class="num">55.2%</td><td class="num">2</td><td class="num">0</td></tr>
+<tr><td>Autoscale, min replicas 1</td><td class="num">50</td><td class="num">199.50</td><td class="num">0.251</td><td class="num">68.4%</td><td class="num">3</td><td class="num">0</td></tr>
+<tr><td>Scale to zero</td><td class="num">44</td><td class="num hi">175.56</td><td class="num hi">0.221</td><td class="num">77.7%</td><td class="num">4</td><td class="num lo">1</td></tr>
+</table></div>
+<div class="formula">replicas per hour = ceil(demand ÷ 6,450) = [0 0 0 0 0 1 1 1 2 3 4 4 4 4 4 3 3 3 2 2 1 1 1 0]
+peak:      4 × 24 = 96 GPU-h × $3.99 = $383.04 ÷ 794.16 M tokens     = $0.482/M
+min 1:     max(need, 1) summed = 50 GPU-h × $3.99 = $199.50 ÷ 794.16 = $0.251/M
+to zero:   need summed         = 44 GPU-h × $3.99 = $175.56 ÷ 794.16 = $0.221/M
+ceiling:   $3.99 ÷ (6,450 × 3,600 ÷ 10⁶)                               = $0.172/M  (u = 100%)</div>
+<p>Autoscaling at all is the big win: 48% cheaper than provisioning for the peak. Going from min 1 to zero saves only 6 GPU-hours ($23.94/day), and it costs you the first morning user, who waits a whole cold start (33 s tuned, 10 min naive). This day is also hour-grained. Real traffic spikes within minutes, which is where cold-start time turns into queueing:</p>
+<div class="tw"><table>
+<tr><th>Demand jumps to 18,000 tok/s with 2 replicas up (12,900 tok/s)</th><th class="num">Cold start</th><th class="num">Backlog while starting</th><th class="num">Time to drain after it's up</th></tr>
+<tr><td>Naive setup</td><td class="num lo">616 s</td><td class="num lo">3.14M tokens</td><td class="num lo">2,327 s</td></tr>
+<tr><td>Tuned setup</td><td class="num">33.2 s</td><td class="num">0.17M tokens</td><td class="num">125 s</td></tr>
+<tr><td>Best setup</td><td class="num">10.2 s</td><td class="num">0.05M tokens</td><td class="num">39 s</td></tr>
+<tr><td>A third replica already warm (+$95.76/day)</td><td class="num hi">0 s</td><td class="num hi">0</td><td class="num hi">0</td></tr>
+</table></div>
+<p class="cap">Backlog = (18,000 − 12,900) tok/s × cold start. After the third replica is up, the spare capacity is 3 × 6,450 − 18,000 = 1,350 tok/s, so drain = backlog ÷ 1,350. A 10-minute cold start leaves users queued for about 49 minutes in all. So you either keep a spare warm or make the cold start short. That's Kiely's point about over-provisioning.</p>
+
+<p>The last case is light, all-day traffic on one warm replica ($95.76/day). Effective $/M = $3.99 ÷ (average tok/s × 3,600 / 10⁶):</p>
+<div class="tw"><table>
+<tr><th>Average load on the one replica</th><th class="num">50 tok/s</th><th class="num">200</th><th class="num">1,000</th><th class="num">3,000</th><th class="num">6,450 (full)</th></tr>
+<tr><td>$/M output tokens</td><td class="num lo">22.17</td><td class="num">5.54</td><td class="num">1.11</td><td class="num">0.37</td><td class="num hi">0.172</td></tr>
+</table></div>
+<p class="cap">Compare the market: $0.04–0.08/M output for Llama-3.1-8B (DeepInfra FP8, Groq, OpenRouter, 2026-09-24). At 50 tok/s a dedicated BF16 replica costs 277× that. This is Kiely's p.192 advice in numbers: if scale to zero is what keeps a light, unscheduled, latency-sensitive app affordable, "it's probably a sign that your AI application is not yet ready for dedicated infrastructure and should use pay-per-token APIs until greater scale is reached."</p>
+
+<h2>Why it beats the alternatives</h2>
+<div class="grid2">
+  <div class="cell"><h3><span class="x">&#10007;</span> Provision for the peak</h3><p>No cold starts ever, but the fleet runs at 35.6% utilization in our day: $383/day and $0.48/M, 2.8× the busy-GPU price. It also still breaks on a peak bigger than the one you planned for.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Scale to zero with a naive start</h3><p>Cheapest on paper ($176/day), but the first user after a quiet spell waits the whole cold start, up to 10 minutes with a fresh node, a 1 Gbps download and an uncached compile. Kiely: it needs "Fast cold starts" and "Robust queueing" first.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Bake weights into the image, or keep all models warm</h3><p>Baking worked for small models, but "the weights dwarf the image" now. Keeping every model warm is the "over-subscribing GPUs" approach ServerlessLLM calls challenging for LLMs, "which require substantially greater resources from costly GPUs".</p></div>
+  <div class="cell win"><h3><span class="ok">&#10003;</span> Autoscale with a floor and a fast cold start</h3><p>Scale on traffic plus utilization, set the concurrency target to the batch size, keep a small min-replica floor, and cut the cold start to seconds (warm nodes, cached image and engine, weights close by). In our day: $199.50/day, 68% utilization, no user ever waits a cold start.</p></div>
+</div>
+
+<h2>Is scale to zero (or even autoscaling) always right?</h2>
+<div class="note">
+  <p>No. Kiely says scale to zero "is not a fit for all workloads" (p.192). It fits:</p>
+  <ul>
+    <li><b>Development</b>, "when testing is bursty and latency for the first request is unimportant".</li>
+    <li><b>Periodic production traffic</b>, "like an agent that's only accessed during business hours in one country or an offline system designed for daily batch processing jobs".</li>
+  </ul>
+  <p>It doesn't fit light, unscheduled, latency-sensitive traffic. For that, use a pay-per-token API. Autoscaling itself matters less when traffic is flat (every policy converges on the same replica count) or when the GPUs are reserved for months anyway. Then idle hours are already paid for, and the question becomes filling them with batch work, as DeepSeek does with its night-time nodes (<a href="cost-per-token.html">cost-per-token card</a>). Very large models (70B+ across 8 GPUs, big MoEs) have cold starts long enough that most teams keep a floor of warm replicas and scale only between the floor and the max.</p>
+</div>
+
+<h2>Run it yourself</h2>
+<p><a href="https://github.com/seyonv/explainers/blob/main/perf-7-training-economics/labs/cold-start.py">Run it: labs/cold-start.py</a> <b>[L]</b> is a calculator that runs on your Mac in under a second (numpy only). It prints the weight-load table for every tier (8B BF16/FP8, 70B), the three cold-start setups by component, the ServerlessLLM ratios, the bursty-day cost table for all four policies, the burst backlog, and the one-warm-replica $/M table. Try <code>CAP = 13400</code> (roughly FP8's decode ceiling), an engine startup of 600 s (an uncached TensorRT-LLM build), or a flat day to watch scale to zero stop saving anything.</p>
+
+<div class="foot">
+<p><b>Read next:</b> ServerlessLLM, <a href="https://arxiv.org/abs/2401.14351">Fu et al., OSDI '24</a>, §1–4 (motivation with the 26 s / 84 s numbers, the checkpoint format and multi-tier loader, and live migration), ~25 min. Then §7.4 for the end-to-end numbers and their testbed, ~5 min. Philip Kiely, <i>Inference Engineering</i>, §7.2 "Autoscaling" (pp. 183–192: knobs, concurrency, cold starts, routing and queueing, scale to zero), ~15 min, and §7.1 on containers (pp. 179–183), ~5 min. Optional: vLLM's <a href="https://docs.vllm.ai/en/latest/design/torch_compile.html">torch.compile design doc</a>, the caching section, ~5 min.</p>
+<p><b>Related:</b> <a href="cost-per-token.html">$ per million tokens and the batch dial</a> · <a href="choosing-hardware.html">Choosing hardware</a> · <a href="kv-aware-routing.html">KV-aware routing</a> · <a href="reliability-quality.html">Reliability and quality</a> · course 6, Serving across many GPUs: <a href="../perf-6-scaling-out/sizing-deployment.html">Sizing a deployment</a> · course 3, Writing fast GPU kernels: <a href="../perf-3-kernels/fusion-cuda-graphs.html">Kernel fusion, launch overhead and CUDA graphs</a> · course 1: <a href="../perf-1-foundations/serving-metrics.html">Serving metrics</a> · <a href="../llm-latency/tail-latency.html">Tail latency</a></p>
+<p><b>Sources:</b> autoscaling goal, the two signals, the five knobs, concurrency target = batch size, "half-full batches", the four cold-start parts, "make them smaller or get more bandwidth", "the weights dwarf the image", egress, "several minutes", "exactly the GPU type…", scale to zero and its prerequisites and fits, "not yet ready for dedicated infrastructure": Philip Kiely, <i>Inference Engineering</i> (Baseten), §7.1–7.2, printed pp. 180–192. 84 s, 34 s, 26 s at 5 GB/s, 512 and 60 GB/s, 3.6–8.2×, 6 / 3.6 / 8.2 / 4.7×, 112K page faults, 4.4× LoRA, 16 MB chunks, tokens vs KV sizes, 1,000 vs 100 tokens, 0.8 / 12.1 / 8.2 s, 7.5 / 213 / 199.2 s, 89% vs 26%, 128 / 114 s KServe, 3.8 s and 4.7× at 100 Gbps, "10 - 200X", the testbeds, "over-subscribing GPUs": <a href="https://arxiv.org/abs/2401.14351">ServerlessLLM, arXiv 2401.14351</a>. "All the compilation finishes before we serve any requests", auto-tuning "from seconds to minutes", the compile cache: <a href="https://docs.vllm.ai/en/latest/design/torch_compile.html">vLLM torch.compile design doc</a> (opened 2026-09-24). ModelExpress "7x faster cold-start": <a href="https://github.com/ai-dynamo/dynamo">ai-dynamo/dynamo README</a>. $3.99/GPU-hr (Lambda 8×H100), 16.06 GB, 6,450 tok/s at batch 64, $0.172/M and OpenRouter prices: course facts (2026-09-24). Every weight-load time, the three setups' totals, the day's costs and the burst backlog are our arithmetic in <code>labs/cold-start.py</code>. The traffic day and all non-weight component times are illustrative.</p>
+</div>
+</article>
+<!-- series-nav:bottom -->
+<div class="snx"><a class="nx" href="index.html#kv-aware-routing" target="_top">
+<span class="mini" aria-hidden="true"><span class="m1">KV-aware routing: sending requests where their cache lives</span><span class="m2">Also called prefix-aware routing, prefix-cache-aware routing, cache-aware load balancing, or (for the component that decides) the endpoint picker. This is the step in front of the engines: when you…</span><span class="m3">In one breath</span><span class="m4">Each replica keeps the KV cache of prompts it has already seen, so a request whose prefix it already holds skips most of prefill. A router that ignores this (round-robin) sends each conversation's next turn to a random replica, so the cache is almost never there. A KV-aware router scores every replica on "how much of this prompt…</span></span>
+<span class="tx"><span class="lab">Next up · 11 / 13</span><span class="tt">KV-aware routing: sending requests where their cache lives</span><span class="ds">Prefix caches only help if requests come back</span><span class="nd">Builds on: RadixAttention I: the radix tree of KV caches, $ per million tokens and the batch dial.</span><span class="go">Continue →</span></span></a><div class="aux"><span><a href="index.html#choosing-hardware" target="_top">← Choosing hardware: FLOPS, bandwidth, memory and price</a></span><a href="index.html" target="_top">All cards in 7 · Training &amp; cost per token</a></div></div>
+<!-- /series-nav:bottom -->
+</body>
+</html>

@@ -1,0 +1,341 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KV-aware routing: sending requests where their cache lives</title>
+<style>
+:root{
+  --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
+  --text:#1c1f23; --muted:#6b7068; --faint:#b9b9b3;
+  --accent:#4a9d77; --accent-bg:#dcefdf; --accent-border:#8cc79c;
+  --red:#c0492b; --red-bg:#fbeceb;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#15171a; --surface:#1d2024; --surface2:#24282d; --border:#32373d;
+    --text:#e6e8ea; --muted:#9aa1a9; --faint:#4a5057;
+    --accent:#5fb37f; --accent-bg:#1c2b22; --accent-border:#3f7a55;
+    --red:#e57368; --red-bg:#2e1f1e;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text)}
+.card{max-width:820px;margin:0 auto;padding:28px 32px;font-family:-apple-system,"Inter",system-ui,sans-serif;line-height:1.45}
+h1{font-size:26px;font-weight:600;margin:0 0 6px;letter-spacing:-0.01em}
+.sub{font-size:15px;color:var(--muted);margin:0 0 20px}
+h2{font-size:17px;font-weight:600;margin:26px 0 10px}
+p{font-size:15px;margin:0 0 10px}
+ul{font-size:15px;margin:0 0 10px;padding-left:22px}
+.cap{font-size:13px;color:var(--muted);margin:8px 0 14px;text-align:center}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+
+/* Tables and formulas */
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border)}
+th{font-size:12px;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:none}
+.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.hi{color:var(--accent);font-weight:600} .lo{color:var(--red)}
+.formula{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin:10px 0;white-space:pre;overflow-x:auto;line-height:1.55}
+
+/* MathML formula (patterns.md 1) */
+.mathbox{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px 16px 12px;margin:10px 0;overflow-x:auto}
+.mathbox math{font-size:21px;color:var(--text);font-family:"STIX Two Math","Latin Modern Math","Cambria Math",math}
+.mathbox .t1{color:var(--text)} .mathbox .t2{color:var(--accent)} .mathbox .t3{color:var(--muted)}
+.mathbox .lab{font-size:12px;font-family:-apple-system,"Inter",system-ui,sans-serif;padding-top:3px;border-top:1.5px solid currentColor;margin-top:2px}
+.legend{display:grid;grid-template-columns:auto 1fr auto;column-gap:14px;row-gap:5px;font-size:13px;margin-top:12px;align-items:baseline}
+.legend .sym{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;text-align:right}
+.legend .v{color:var(--muted);text-align:right;font-variant-numeric:tabular-nums}
+@media (max-width:560px){.legend{grid-template-columns:auto 1fr}.legend .v{display:none}}
+
+/* Two examples per term (patterns.md 3) */
+.parts td{vertical-align:top} .parts td:first-child{font-weight:600;white-space:nowrap}
+.parts .ex{font-size:13px} .parts .ex span{display:block;color:var(--muted)}
+@media (max-width:560px){.parts .what{display:none}}
+
+/* Stacked cost bars */
+.cbars{display:grid;grid-template-columns:150px 1fr 110px;column-gap:14px;row-gap:12px;align-items:center;font-size:14px}
+.cbars .hd{font-size:13px;color:var(--muted)} .cbars .r{text-align:right;font-variant-numeric:tabular-nums}
+.cbars .lbl small{display:block;font-size:12px;color:var(--muted)}
+.cbars .track{display:flex;height:22px}
+.cbars .pf{background:var(--muted);border-radius:3px 0 0 3px}
+.cbars .dc{background:var(--faint);border-radius:0 3px 3px 0}
+.cbars .win .pf{background:var(--accent)} .cbars .win .dc{background:var(--accent-border)}
+.cbars .tot{font-size:15px;text-align:right;font-variant-numeric:tabular-nums}
+.key{display:flex;gap:18px;flex-wrap:wrap;justify-content:center;font-size:13px;color:var(--muted);margin-top:10px}
+.key i{display:inline-block;width:12px;height:12px;border-radius:2px;margin-right:6px;vertical-align:-1px}
+
+/* 2x2 grid */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.cell{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.cell.win{background:var(--accent-bg);border-color:var(--accent-border)}
+.cell h3{font-size:16px;font-weight:600;margin:0 0 5px;display:flex;gap:8px;align-items:baseline}
+.cell p{font-size:14px;margin:0;color:var(--text)}
+.cell.win h3,.cell.win p{color:var(--accent)}
+.x{color:var(--red)} .ok{color:var(--accent)}
+
+/* Clarification box */
+.note{border:1px solid var(--border);border-radius:10px;padding:14px 18px;font-size:14px}
+.note p,.note li{font-size:14px} .note p:last-child{margin-bottom:0}
+
+.foot{margin-top:22px;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+.foot p{font-size:13px}
+.lab-link{display:inline-block;font-size:13px;border:1px solid var(--accent-border);background:var(--accent-bg);color:var(--accent);border-radius:6px;padding:4px 10px;margin:2px 0 10px;text-decoration:none}
+svg{display:block;max-width:100%;height:auto}
+.sl{font-size:12px;fill:var(--muted)} .st{font-size:13px;fill:var(--text)} .sg{font-size:13px;fill:var(--accent);font-weight:600}
+.bx{fill:var(--surface);stroke:var(--border);stroke-width:1.2} .bxw{fill:var(--accent-bg);stroke:var(--accent-border);stroke-width:1.2}
+.bxi{fill:var(--bg);stroke:var(--border);stroke-width:1}
+.ar{stroke:var(--muted);stroke-width:1.4;fill:none} .arw{stroke:var(--accent);stroke-width:2;fill:none}
+.ard{stroke:var(--faint);stroke-width:1.4;fill:none;stroke-dasharray:5 4}
+.ours{border:1px dashed var(--border);border-radius:10px;padding:12px 16px;margin-top:10px}
+.ours .tag{font-size:12px;color:var(--muted);font-weight:600;letter-spacing:.02em}
+.ours p{font-size:14px}
+tr.best td{background:var(--accent-bg)} tr.bad td{background:var(--red-bg)}
+@media (max-width:560px){.grid2{grid-template-columns:1fr}.card{padding:20px 16px}.hide-s{display:none}.cbars{grid-template-columns:90px 1fr 84px}}
+a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+/* series-nav */
+.sn{max-width:820px;margin:0 auto;padding:16px 32px 0;font-family:-apple-system,"Inter",system-ui,sans-serif;font-size:13px;line-height:1.5;color:var(--muted)}
+.sn a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
+.sn .crumbs{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 7px}
+.sn .crumbs b{color:var(--text);font-weight:600}
+.sn .sep{color:var(--faint,var(--border))}
+.sn .step{margin-left:auto;white-space:nowrap}
+.sn .dep{margin-top:5px;padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface)}
+.sn .dep .ok{color:var(--accent);font-weight:600}
+.snx{max-width:820px;margin:0 auto;padding:6px 32px 44px;font-family:-apple-system,"Inter",system-ui,sans-serif}
+.snx .nx{display:grid;grid-template-columns:280px 1fr;text-decoration:none;color:var(--text);background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.snx .nx:hover,.snx .nx:focus-visible{border-color:var(--accent-border,var(--accent));outline:none}
+.snx .mini{position:relative;height:210px;overflow:hidden;background:var(--bg);border-right:1px solid var(--border);padding:14px 16px}
+.snx .mini span{display:block}
+.snx .mini .m1{font-size:12.5px;font-weight:600;margin:0 0 4px;line-height:1.3}
+.snx .mini .m2{font-size:9px;color:var(--muted);margin:0 0 8px;line-height:1.4}
+.snx .mini .m3{font-size:8.5px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;margin:0 0 3px}
+.snx .mini .m4{font-size:9.5px;margin:0;line-height:1.45}
+.snx .tx{padding:16px 20px}
+.snx .lab{font-size:12px;font-weight:600;color:var(--accent);letter-spacing:.04em;text-transform:uppercase}
+.snx .tt{display:block;font-size:20px;font-weight:600;margin:5px 0 4px;line-height:1.25}
+.snx .ds{display:block;font-size:14px;color:var(--muted)}
+.snx .nd{display:block;font-size:13px;color:var(--muted);margin-top:10px}
+.snx .go{display:block;margin-top:12px;font-size:14px;font-weight:600;color:var(--accent)}
+.snx .aux{display:flex;justify-content:space-between;gap:12px;margin-top:10px;font-size:13px;color:var(--muted)}
+.snx .aux a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
+@media (max-width:560px){.sn,.snx{padding-left:16px;padding-right:16px}.snx .nx{grid-template-columns:1fr}.snx .mini{display:none}.sn .step{margin-left:0}}
+/* /series-nav */
+</style>
+</head>
+<body>
+<!-- series-nav:top -->
+<nav class="sn" aria-label="Course navigation"><div class="crumbs"><a href="../perf-0-map/index.html" target="_top">Fast LLM inference</a><span class="sep">›</span><a href="index.html" target="_top">7 · Training &amp; cost per token</a><span class="sep">›</span><b>11 / 13</b><span class="step"><a href="index.html#autoscaling-cold-starts" target="_top">← prev</a> · <a href="index.html#reliability-quality" target="_top">next →</a></span></div>
+<div class="dep"><b>Before this:</b> <a href="../perf-4-attention-kv/index.html#radixattention" target="_top">RadixAttention I: the radix tree of KV caches</a> (perf-4) · <a href="index.html#cost-per-token" target="_top">$ per million tokens and the batch dial</a></div></nav>
+<!-- /series-nav:top -->
+<article class="card">
+<h1>KV-aware routing: sending requests where their cache lives</h1>
+<p class="sub">Also called prefix-aware routing, prefix-cache-aware routing, cache-aware load balancing, or (for the component that decides) the endpoint picker. This is the step in front of the engines: when you run N copies of a model, which copy gets each request? Covered here: NVIDIA Dynamo's KV router cost function, llm-d's Endpoint Picker with its approximate and precise prefix modes, and the Kubernetes Gateway API Inference Extension, all read from their docs on 2026-09-24. Our 8-replica simulation runs Llama-3.1-8B on H100s. Prefix caching inside one engine is course 4's <a href="../perf-4-attention-kv/radixattention.html">RadixAttention</a>, and this card doesn't repeat it.</p>
+
+<h2>In one breath</h2>
+<p>Each replica keeps the KV cache of prompts it has already seen, so a request whose prefix it already holds skips most of prefill. A router that ignores this (round-robin) sends each conversation's next turn to a random replica, so the cache is almost never there. A KV-aware router scores every replica on "how much of this prompt is already cached here" <em>and</em> "how busy is it", then picks the cheapest.</p>
+
+<h2>The problem: round-robin scatters the cache</h2>
+<p>A chat conversation's prompt at turn k is the system prompt plus every earlier turn, and then the new message. The replica that served turn k − 1 holds all of that except the new message. Round-robin sends turn k to that replica with probability 1/N. For N = 8 that is 12.5%, so 7 turns in 8 recompute the whole history from scratch. The system prompt is different: every replica soon caches its own copy, and that costs memory N times over.</p>
+<div class="formula">P(next turn lands where its history is) = 1 / N = 1 / 8 = 12.5%     ← round-robin
+lab, 54,284 follow-up turns:             12.6% landed "home"   → history hit rate 9.8%
+                                          (below 12.6% because LRU evicts some of it first)</div>
+<p class="cap">Our simulation (labs/kv-router.py), described in full below. Earlier turns make up 40% of all prompt tokens in this workload, so losing them costs real prefill work.</p>
+
+<h2>The naive fix: hash the prefix, always go to the same replica</h2>
+<p>Hash the system prompt and send it to replica <code>hash mod N</code>. Every request with that prefix now hits a warm cache, because it always lands in the same place. The failure is that prefix popularity is skewed. In our workload the most popular of four system prompts carries 53% of conversations (a Zipf split: 53 / 23 / 14 / 10%), so one replica gets 53% of all requests while its fair share is 12.5%. Its prefill queue grows faster than it drains. Four prompts can also use at most four of the eight replicas.</p>
+<table>
+<tr><th>Router</th><th class="num">Busiest replica's requests ÷ mean</th><th class="num">Mean TTFT</th><th class="num">p99 TTFT</th></tr>
+<tr><td>Round-robin</td><td class="num">1.00</td><td class="num">26 ms</td><td class="num">130 ms</td></tr>
+<tr class="bad"><td>Prefix hash (sticky on the system prompt)</td><td class="num lo">4.26</td><td class="num lo">33.0 s</td><td class="num lo">165 s</td></tr>
+</table>
+<p class="cap">Our simulation. The hot replica is asked for 5.1× the prefill work of an average replica. With caching, an average replica's prefill takes about a quarter of its time, so the hot one is asked for roughly 125% of what one GPU can do (our estimate). Its queue never drains, so its TTFT keeps growing until traffic dies down. Hashing on the user or session instead spreads load well (the lab's "session hash" row), and its weaknesses show up further down.</p>
+
+<h2>The real fix: a cost function over cache and load</h2>
+<p>Dynamo's KV router tracks, for every worker, how many KV blocks of the incoming prompt are already cached there (from a global prefix tree built from the workers' KV events) and how much work is already assigned, counted in KV blocks (fixed runs of tokens; 16 in llm-d's approximate mode and in our lab). It computes a cost for each worker and picks the lowest. Its documented formula, copied from router-design.md:</p>
+<div class="mathbox">
+<math display="block">
+  <mtext>cost</mtext><mo>=</mo>
+  <munder class="t3"><msub><mi>s</mi><mtext>p</mtext></msub><mtext class="lab">prefill scale</mtext></munder>
+  <mo>&#183;</mo>
+  <munder class="t1"><mrow><mo>max</mo><mo>(</mo><mn>0</mn><mo>,</mo><mi>P</mi><mo>&#8722;</mo><mi>c</mi><mo>&#183;</mo><msub><mi>O</mi><mtext>dev</mtext></msub><mo>&#8722;</mo><msub><mi>h</mi><mtext></mtext></msub><mo>&#183;</mo><msub><mi>O</mi><mtext>host</mtext></msub><mo>&#8722;</mo><mi>d</mi><mo>&#183;</mo><msub><mi>O</mi><mtext>disk</mtext></msub><mo>&#8722;</mo><mo>&#8230;</mo><mo>)</mo></mrow><mtext class="lab">prefill blocks still to compute</mtext></munder>
+  <mo>+</mo>
+  <munder class="t3"><mi>D</mi><mtext class="lab">decode blocks</mtext></munder>
+  <mo>+</mo>
+  <munder class="t3"><mrow><mi>w</mi><mo>&#183;</mo><mi>A</mi></mrow><mtext class="lab">active requests</mtext></munder>
+</math>
+<div class="legend">
+  <span class="sym">P</span><span>prefill blocks: the prompt-side tokens already queued on that worker plus this request's input, ÷ block size</span><span class="v">10 in the example</span>
+  <span class="sym">O<sub>dev</sub></span><span>blocks of this prompt already in that worker's GPU cache (overlap)</span><span class="v">2 · 5 · 8</span>
+  <span class="sym">c</span><span><code>overlap_score_credit</code> (× a decay factor when the worker has excess prefill load)</span><span class="v">1.0 in the example</span>
+  <span class="sym">O<sub>host</sub>, O<sub>disk</sub></span><span>blocks cached in CPU memory or on disk, credited with their own weights h, d</span><span class="v">0 in the example</span>
+  <span class="sym">D</span><span>potential decode blocks: KV blocks active on that worker, including this request's</span><span class="v">10 · 5 · 9</span>
+  <span class="sym">w · A</span><span>optional charge per active request</span><span class="v">w = 0 by default</span>
+</div>
+</div>
+<div class="formula">effective_device_credit = overlap_score_credit * overlap_score_credit_decay_factor
+adjusted_prefill_blocks = max(0, (
+    prefill_blocks
+    - effective_device_credit * device_overlap_blocks
+    - host_cache_hit_weight * host_overlap_blocks
+    - disk_cache_hit_weight * disk_overlap_blocks
+    - shared_cache_multiplier * shared_beyond_blocks
+))
+active_request_blocks = decode_active_request_weight * active_requests
+cost = (
+    prefill_load_scale * adjusted_prefill_blocks
+    + potential_decode_blocks
+    + active_request_blocks
+)</div>
+<p class="cap">Verbatim from Dynamo's router-design.md. With <code>router_temperature</code> &gt; 0 the router instead samples with "softmax sampling on the normalized cost logits", which spreads load.</p>
+
+<h3 style="font-size:15px;margin:18px 0 10px">Dynamo's own worked example: the best cache loses</h3>
+<div class="cbars">
+  <div class="hd">Worker</div><div class="hd">prefill still to compute + decode blocks</div><div class="hd r">Cost</div>
+  <div class="lbl">Worker 1<small>overlap 2 of 10 blocks</small></div><div class="track"><div class="pf" style="width:36%"></div><div class="dc" style="width:45%"></div></div><div class="tot lo">8 + 10 = 18</div>
+  <div class="lbl hi">Worker 2 (picked)<small>overlap 5 of 10 blocks</small></div><div class="track win"><div class="pf" style="width:22.5%"></div><div class="dc" style="width:22.5%"></div></div><div class="tot hi">5 + 5 = 10</div>
+  <div class="lbl">Worker 3<small>overlap 8 of 10: best cache</small></div><div class="track"><div class="pf" style="width:9%"></div><div class="dc" style="width:40.5%"></div></div><div class="tot">2 + 9 = 11</div>
+</div>
+<div class="key"><span><i style="background:var(--muted)"></i>prefill blocks left after the cache credit (10 − overlap)</span><span><i style="background:var(--faint)"></i>decode blocks already running there</span></div>
+<p class="cap">From router-design.md, with overlap_score_credit = 1.0 and the default active-request weight 0. Worker 3 holds the most of this prompt, but it is running 9 blocks of decode against Worker 2's 5, so Worker 2 wins by one block. In the docs' words: "Higher overlap credits favor cache reuse (improving TTFT), while lower credits prioritize even load distribution (improving ITL)." No credit can rescue Worker 3 here. At credit 2 the costs become 16 / 5 / 9, because the credit only erases prefill blocks, and Worker 3's 9 decode blocks already outweigh Worker 2's whole cost (our arithmetic).</p>
+
+<h2>llm-d: the same idea as a Kubernetes router</h2>
+<p>llm-d (a CNCF sandbox project founded by Red Hat, Google Cloud, IBM Research, CoreWeave and NVIDIA) splits its router in two. Any L7 proxy carries the traffic. For each request the proxy "parks" the request and calls an Endpoint Picker (EPP) over Envoy's ext-proc protocol, and the EPP returns the pod to send it to. Inside the EPP, a plugin pipeline narrows the candidates:</p>
+<svg viewBox="0 0 760 210" role="img" aria-label="Request flow: client to L7 proxy, proxy calls the Endpoint Picker over ext-proc; the EPP runs filters, scorers and a picker using a prefix index fed by the approximate LRU or precise KV events; the proxy forwards to the chosen pod">
+  <defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker>
+  <marker id="ahg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="var(--accent)"/></marker></defs>
+  <rect class="bx" x="6" y="30" width="80" height="44" rx="6"/><text class="st" x="46" y="57" text-anchor="middle">client</text>
+  <rect class="bx" x="120" y="22" width="130" height="60" rx="6"/><text class="st" x="185" y="48" text-anchor="middle">L7 proxy</text><text class="sl" x="185" y="66" text-anchor="middle">Envoy, Istio, GKE…</text>
+  <line class="ar" x1="86" y1="52" x2="118" y2="52" marker-end="url(#ah)"/>
+  <rect class="bx" x="120" y="112" width="560" height="86" rx="8"/>
+  <text class="sl" x="132" y="130">Endpoint Picker (EPP)</text>
+  <line class="ar" x1="170" y1="82" x2="170" y2="110" marker-end="url(#ah)"/><text class="sl" x="176" y="100">ext-proc: "which pod?"</text>
+  <rect class="bxi" x="134" y="140" width="140" height="44" rx="5"/><text class="st" x="204" y="160" text-anchor="middle">Filters</text><text class="sl" x="204" y="176" text-anchor="middle">drop ineligible pods</text>
+  <rect class="bxi" x="300" y="140" width="160" height="44" rx="5"/><text class="st" x="380" y="160" text-anchor="middle">Scorers</text><text class="sl" x="380" y="176" text-anchor="middle">prefix match, load, queue</text>
+  <rect class="bxw" x="486" y="140" width="110" height="44" rx="5"/><text class="sg" x="541" y="160" text-anchor="middle">Picker</text><text class="sl" x="541" y="176" text-anchor="middle">highest total</text>
+  <line class="ar" x1="274" y1="162" x2="298" y2="162" marker-end="url(#ah)"/><line class="ar" x1="460" y1="162" x2="484" y2="162" marker-end="url(#ah)"/>
+  <line class="arw" x1="596" y1="150" x2="620" y2="150"/><line class="arw" x1="620" y1="150" x2="620" y2="72" /><line class="arw" x1="620" y1="72" x2="252" y2="72" marker-end="url(#ahg)"/><text class="sg" x="440" y="66" text-anchor="middle">pod 3's address</text>
+  <rect class="bx" x="290" y="10" width="72" height="34" rx="5"/><text class="st" x="326" y="32" text-anchor="middle">pod 1</text>
+  <rect class="bx" x="372" y="10" width="72" height="34" rx="5"/><text class="st" x="408" y="32" text-anchor="middle">pod 2</text>
+  <rect class="bxw" x="454" y="10" width="72" height="34" rx="5"/><text class="sg" x="490" y="32" text-anchor="middle">pod 3</text>
+  <rect class="bx" x="536" y="10" width="72" height="34" rx="5"/><text class="st" x="572" y="32" text-anchor="middle">pod N</text>
+  <path class="arw" d="M250,40 C 330,52 420,52 468,45" marker-end="url(#ahg)"/>
+  <rect class="bx" x="690" y="112" width="64" height="86" rx="6"/><text class="sl" x="722" y="140" text-anchor="middle">prefix</text><text class="sl" x="722" y="156" text-anchor="middle">index</text>
+  <path class="ard" d="M690,190 L380,190 L380,186"/>
+  <path class="ard" d="M722,112 C 722,60 660,30 610,28"/><text class="sl" x="700" y="60" text-anchor="middle">KV events</text><text class="sl" x="700" y="74" text-anchor="middle">(precise)</text>
+</svg>
+<p class="cap">From llm-d's router and prefix-cache-aware-routing docs. The prefix scorer's score is the share of the prompt's blocks already matched on that pod. It is combined with load scorers, so, as in Dynamo, a warm but busy pod can lose.</p>
+
+<p>The prefix index can be kept in one of two ways. It depends on the setup, so here they are side by side:</p>
+<table>
+<tr><th>Mode</th><th>How it knows what's cached</th><th>Needs</th><th>Accuracy, as documented</th></tr>
+<tr><td><b>Approximate</b></td><td>No tokenizer: estimates tokens from a character-to-token ratio, cuts the prompt into 16-token blocks, and hashes them as a rolling chain. An in-memory LRU remembers which hashes it recently <em>sent</em> to which pod, and assumes they are still there.</td><td>Nothing beyond the EPP</td><td class="lo">"Can diverge from actual model server state (e.g., if a Pod evicts a prefix due to memory pressure)"</td></tr>
+<tr><td><b>Precise</b></td><td>Exact token IDs from vLLM's render endpoint. vLLM emits <code>KVEvents</code> over ZeroMQ whenever a block is added or evicted, and a global KV-Cache Indexer subscribes to them. "Speculative" entries cover the gap between a routing decision and the event arriving.</td><td>vLLM render endpoint, ZMQ from every pod, event support in the model server</td><td class="hi">"100% precision"; handles eviction and P/D disaggregation</td></tr>
+</table>
+<p class="cap">Our lab behaves like the precise mode: the router reads each replica's actual cache. Dynamo also has both options: workers publish KV events when the engine supports them, and <code>--no-router-kv-events</code> makes it predict cache state from its own routing decisions instead.</p>
+
+<p><b>Gateway API Inference Extension (GIE)</b> is the Kubernetes standard underneath. It is a kubernetes-sigs project that turns any gateway supporting ext-proc (Envoy Gateway, kgateway, GKE Gateway) into an "inference gateway" whose scheduling is "kv-cache and request cost aware, avoiding evictions or queueing as load increases". It adds model-aware APIs: routing a model name to a LoRA adapter, A/B splits, and "safe blue-green base model and model server upgrades". One quirk as of 2026-09-24: its README says the full EPP and its APIs "have moved" to <code>llm-d/llm-d-router</code>. GIE keeps the <code>InferencePool</code> API, a lightweight reference EPP and the conformance tests. So cite GIE for the standard and llm-d for the implementation. Dynamo can also plug in behind GIE as an EPP.</p>
+
+<table class="parts" style="margin-top:14px">
+<tr><th>Term</th><th class="what">What it means</th><th>Example A</th><th>Example B</th></tr>
+<tr><td>Prefix overlap</td><td class="what">How many leading blocks of this prompt a replica already holds</td>
+  <td class="ex"><b class="ok">1,000 of 1,044 blocks</b><span>turn 5 of a chat, sent back to the replica that served turn 4 (illustrative)</span></td>
+  <td class="ex"><b>128 blocks</b><span>the 2,048-token system prompt only: a different replica</span></td></tr>
+<tr><td>Endpoint picker</td><td class="what">The service a proxy asks "which pod?" for every request</td>
+  <td class="ex"><b>llm-d EPP</b><span>filters → scorers → picker, called over Envoy ext-proc</span></td>
+  <td class="ex"><b>Dynamo EPP plugin</b><span>Dynamo's cost function behind a GIE gateway</span></td></tr>
+<tr><td>KV events</td><td class="what">Messages a model server sends when cache blocks are stored or evicted</td>
+  <td class="ex"><b class="ok">Precise index</b><span>vLLM KVEvents over ZMQ → llm-d's global indexer</span></td>
+  <td class="ex"><b>None</b><span>approximate mode, or Dynamo's --no-router-kv-events: the router guesses from its own decisions</span></td></tr>
+<tr><td>Overlap credit</td><td class="what">How much a cached block reduces a worker's cost (Dynamo)</td>
+  <td class="ex"><b>1.0</b><span>docs' example: the less-loaded worker wins, 10 vs 11</span></td>
+  <td class="ex"><b>4.0</b><span>our lab: 41% of turns sent home vs 22% at credit 1</span></td></tr>
+<tr><td>InferencePool</td><td class="what">GIE's Kubernetes object: a set of model-server pods behind one picker</td>
+  <td class="ex"><b>8 pods of an 8B</b><span>one pool, one EPP (our lab's shape)</span></td>
+  <td class="ex"><b>Base model + LoRAs</b><span>GIE routes model names to adapters on shared pods</span></td></tr>
+</table>
+
+<h2>Worked example: 8 replicas, four routers</h2>
+<p>The lab sends one seeded workload to 8 replicas of Llama-3.1-8B on H100s. Each replica has an LRU prefix cache of 40 GB = 327,680 tokens, about the 64 GB left after the 16 GB of weights with some held back for running batches (illustrative). The workload: 18,000 conversations, starting evenly over 10 minutes, drawing from four system prompts (2,048 / 1,536 / 3,072 / 1,024 tokens) with Zipf popularity 53 / 23 / 14 / 10%, a mean of 4 turns each, users typing 48–256 tokens and replies of 128–512 tokens. That makes 72,284 requests, 116.8 per second in steady state, with a mean prompt of 3,564 tokens. With no cache at all the fleet would spend 81% of its time on prefill. Each replica runs one FIFO prefill queue at the 8B's prefill floor:</p>
+<div class="formula">prefill floor = 2 × 8.03e9 × 1,000 / 989e12 = 16.2 ms per 1,000 tokens
+                (compute-bound, 100% of dense BF16)
+TTFT          = prefill queue wait + uncached tokens × 16.2 µs
+cost function = (prompt blocks − credit × cached blocks)
+                + queued prefill blocks + active decode blocks
+                (Dynamo's form, prefill_load_scale 1; decode at
+                 100 tok/s per user, cost-per-token's B = 64 row)</div>
+<table>
+<tr><th>Router</th><th class="num">Prompt tokens cached</th><th class="num hide-s">…of earlier turns</th><th class="num">Turns sent home</th><th class="num">Busiest ÷ mean prefill work</th><th class="num">Mean TTFT</th><th class="num">p99 TTFT</th><th class="num">Prefill GPU-s</th></tr>
+<tr><td>Round-robin</td><td class="num">59.3%</td><td class="num hide-s lo">9.8%</td><td class="num lo">12.6%</td><td class="num">1.01</td><td class="num">26 ms</td><td class="num">130 ms</td><td class="num lo">1,703</td></tr>
+<tr class="bad"><td>Prefix hash</td><td class="num">69.8%</td><td class="num hide-s">35.9%</td><td class="num">100%</td><td class="num lo">5.14</td><td class="num lo">33.0 s</td><td class="num lo">165 s</td><td class="num">1,261</td></tr>
+<tr><td>Session hash (sticky per user)</td><td class="num hi">80.5%</td><td class="num hide-s hi">62.5%</td><td class="num">100%</td><td class="num">1.11</td><td class="num hi">15 ms</td><td class="num">115 ms</td><td class="num hi">814</td></tr>
+<tr><td>Cost function, credit 1</td><td class="num">66.2%</td><td class="num hide-s">27.0%</td><td class="num">22.1%</td><td class="num">1.02</td><td class="num">23 ms</td><td class="num">113 ms</td><td class="num">1,413</td></tr>
+<tr class="best"><td>Cost function, credit 4</td><td class="num">74.9%</td><td class="num hide-s">48.6%</td><td class="num">41.2%</td><td class="num">1.02</td><td class="num">18 ms</td><td class="num hi">103 ms</td><td class="num">1,048</td></tr>
+</table>
+<p class="cap">Our simulation (labs/kv-router.py, seed 7). The workload and cache size are illustrative. TTFT counts prefill only (no network, no decode interference). System prompts are 100% cached under every router here because 40 GB holds all four on every replica, so every difference comes from the conversation history.</p>
+<p>Four things to read off it:</p>
+<ul>
+<li><b>Round-robin</b> balances perfectly and wastes the history. 12.6% of turns land home, which is the 1/N from above.</li>
+<li><b>Prefix hash</b> caches well and melts one replica.</li>
+<li><b>Session hash</b> wins this workload on hits (80.5%) and mean TTFT (15 ms). That is honest: for plain multi-turn chat with plenty of memory, sticky sessions are a strong baseline. It is blind to load, though. The busiest replica runs on average 1.28× the mean decode load, against 1.06× under the cost function, and its p99 is 115 vs 103 ms. With a 2 GB cache (lab try-this 3) it falls to 45.4% cached and 53 ms mean / 259 ms p99, because every replica must hold every system prompt. The cost function at credit 4 keeps 53.7%, 34 / 149 ms.</li>
+<li><b>The cost function</b> gives up some hits to stay balanced, and the credit is the dial: raising it from 1 to 4 sends 41% of turns home instead of 22%. At credit 4 it has the best p99 in the table.</li>
+</ul>
+
+<h2>What routing saves, in dollars</h2>
+<p>Every cached prompt token is prefill you don't run. Price it with the prefill floor and the course's $3.99 H100-hour (the input-token row of <a href="cost-per-token.html">$ per million tokens</a>):</p>
+<div class="formula">$ saved = tokens avoided × 16.2 µs × $3.99 / 3,600 s
+per million requests, vs round-robin:
+  session hash:        0.76B tokens × 16.2 µs = 3.4 GPU-h = $14
+  cost fn, credit 4:   0.56B tokens × 16.2 µs = 2.5 GPU-h = $10
+  at 50% of peak FLOPs, double both: about $27 and $20
+prefill GPU-s in the run: 1,703 → 814 (−52%) · 1,703 → 1,048 (−38%)</div>
+<div class="ours"><span class="tag">OUR REASONING, NOT FROM A SOURCE</span>
+<p>For an 8B model the dollar saving per request is small, because 8B prefill is cheap: $0.018 per million input tokens at peak. The bigger prizes are elsewhere. First, freed prefill capacity: 38–52% fewer prefill GPU-seconds means the same fleet takes more traffic before TTFT degrades. Second, TTFT itself. Third, bigger models: prefill cost scales with 2N, so the same tokens avoided on a 70B are worth about 70.6 / 8.03 ≈ 8.8× more. Long agent or coding sessions with 50k-token histories also have a much larger share of history tokens than our 40%. That is where the published 2–3× results come from.</p></div>
+
+<h2>What has been published</h2>
+<table>
+<tr><th>Claim</th><th>Setup</th><th>Caveat</th></tr>
+<tr><td><b>3× higher output throughput, 2× faster TTFT</b> with prefix-cache-aware routing vs round-robin</td><td>Llama 3.1 70B on 4× AMD MI300X (llm-d README, citing a Tesla / Red Hat blog)</td><td>Partner blog, so the workload's prefix share decides the result; the README states neither concurrency nor prompt mix</td></tr>
+<tr><td><b>2× faster time to first token</b> with KV-aware routing</td><td>Qwen3-Coder 480B (Dynamo README, citing a Baseten benchmark)</td><td>Vendor and customer; the README doesn't state the baseline router or the traffic; coding agents reuse long prefixes</td></tr>
+<tr><td><b>40% lower TTFT and ITL</b> with predicted-latency scheduling vs heuristics</td><td>NVIDIA GPUs (llm-d README, Google blog)</td><td>A newer scorer that predicts latency; compared against llm-d's own heuristics, not round-robin</td></tr>
+<tr><td>38% fewer prefill GPU-seconds, p99 TTFT 130 → 103 ms (cost function, credit 4)</td><td>Our 8-replica simulation</td><td>Our model, illustrative chat workload, prefill-only TTFT</td></tr>
+</table>
+<p class="cap">We opened the READMEs, not the partner blogs. The blog links are in the footer as the READMEs give them.</p>
+
+<h2>Why it beats the alternatives</h2>
+<div class="grid2">
+  <div class="cell"><h3><span class="x">&#10007;</span> Round-robin / least-requests</h3><p>Even load, but a conversation's next turn finds its cache only 1/N of the time (12.6% in the lab). Kiely also warns that counting requests fails when "a request with 10,000 [input tokens] will unbalance a simple system".</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Hash the prefix (sticky)</h3><p>Always warm, but popular prefixes pile onto one replica: 53% of traffic on 1 of 8 replicas, and TTFT grows to minutes. Adding or removing a replica also reshuffles the hashes.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Sticky per session</h3><p>Strong for plain chat (80.5% cached, best mean TTFT in the lab), but blind to load and memory. Decode load is lopsided (1.28×), and it collapses when caches are small (259 ms p99 at 2 GB). Our inference: it also reshuffles when replicas scale.</p></div>
+  <div class="cell win"><h3><span class="ok">&#10003;</span> Cost function over cache + load</h3><p>Scores cached blocks against queued and running work on every replica. It gets most of the hits without hot spots, and one knob (the overlap credit) trades TTFT against even load. It has the best p99 in the lab and holds up when memory is scarce.</p></div>
+</div>
+
+<h2>Is KV-aware routing always worth it?</h2>
+<div class="note">
+  <p>No. It pays when prompts share long prefixes and a fleet has several replicas: multi-turn chat, agents and coding tools resending long histories, RAG over a fixed corpus, few-shot templates. It does little in these cases:</p>
+  <ul>
+    <li><b>One replica, or one big TP/PP instance.</b> There is nothing to route, and in-engine prefix caching (<a href="../perf-4-attention-kv/radixattention.html">RadixAttention</a>, <a href="../perf-4-attention-kv/cache-aware-scheduling.html">cache-aware scheduling</a>) does the whole job.</li>
+    <li><b>Prompts with no shared prefix</b> (one-off summarisation of unique documents). The best possible hit rate is near zero, so routing on load alone is simpler.</li>
+    <li><b>Small volume.</b> Kiely on Dynamo: "Unless you're operating with enough volume for disaggregation and KV-aware routing to matter, Dynamo will be unnecessary work". Session affinity at the load balancer gets much of the gain for chat.</li>
+    <li><b>When the index is wrong.</b> Approximate mode can route to a pod that already evicted the prefix, so you pay the balancing cost without the hit. Precise mode fixes that with KV events, at the price of ZMQ plumbing and a tokenizer in the router's path.</li>
+  </ul>
+  <p>Caches that live off the GPU change the calculation. Mooncake's pooled KV store and LMCache-style offloading let any replica fetch a prefix, so where the request lands matters less (<a href="../perf-4-attention-kv/mooncake-scheduling.html">Mooncake scheduling</a>, and Dynamo's host and disk hit weights in the formula above).</p>
+</div>
+
+<h2>Run it yourself</h2>
+<p><a class="lab-link" href="https://github.com/seyonv/explainers/blob/main/perf-7-training-economics/labs/kv-router.py">Run it: labs/kv-router.py</a> <b>[L]</b> runs on your Mac in about 3 seconds (numpy + stdlib). It prints the workload, the router table above with the hit rate split into system prompt and history, the dollars saved, and Dynamo's 18 / 10 / 11 example. Try <code>N_REP = 32</code>: round-robin sends 3.1% of turns home, while the cost function at credit 4 keeps 49% home and needs 584 prefill GPU-seconds instead of 1,760. Try <code>ZIPF_S = 2.0</code>: prefix hash puts 71% of requests on one replica and mean TTFT reaches 114 s. Or try <code>CACHE_GB = 2</code> to see sticky sessions fail when memory is tight.</p>
+
+<div class="foot">
+<p><b>Read next:</b> Dynamo docs, "Router Design" (<a href="https://github.com/ai-dynamo/dynamo/blob/main/docs/fern/pages/developer-guide/knowledge-base/modular-components/router/router-design.md">router-design.md</a>) from "KV Router Architecture" through "Worker Selection", ~10 min, then the router <a href="https://github.com/ai-dynamo/dynamo/blob/main/docs/fern/pages/developer-guide/knowledge-base/modular-components/router/overview.md">overview</a>, ~3 min. llm-d: the <a href="https://github.com/llm-d/llm-d">README</a> (the performance list), ~5 min, then "Prefix-Cache Aware Routing" (<a href="https://github.com/llm-d/llm-d/blob/main/docs/architecture/advanced/kv-management/prefix-cache-aware-routing.md">docs/architecture/advanced/kv-management</a>), all of it, and the <a href="https://github.com/llm-d/llm-d/blob/main/docs/architecture/core/router/README.md">router README</a> (proxy + EPP), together ~10 min. <a href="https://github.com/kubernetes-sigs/gateway-api-inference-extension">Gateway API Inference Extension README</a>, "Concepts and Definitions" and "Technical Overview", ~5 min. Kiely, <i>Inference Engineering</i> §7.2.3 on routing (pp. 190–191), ~5 min.</p>
+<p><b>Related:</b> <a href="_overview.html">overview</a> · <a href="cost-per-token.html">$ per million tokens</a> · <a href="choosing-hardware.html">choosing hardware</a> · <a href="autoscaling-cold-starts.html">autoscaling and cold starts</a> · <a href="reliability-quality.html">reliability and quality</a> · <a href="kernelbench.html">AI-written kernels</a> · course 4: <a href="../perf-4-attention-kv/radixattention.html">RadixAttention I</a>, <a href="../perf-4-attention-kv/cache-aware-scheduling.html">RadixAttention II: cache-aware scheduling</a> (its Appendix A.4 section is the router's meta-tree), <a href="../perf-4-attention-kv/mooncake-scheduling.html">Mooncake II</a> · course 6: <a href="../perf-6-scaling-out/disaggregation-in-production.html">disaggregation in production (Dynamo)</a> · <a href="../llm-latency/prompt-caching.html">prompt caching</a> · <a href="../llm-latency/tail-latency.html">tail latency</a></p>
+<p><b>Sources:</b> Dynamo cost formula, worked example, temperature and KV-event quotes: router-design.md, overview.md and the KV-aware-routing concept page in <a href="https://github.com/ai-dynamo/dynamo">github.com/ai-dynamo/dynamo</a>, read 2026-09-24. Dynamo "2x faster time to first token" with KV-aware routing on Qwen3-Coder 480B: Dynamo README, linking Baseten's <a href="https://www.baseten.co/blog/how-baseten-achieved-2x-faster-inference-with-nvidia-dynamo/">"How Baseten achieved 2x faster inference with NVIDIA Dynamo"</a> (not opened by us). llm-d router, EPP and approximate/precise modes: the llm-d docs above. llm-d "3x higher output throughput and 2x faster TTFT" (Llama 3.1 70B, 4× MI300X) and "40% reduction in TTFT and ITL": llm-d README, linking <a href="https://llm-d.ai/blog/production-grade-llm-inference-at-scale-kserve-llm-d-vllm">llm-d.ai/blog/production-grade-llm-inference-at-scale-kserve-llm-d-vllm</a> and <a href="https://llm-d.ai/blog/predicted-latency-based-scheduling-for-llms">llm-d.ai/blog/predicted-latency-based-scheduling-for-llms</a> (not opened by us). GIE quotes and the "have moved" notice: GIE README, read 2026-09-24. Kiely quotes: <i>Inference Engineering</i> pp. 111–112 and 190–191 (printed page numbers). Prefill floor: 8.03B params, 989 TFLOPS dense BF16 (course facts). Every simulated number is our model from labs/kv-router.py.</p>
+</div>
+</article>
+<!-- series-nav:bottom -->
+<div class="snx"><a class="nx" href="index.html#reliability-quality" target="_top">
+<span class="mini" aria-hidden="true"><span class="m1">Reliability and quality: failures, canaries and evals</span><span class="m2">Also called fault tolerance, high availability, safe rollouts, progressive delivery, or quality regression testing. GPUs fail often enough that you plan for failure: Llama 3 lost its training job 419…</span><span class="m3">In one breath</span><span class="m4">Hardware breaks at a steady rate, so what you design is how much each failure costs. A training job loses the work since its last checkpoint plus a restart, a serving fleet loses the replica (or node) that failed until a spare takes over. Software changes break things too, so new versions reach users gradually (a canary), and a…</span></span>
+<span class="tx"><span class="lab">Next up · 12 / 13</span><span class="tt">Reliability and quality: failures, canaries and evals</span><span class="ds">GPUs fail; speed changes can change answers</span><span class="nd">Builds on: Sizing a deployment: how many GPUs, and which layout.</span><span class="go">Continue →</span></span></a><div class="aux"><span><a href="index.html#autoscaling-cold-starts" target="_top">← Autoscaling, cold starts and scale to zero</a></span><a href="index.html" target="_top">All cards in 7 · Training &amp; cost per token</a></div></div>
+<!-- /series-nav:bottom -->
+</body>
+</html>

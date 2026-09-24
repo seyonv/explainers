@@ -1,0 +1,443 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mixed precision, FP8 and activation checkpointing</title>
+<style>
+:root{
+  --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
+  --text:#1c1f23; --muted:#6b7068; --faint:#b9b9b3;
+  --accent:#4a9d77; --accent-bg:#dcefdf; --accent-border:#8cc79c;
+  --red:#c0492b; --red-bg:#fbeceb;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#15171a; --surface:#1d2024; --surface2:#24282d; --border:#32373d;
+    --text:#e6e8ea; --muted:#9aa1a9; --faint:#4a5057;
+    --accent:#5fb37f; --accent-bg:#1c2b22; --accent-border:#3f7a55;
+    --red:#e57368; --red-bg:#2e1f1e;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text)}
+.card{max-width:820px;margin:0 auto;padding:28px 32px;font-family:-apple-system,"Inter",system-ui,sans-serif;line-height:1.45}
+h1{font-size:26px;font-weight:600;margin:0 0 6px;letter-spacing:-0.01em}
+.sub{font-size:15px;color:var(--muted);margin:0 0 20px}
+h2{font-size:17px;font-weight:600;margin:28px 0 10px}
+h2 small{font-size:13px;font-weight:400;color:var(--muted)}
+p{font-size:15px;margin:0 0 10px}
+ul{font-size:15px;margin:0 0 10px;padding-left:20px}
+li{margin-bottom:4px}
+.cap{font-size:13px;color:var(--muted);margin:8px 0 0;text-align:center}
+.cap + p{margin-top:14px}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+.take{border-left:3px solid var(--accent-border);background:var(--surface);padding:8px 14px;margin:12px 0;font-size:14px;border-radius:0 6px 6px 0}
+.take b{color:var(--accent)}
+.lab{font-size:13px;color:var(--muted)}
+
+/* Tables and formulas */
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border)}
+th{font-size:12px;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:none}
+.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.hi{color:var(--accent);font-weight:600} .lo{color:var(--red)} .mu{color:var(--muted)}
+.formula{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin:10px 0;white-space:pre;overflow-x:auto;line-height:1.55}
+.formula .c{color:var(--muted)}
+.formula .g{color:var(--accent);font-weight:600}
+.formula .r{color:var(--red);font-weight:600}
+.tw{overflow-x:auto}
+.tw table{min-width:640px}
+.small td,.small th{font-size:13px;padding:6px 8px}
+
+/* MathML */
+.mathbox{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px 16px 12px;margin:10px 0;overflow-x:auto}
+.mathbox math{font-size:21px;color:var(--text);font-family:"STIX Two Math","Latin Modern Math","Cambria Math",math}
+.mathbox .t1{color:var(--text)} .mathbox .t2{color:var(--accent)} .mathbox .t3{color:var(--muted)}
+.mathbox .lab{font-size:12px;font-family:-apple-system,"Inter",system-ui,sans-serif;padding-top:3px;border-top:1.5px solid currentColor;margin-top:2px}
+.legend{display:grid;grid-template-columns:auto 1fr auto;column-gap:14px;row-gap:5px;font-size:13px;margin-top:12px;align-items:baseline}
+.legend .sym{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;text-align:right}
+.legend .v{color:var(--muted);text-align:right;font-variant-numeric:tabular-nums}
+@media (max-width:560px){.legend{grid-template-columns:auto 1fr}.legend .v{display:none}}
+
+/* Two examples per term */
+.parts td{vertical-align:top} .parts td:first-child{font-weight:600}
+.parts .ex{font-size:13px} .parts .ex span{display:block;color:var(--muted)}
+.parts .what{font-size:13px}
+@media (max-width:560px){.parts .what{display:none}}
+
+/* 2x2 grid */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.cell{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.cell.win{background:var(--accent-bg);border-color:var(--accent-border)}
+.cell h3{font-size:16px;font-weight:600;margin:0 0 5px;display:flex;gap:8px;align-items:baseline}
+.cell p{font-size:14px;margin:0;color:var(--text)}
+.cell.win h3,.cell.win p{color:var(--accent)}
+.x{color:var(--red)} .ok{color:var(--accent)}
+
+/* Clarification box */
+.note{border:1px solid var(--border);border-radius:10px;padding:14px 18px;font-size:14px}
+.note p,.note li{font-size:14px} .note p:last-child{margin-bottom:0}
+.note ul{padding-left:18px}
+
+.foot{margin-top:22px;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+.foot p{font-size:13px}
+svg{display:block;max-width:100%;height:auto}
+.sl{font-size:12px;fill:var(--muted)} .st{font-size:13px;fill:var(--text)}
+@media (max-width:560px){.grid2{grid-template-columns:1fr}.card{padding:22px 16px}}
+a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+/* series-nav */
+.sn{max-width:820px;margin:0 auto;padding:16px 32px 0;font-family:-apple-system,"Inter",system-ui,sans-serif;font-size:13px;line-height:1.5;color:var(--muted)}
+.sn a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
+.sn .crumbs{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 7px}
+.sn .crumbs b{color:var(--text);font-weight:600}
+.sn .sep{color:var(--faint,var(--border))}
+.sn .step{margin-left:auto;white-space:nowrap}
+.sn .dep{margin-top:5px;padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface)}
+.sn .dep .ok{color:var(--accent);font-weight:600}
+.snx{max-width:820px;margin:0 auto;padding:6px 32px 44px;font-family:-apple-system,"Inter",system-ui,sans-serif}
+.snx .nx{display:grid;grid-template-columns:280px 1fr;text-decoration:none;color:var(--text);background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.snx .nx:hover,.snx .nx:focus-visible{border-color:var(--accent-border,var(--accent));outline:none}
+.snx .mini{position:relative;height:210px;overflow:hidden;background:var(--bg);border-right:1px solid var(--border);padding:14px 16px}
+.snx .mini span{display:block}
+.snx .mini .m1{font-size:12.5px;font-weight:600;margin:0 0 4px;line-height:1.3}
+.snx .mini .m2{font-size:9px;color:var(--muted);margin:0 0 8px;line-height:1.4}
+.snx .mini .m3{font-size:8.5px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;margin:0 0 3px}
+.snx .mini .m4{font-size:9.5px;margin:0;line-height:1.45}
+.snx .tx{padding:16px 20px}
+.snx .lab{font-size:12px;font-weight:600;color:var(--accent);letter-spacing:.04em;text-transform:uppercase}
+.snx .tt{display:block;font-size:20px;font-weight:600;margin:5px 0 4px;line-height:1.25}
+.snx .ds{display:block;font-size:14px;color:var(--muted)}
+.snx .nd{display:block;font-size:13px;color:var(--muted);margin-top:10px}
+.snx .go{display:block;margin-top:12px;font-size:14px;font-weight:600;color:var(--accent)}
+.snx .aux{display:flex;justify-content:space-between;gap:12px;margin-top:10px;font-size:13px;color:var(--muted)}
+.snx .aux a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
+@media (max-width:560px){.sn,.snx{padding-left:16px;padding-right:16px}.snx .nx{grid-template-columns:1fr}.snx .mini{display:none}.sn .step{margin-left:0}}
+/* /series-nav */
+</style>
+</head>
+<body>
+<!-- series-nav:top -->
+<nav class="sn" aria-label="Course navigation"><div class="crumbs"><a href="../perf-0-map/index.html" target="_top">Fast LLM inference</a><span class="sep">›</span><a href="index.html" target="_top">7 · Training &amp; cost per token</a><span class="sep">›</span><b>06 / 13</b><span class="step"><a href="index.html#parallelism-4d" target="_top">← prev</a> · <a href="index.html#post-training" target="_top">next →</a></span></div>
+<div class="dep"><b>Before this:</b> <a href="index.html#training-step" target="_top">A training step and where its memory goes</a> · <a href="../perf-3-kernels/index.html#tensor-cores-low-precision" target="_top">Tensor cores and low precision</a> (perf-3)</div></nav>
+<!-- /series-nav:top -->
+<article class="card">
+<h1>Mixed precision, FP8 and activation checkpointing</h1>
+<p class="sub">Also called AMP or mixed-precision training, loss scaling, BF16 and FP8 training, gradient checkpointing, recomputation or remat, and selective recompute. These are two ways to make a training step fit and run faster: use fewer bits per number, and keep fewer activations. This card follows Micikevicius et al. §3 (the 2017 mixed-precision paper), DeepSeek-V3 §3.3 (briefly), Korthikanti et al. §4–5 and Chen et al. It applies them to the course's Llama-3.1-8B training example. The number formats themselves are covered in <a href="../perf-3-kernels/tensor-cores-low-precision.html">Tensor cores and low precision</a>.</p>
+
+<h2>In one breath</h2>
+<p>Mixed precision runs the big matmuls in 16 bits (or 8) for speed, but keeps a 32-bit copy of the weights, because small updates vanish in 16 bits. With FP16 you also multiply the loss by a large constant so tiny gradients don't round to zero. BF16 has FP32's exponent range, so it mostly doesn't need that step. Activation checkpointing throws away most of what the forward pass saved and recomputes it during the backward pass. Recomputing everything costs one extra forward pass (6ND becomes about 8ND). Recomputing only attention's large but cheap part costs a few percent.</p>
+
+<h2>1 · Mixed precision: four pieces <small>Micikevicius §3</small></h2>
+<p>Think of it like doing the arithmetic on a fast pocket calculator while keeping the ledger in a bound book. Each piece below, in the paper's 2017 FP16 setting and in today's BF16 setting:</p>
+<div class="tw"><table class="parts small">
+<tr><th>Piece</th><th class="what">What actually happens</th><th>Example A: FP16 (2017 paper, V100 era)</th><th>Example B: BF16 (today, e.g. Llama 3)</th></tr>
+<tr><td>16-bit matmuls</td><td class="what">Weights, activations and gradients are stored and multiplied in 16 bits on the tensor cores.</td>
+ <td class="ex"><b>"2× to 8×"</b><span>half-precision math throughput vs FP32 on then-recent GPUs</span></td>
+ <td class="ex"><b class="ok">989 vs 67 TFLOPS</b><span>H100 dense BF16 tensor vs FP32, 14.8×</span></td></tr>
+<tr><td>FP32 accumulation</td><td class="what">Products are summed into FP32 and cast to 16 bits on write. Big reductions (softmax, norm statistics) run in FP32.</td>
+ <td class="ex"><b>needed</b><span>"some FP16 models did not match the accuracy" without it</span></td>
+ <td class="ex"><b>still used</b><span>Llama 3 accumulates gradients across micro-batches and reduce-scatters them in FP32</span></td></tr>
+<tr><td>FP32 master weights</td><td class="what">The optimizer updates an FP32 copy. A 16-bit copy is cast from it for each forward and backward pass.</td>
+ <td class="ex"><b class="lo">80% relative accuracy loss</b><span>Mandarin speech model when the FP16 weights were updated directly</span></td>
+ <td class="ex"><b>still needed</b><span>an update is lost once weight/update &gt; 256 (ours, below). This is the 4 bytes/param master copy in the 16-byte count.</span></td></tr>
+<tr><td>Loss scaling</td><td class="what">Multiply the loss by S before backward. Divide the gradients by S before clipping and the optimizer.</td>
+ <td class="ex"><b>needed</b><span>the SSD detector diverges without it, and S = 8 is enough. Factors "ranging from 8 to 32K"</span></td>
+ <td class="ex"><b class="ok">usually dropped</b><span>BF16's smallest normal number is 2<sup>−126</sup>, like FP32's</span></td></tr>
+</table></div>
+
+<h2>2 · Why FP16 needs loss scaling: gradients sit below its range</h2>
+<p>FP16's normal numbers run from 2<sup>−14</sup> to 65,504. Subnormals continue down to 2<sup>−24</sup>, with fewer bits of precision, and anything smaller becomes zero. Gradients are mostly tiny. In the paper's Mandarin model, "approximately 5% of weight gradient values have exponents smaller than −24". In the SSD detector, 67% of activation gradients are zero, and values in [2<sup>−27</sup>, 2<sup>−24</sup>) "were important to preserve". Scaling the loss shifts every gradient up by the same number of binades (chain rule), so the whole distribution moves into range:</p>
+<svg viewBox="0 0 756 300" role="img" aria-label="Gradient exponents against the FP16 range, before and after loss scaling">
+<text x="40" y="34" class="st" font-weight="600">A · loss scale S = 1: 3.0% of gradients round to 0, 77.8% are subnormal</text>
+<rect x="40" y="50" width="214.5" height="62" fill="var(--red-bg)"/>
+<rect x="254.5" y="50" width="124.2" height="62" fill="var(--surface2)"/>
+<rect x="378.7" y="50" width="338.7" height="62" fill="var(--accent-bg)"/>
+<rect x="717.4" y="50" width="22.6" height="62" fill="var(--red-bg)"/>
+<rect x="142.4" y="112.0" width="9.7" height="0.0" fill="var(--red)"/>
+<rect x="153.7" y="112.0" width="9.7" height="0.0" fill="var(--red)"/>
+<rect x="165.0" y="111.9" width="9.7" height="0.1" fill="var(--red)"/>
+<rect x="176.3" y="111.9" width="9.7" height="0.1" fill="var(--red)"/>
+<rect x="187.6" y="111.7" width="9.7" height="0.3" fill="var(--red)"/>
+<rect x="198.9" y="111.4" width="9.7" height="0.6" fill="var(--red)"/>
+<rect x="210.2" y="110.7" width="9.7" height="1.3" fill="var(--red)"/>
+<rect x="221.4" y="109.5" width="9.7" height="2.5" fill="var(--red)"/>
+<rect x="232.7" y="107.5" width="9.7" height="4.5" fill="var(--red)"/>
+<rect x="244.0" y="104.3" width="9.7" height="7.7" fill="var(--red)"/>
+<rect x="255.3" y="99.8" width="9.7" height="12.2" fill="var(--faint)"/>
+<rect x="266.6" y="93.7" width="9.7" height="18.3" fill="var(--faint)"/>
+<rect x="277.9" y="86.3" width="9.7" height="25.7" fill="var(--faint)"/>
+<rect x="289.2" y="77.9" width="9.7" height="34.1" fill="var(--faint)"/>
+<rect x="300.5" y="69.7" width="9.7" height="42.3" fill="var(--faint)"/>
+<rect x="311.8" y="62.5" width="9.7" height="49.5" fill="var(--faint)"/>
+<rect x="323.1" y="57.7" width="9.7" height="54.3" fill="var(--faint)"/>
+<rect x="334.3" y="56.0" width="9.7" height="56.0" fill="var(--faint)"/>
+<rect x="345.6" y="57.7" width="9.7" height="54.3" fill="var(--faint)"/>
+<rect x="356.9" y="62.5" width="9.7" height="49.5" fill="var(--faint)"/>
+<rect x="368.2" y="69.7" width="9.7" height="42.3" fill="var(--faint)"/>
+<rect x="379.5" y="77.9" width="9.7" height="34.1" fill="var(--accent)"/>
+<rect x="390.8" y="86.3" width="9.7" height="25.7" fill="var(--accent)"/>
+<rect x="402.1" y="93.7" width="9.7" height="18.3" fill="var(--accent)"/>
+<rect x="413.4" y="99.8" width="9.7" height="12.2" fill="var(--accent)"/>
+<rect x="424.7" y="104.3" width="9.7" height="7.7" fill="var(--accent)"/>
+<rect x="436.0" y="107.5" width="9.7" height="4.5" fill="var(--accent)"/>
+<rect x="447.3" y="109.5" width="9.7" height="2.5" fill="var(--accent)"/>
+<rect x="458.5" y="110.7" width="9.7" height="1.3" fill="var(--accent)"/>
+<rect x="469.8" y="111.4" width="9.7" height="0.6" fill="var(--accent)"/>
+<rect x="481.1" y="111.7" width="9.7" height="0.3" fill="var(--accent)"/>
+<rect x="492.4" y="111.9" width="9.7" height="0.1" fill="var(--accent)"/>
+<rect x="503.7" y="111.9" width="9.7" height="0.1" fill="var(--accent)"/>
+<rect x="515.0" y="112.0" width="9.7" height="0.0" fill="var(--accent)"/>
+<rect x="526.3" y="112.0" width="9.7" height="0.0" fill="var(--accent)"/>
+<line x1="40" y1="112" x2="740" y2="112" stroke="var(--border)"/>
+<text x="40" y="154" class="st" font-weight="600">B · S = 8,192 (2¹³, every exponent +13): 0% round to 0, 0.9% subnormal, none overflow</text>
+<rect x="40" y="170" width="214.5" height="62" fill="var(--red-bg)"/>
+<rect x="254.5" y="170" width="124.2" height="62" fill="var(--surface2)"/>
+<rect x="378.7" y="170" width="338.7" height="62" fill="var(--accent-bg)"/>
+<rect x="717.4" y="170" width="22.6" height="62" fill="var(--red-bg)"/>
+<rect x="289.2" y="232.0" width="9.7" height="0.0" fill="var(--faint)"/>
+<rect x="300.5" y="232.0" width="9.7" height="0.0" fill="var(--faint)"/>
+<rect x="311.8" y="231.9" width="9.7" height="0.1" fill="var(--faint)"/>
+<rect x="323.1" y="231.9" width="9.7" height="0.1" fill="var(--faint)"/>
+<rect x="334.3" y="231.7" width="9.7" height="0.3" fill="var(--faint)"/>
+<rect x="345.6" y="231.4" width="9.7" height="0.6" fill="var(--faint)"/>
+<rect x="356.9" y="230.7" width="9.7" height="1.3" fill="var(--faint)"/>
+<rect x="368.2" y="229.5" width="9.7" height="2.5" fill="var(--faint)"/>
+<rect x="379.5" y="227.5" width="9.7" height="4.5" fill="var(--accent)"/>
+<rect x="390.8" y="224.3" width="9.7" height="7.7" fill="var(--accent)"/>
+<rect x="402.1" y="219.8" width="9.7" height="12.2" fill="var(--accent)"/>
+<rect x="413.4" y="213.7" width="9.7" height="18.3" fill="var(--accent)"/>
+<rect x="424.7" y="206.3" width="9.7" height="25.7" fill="var(--accent)"/>
+<rect x="436.0" y="197.9" width="9.7" height="34.1" fill="var(--accent)"/>
+<rect x="447.3" y="189.7" width="9.7" height="42.3" fill="var(--accent)"/>
+<rect x="458.5" y="182.5" width="9.7" height="49.5" fill="var(--accent)"/>
+<rect x="469.8" y="177.7" width="9.7" height="54.3" fill="var(--accent)"/>
+<rect x="481.1" y="176.0" width="9.7" height="56.0" fill="var(--accent)"/>
+<rect x="492.4" y="177.7" width="9.7" height="54.3" fill="var(--accent)"/>
+<rect x="503.7" y="182.5" width="9.7" height="49.5" fill="var(--accent)"/>
+<rect x="515.0" y="189.7" width="9.7" height="42.3" fill="var(--accent)"/>
+<rect x="526.3" y="197.9" width="9.7" height="34.1" fill="var(--accent)"/>
+<rect x="537.6" y="206.3" width="9.7" height="25.7" fill="var(--accent)"/>
+<rect x="548.9" y="213.7" width="9.7" height="18.3" fill="var(--accent)"/>
+<rect x="560.2" y="219.8" width="9.7" height="12.2" fill="var(--accent)"/>
+<rect x="571.4" y="224.3" width="9.7" height="7.7" fill="var(--accent)"/>
+<rect x="582.7" y="227.5" width="9.7" height="4.5" fill="var(--accent)"/>
+<rect x="594.0" y="229.5" width="9.7" height="2.5" fill="var(--accent)"/>
+<rect x="605.3" y="230.7" width="9.7" height="1.3" fill="var(--accent)"/>
+<rect x="616.6" y="231.4" width="9.7" height="0.6" fill="var(--accent)"/>
+<rect x="627.9" y="231.7" width="9.7" height="0.3" fill="var(--accent)"/>
+<rect x="639.2" y="231.9" width="9.7" height="0.1" fill="var(--accent)"/>
+<rect x="650.5" y="231.9" width="9.7" height="0.1" fill="var(--accent)"/>
+<rect x="661.8" y="232.0" width="9.7" height="0.0" fill="var(--accent)"/>
+<rect x="673.1" y="232.0" width="9.7" height="0.0" fill="var(--accent)"/>
+<line x1="40" y1="232" x2="740" y2="232" stroke="var(--border)"/>
+<text x="85.2" y="250" class="sl" text-anchor="middle">2⁻⁴⁰</text>
+<text x="175.5" y="250" class="sl" text-anchor="middle">2⁻³²</text>
+<text x="265.8" y="250" class="sl" text-anchor="middle">2⁻²⁴</text>
+<text x="356.1" y="250" class="sl" text-anchor="middle">2⁻¹⁶</text>
+<text x="446.5" y="250" class="sl" text-anchor="middle">2⁻⁸</text>
+<text x="536.8" y="250" class="sl" text-anchor="middle">2⁰</text>
+<text x="627.1" y="250" class="sl" text-anchor="middle">2⁸</text>
+<text x="717.4" y="250" class="sl" text-anchor="middle">2¹⁶</text>
+<text x="152.9" y="275" class="sl" text-anchor="middle">rounds to 0 (below 2⁻²⁵)</text>
+<text x="322.3" y="275" class="sl" text-anchor="middle">subnormal</text>
+<text x="536.8" y="275" class="sl" text-anchor="middle">normal FP16 [2⁻¹⁴, 65,504]</text>
+<text x="728.7" y="275" class="sl" text-anchor="end">inf</text>
+<text x="740" y="294" class="sl" text-anchor="end">|gradient|, log₂ scale · 1M illustrative values</text>
+</svg>
+<p class="cap">One million illustrative gradients, log₂|g| ~ Normal(−17.5, 4). We chose that distribution so that 5.2% fall below 2<sup>−24</sup>, matching the paper's ~5%. Only 3.0% become exactly zero, because values between 2<sup>−25</sup> and 2<sup>−24</sup> round up to the smallest subnormal. Red: lost to zero. Grey: subnormal, so precision is lost. Green: normal FP16. From labs/loss-scaling.py.</p>
+
+<div class="mathbox">
+<math display="block">
+  <munder class="t2"><mi>g</mi><mtext class="lab">gradient the optimizer sees</mtext></munder><mo>=</mo>
+  <mfrac><mn>1</mn><mi>S</mi></mfrac>
+  <munder class="t1"><mrow><msub><mo>&#8711;</mo><mi>&#952;</mi></msub><mo stretchy="false">(</mo><mi>S</mi><mo>&#183;</mo><mi>L</mi><mo stretchy="false">)</mo></mrow><mtext class="lab">backward pass, in FP16</mtext></munder>
+  <mspace width="1.2em"/><mtext>with</mtext><mspace width="0.6em"/>
+  <munder class="t3"><mrow><mi>S</mi><mo>&#183;</mo><mo movablelimits="false">max</mo><mo stretchy="false">|</mo><mi>g</mi><mo stretchy="false">|</mo><mo>&lt;</mo><mn>65,504</mn></mrow><mtext class="lab">or it overflows to inf</mtext></munder>
+</math>
+<div class="legend">
+  <span class="sym">S</span><span>loss scale, a power of 2 so that dividing by it is exact</span><span class="v">8 … 32K in the paper</span>
+  <span class="sym">L</span><span>the loss computed by the forward pass</span><span class="v">one number</span>
+  <span class="sym">65,504</span><span>the largest FP16 value</span><span class="v">E5M2 FP8: 57,344</span>
+</div>
+</div>
+
+<table class="small">
+<tr><th class="num">Loss scale S</th><th class="num">Round to 0</th><th class="num">Subnormal</th><th class="num">Overflow to inf</th><th class="num">max|g| × S</th></tr>
+<tr><td class="num">1</td><td class="num lo">3.03%</td><td class="num">77.83%</td><td class="num">0</td><td class="num">3</td></tr>
+<tr><td class="num">8</td><td class="num">0.45%</td><td class="num">54.49%</td><td class="num">0</td><td class="num">22</td></tr>
+<tr><td class="num">128</td><td class="num">0.01%</td><td class="num">19.05%</td><td class="num">0</td><td class="num">344</td></tr>
+<tr><td class="num">1,024</td><td class="num">0.00%</td><td class="num">5.20%</td><td class="num">0</td><td class="num">2,755</td></tr>
+<tr><td class="num">8,192</td><td class="num">0.00%</td><td class="num">0.88%</td><td class="num">0</td><td class="num">22,040</td></tr>
+<tr><td class="num hi">16,384</td><td class="num">0.00%</td><td class="num">0.45%</td><td class="num">0</td><td class="num">44,080</td></tr>
+<tr><td class="num">32,768</td><td class="num">0.00%</td><td class="num">0.21%</td><td class="num lo">2 values</td><td class="num lo">88,160</td></tr>
+</table>
+<div class="formula">largest safe S = 65,504 ÷ max|g| = 65,504 ÷ 2.69 = 24,347  → largest power of 2 = <span class="g">16,384</span>
+one inf anywhere → unscaled gradient is inf/NaN → <span class="r">skip this step's update</span> (paper §3.2)
+after S = 8,192 and ÷ S: median relative error 1.7e-4 (the FP16 rounding, nothing lost)</div>
+<p><b>Dynamic loss scaling.</b> A fixed S has to be guessed. The paper's conclusion proposes adjusting it automatically: inspect the gradients for overflow, skip the update when one occurs, and move S up or down. The lab runs an illustrative policy: start at 65,536, halve and skip on overflow, double after 200 clean steps. Over 2,000 steps whose gradients shrink and sometimes spike, it skips 9 steps (0.4%), and S drifts from 65,536 down to 2,048 and back up to 16,384. Framework defaults for this policy aren't in our sources.</p>
+
+<p><b>Why BF16 mostly ends this.</b> BF16 keeps FP32's 8 exponent bits and gives up mantissa bits instead:</p>
+<table class="small">
+<tr><th>Format</th><th>sign · exp · mantissa</th><th class="num">Max</th><th class="num">Min normal</th><th class="num">Min subnormal</th><th class="num">Rounding error ≤</th><th class="num">Lab: gradients → 0</th></tr>
+<tr><td>FP32</td><td>1 · 8 · 23</td><td class="num">3.4e38</td><td class="num">2<sup>−126</sup></td><td class="num">2<sup>−149</sup></td><td class="num">2<sup>−24</sup></td><td class="num">0</td></tr>
+<tr><td>FP16</td><td>1 · 5 · 10</td><td class="num lo">65,504</td><td class="num lo">2<sup>−14</sup></td><td class="num">2<sup>−24</sup></td><td class="num">2<sup>−11</sup> = 4.9e-4</td><td class="num lo">3.03%</td></tr>
+<tr><td>BF16</td><td>1 · 8 · 7</td><td class="num">3.39e38</td><td class="num">2<sup>−126</sup></td><td class="num">2<sup>−133</sup></td><td class="num lo">2<sup>−8</sup> = 3.9e-3</td><td class="num hi">0</td></tr>
+</table>
+<p class="cap">Format limits as in <a href="../perf-3-kernels/tensor-cores-low-precision.html">tensor cores and low precision</a>. The lab emulates BF16 by rounding float32 to its top 16 bits. On the same gradients its worst relative error is 3.89e-3, versus 4.87e-4 for FP16 on FP16's normal range. That makes it 8× coarser, with nothing flushed.</p>
+
+<p><b>BF16 removes loss scaling, not master weights.</b> Coarser rounding makes lost updates worse, not better:</p>
+<div class="formula">w = 1.0, add an update of 1e-4 one thousand times            (labs/loss-scaling.py)
+FP32 master: <span class="g">1.1000</span>     FP16 weights: <span class="r">1.0000</span>     BF16 weights: <span class="r">1.0000</span>
+spacing above 1.0: FP16 2^-10 = 9.8e-4, BF16 2^-7 = 7.8e-3
+1e-4 is less than half a step → every single update rounds away
+paper: in FP16 an update is lost once weight/update &gt; 2,048 (2^11)
+BF16 (7 mantissa bits): lost once weight/update &gt; 256 (2^8)   <span class="c"># ours</span></div>
+<p>That is why the <a href="training-step.html">training step's</a> 16 bytes per parameter still include a 4-byte FP32 master copy: 2 (BF16 weights) + 2 (grads) + 4 (master) + 4 + 4 (Adam m, v). The Playbook's point: "mixed precision training itself doesn't save memory". It pays off in faster math and half-size activations.</p>
+
+<h2>3 · FP8 training: one scale per tile, not per tensor <small>brief</small></h2>
+<p>FP8 matmuls run at twice the BF16 rate on an H100 (1,979 vs 989 dense TFLOPS), but E4M3 tops out at 448. With one scale per tensor, a single outlier sets the scale and squeezes every other value toward zero. The two approaches:</p>
+<div class="tw"><table class="small">
+<tr><th></th><th>Per-tensor, delayed scaling</th><th>DeepSeek-V3: fine-grained, online scaling</th></tr>
+<tr><td><b>Scale per</b></td><td>whole tensor</td><td class="hi">1×128 activation tile ("per token per 128 channels") · 128×128 weight block</td></tr>
+<tr><td><b>Scale from</b></td><td>"a history of the maximum absolute values across prior iterations" (DeepSeek's description of NVIDIA's framework and FP8-LM)</td><td>max-abs computed on the fly for each tile or block</td></tr>
+<tr><td><b>Formats</b></td><td>prior work: E4M3 forward, E5M2 (more range) for gradients</td><td>E4M3 on all tensors. Small groups share the exponent range.</td></tr>
+<tr><td><b>Accumulation</b></td><td>in the tensor core</td><td>partial sums promoted to FP32 every 128 elements (Hopper keeps "around 14 bits")</td></tr>
+<tr><td><b>Kept high precision</b></td><td>not covered in our sources</td><td>embedding, output head, MoE gating, norms, attention. FP32 master weights and gradients, BF16 AdamW moments (15 bytes/param).</td></tr>
+<tr><td><b>Result</b></td><td>not covered in our sources</td><td class="hi">relative loss error vs BF16 "consistently below 0.25%" (two scales, ~1T tokens each)</td></tr>
+</table></div>
+<p class="cap">We did not open NVIDIA's Transformer Engine docs. The left column describes delayed scaling only as DeepSeek-V3 §3.3 characterises it. The full recipe, with the per-group scale formula and what's stored in which format, is on <a href="../perf-6-scaling-out/deepseek-v3-infrastructure.html">DeepSeek-V3 II: infrastructure</a>. The Playbook still called FP8 pretraining "an experimental technique" in early 2025.</p>
+
+<p><b>Which format you train in depends on the chip</b> (dense peaks, from course 3):</p>
+<table class="small">
+<tr><th>GPU</th><th>Fastest 16-bit format</th><th class="num">16-bit TFLOPS</th><th class="num">FP8 TFLOPS</th><th>Consequence for training</th></tr>
+<tr><td>T4 (Colab)</td><td>FP16 only</td><td class="num">65</td><td class="num">none</td><td class="lo">FP16 + loss scaling</td></tr>
+<tr><td>V100</td><td>FP16 only</td><td class="num mu">not in our sources</td><td class="num">none</td><td>the 2017 paper's setting</td></tr>
+<tr><td>A100</td><td>BF16 (added in Ampere)</td><td class="num">312</td><td class="num">none</td><td>BF16, no loss scaling (Korthikanti's runs)</td></tr>
+<tr><td>H100 / H800</td><td>BF16</td><td class="num">989</td><td class="num">1,979</td><td>BF16 (Llama 3) or FP8 (DeepSeek-V3)</td></tr>
+<tr><td>B200</td><td>BF16</td><td class="num">2,250</td><td class="num">4,500</td><td class="hi">also FP4 at 9,000 (training with it: announced, per the Playbook)</td></tr>
+</table>
+
+<h2>4 · Activation checkpointing: keep less, recompute in the backward pass</h2>
+<p>The backward pass needs tensors the forward pass produced. Korthikanti et al. count them in bytes per layer, for 16-bit values and a GPT-style layer:</p>
+<div class="mathbox">
+<math display="block">
+  <msub><mi>A</mi><mtext>layer</mtext></msub><mo>=</mo><mi>s</mi><mi>b</mi><mi>h</mi>
+  <mo stretchy="true" form="prefix" minsize="2.2em">(</mo>
+  <munder class="t2"><mn>34</mn><mtext class="lab">everything else: kept</mtext></munder>
+  <mo>+</mo>
+  <munder class="t3"><mfrac><mrow><mn>5</mn><mi>a</mi><mi>s</mi></mrow><mi>h</mi></mfrac><mtext class="lab">scores, softmax, dropout: recomputed by "selective"</mtext></munder>
+  <mo stretchy="true" form="postfix" minsize="2.2em">)</mo>
+  <mspace width="1em"/><mtext>bytes</mtext>
+</math>
+<div class="legend">
+  <span class="sym">s</span><span>sequence length</span><span class="v">8,192</span>
+  <span class="sym">b</span><span>micro-batch (sequences)</span><span class="v">1</span>
+  <span class="sym">h</span><span>hidden size</span><span class="v">4,096</span>
+  <span class="sym">a</span><span>attention heads</span><span class="v">32</span>
+  <span class="sym">L</span><span>layers (multiply A<sub>layer</sub> by L)</span><span class="v">32</span>
+</div>
+</div>
+<p class="cap">Filled in for Llama-3.1-8B: 5as/h = 5 · 32 · 8,192 / 4,096 = 320. For GPT-3 in the paper it is 80. The score term grows with s, so at 8K tokens it is 90% of all activations.</p>
+
+<p><b>Worked example: Llama-3.1-8B, one 8,192-token sequence</b> (Korthikanti's formula applied as-is, our arithmetic):</p>
+<div class="tw"><table class="small">
+<tr><th>Strategy</th><th>What's stored per layer</th><th class="num">Activations</th><th class="num">vs none</th><th class="num">Extra FLOPs / seq</th><th class="num">Overhead</th></tr>
+<tr><td><b>None</b></td><td>everything: sbh(34 + 320)</td><td class="num lo">380.1 GB</td><td class="num">100%</td><td class="num">0</td><td class="num">0</td></tr>
+<tr><td><b>Selective</b></td><td>sbh·34. Recompute QKᵀ, softmax and ·V in the backward pass.</td><td class="num hi">36.5 GB</td><td class="num">9.6%</td><td class="num">3.52e13</td><td class="num hi">+7.0%</td></tr>
+<tr><td><b>Full</b></td><td>the layer's input only: sbh·2</td><td class="num">2.1 GB<br><span class="mu">+11.9 GB peak</span></td><td class="num">0.6%</td><td class="num">1.67e14</td><td class="num lo">+33.3%</td></tr>
+</table></div>
+<div class="formula">sbh·L = 8,192 × 1 × 4,096 × 32 = 1.07e9 bytes           <span class="c"># exactly 1 GiB</span>
+none         (34 + 320) × 1.07e9 = <span class="r">380.1 GB</span>
+selective           34 × 1.07e9 = <span class="g">36.5 GB</span>
+full                 2 × 1.07e9 =   2.1 GB
+  + one layer rebuilt at a time during backward: 354 × 33.5M = 11.9 GB peak
+model FLOPs / seq = 6·N·s + 12·L·h·s² = 3.95e14 + 1.06e14 = 5.00e14
+selective adds 4·L·h·s² (redo QKᵀ and ·V forward)   = 3.52e13 → <span class="g">+7.0%</span>
+full adds one forward: 2·N·s + 4·L·h·s²             = 1.67e14 → <span class="r">+33.3%</span>  (6ND → 8ND)
+8 H100s, ZeRO-3: 128.5 GB state ÷ 8 = 16.1 GB per GPU, plus activations
+  none 16.1 + 380.1 = <span class="r">396.2 GB ✗</span>   selective 16.1 + 36.5 = <span class="g">52.6 GB ✓</span>   full 18.2 GB ✓</div>
+<svg viewBox="0 0 756 300" role="img" aria-label="Activation memory against extra FLOPs for Llama-3.1-8B at 8,192 tokens">
+<line x1="70" y1="250.0" x2="720" y2="250.0" stroke="var(--border)"/>
+<text x="62" y="254.0" class="sl" text-anchor="end">0</text>
+<line x1="70" y1="192.5" x2="720" y2="192.5" stroke="var(--border)"/>
+<text x="62" y="196.5" class="sl" text-anchor="end">100</text>
+<line x1="70" y1="135.0" x2="720" y2="135.0" stroke="var(--border)"/>
+<text x="62" y="139.0" class="sl" text-anchor="end">200</text>
+<line x1="70" y1="77.5" x2="720" y2="77.5" stroke="var(--border)"/>
+<text x="62" y="81.5" class="sl" text-anchor="end">300</text>
+<line x1="70" y1="20.0" x2="720" y2="20.0" stroke="var(--border)"/>
+<text x="62" y="24.0" class="sl" text-anchor="end">400</text>
+<text x="70.0" y="268" class="sl" text-anchor="middle">+0%</text>
+<text x="162.9" y="268" class="sl" text-anchor="middle">+5%</text>
+<text x="255.7" y="268" class="sl" text-anchor="middle">+10%</text>
+<text x="348.6" y="268" class="sl" text-anchor="middle">+15%</text>
+<text x="441.4" y="268" class="sl" text-anchor="middle">+20%</text>
+<text x="534.3" y="268" class="sl" text-anchor="middle">+25%</text>
+<text x="627.1" y="268" class="sl" text-anchor="middle">+30%</text>
+<text x="720.0" y="268" class="sl" text-anchor="middle">+35%</text>
+<text x="395.0" y="290" class="sl" text-anchor="middle">extra FLOPs per step (recompute) →</text>
+<text x="14" y="24" class="sl">GB</text>
+<line x1="70" y1="213.3" x2="720" y2="213.3" stroke="var(--red)" stroke-dasharray="5 4" stroke-width="1.5"/>
+<text x="78" y="207.3" class="sl" text-anchor="start" style="fill:var(--red)">fits under here: 80 GB − 16.1 GB ZeRO-3 state = 63.9 GB</text>
+<polyline fill="none" stroke="var(--faint)" stroke-width="2" points="70.0,31.4 89.3,38.2 108.7,45.0 128.0,51.8 147.4,58.6 166.7,65.4 186.1,72.2 205.4,79.0 224.7,85.8 244.1,92.6 263.4,99.4 282.8,106.1 302.1,112.9 321.5,119.7 340.8,126.5 360.1,133.3 379.5,140.1 398.8,146.9 418.2,153.7 437.5,160.5 456.9,167.3 476.2,174.1 495.6,180.9 514.9,187.6 534.2,194.4 553.6,201.2 572.9,208.0 592.3,214.8 611.6,221.6 631.0,228.4 650.3,235.2 669.6,242.0 689.0,248.8"/>
+<circle cx="224.7" cy="85.8" r="3" fill="var(--faint)"/>
+<circle cx="379.5" cy="140.1" r="3" fill="var(--faint)"/>
+<circle cx="534.2" cy="194.4" r="3" fill="var(--faint)"/>
+<text x="389.5" y="124.1" class="sl">recompute k of 32 layers fully (dots: k = 8, 16, 24)</text>
+<circle cx="70.0" cy="31.4" r="6" fill="var(--red)"/>
+<text x="82.0" y="21.4" class="st" text-anchor="start">none: 380 GB, +0%</text>
+<circle cx="200.0" cy="229.0" r="6" fill="var(--accent)"/>
+<text x="212.0" y="233.0" class="st" text-anchor="start">selective: 36.5 GB, +7.0%</text>
+<circle cx="688.4" cy="248.8" r="6" fill="var(--muted)"/>
+<text x="678.4" y="240.8" class="st" text-anchor="end">full: 2.1 GB, +33%</text>
+</svg>
+<p class="cap">The memory–compute curve (labs/loss-scaling.py). Grey line: the older approach of fully recomputing k of the 32 layers and storing the rest. Getting it down to selective's memory takes k ≈ 29, which costs 30.2% extra FLOPs, against 7.0% for selective. The red dashed line is what fits beside 8-way ZeRO-3 state on an 80 GB H100.</p>
+<p class="lab"><b>Assumptions.</b> The formula describes a GPT layer (4h GeLU MLP, dropout, full multi-head K and V, micro-batch 1). Llama uses SwiGLU (14,336 wide), GQA (8 KV heads) and no dropout, so its true bytes differ. These are our estimates, not measurements. FlashAttention never stores the s×s scores at all. With it, "none" already costs about the selective 36.5 GB. As the Playbook puts it, "most people using FlashAttention are already making use of selective recomputation". Llama 3 pretrained at 8K "without activation checkpointing" by sharding with TP and PP and freeing tensors early. For this 8B shape, TP8 + sequence parallelism would take selective's 36.5 GB to 4.6 GB per GPU (ours).</p>
+
+<p><b>What the papers report.</b></p>
+<div class="formula">Korthikanti, GPT-3 175B (a=96, s=2,048, h=12,288): 5as/h = 80
+  selective saves 70% of activation memory for 2.7% more FLOPs    (MT-NLG: 65% for 1.6%)
+  measured, 22B, one layer (Table 4): full +39% time · selective +7% · selective+SP +4%
+  headline "5×" less memory = sequence parallelism AND selective together, vs TP alone
+full recompute "one extra forward": Chen · 33%: ZeRO · 30–40%: Korthikanti, Playbook
+  · 6ND → ~8ND: Scaling Book. All the same thing: the forward pass is ~1/3 of a step</div>
+<p class="lab">Two flags. (1) The "5×" is not selective recompute alone. Each technique "nearly" halves memory on its own. (2) The paper's 2.7% equals its Eq. 9, s/6h. By its own Appendix A term count (4Bs²h per layer for the recomputed QKᵀ and ·V), we get 0.9% for GPT-3. We could not reconcile the two, and our 7.0% uses the Appendix A count. Measured time overheads (7%) exceed either figure, because softmax and dropout are memory-bound, not FLOP-bound.</p>
+
+<p><b>Chen's √n segments.</b> Chen et al. (2016) train an n-layer network in "O(√n) memory … with only the computational cost of an extra forward pass per mini-batch". A 1,000-layer ResNet went "from 48G to 7G". Store a checkpoint every g layers, then in the backward pass rebuild one g-layer segment at a time. Memory is about n/g + g layer-units, which is smallest at g = √n. For n = 32 that means g ≈ 6 and 11.3 units instead of 33. A transformer's checkpoint (its layer input, 2sbh) is 177× smaller than that layer's activations (354sbh). So checkpointing every layer (g = 1) is already close to the minimum, and that is exactly "full".</p>
+<p><b>At run scale</b> (our recomputation): full recompute turns the 8B run's 7.2e23 FLOPs into 9.6e23. At 40% of peak, 0.51M H100-hours becomes 0.68M. The MFU you'd report drops to 30% while the HFU stays at 40%, because MFU doesn't count recompute (see <a href="compute-budgets.html">compute budgets</a>).</p>
+
+<h2>Why it beats the alternatives</h2>
+<div class="grid2">
+  <div class="cell"><h3><span class="x">&#10007;</span> All FP32</h3><p>Safe, but gives up the tensor cores' 16-bit rate (67 vs 989 TFLOPS on an H100) and stores activations at 4 bytes instead of 2.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Pure FP16, no master copy or scaling</h3><p>Small gradients round to zero (3% here) and small updates vanish. The Mandarin model lost 80% relative accuracy, and SSD diverged.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Full recompute everywhere</h3><p>Minimum memory (2.1 GB) but +33% FLOPs on every step. On the 8B run that's 0.17M extra H100-hours spent redoing work.</p></div>
+  <div class="cell win"><h3><span class="ok">&#10003;</span> BF16 + FP32 master + selective</h3><p>No loss scaling to tune. Activations fall from 380 to 36.5 GB for about 7% more FLOPs, and FlashAttention gives you the selective part for free.</p></div>
+</div>
+
+<h2>Is this always the right setup?</h2>
+<div class="note">
+  <p>No. Four cases where something else wins:</p>
+  <ul>
+    <li><b>No BF16 on the chip</b> (T4, V100): you're back to FP16 with dynamic loss scaling and FP32 master weights, as in 2017.</li>
+    <li><b>FP8</b> doubles matmul speed on Hopper and Blackwell, but only with fine-grained scales and FP32 promotion. DeepSeek-V3 is the public large-scale success. For most teams it was still experimental in early 2025, and BF16 is the default.</li>
+    <li><b>Full recompute wins when memory is the limit</b>, not FLOPs: few GPUs, long sequences, or a bigger batch. In Megatron (145B, 128 A100s) recompute cost "up to 33% lower throughput" at small batch. It allowed batches "up to 2× higher" in throughput because the pipeline bubble shrank.</li>
+    <li><b>Precision at serving time is a separate choice.</b> Llama 3 trained in BF16 and is served in BF16 or FP8. See <a href="../perf-5-engines/quantization-serving.html">quantization in serving</a>.</li>
+  </ul>
+</div>
+
+<div class="foot">
+<p><b>Run it: <a href="https://github.com/seyonv/explainers/blob/main/perf-7-training-economics/labs/loss-scaling.py">labs/loss-scaling.py</a></b> (numpy only, ~3 s): FP16 underflow vs loss scale, dynamic scaling, BF16 emulation, the master-weight demo and the checkpointing memory/FLOPs table.</p>
+<p><b>Read next:</b> Micikevicius et al., "Mixed Precision Training": §3.1–3.3, all of it, ~15 min (<a href="https://arxiv.org/pdf/1710.03740">arxiv.org/pdf/1710.03740</a>). Korthikanti et al., "Reducing Activation Recomputation in Large Transformer Models": §4 (activation memory) and §5 (selective recompute), plus Appendix A, ~20 min (<a href="https://arxiv.org/pdf/2205.05198">arxiv.org/pdf/2205.05198</a>). Ultra-Scale Playbook, "Activation recomputation" (under First Steps) and "Mixed precision training" (under Diving into the GPUs), ~10 min each (<a href="https://huggingface.co/spaces/nanotron/ultrascale-playbook">huggingface.co/spaces/nanotron/ultrascale-playbook</a>). Optional: DeepSeek-V3 §3.3, ~15 min (<a href="https://arxiv.org/pdf/2412.19437">arxiv.org/pdf/2412.19437</a>).</p>
+<p><b>Related:</b> <a href="training-step.html">A training step and where its memory goes</a> · <a href="compute-budgets.html">Compute budgets</a> · <a href="zero-fsdp.html">ZeRO and FSDP</a> · <a href="parallelism-4d.html">4D parallelism</a> · <a href="post-training.html">Post-training</a> · <a href="../perf-3-kernels/tensor-cores-low-precision.html">Tensor cores and low precision</a> · <a href="../perf-6-scaling-out/deepseek-v3-infrastructure.html">DeepSeek-V3 II: infrastructure</a> · <a href="../perf-5-engines/quantization-serving.html">Quantization in serving</a></p>
+<p><b>Sources:</b> master weights, 2<sup>−24</sup> and ~5%, the 2,048 ratio, 80% loss, 8…32K, 65,504, skip on overflow, dynamic scaling, "2× to 8×": Micikevicius et al. §1, §3, §6 (<a href="https://arxiv.org/pdf/1710.03740">1710.03740</a>). sbh(34 + 5as/h), 70%/2.7%, 65%/1.6%, Table 4 times, 5×, Appendix A FLOPs: Korthikanti et al. (<a href="https://arxiv.org/pdf/2205.05198">2205.05198</a>). √n, 48G → 7G: Chen et al. (<a href="https://arxiv.org/pdf/1604.06174">1604.06174</a>). 6ND → 8ND: Scaling Book Part 4 (<a href="https://jax-ml.github.io/scaling-book/transformers/">jax-ml.github.io/scaling-book/transformers</a>). 33%: ZeRO §3.2 (<a href="https://arxiv.org/pdf/1910.02054">1910.02054</a>). 1×128 / 128×128, online vs delayed, E4M3, 0.25%: DeepSeek-V3 §3.3 (<a href="https://arxiv.org/pdf/2412.19437">2412.19437</a>). FP32 grad accumulation, 8K without checkpointing: Llama 3 §3.3 (<a href="https://arxiv.org/pdf/2407.21783">2407.21783</a>). 33% / 2×: Narayanan et al. §5.6 (<a href="https://arxiv.org/pdf/2104.04473">2104.04473</a>). "Doesn't save memory", FlashAttention as selective, FP8 "experimental": Ultra-Scale Playbook. GPU peaks: course 3 and this course's shared facts. The gradient distribution, the dynamic-scaling run and every Llama-3.1-8B activation number are ours (illustrative or computed, not measured).</p>
+</div>
+</article>
+<!-- series-nav:bottom -->
+<div class="snx"><a class="nx" href="index.html#post-training" target="_top">
+<span class="mini" aria-hidden="true"><span class="m1">From pretrained to served: SFT, RL and distillation</span><span class="m2">Also called post-training, alignment, fine-tuning, RLHF, RL with verifiable rewards, or knowledge distillation. The last training card of "Training and the cost of a token". It follows DeepSeek-V3 and…</span><span class="m3">In one breath</span><span class="m4">Pretraining makes a base model that continues text. Post-training turns it into something you can serve: SFT teaches it the answer format by imitating curated examples. RL (or a preference method like DPO) rewards good answers instead of copying them, and for a reasoning model that is where the long chains of thought come from.…</span></span>
+<span class="tx"><span class="lab">Next up · 07 / 13</span><span class="tt">From pretrained to served: SFT, RL and distillation</span><span class="ds">What each stage hands to inference</span><span class="nd">Builds on: Compute budgets: 6ND, Chinchilla and MFU.</span><span class="go">Continue →</span></span></a><div class="aux"><span><a href="index.html#parallelism-4d" target="_top">← 4D parallelism: TP, PP, CP and EP in training</a></span><a href="index.html" target="_top">All cards in 7 · Training &amp; cost per token</a></div></div>
+<!-- /series-nav:bottom -->
+</body>
+</html>

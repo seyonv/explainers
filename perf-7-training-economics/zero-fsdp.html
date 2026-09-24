@@ -1,0 +1,392 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Data parallelism, ZeRO and FSDP</title>
+<style>
+:root{
+  --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
+  --text:#1c1f23; --muted:#6b7068; --faint:#b9b9b3;
+  --accent:#4a9d77; --accent-bg:#dcefdf; --accent-border:#8cc79c;
+  --red:#c0492b; --red-bg:#fbeceb;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#15171a; --surface:#1d2024; --surface2:#24282d; --border:#32373d;
+    --text:#e6e8ea; --muted:#9aa1a9; --faint:#4a5057;
+    --accent:#5fb37f; --accent-bg:#1c2b22; --accent-border:#3f7a55;
+    --red:#e57368; --red-bg:#2e1f1e;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text)}
+.card{max-width:820px;margin:0 auto;padding:28px 32px;font-family:-apple-system,"Inter",system-ui,sans-serif;line-height:1.45}
+h1{font-size:26px;font-weight:600;margin:0 0 6px;letter-spacing:-0.01em}
+.sub{font-size:15px;color:var(--muted);margin:0 0 20px}
+h2{font-size:17px;font-weight:600;margin:26px 0 10px}
+p{font-size:15px;margin:0 0 10px}
+ul{margin:4px 0 10px;padding-left:20px} li{font-size:15px;margin:0 0 4px}
+.cap{font-size:13px;color:var(--muted);margin:8px 0 0;text-align:center}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border)}
+th{font-size:12px;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:none}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+.hi{color:var(--accent);font-weight:600} .lo{color:var(--red)} .mu{color:var(--muted)}
+.formula{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin:10px 0;white-space:pre;overflow-x:auto;line-height:1.55}
+.tw{overflow-x:auto}
+
+.mathbox{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px 16px 12px;margin:10px 0;overflow-x:auto}
+.mathbox math{font-size:21px;color:var(--text);font-family:"STIX Two Math","Latin Modern Math","Cambria Math",math}
+.mathbox .t1{color:var(--text)} .mathbox .t2{color:var(--accent)} .mathbox .t3{color:var(--muted)}
+.mathbox .lab{font-size:12px;font-family:-apple-system,"Inter",system-ui,sans-serif;padding-top:3px;border-top:1.5px solid currentColor;margin-top:2px}
+.mathbox mtd{padding:5px 6px;text-align:left}
+.mathbox .nm{font-size:15px;font-family:-apple-system,"Inter",system-ui,sans-serif;color:var(--muted)}
+.legend{display:grid;grid-template-columns:auto 1fr auto;column-gap:14px;row-gap:5px;font-size:13px;margin-top:12px;align-items:baseline}
+.legend .sym{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;text-align:right}
+.legend .v{color:var(--muted);text-align:right;font-variant-numeric:tabular-nums}
+
+.parts td{vertical-align:top} .parts td:first-child{font-weight:600}
+.parts .ex{font-size:13px} .parts .ex span{display:block;color:var(--muted)}
+.plan td{vertical-align:top;font-size:13px} .plan td:first-child{font-weight:600;white-space:nowrap;font-size:14px}
+
+.key{display:flex;flex-wrap:wrap;gap:6px 18px;font-size:12px;color:var(--muted);margin:6px 0 0}
+.key span{display:inline-flex;align-items:center;gap:6px}
+.key i{display:inline-block;width:14px;height:11px;border-radius:2px}
+.sp{fill:var(--muted)} .sg{fill:var(--faint)} .so{fill:var(--surface2);stroke:var(--muted);stroke-width:1}
+.hole{fill:none;stroke:var(--faint);stroke-width:1;stroke-dasharray:3 3}
+.key .ksp{background:var(--muted)} .key .ksg{background:var(--faint)} .key .kso{background:var(--surface2);border:1px solid var(--muted)} .key .khole{border:1px dashed var(--faint)}
+
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.cell{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.cell.win{background:var(--accent-bg);border-color:var(--accent-border)}
+.cell h3{font-size:16px;font-weight:600;margin:0 0 5px;display:flex;gap:8px;align-items:baseline}
+.cell p{font-size:14px;margin:0;color:var(--text)}
+.cell.win h3,.cell.win p{color:var(--accent)}
+.x{color:var(--red)} .ok{color:var(--accent)}
+
+.note{border:1px solid var(--border);border-radius:10px;padding:14px 18px;font-size:14px}
+.note p,.note li{font-size:14px} .note p:last-child{margin-bottom:0}
+.ours{border-left:3px solid var(--accent-border);padding:2px 0 2px 14px;margin:10px 0}
+
+.foot{margin-top:22px;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+.foot p{font-size:13px;margin:0 0 6px}
+svg{display:block;max-width:100%;height:auto;margin:6px 0}
+.sl{font-size:12px;fill:var(--muted)} .st{font-size:13px;fill:var(--text)}
+a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+@media (max-width:560px){
+  .card{padding:22px 16px}
+  .grid2{grid-template-columns:1fr}
+  .legend{grid-template-columns:auto 1fr}.legend .v{display:none}
+  .parts .what{display:none}
+  th,td{padding:6px 6px}
+}
+/* series-nav */
+.sn{max-width:820px;margin:0 auto;padding:16px 32px 0;font-family:-apple-system,"Inter",system-ui,sans-serif;font-size:13px;line-height:1.5;color:var(--muted)}
+.sn a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
+.sn .crumbs{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 7px}
+.sn .crumbs b{color:var(--text);font-weight:600}
+.sn .sep{color:var(--faint,var(--border))}
+.sn .step{margin-left:auto;white-space:nowrap}
+.sn .dep{margin-top:5px;padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface)}
+.sn .dep .ok{color:var(--accent);font-weight:600}
+.snx{max-width:820px;margin:0 auto;padding:6px 32px 44px;font-family:-apple-system,"Inter",system-ui,sans-serif}
+.snx .nx{display:grid;grid-template-columns:280px 1fr;text-decoration:none;color:var(--text);background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.snx .nx:hover,.snx .nx:focus-visible{border-color:var(--accent-border,var(--accent));outline:none}
+.snx .mini{position:relative;height:210px;overflow:hidden;background:var(--bg);border-right:1px solid var(--border);padding:14px 16px}
+.snx .mini span{display:block}
+.snx .mini .m1{font-size:12.5px;font-weight:600;margin:0 0 4px;line-height:1.3}
+.snx .mini .m2{font-size:9px;color:var(--muted);margin:0 0 8px;line-height:1.4}
+.snx .mini .m3{font-size:8.5px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;margin:0 0 3px}
+.snx .mini .m4{font-size:9.5px;margin:0;line-height:1.45}
+.snx .tx{padding:16px 20px}
+.snx .lab{font-size:12px;font-weight:600;color:var(--accent);letter-spacing:.04em;text-transform:uppercase}
+.snx .tt{display:block;font-size:20px;font-weight:600;margin:5px 0 4px;line-height:1.25}
+.snx .ds{display:block;font-size:14px;color:var(--muted)}
+.snx .nd{display:block;font-size:13px;color:var(--muted);margin-top:10px}
+.snx .go{display:block;margin-top:12px;font-size:14px;font-weight:600;color:var(--accent)}
+.snx .aux{display:flex;justify-content:space-between;gap:12px;margin-top:10px;font-size:13px;color:var(--muted)}
+.snx .aux a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
+@media (max-width:560px){.sn,.snx{padding-left:16px;padding-right:16px}.snx .nx{grid-template-columns:1fr}.snx .mini{display:none}.sn .step{margin-left:0}}
+/* /series-nav */
+</style>
+</head>
+<body>
+<!-- series-nav:top -->
+<nav class="sn" aria-label="Course navigation"><div class="crumbs"><a href="../perf-0-map/index.html" target="_top">Fast LLM inference</a><span class="sep">›</span><a href="index.html" target="_top">7 · Training &amp; cost per token</a><span class="sep">›</span><b>04 / 13</b><span class="step"><a href="index.html#compute-budgets" target="_top">← prev</a> · <a href="index.html#parallelism-4d" target="_top">next →</a></span></div>
+<div class="dep"><b>Before this:</b> <a href="index.html#training-step" target="_top">A training step and where its memory goes</a> · <a href="../perf-6-scaling-out/index.html#collectives" target="_top">How GPUs talk: collectives and interconnects</a> (perf-6)</div></nav>
+<!-- /series-nav:top -->
+<article class="card">
+<h1>Data parallelism, ZeRO and FSDP</h1>
+<p class="sub">Also called DP or DDP (PyTorch's DistributedDataParallel); ZeRO-1, ZeRO-2 and ZeRO-3 (the paper's P<sub>os</sub>, P<sub>os+g</sub>, P<sub>os+g+p</sub>; "ZeRO-1/2/3" is DeepSpeed's and the community's naming); FSDP, "fully sharded data parallel", PyTorch's ZeRO-3; together, "sharding". This card follows the ZeRO paper's own example (7.5B parameters on 64 GPUs), then puts Llama-3.1-8B training on one 8×H100 node.</p>
+
+<h2>In one breath</h2>
+<p>Data parallelism gives every GPU a full copy of the model and a different slice of the batch, then averages the gradients so every copy takes the same step. ZeRO notices that every GPU is storing the same 16 bytes per parameter, so it gives each GPU only 1/N<sub>d</sub> of the optimizer state, then of the gradients, then of the weights, and fetches a missing slice just before it is needed. Stages 1 and 2 cost no extra communication; stage 3 (FSDP) costs 1.5×, and that extra traffic can usually be hidden behind the math.</p>
+
+<h2>Plain data parallelism: a replica per GPU, one all-reduce per step</h2>
+<p>Each GPU runs forward and backward on its own micro-batch, so each one ends up with different gradients. An <b>all-reduce</b> (see <a href="../perf-6-scaling-out/collectives.html">How GPUs talk: collectives and interconnects</a>) sums them so every replica applies the same optimizer step. The forward pass needs no communication at all. In the Scaling Book's words, the backward all-reduces "aren't in the 'critical path'": nothing waits on them until the optimizer step. The Playbook lists three optimizations on top of the naive version, which waits for backward to finish and then communicates ("A BIG NO-NO"):</p>
+<ul>
+<li><b>Overlap with backward.</b> A hook on each parameter starts reducing its gradient as soon as it's ready, while backward works through earlier layers.</li>
+<li><b>Bucketing.</b> Pack many small gradients into one buffer and all-reduce the whole bucket: "a few big boxes than many small ones". The Playbook's overlap appendix uses buckets of "default size 25 MB".</li>
+<li><b>No sync during gradient accumulation.</b> <code>model.no_sync()</code> skips the all-reduce on every micro-batch except the last, because one reduce at the end gives the same result.</li>
+</ul>
+<div class="formula">global batch = micro-batch × gradient-accumulation steps × DP degree      (Playbook)
+
+Playbook example: 4M tokens ÷ 4,096-token sequences = 1,024 sequences
+  mbs 2, 128 GPUs → grad_acc = 1,024 ÷ (2 × 128) = 4
+  mbs 2, 512 GPUs → grad_acc = 1          (same batch, 4× fewer serial passes)
+  mbs 2,   8 GPUs → grad_acc = 64         (our 8-H100 node, same target; our division)</div>
+<p>DP never splits the model, so every GPU must hold all of its training state. At the 16 bytes per parameter from <a href="training-step.html">A training step and where its memory goes</a>, Llama-3.1-8B needs <b class="lo">128.5 GB</b> on every GPU before any activations. An 80 GB H100 can't hold that. The ZeRO paper puts it bluntly: "Without ZeRO, the largest model DP alone can run has less than 1.5 Billion parameters" (on its 32 GB V100s).</p>
+
+<h2>What ZeRO shards, stage by stage</h2>
+<p>The ZeRO paper's Figure 1, redrawn for 4 GPUs. Bar length is bytes per parameter. A solid slice is what that GPU keeps. A dashed outline is the part it has dropped, because another GPU owns that slice.</p>
+<svg viewBox="0 0 716 212" role="img" aria-label="What each GPU stores under plain DP and ZeRO stages 1 to 3, four GPUs">
+<text class="sl" x="128" y="14">GPU 0</text>
+<text class="sl" x="278" y="14">GPU 1</text>
+<text class="sl" x="428" y="14">GPU 2</text>
+<text class="sl" x="578" y="14">GPU 3</text>
+<text class="st" x="0" y="36" font-weight="600">Plain DP</text>
+<text class="sl" x="0" y="52">16Ψ · 120 GB</text>
+<rect class="sp" x="128.00" y="26" width="17.00" height="24"/>
+<rect class="sg" x="145.00" y="26" width="17.00" height="24"/>
+<rect class="so" x="162.00" y="26" width="102.00" height="24"/>
+<rect class="sp" x="278.00" y="26" width="17.00" height="24"/>
+<rect class="sg" x="295.00" y="26" width="17.00" height="24"/>
+<rect class="so" x="312.00" y="26" width="102.00" height="24"/>
+<rect class="sp" x="428.00" y="26" width="17.00" height="24"/>
+<rect class="sg" x="445.00" y="26" width="17.00" height="24"/>
+<rect class="so" x="462.00" y="26" width="102.00" height="24"/>
+<rect class="sp" x="578.00" y="26" width="17.00" height="24"/>
+<rect class="sg" x="595.00" y="26" width="17.00" height="24"/>
+<rect class="so" x="612.00" y="26" width="102.00" height="24"/>
+<text class="st" x="0" y="84" font-weight="600">ZeRO-1</text>
+<text class="sl" x="0" y="100">7Ψ · 52.5 GB</text>
+<rect class="sp" x="128.00" y="74" width="17.00" height="24"/>
+<rect class="sg" x="145.00" y="74" width="17.00" height="24"/>
+<rect class="hole" x="162.00" y="74" width="102.00" height="24"/>
+<rect class="so" x="162.00" y="74" width="25.50" height="24"/>
+<rect class="sp" x="278.00" y="74" width="17.00" height="24"/>
+<rect class="sg" x="295.00" y="74" width="17.00" height="24"/>
+<rect class="hole" x="312.00" y="74" width="102.00" height="24"/>
+<rect class="so" x="337.50" y="74" width="25.50" height="24"/>
+<rect class="sp" x="428.00" y="74" width="17.00" height="24"/>
+<rect class="sg" x="445.00" y="74" width="17.00" height="24"/>
+<rect class="hole" x="462.00" y="74" width="102.00" height="24"/>
+<rect class="so" x="513.00" y="74" width="25.50" height="24"/>
+<rect class="sp" x="578.00" y="74" width="17.00" height="24"/>
+<rect class="sg" x="595.00" y="74" width="17.00" height="24"/>
+<rect class="hole" x="612.00" y="74" width="102.00" height="24"/>
+<rect class="so" x="688.50" y="74" width="25.50" height="24"/>
+<text class="st" x="0" y="132" font-weight="600">ZeRO-2</text>
+<text class="sl" x="0" y="148">5.5Ψ · 41.3 GB</text>
+<rect class="sp" x="128.00" y="122" width="17.00" height="24"/>
+<rect class="hole" x="145.00" y="122" width="17.00" height="24"/>
+<rect class="sg" x="145.00" y="122" width="4.25" height="24"/>
+<rect class="hole" x="162.00" y="122" width="102.00" height="24"/>
+<rect class="so" x="162.00" y="122" width="25.50" height="24"/>
+<rect class="sp" x="278.00" y="122" width="17.00" height="24"/>
+<rect class="hole" x="295.00" y="122" width="17.00" height="24"/>
+<rect class="sg" x="299.25" y="122" width="4.25" height="24"/>
+<rect class="hole" x="312.00" y="122" width="102.00" height="24"/>
+<rect class="so" x="337.50" y="122" width="25.50" height="24"/>
+<rect class="sp" x="428.00" y="122" width="17.00" height="24"/>
+<rect class="hole" x="445.00" y="122" width="17.00" height="24"/>
+<rect class="sg" x="453.50" y="122" width="4.25" height="24"/>
+<rect class="hole" x="462.00" y="122" width="102.00" height="24"/>
+<rect class="so" x="513.00" y="122" width="25.50" height="24"/>
+<rect class="sp" x="578.00" y="122" width="17.00" height="24"/>
+<rect class="hole" x="595.00" y="122" width="17.00" height="24"/>
+<rect class="sg" x="607.75" y="122" width="4.25" height="24"/>
+<rect class="hole" x="612.00" y="122" width="102.00" height="24"/>
+<rect class="so" x="688.50" y="122" width="25.50" height="24"/>
+<text class="st" x="0" y="180" font-weight="600">ZeRO-3 / FSDP</text>
+<text class="sl" x="0" y="196">4Ψ · 30 GB</text>
+<rect class="hole" x="128.00" y="170" width="17.00" height="24"/>
+<rect class="sp" x="128.00" y="170" width="4.25" height="24"/>
+<rect class="hole" x="145.00" y="170" width="17.00" height="24"/>
+<rect class="sg" x="145.00" y="170" width="4.25" height="24"/>
+<rect class="hole" x="162.00" y="170" width="102.00" height="24"/>
+<rect class="so" x="162.00" y="170" width="25.50" height="24"/>
+<rect class="hole" x="278.00" y="170" width="17.00" height="24"/>
+<rect class="sp" x="282.25" y="170" width="4.25" height="24"/>
+<rect class="hole" x="295.00" y="170" width="17.00" height="24"/>
+<rect class="sg" x="299.25" y="170" width="4.25" height="24"/>
+<rect class="hole" x="312.00" y="170" width="102.00" height="24"/>
+<rect class="so" x="337.50" y="170" width="25.50" height="24"/>
+<rect class="hole" x="428.00" y="170" width="17.00" height="24"/>
+<rect class="sp" x="436.50" y="170" width="4.25" height="24"/>
+<rect class="hole" x="445.00" y="170" width="17.00" height="24"/>
+<rect class="sg" x="453.50" y="170" width="4.25" height="24"/>
+<rect class="hole" x="462.00" y="170" width="102.00" height="24"/>
+<rect class="so" x="513.00" y="170" width="25.50" height="24"/>
+<rect class="hole" x="578.00" y="170" width="17.00" height="24"/>
+<rect class="sp" x="590.75" y="170" width="4.25" height="24"/>
+<rect class="hole" x="595.00" y="170" width="17.00" height="24"/>
+<rect class="sg" x="607.75" y="170" width="4.25" height="24"/>
+<rect class="hole" x="612.00" y="170" width="102.00" height="24"/>
+<rect class="so" x="688.50" y="170" width="25.50" height="24"/>
+</svg>
+<div class="key"><span><i class="ksp"></i>BF16 parameters 2Ψ</span><span><i class="ksg"></i>BF16 gradients 2Ψ</span><span><i class="kso"></i>optimizer state KΨ = 12Ψ (FP32 master copy 4 + Adam m 4 + v 4)</span><span><i class="khole"></i>slice held by another GPU</span></div>
+<p class="cap">Totals are per GPU for the paper's 7.5B model at N<sub>d</sub> = 4, straight from ZeRO Table 1 (52.5 / 41.3 / 30 GB). Activations aren't in the picture. Each GPU sees different data, so its activations are its own and "can't be sharded" (Playbook).</p>
+
+<p style="margin-top:14px">Model-state memory per GPU, exactly as ZeRO writes it (Figure 1):</p>
+<div class="mathbox">
+<math display="block">
+<mtable>
+<mtr><mtd><mtext class="nm">plain DP</mtext></mtd><mtd><mo stretchy="false">(</mo><mn>2</mn><mo>+</mo><mn>2</mn><mo>+</mo><mi>K</mi><mo stretchy="false">)</mo><mo>&#8290;</mo><mi>&#936;</mi></mtd></mtr>
+<mtr><mtd><msub><mi>P</mi><mtext>os</mtext></msub></mtd><mtd><mn>2</mn><mi>&#936;</mi><mo>+</mo><mn>2</mn><mi>&#936;</mi><mo>+</mo><mfrac><mrow><mi>K</mi><mo>&#8290;</mo><mi>&#936;</mi></mrow><msub><mi>N</mi><mi>d</mi></msub></mfrac></mtd></mtr>
+<mtr><mtd><msub><mi>P</mi><mtext>os+g</mtext></msub></mtd><mtd><mn>2</mn><mi>&#936;</mi><mo>+</mo><mfrac><mrow><mo stretchy="false">(</mo><mn>2</mn><mo>+</mo><mi>K</mi><mo stretchy="false">)</mo><mo>&#8290;</mo><mi>&#936;</mi></mrow><msub><mi>N</mi><mi>d</mi></msub></mfrac></mtd></mtr>
+<mtr><mtd><msub><mi>P</mi><mtext>os+g+p</mtext></msub></mtd><mtd><mfrac><mrow><mo stretchy="false">(</mo><mn>2</mn><mo>+</mo><mn>2</mn><mo>+</mo><mi>K</mi><mo stretchy="false">)</mo><mo>&#8290;</mo><mi>&#936;</mi></mrow><msub><mi>N</mi><mi>d</mi></msub></mfrac></mtd></mtr>
+</mtable>
+</math>
+<div class="legend">
+  <span class="sym">&#936;</span><span>number of parameters (ZeRO's notation)</span><span class="v">7.5B paper example · 8.03B Llama-3.1-8B</span>
+  <span class="sym">K</span><span>optimizer bytes per parameter: FP32 master copy, Adam m, Adam v</span><span class="v">12 ("Mixed-precision Adam has K = 12")</span>
+  <span class="sym">N<sub>d</sub></span><span>data-parallel degree: GPUs the state is split across</span><span class="v">64 paper · 8 our node</span>
+</div>
+</div>
+<div class="formula">Paper's example, Ψ = 7.5B, N_d = 64, K = 12:
+  plain DP   (2 + 2 + 12) × 7.5        = 120 GB
+  P_os       15 + 15 + 12 × 7.5 / 64   = 31.4 GB   "4x memory reduction"
+  P_os+g     15 + 14 × 7.5 / 64        = 16.6 GB   "8x"
+  P_os+g+p   16 × 7.5 / 64             = 1.88 GB   "64x" (linear in N_d)</div>
+<div class="tw"><table>
+<tr><th>N<sub>d</sub> (7.5B model)</th><th class="num">P<sub>os</sub></th><th class="num">P<sub>os+g</sub></th><th class="num">P<sub>os+g+p</sub></th></tr>
+<tr><td>1</td><td class="num">120</td><td class="num">120</td><td class="num">120</td></tr>
+<tr><td>4</td><td class="num">52.5</td><td class="num">41.3</td><td class="num">30</td></tr>
+<tr><td>64</td><td class="num">31.4</td><td class="num">16.6</td><td class="num hi">1.88</td></tr>
+<tr><td>1,024</td><td class="num">30.1</td><td class="num">15.1</td><td class="num hi">0.12</td></tr>
+</table></div>
+<p class="cap">GB per GPU, ZeRO Table 1 (all six rows reproduce exactly in the lab). Stages 1 and 2 level off at 4Ψ and 2Ψ, because every GPU still holds a full copy of the weights and, in stage 1, the gradients. Only stage 3 keeps shrinking. The paper puts the same point in model sizes: at N<sub>d</sub> = 64 it trains up to 7.5B, 14B and 128B with the three stages, and 1T at N<sub>d</sub> = 1,024.</p>
+
+<p style="margin-top:14px">The three things being sharded, each shown with the paper's model and with ours:</p>
+<div class="tw"><table class="parts">
+<tr><th>State</th><th class="what">What it is and when it's needed</th><th>7.5B, N<sub>d</sub> = 64 (paper)</th><th>Llama-3.1-8B, N<sub>d</sub> = 8 (ours)</th></tr>
+<tr><td>Optimizer state</td><td class="what">FP32 master weights plus Adam's m and v, 12 bytes per parameter. It's touched only in the optimizer step, so a GPU needs only the slice it updates. That makes it the cheapest thing to shard.</td><td class="ex"><b>90 GB → 1.41 GB</b><span>stage 1</span></td><td class="ex"><b>96.4 GB → 12.0 GB</b><span>stage 1</span></td></tr>
+<tr><td>Gradients</td><td class="what">BF16, 2 bytes per parameter, produced layer by layer in backward. After a reduce-scatter each GPU keeps only the slice matching its optimizer shard, and frees the rest on the fly.</td><td class="ex"><b>15 GB → 0.23 GB</b><span>stage 2</span></td><td class="ex"><b>16.1 GB → 2.0 GB</b><span>stage 2</span></td></tr>
+<tr><td>Parameters</td><td class="what">BF16, 2 bytes per parameter, needed by every layer in both forward and backward. With stage 3 they have to be gathered just in time, twice per step, and thrown away after use.</td><td class="ex"><b>15 GB → 0.23 GB</b><span>stage 3</span></td><td class="ex"><b>16.1 GB → 2.0 GB</b><span>stage 3</span></td></tr>
+</table></div>
+
+<h2>What it costs in communication: 2Ψ, or 3Ψ for stage 3</h2>
+<div class="mathbox">
+<math display="block">
+  <msub><mi>V</mi><mtext>DP, ZeRO-1, ZeRO-2</mtext></msub><mo>=</mo>
+  <munder class="t3"><mi>&#936;</mi><mtext class="lab">reduce-scatter grads</mtext></munder><mo>+</mo>
+  <munder class="t3"><mi>&#936;</mi><mtext class="lab">all-gather</mtext></munder><mo>=</mo><mn>2</mn><mi>&#936;</mi>
+  <mspace width="1.4em"/>
+  <msub><mi>V</mi><mtext>ZeRO-3</mtext></msub><mo>=</mo>
+  <munder class="t3"><mi>&#936;</mi><mtext class="lab">gather, forward</mtext></munder><mo>+</mo>
+  <munder class="t3"><mi>&#936;</mi><mtext class="lab">gather, backward</mtext></munder><mo>+</mo>
+  <munder class="t3"><mi>&#936;</mi><mtext class="lab">reduce-scatter</mtext></munder><mo>=</mo><mn>3</mn><mi>&#936;</mi>
+</math>
+<div class="legend">
+  <span class="sym">V</span><span>elements each GPU moves per step (ZeRO §7); ×2 for bytes in BF16, ×(n−1)/n for the ring</span><span class="v">DP: 2 × 7/8 × 16.06 GB = 28.1 GB for the 8B</span>
+</div>
+</div>
+<p>Plain DP's all-reduce is a reduce-scatter plus an all-gather, Ψ elements each (the identity from <a href="../perf-6-scaling-out/collectives.html">the collectives card</a>). ZeRO-1 and ZeRO-2 do the same two collectives, just split up differently: reduce-scatter the gradients so each GPU gets the summed slice it owns, update that slice, then all-gather the updated weights. ZeRO says that's "exactly the same as the baseline DP". ZeRO-3 no longer keeps the weights, so it gathers each layer's weights in forward, throws them away, and gathers them again in backward. That second gather is the extra Ψ: "3Ψ which is 1.5x compared to the baseline". The PyTorch FSDP paper measures the same "1.5x communication overhead and volume over DDP". The Playbook also counts it in launches: "2·num_layers − 1 additional all-gathers" per step, each with its own latency.</p>
+<div class="tw"><table class="plan">
+<tr><th></th><th>Forward</th><th>Backward</th><th>Optimizer step</th></tr>
+<tr><td>Plain DP</td><td class="mu">no communication</td><td>all-reduce gradients, bucketed and overlapped</td><td>every GPU updates all Ψ (identical, duplicated work)</td></tr>
+<tr><td>ZeRO-1</td><td class="mu">no communication</td><td>reduce-scatter gradients (full gradients still held)</td><td>update own 1/N<sub>d</sub>, then all-gather BF16 weights</td></tr>
+<tr><td>ZeRO-2</td><td class="mu">no communication</td><td>reduce-scatter each bucket, free the rest at once</td><td>update own 1/N<sub>d</sub>, then all-gather BF16 weights</td></tr>
+<tr><td>ZeRO-3 / FSDP</td><td>all-gather each unit, compute, free it</td><td>all-gather each unit again, then reduce-scatter its gradients</td><td>update own shard; no gather needed</td></tr>
+</table></div>
+<p class="cap">The Playbook's note: "there is no real overhead to using ZeRO-2 over ZeRO-1 besides implementation complexity, and indeed ZeRO-2 is usually the better option."</p>
+
+<h2>FSDP: PyTorch's ZeRO-3</h2>
+<p>PyTorch FSDP (Zhao et al., VLDB 2023) implements stage 3 with a few engineering choices that are worth knowing by name:</p>
+<ul>
+<li><b>Units.</b> You wrap the model into FSDP units, for example one per transformer block. FSDP "only materializes unsharded parameters and gradients of one unit at a time", so peak memory is "the size of the sharded model plus the size of the largest fully-materialized FSDP unit".</li>
+<li><b>FlatParameter.</b> A unit's parameters are concatenated into one 1-D tensor, padded, and cut into equal chunks, one per rank. NCCL's all-gather and reduce-scatter need even sizes, and one big collective beats many small ones (the same idea as bucketing).</li>
+<li><b>Prefetch.</b> Backward prefetch issues the next unit's all-gather before the current reduce-scatter, so the two don't queue on one NCCL stream. On GPT-175B it gave "approximately 18% speedup". Forward prefetch does the same in forward when the CPU can't issue collectives early enough. The Playbook describes the same trick for ZeRO-3: gather layer n+1 while computing layer n.</li>
+<li><b>Sharding factor F.</b> F = 1 is plain DDP, F = world size is full sharding, and anything in between is <i>hybrid sharding</i>: shard within a group (say, a node on NVLink) and replicate across groups.</li>
+</ul>
+<p>Headline result: GPT-175B on up to 512 A100s at "173 and 186 TFLOPS per GPU" (batch 1 and 2), "approximately 55% and 60%" of the A100's 312 TFLOPS BF16 peak, scaling linearly from 128 to 512 GPUs.</p>
+
+<h2>Worked example: Llama-3.1-8B on one 8×H100 node</h2>
+<p>Ψ = 8.03B, 16 bytes per parameter (ZeRO's convention; 128.5 GB of state), N<sub>d</sub> = 8, and the course's link speeds: NVLink 450 GB/s per GPU in each direction, InfiniBand 50 GB/s per GPU. These are model states only. Activations come on top.</p>
+<div class="tw"><table>
+<tr><th>Stage</th><th class="num">State per GPU</th><th>Fits 80 GB?</th><th class="num">Sent per GPU per step</th><th class="num">NVLink</th><th class="num">IB, one NIC each</th></tr>
+<tr><td>Plain DP</td><td class="num lo">128.5 GB</td><td class="lo">no, 48.5 GB over</td><td class="num">28.1 GB</td><td class="num">62.5 ms</td><td class="num">562 ms</td></tr>
+<tr><td>ZeRO-1</td><td class="num">44.2 GB</td><td>yes, 35.8 GB spare</td><td class="num">28.1 GB</td><td class="num">62.5 ms</td><td class="num">562 ms</td></tr>
+<tr><td>ZeRO-2</td><td class="num">30.1 GB</td><td>yes, 49.9 GB spare</td><td class="num">28.1 GB</td><td class="num">62.5 ms</td><td class="num">562 ms</td></tr>
+<tr><td>ZeRO-3 / FSDP</td><td class="num hi">16.1 GB</td><td>yes, 63.9 GB spare</td><td class="num">42.2 GB</td><td class="num">93.7 ms</td><td class="num lo">843 ms</td></tr>
+</table></div>
+<div class="formula">memory   ZeRO-1  2Ψ + 2Ψ + 12Ψ/8 = 16.06 + 16.06 + 12.05 = 44.2 GB
+         ZeRO-2  2Ψ + 14Ψ/8      = 16.06 + 14.05         = 30.1 GB
+         ZeRO-3  16Ψ/8           = 128.5 / 8             = 16.1 GB
+traffic  2Ψ: 2 × 7/8 × 16.06 GB = 28.1 GB → ÷ 450 GB/s = 62.5 ms
+         3Ψ: 3 × 7/8 × 16.06 GB = 42.2 GB → ÷ 450 GB/s = 93.7 ms
+compute  one 4,096-token sequence per GPU, 989 TFLOPS dense BF16, 100%:
+         forward  2 × 8.03e9 × 4,096 / 989e12 =  66.5 ms
+         backward 4 × 8.03e9 × 4,096 / 989e12 = 133.0 ms</div>
+<p class="ours">Our reading (ceiling arithmetic, not a measurement): over NVLink every stage's traffic fits under the math. DP's 62.5 ms all-reduce hides inside the 133 ms backward. ZeRO-3's extra forward gather (31.2 ms) hides inside the 66.5 ms forward. If the eight GPUs sat in eight different nodes with one 50 GB/s NIC each, the same traffic would take 562–843 ms against 200 ms of math, and the step would be communication-bound. At the 20 bytes per parameter of FP32 gradient accumulation (Playbook), the states become 160.6 / 76.3 / 34.1 / 20.1 GB. ZeRO-1's 76.3 GB assumes the FP32 gradients stay unsharded (our assumption), which leaves 3.7 GB for activations.</p>
+
+<h2>When does DP or FSDP stay compute-bound?</h2>
+<p>Scaling Book Part 5 compares the backward-pass math with the gradient traffic, one layer at a time. The math grows with the tokens each chip processes. The traffic doesn't: it's always one set of weight gradients. So there is a minimum batch per chip:</p>
+<div class="mathbox">
+<math display="block">
+  <mfrac><mi>B</mi><mi>X</mi></mfrac><mo>&gt;</mo><mfrac><mi>C</mi><msub><mi>W</mi><mtext>ici</mtext></msub></mfrac>
+  <mspace width="1.2em"/><mtext class="nm">from</mtext><mspace width="0.6em"/>
+  <msub><mi>T</mi><mtext>math</mtext></msub><mo>=</mo><mfrac><mrow><mn>2</mn><mo>&#183;</mo><mn>2</mn><mo>&#183;</mo><mn>2</mn><mo>&#183;</mo><mi>B</mi><mi>D</mi><mi>F</mi></mrow><mrow><mi>X</mi><mo>&#183;</mo><mi>C</mi></mrow></mfrac>
+  <mo>,</mo><mspace width="0.6em"/>
+  <msub><mi>T</mi><mtext>comms</mtext></msub><mo>=</mo><mfrac><mrow><mn>2</mn><mo>&#183;</mo><mn>2</mn><mo>&#183;</mo><mn>2</mn><mo>&#183;</mo><mi>D</mi><mi>F</mi></mrow><msub><mi>W</mi><mtext>ici</mtext></msub></mfrac>
+</math>
+<div class="legend">
+  <span class="sym">B</span><span>global batch in tokens</span><span class="v">Playbook example: 4M</span>
+  <span class="sym">X</span><span>chips the batch is split over</span><span class="v">so B/X = tokens per chip</span>
+  <span class="sym">C</span><span>FLOP/s per chip</span><span class="v">4.59e14 v5p · 989e12 H100</span>
+  <span class="sym">W</span><span>network bandwidth per chip</span><span class="v">1.8e11 v5p ICI · 450e9 NVLink</span>
+  <span class="sym">D, F</span><span>MLP dimensions; they cancel</span><span class="v">the bound is model-free</span>
+</div>
+</div>
+<p>FSDP has the same bound: "we can basically always do ZeRO-3 sharding". Its extra forward gather lines up against forward FLOPs in the same proportion, so the ratio doesn't change. The number depends on the hardware:</p>
+<div class="tw"><table>
+<tr><th>Setup</th><th class="num">C</th><th class="num">W</th><th class="num">Min tokens per chip</th><th>Source</th></tr>
+<tr><td>TPU v5p, one ICI axis</td><td class="num">4.59e14</td><td class="num">1.8e11</td><td class="num">2,550</td><td>Scaling Book Part 5 (850 with all 3 axes)</td></tr>
+<tr><td>H100, inside a node (NVLink)</td><td class="num">990e12</td><td class="num">450e9</td><td class="num">2,200</td><td>Scaling Book GPU chapter</td></tr>
+<tr><td>H100, across nodes (400 GB/s node egress)</td><td class="num">990e12</td><td class="num">400e9</td><td class="num">2,475</td><td>Scaling Book GPU chapter</td></tr>
+<tr><td>B200, across nodes</td><td class="num">2,250e12</td><td class="num">400e9</td><td class="num">5,625</td><td>Scaling Book GPU chapter</td></tr>
+<tr><td>Ours: H100, 8-GPU NVLink ring, × (n−1)/n</td><td class="num">989e12</td><td class="num">450e9</td><td class="num hi">1,923</td><td>our arithmetic</td></tr>
+<tr><td>Ours: H100, each GPU on its own 50 GB/s NIC</td><td class="num">989e12</td><td class="num">50e9</td><td class="num lo">19,780</td><td>our arithmetic, pessimistic</td></tr>
+</table></div>
+<p class="cap">The lab checks the 1,923: at that many tokens per GPU, the 8B's backward takes 62.5 ms, exactly as long as its all-reduce. Across nodes the book divides by the node's total egress (8 NICs × 50 GB/s = 400 GB/s). We read that as assuming the gradients are first reduced inside the node over NVLink, so each NIC carries only 1/8 of them. If every GPU pushed the full gradient through its own NIC, you'd need 8× the batch (our inference). The Scaling Book's own takeaway: "about 2500 tokens" per GPU on an H100 or B200. For MoE models it's E/k times more.</p>
+
+<h2>Why it beats the alternatives</h2>
+<div class="grid2">
+  <div class="cell"><h3><span class="x">&#10007;</span> Plain DP (DDP)</h3><p>The cheapest communication pattern, but every GPU holds all 16Ψ. That's 128.5 GB for an 8B model, so it doesn't fit an 80 GB H100 at any N<sub>d</sub>. Adding GPUs adds throughput, never memory.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Tensor parallelism alone</h3><p>Shards weights and activations, but its collectives sit on the critical path of every layer. On TPU v5p the Scaling Book finds it comm-bound past about F/2550, 8–16 ways. On GPUs it stays inside a node (<a href="parallelism-4d.html">4D parallelism</a>).</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Pipeline parallelism alone</h3><p>Moves little data, but idles in the bubble and needs complex schedules. It also "plays badly with FSDP": each micro-batch would re-gather the weights, so pipelines pair with ZeRO-1 instead (DeepSeek-V3 did PP + ZeRO-1).</p></div>
+  <div class="cell win"><h3><span class="ok">&#10003;</span> ZeRO / FSDP sharding</h3><p>Keeps DP's simple, overlappable, off-critical-path communication (the same 2Ψ, or 1.5× for stage 3). Model-state memory drops to 16Ψ/N<sub>d</sub>: 16.1 GB per GPU for the 8B on one node.</p></div>
+</div>
+
+<h2>Is FSDP always the answer?</h2>
+<div class="note">
+  <p>No. It's the default for training dense models that don't fit one GPU. It's the wrong tool when:</p>
+  <ul>
+    <li><b>You're serving, especially decode.</b> Each decode step handles a handful of tokens, so there's no math to hide the weight gathers behind. Gathering 7/8 of Llama-3.1-8B's 16.06 GB over NVLink takes <b class="lo">31.2 ms per token</b>, while one GPU reads the whole model from HBM in 4.79 ms (ours). For 70B on 8 GPUs it's <b class="lo">274 ms</b>, against 5.27 ms to read a TP8 shard (<a href="../perf-6-scaling-out/pipeline-data-parallel.html">Pipeline and data parallelism when serving</a>). The Scaling Book: "We want to move activations rather than weights." Serving uses TP inside a node, plus independent replicas.</li>
+    <li><b>Tokens per GPU fall below C/W</b> (~2,200–2,500 on H100s). Then the collectives outlast the math. Mixing in tensor parallelism cuts the floor to 2550²/2F ≈ 100 per chip on TPU v5p (Scaling Book). The Playbook's rule of thumb is that DP "shouldn't exceed 512", since past that the rings become latency-bound.</li>
+    <li><b>Activations are the problem.</b> ZeRO shards only model states. For long sequences or big micro-batches you need recomputation or context parallelism (<a href="precision-recompute.html">Mixed precision, FP8 and activation checkpointing</a>).</li>
+    <li><b>You're pipelining.</b> Use ZeRO-1 or ZeRO-2 with pipelines, not ZeRO-3.</li>
+  </ul>
+</div>
+
+<h2>Run it yourself</h2>
+<p><a href="https://github.com/seyonv/explainers/blob/main/perf-7-training-economics/labs/zero-memory.py">Run it: labs/zero-memory.py</a> <b>[L]</b> runs on your Mac in under a second (numpy only). It reproduces all six rows of ZeRO Table 1 and prints every number in the worked example, including the 20-byte variant. It computes the C/W table and checks the 1,923-token break-even. It also trains a tiny linear model with Adam on 4 simulated ranks four ways (DP and ZeRO-1/2/3). All four end with bit-identical weights (max difference 0.0). Per rank per step, DP and ZeRO-1/2 each send 24 elements and ZeRO-3 sends 36, the 2Ψ vs 3Ψ ratio. Try <code>k=4</code> in <code>zero_mem</code> (a lighter optimizer shrinks the stage-1 win), <code>n = 64</code> (bytes per GPU barely grow: 1.97 vs 1.75 × 16 GB), or <code>W = 300e9</code> in section 4.</p>
+
+<div class="foot">
+<p><b>Read next:</b> ZeRO, <a href="https://arxiv.org/abs/1910.02054">Rajbhandari et al. 2020</a>, §5 "Deep Dive into ZeRO-DP" (all of it, with Table 1), ~15 min, then §7 on communication volume (~5 min). Then the <a href="https://huggingface.co/spaces/nanotron/ultrascale-playbook">Ultra-Scale Playbook</a>, the "Data Parallelism" and "Zero Redundancy Optimizer (ZeRO)" sections, ~30 min. Optional: <a href="https://jax-ml.github.io/scaling-book/training/">Scaling Book Part 5</a>, "Data Parallelism" and "Fully-Sharded Data Parallelism (FSDP)", ~15 min, and the "Data Parallelism" roofline in <a href="https://jax-ml.github.io/scaling-book/gpus/">"How to Think About GPUs"</a>, ~5 min. PyTorch FSDP, <a href="https://arxiv.org/abs/2304.11277">Zhao et al. 2023</a>, §3 "System design" (units, sharding strategies, prefetch), ~15 min.</p>
+<p><b>Related:</b> <a href="training-step.html">A training step and where its memory goes</a> · <a href="compute-budgets.html">Compute budgets: 6ND, Chinchilla and MFU</a> · <a href="parallelism-4d.html">4D parallelism: TP, PP, CP and EP in training</a> · <a href="precision-recompute.html">Mixed precision, FP8 and activation checkpointing</a> · <a href="post-training.html">From pretrained to served</a> · course 6, Serving across many GPUs: <a href="../perf-6-scaling-out/collectives.html">How GPUs talk: collectives and interconnects</a>, <a href="../perf-6-scaling-out/pipeline-data-parallel.html">Pipeline and data parallelism when serving</a>, <a href="../perf-6-scaling-out/megatron-mlp-attention.html">Megatron I</a> · course 2, The math of serving an LLM: <a href="../perf-2-scaling-book-inference/critical-batch-size.html">the critical batch size</a>, <a href="../perf-2-scaling-book-inference/sharding-prefill-generation.html">sharding prefill vs generation</a></p>
+<p><b>Sources:</b> 16Ψ accounting, K = 12, Figure 1 formulas, 120 / 31.4 / 16.6 / 1.9 GB, Table 1, "4x / 8x / 64x", the 7.5B / 14B / 128B / 1T sizes, "less than 1.5 Billion", and 2Ψ vs 3Ψ (§7): <a href="https://arxiv.org/abs/1910.02054">ZeRO, arXiv 1910.02054</a>. Overlap, bucketing, <code>no_sync</code>, gbs = mbs × grad_acc × dp, the 4M-token / 128 / 512-GPU example, "can't be sharded", "ZeRO-2 is usually the better option", "2·num_layers − 1", prefetching, "DP shouldn't exceed 512", 20 bytes with FP32 gradient accumulation, the 25 MB bucket: <a href="https://huggingface.co/spaces/nanotron/ultrascale-playbook">Ultra-Scale Playbook</a>. B/X &gt; C/W<sub>ici</sub>, 2,550, 850, "critical path", "basically always do ZeRO-3", 2550²/2F: <a href="https://jax-ml.github.io/scaling-book/training/">Scaling Book Part 5</a>. 2,200, 2,475, 5,625, "about 2500 tokens", E/k, pipelining "plays badly with FSDP" and "makes ZeRO-3 impossible … you can do ZeRO-1 instead": <a href="https://jax-ml.github.io/scaling-book/gpus/">Scaling Book, "How to Think About GPUs"</a>. DeepSeek-V3 "used PP combined with ZeRO-1": Playbook. Units, FlatParameter, prefetch and ~18%, sharding factor F, 1.5×, 173 / 186 TFLOPS: <a href="https://arxiv.org/abs/2304.11277">PyTorch FSDP, arXiv 2304.11277</a>. "Move activations rather than weights", 274 ms and 5.27 ms: <a href="../perf-6-scaling-out/pipeline-data-parallel.html">course 6</a> (Scaling Book Part 7). 8.03B, 989 TFLOPS, 3.35 TB/s, 450 and 50 GB/s: course facts. Every Llama-3.1-8B number on this card is our arithmetic in <code>labs/zero-memory.py</code>: ceilings, not measurements.</p>
+</div>
+</article>
+<!-- series-nav:bottom -->
+<div class="snx"><a class="nx" href="index.html#parallelism-4d" target="_top">
+<span class="mini" aria-hidden="true"><span class="m1">4D parallelism: TP, PP, CP and EP in training</span><span class="m2">Also called model parallelism, 3D parallelism or PTD-P (Megatron: pipeline, tensor, data), 4D (Llama 3 adds context) or 5D (the Ultra-Scale Playbook adds experts). Layouts are written like "TP8 PP16…</span><span class="m3">In one breath</span><span class="m4">One GPU can't hold a big model's training state, and one GPU would take centuries to do the FLOPs. So training splits the work along every axis it has: tensor (inside each matrix, over fast NVLink), sequence/context (along the tokens), pipeline (blocks of layers, across nodes), expert (whole experts, for MoE) and data (copies of…</span></span>
+<span class="tx"><span class="lab">Next up · 05 / 13</span><span class="tt">4D parallelism: TP, PP, CP and EP in training</span><span class="ds">Pipeline bubbles and Llama 3's layouts</span><span class="nd">Builds directly on this card.</span><span class="go">Continue →</span></span></a><div class="aux"><span><a href="index.html#compute-budgets" target="_top">← Compute budgets: 6ND, Chinchilla and MFU</a></span><a href="index.html" target="_top">All cards in 7 · Training &amp; cost per token</a></div></div>
+<!-- /series-nav:bottom -->
+</body>
+</html>

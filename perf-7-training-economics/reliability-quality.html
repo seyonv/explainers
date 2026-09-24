@@ -1,0 +1,326 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reliability and quality: failures, canaries and evals</title>
+<style>
+:root{
+  --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
+  --text:#1c1f23; --muted:#6b7068; --faint:#b9b9b3;
+  --accent:#4a9d77; --accent-bg:#dcefdf; --accent-border:#8cc79c;
+  --red:#c0492b; --red-bg:#fbeceb;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#15171a; --surface:#1d2024; --surface2:#24282d; --border:#32373d;
+    --text:#e6e8ea; --muted:#9aa1a9; --faint:#4a5057;
+    --accent:#5fb37f; --accent-bg:#1c2b22; --accent-border:#3f7a55;
+    --red:#e57368; --red-bg:#2e1f1e;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text)}
+.card{max-width:820px;margin:0 auto;padding:28px 32px;font-family:-apple-system,"Inter",system-ui,sans-serif;line-height:1.45}
+h1{font-size:26px;font-weight:600;margin:0 0 6px;letter-spacing:-0.01em}
+.sub{font-size:15px;color:var(--muted);margin:0 0 20px}
+h2{font-size:17px;font-weight:600;margin:26px 0 10px}
+p{font-size:15px;margin:0 0 10px}
+ul,ol{font-size:15px;margin:0 0 10px;padding-left:22px}
+li{margin-bottom:4px}
+.cap{font-size:13px;color:var(--muted);margin:8px 0 0;text-align:center}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+
+/* Tables and formulas */
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border)}
+th{font-size:12px;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:none}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+.hi{color:var(--accent);font-weight:600} .lo{color:var(--red)}
+.formula{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin:10px 0;white-space:pre;overflow-x:auto;line-height:1.55}
+.tw{overflow-x:auto}
+.mini{display:inline-block;height:9px;border-radius:2px;background:var(--red);vertical-align:middle}
+.mini.g{background:var(--faint)}
+tr.best td{background:var(--accent-bg)}
+
+/* MathML formula (patterns.md 1) */
+.mathbox{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px 16px 12px;margin:10px 0;overflow-x:auto}
+.mathbox math{font-size:21px;color:var(--text);font-family:"STIX Two Math","Latin Modern Math","Cambria Math",math}
+.mathbox .t1{color:var(--text)} .mathbox .t2{color:var(--accent)} .mathbox .t3{color:var(--muted)}
+.mathbox .lab{font-size:12px;font-family:-apple-system,"Inter",system-ui,sans-serif;padding-top:3px;border-top:1.5px solid currentColor;margin-top:2px}
+.legend{display:grid;grid-template-columns:auto 1fr auto;column-gap:14px;row-gap:5px;font-size:13px;margin-top:12px;align-items:baseline}
+.legend .sym{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;text-align:right}
+.legend .v{color:var(--muted);text-align:right;font-variant-numeric:tabular-nums}
+@media (max-width:560px){.legend{grid-template-columns:auto 1fr}.legend .v{display:none}}
+
+/* Two examples per term (patterns.md 3) */
+.parts td{vertical-align:top} .parts td:first-child{font-weight:600;white-space:nowrap}
+.parts .ex{font-size:13px} .parts .ex span{display:block;color:var(--muted)}
+@media (max-width:560px){.parts .what{display:none}}
+
+/* 2x2 grid */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.cell{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.cell.win{background:var(--accent-bg);border-color:var(--accent-border)}
+.cell h3{font-size:16px;font-weight:600;margin:0 0 5px;display:flex;gap:8px;align-items:baseline}
+.cell p{font-size:14px;margin:0;color:var(--text)}
+.cell.win h3,.cell.win p{color:var(--accent)}
+.x{color:var(--red)} .ok{color:var(--accent)}
+
+/* Clarification box */
+.note{border:1px solid var(--border);border-radius:10px;padding:14px 18px;font-size:14px}
+.note p,.note li{font-size:14px} .note p:last-child{margin-bottom:0}
+.ours{border:1px dashed var(--border);border-radius:10px;padding:12px 16px;margin-top:10px}
+.ours .tag{font-size:12px;color:var(--muted);font-weight:600;letter-spacing:.02em}
+.ours p,.ours li{font-size:14px}
+
+.foot{margin-top:22px;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+.foot p{font-size:13px}
+.lab-link{display:inline-block;font-size:13px;border:1px solid var(--accent-border);background:var(--accent-bg);color:var(--accent);border-radius:6px;padding:4px 10px;margin:2px 0 10px;text-decoration:none}
+svg{display:block;max-width:100%;height:auto}
+.sl{font-size:12px;fill:var(--muted)} .st{font-size:13px;fill:var(--text)}
+.sw{fill:var(--accent)} .sg{fill:var(--faint)} .sr{fill:var(--red)} .srb{fill:var(--red-bg);stroke:var(--red);stroke-width:1;stroke-dasharray:3 2}
+.tr{fill:var(--red);font-size:12px} .tg{fill:var(--accent);font-size:12px}
+.ax{stroke:var(--faint);stroke-width:1}
+@media (max-width:560px){.grid2{grid-template-columns:1fr}.card{padding:20px 16px}.hide-s{display:none}}
+a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+/* series-nav */
+.sn{max-width:820px;margin:0 auto;padding:16px 32px 0;font-family:-apple-system,"Inter",system-ui,sans-serif;font-size:13px;line-height:1.5;color:var(--muted)}
+.sn a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
+.sn .crumbs{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 7px}
+.sn .crumbs b{color:var(--text);font-weight:600}
+.sn .sep{color:var(--faint,var(--border))}
+.sn .step{margin-left:auto;white-space:nowrap}
+.sn .dep{margin-top:5px;padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface)}
+.sn .dep .ok{color:var(--accent);font-weight:600}
+.snx{max-width:820px;margin:0 auto;padding:6px 32px 44px;font-family:-apple-system,"Inter",system-ui,sans-serif}
+.snx .nx{display:grid;grid-template-columns:280px 1fr;text-decoration:none;color:var(--text);background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.snx .nx:hover,.snx .nx:focus-visible{border-color:var(--accent-border,var(--accent));outline:none}
+.snx .mini{position:relative;height:210px;overflow:hidden;background:var(--bg);border-right:1px solid var(--border);padding:14px 16px}
+.snx .mini span{display:block}
+.snx .mini .m1{font-size:12.5px;font-weight:600;margin:0 0 4px;line-height:1.3}
+.snx .mini .m2{font-size:9px;color:var(--muted);margin:0 0 8px;line-height:1.4}
+.snx .mini .m3{font-size:8.5px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;margin:0 0 3px}
+.snx .mini .m4{font-size:9.5px;margin:0;line-height:1.45}
+.snx .tx{padding:16px 20px}
+.snx .lab{font-size:12px;font-weight:600;color:var(--accent);letter-spacing:.04em;text-transform:uppercase}
+.snx .tt{display:block;font-size:20px;font-weight:600;margin:5px 0 4px;line-height:1.25}
+.snx .ds{display:block;font-size:14px;color:var(--muted)}
+.snx .nd{display:block;font-size:13px;color:var(--muted);margin-top:10px}
+.snx .go{display:block;margin-top:12px;font-size:14px;font-weight:600;color:var(--accent)}
+.snx .aux{display:flex;justify-content:space-between;gap:12px;margin-top:10px;font-size:13px;color:var(--muted)}
+.snx .aux a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
+@media (max-width:560px){.sn,.snx{padding-left:16px;padding-right:16px}.snx .nx{grid-template-columns:1fr}.snx .mini{display:none}.sn .step{margin-left:0}}
+/* /series-nav */
+</style>
+</head>
+<body>
+<!-- series-nav:top -->
+<nav class="sn" aria-label="Course navigation"><div class="crumbs"><a href="../perf-0-map/index.html" target="_top">Fast LLM inference</a><span class="sep">›</span><a href="index.html" target="_top">7 · Training &amp; cost per token</a><span class="sep">›</span><b>12 / 13</b><span class="step"><a href="index.html#kv-aware-routing" target="_top">← prev</a> · <a href="index.html#kernelbench" target="_top">next →</a></span></div>
+<div class="dep"><b>Before this:</b> <a href="../perf-6-scaling-out/index.html#sizing-deployment" target="_top">Sizing a deployment: how many GPUs, and which layout</a> (perf-6)</div></nav>
+<!-- /series-nav:top -->
+<article class="card">
+<h1>Reliability and quality: failures, canaries and evals</h1>
+<p class="sub">Also called fault tolerance, high availability, safe rollouts, progressive delivery, or quality regression testing. GPUs fail often enough that you plan for failure: Llama 3 lost its training job 419 times in 54 days, and Kiely turns that into about one failure per 50,000 GPU-hours for inference. Every speed change (quantization, a new draft model, a new kernel) can also quietly change the answers. This card covers both, and ends with our checklist for shipping a speed change.</p>
+
+<h2>In one breath</h2>
+<p>Hardware breaks at a steady rate, so what you design is how much each failure costs. A training job loses the work since its last checkpoint plus a restart, a serving fleet loses the replica (or node) that failed until a spare takes over. Software changes break things too, so new versions reach users gradually (a canary), and a speed change only ships once an eval shows the outputs stayed the same.</p>
+
+<h2>1. How often GPUs fail: Llama 3's 54 days</h2>
+<p>Meta pre-trained Llama 3 405B on up to 16,384 H100s. Over a 54-day snapshot the job was interrupted <b>466</b> times: <b>47</b> planned (firmware upgrades, config or dataset changes) and <b>419</b> unexpected. "Approximately 78%" of the unexpected ones were confirmed or suspected hardware, and only three needed significant manual intervention. Table 5's top rows:</p>
+<div class="tw"><table>
+<tr><th>Root cause</th><th class="num">Count</th><th></th><th class="num">Printed %</th><th class="num">Count ÷ 419</th></tr>
+<tr><td>Faulty GPU</td><td class="num">148</td><td><span class="mini" style="width:148px"></span></td><td class="num lo">30.1%</td><td class="num">35.3%</td></tr>
+<tr><td>GPU HBM3 memory</td><td class="num">72</td><td><span class="mini" style="width:72px"></span></td><td class="num">17.2%</td><td class="num">17.2%</td></tr>
+<tr><td>Software bug</td><td class="num">54</td><td><span class="mini g" style="width:54px"></span></td><td class="num">12.9%</td><td class="num">12.9%</td></tr>
+<tr><td>Network switch or cable</td><td class="num">35</td><td><span class="mini g" style="width:35px"></span></td><td class="num">8.4%</td><td class="num">8.4%</td></tr>
+<tr><td>Host maintenance (unplanned)</td><td class="num">32</td><td><span class="mini g" style="width:32px"></span></td><td class="num">7.6%</td><td class="num">7.6%</td></tr>
+<tr><td>GPU SRAM memory</td><td class="num">19</td><td><span class="mini" style="width:19px"></span></td><td class="num">4.5%</td><td class="num">4.5%</td></tr>
+<tr><td>GPU system processor</td><td class="num">17</td><td><span class="mini" style="width:17px"></span></td><td class="num">4.1%</td><td class="num">4.1%</td></tr>
+<tr><td>11 smaller causes (NIC, NCCL watchdog, silent data corruption, …)</td><td class="num">42</td><td><span class="mini g" style="width:42px"></span></td><td class="num">10.1%</td><td class="num">10.0%</td></tr>
+<tr><td><b>All unexpected</b></td><td class="num"><b>419</b></td><td></td><td class="num lo">94.9%</td><td class="num">100%</td></tr>
+</table></div>
+<p class="cap">Red bars: rows Llama 3 files under the GPU category; the grey "smaller causes" row also holds two GPU rows (silent data corruption, thermal). Counts and printed % from Llama 3, Table 5; the last column is our arithmetic (labs/failure-sim.py).</p>
+<p><b>The percentages don't reconcile, so cite the counts.</b> 148 ÷ 419 = 35.3%, but the table prints 30.1% (every other row matches its count). With 35.3% the column adds to 100.1%, and with 30.1% it adds to 94.9%. The text's "GPU issues … 58.7%" matches the sum of the printed GPU rows, while the counts give 268 ÷ 419 = 64.0%. Our guess is a typo in one cell that carried into the text; the paper doesn't say.</p>
+<div class="formula">GPU-hours in the snapshot   16,384 × 54 days × 24 h  = 21.23M
+per unexpected failure      21,233,664 ÷ 419         = 50,677 GPU-hours
+                            (Kiely: "approximately one failure per 50,000")
+failures per day            419 ÷ 54 = 7.76 unexpected;  466 ÷ 54 = 8.63 in all
+job's mean time between failures   54 × 24 h ÷ 419   = 3.09 h (186 min)</div>
+
+<h2>2. What that means for training: checkpoint and restart</h2>
+<p>Training is synchronous. In Llama 3's words, "a single GPU failure may require a restart of the entire job". So the job writes a checkpoint every τ minutes, and a failure costs the work since the last one plus the time to restart all 16k GPUs. Meta reports "higher than 90% effective training time", meaning useful training time over elapsed time, and got there by cutting "job startup and checkpointing time". The standard first-order model (Young's approximation, our addition, not from the paper) shows why those two times matter:</p>
+<div class="mathbox">
+<math display="block">
+  <mtext>waste</mtext><mo>&#8776;</mo>
+  <munder class="t3"><mfrac><mi>C</mi><mrow><mi>&#964;</mi><mo>+</mo><mi>C</mi></mrow></mfrac><mtext class="lab">writing checkpoints</mtext></munder>
+  <mo>+</mo>
+  <munder class="t3"><mfrac><mrow><mi>&#964;</mi><mo>/</mo><mn>2</mn><mo>+</mo><mi>R</mi></mrow><mi>M</mi></mfrac><mtext class="lab">lost work + restart, per failure</mtext></munder>
+  <mspace width="1.2em"/>
+  <munder class="t2"><mrow><msup><mi>&#964;</mi><mo>*</mo></msup><mo>=</mo><msqrt><mrow><mn>2</mn><mi>C</mi><mi>M</mi></mrow></msqrt></mrow><mtext class="lab">best checkpoint interval</mtext></munder>
+</math>
+<div class="legend">
+  <span class="sym">C</span><span>time the job pauses to write one checkpoint</span><span class="v">0.5–1 min (illustrative)</span>
+  <span class="sym">&#964;</span><span>minutes of training between checkpoints</span><span class="v">13.6 · 19.3 · 60 min</span>
+  <span class="sym">R</span><span>time to restart the whole job after a failure</span><span class="v">2 … 30 min (illustrative)</span>
+  <span class="sym">M</span><span>mean time between unexpected failures of the job</span><span class="v">186 min (Llama 3)</span>
+</div>
+</div>
+<p class="cap">Filled in for C = 1, R = 5: τ* = √(2 × 1 × 186) = 19.3 min, waste = 1 ÷ 20.3 + (9.65 + 5) ÷ 186 + 0.3% for the 47 planned stops = 13.1%, so <b>86.9%</b> effective. Only M comes from Llama 3; C and R are illustrative.</p>
+<svg viewBox="0 0 760 118" role="img" aria-label="To-scale timeline of 90 minutes of training: work segments of 19.3 minutes separated by 1-minute checkpoints, a failure at minute 52 that loses 11.4 minutes of work, then a 5-minute restart">
+  <rect class="sw" x="20" y="30" width="154.4" height="26" rx="2"/>
+  <rect class="sg" x="174.4" y="30" width="8" height="26"/>
+  <rect class="sw" x="182.4" y="30" width="154.4" height="26" rx="2"/>
+  <rect class="sg" x="336.8" y="30" width="8" height="26"/>
+  <rect class="srb" x="344.8" y="30" width="91.2" height="26"/>
+  <rect class="sg" x="436" y="30" width="40" height="26"/>
+  <rect class="sw" x="476" y="30" width="154.4" height="26" rx="2"/>
+  <rect class="sg" x="630.4" y="30" width="8" height="26"/>
+  <rect class="sw" x="638.4" y="30" width="101.6" height="26" rx="2"/>
+  <text class="sl" x="97" y="22" text-anchor="middle">train 19.3 min</text>
+  <text class="sl" x="178" y="22" text-anchor="middle">C</text>
+  <text class="tr" x="390" y="22" text-anchor="middle">lost 11.4 min</text>
+  <text class="sl" x="456" y="22" text-anchor="middle">R 5 min</text>
+  <path d="M436 26 L436 60" stroke="var(--red)" stroke-width="2"/>
+  <text class="tr" x="442" y="74">GPU fails at 52 min</text>
+  <text class="sl" x="336" y="74" text-anchor="end">restart from this checkpoint</text>
+  <line class="ax" x1="20" y1="92" x2="740" y2="92"/>
+  <text class="sl" x="20" y="108">0</text><text class="sl" x="260" y="108" text-anchor="middle">30 min</text><text class="sl" x="500" y="108" text-anchor="middle">60 min</text><text class="sl" x="740" y="108" text-anchor="end">90 min</text>
+</svg>
+<p class="cap">To scale, illustrative C = 1 min, R = 5 min. Green is kept work, grey is overhead, red is work thrown away.</p>
+<table>
+<tr><th class="num">Checkpoint C</th><th class="num">Restart R</th><th class="num">Best τ</th><th class="num">Effective, model</th><th class="num">Effective, simulated</th><th class="num">Simulated, τ = 60 min</th></tr>
+<tr><td class="num">1 min</td><td class="num">5 min</td><td class="num">19.3 min</td><td class="num">86.9%</td><td class="num">87.5%</td><td class="num">81.0%</td></tr>
+<tr><td class="num">1 min</td><td class="num">15 min</td><td class="num">19.3 min</td><td class="num">80.9%</td><td class="num">82.5%</td><td class="num">76.2%</td></tr>
+<tr><td class="num">1 min</td><td class="num">30 min</td><td class="num">19.3 min</td><td class="num lo">71.9%</td><td class="num lo">76.2%</td><td class="num lo">70.5%</td></tr>
+<tr class="best"><td class="num">0.5 min</td><td class="num">2 min</td><td class="num">13.6 min</td><td class="num hi">91.6%</td><td class="num hi">91.7%</td><td class="num">83.0%</td></tr>
+</table>
+<p class="cap">labs/failure-sim.py: the model above, and a seeded Monte Carlo of 54-day runs with Llama 3's failure rates. The simulation is a little kinder because no new failure can hit during a restart. <b>Our inference:</b> at one failure every 3 hours, Meta's &gt; 90% implies that checkpoint plus restart took a few minutes at most. The paper doesn't give either time.</p>
+
+<h2>3. What that means for serving: expect failures, contain them</h2>
+<p>Kiely (§7.3.3) takes the same data to inference: "approximately one failure per 50,000 GPU-hours", and "running a single node of eight GPUs for inference for an entire year is over 70,000 GPU-hours" (8 × 8,760 = 70,080, so <b>1.40 failures per node-year</b>). "Inference engineers should expect hardware failure." At that rate:</p>
+<table>
+<tr><th class="num">GPUs in the fleet</th><th class="num">Failures per day</th><th class="num">Per year</th><th class="num">Mean gap</th><th class="num hide-s">Chance of a failure-free year</th></tr>
+<tr><td class="num">8 (one node)</td><td class="num">0.004</td><td class="num">1.4</td><td class="num">260 days</td><td class="num hide-s">24.6%</td></tr>
+<tr><td class="num">16</td><td class="num">0.008</td><td class="num">2.8</td><td class="num">130 days</td><td class="num hide-s">6.1%</td></tr>
+<tr><td class="num">64</td><td class="num">0.031</td><td class="num">11.2</td><td class="num">32.6 days</td><td class="num hide-s">0.0%</td></tr>
+<tr><td class="num">1,000</td><td class="num">0.48</td><td class="num">175</td><td class="num">2.1 days</td><td class="num hide-s">0.0%</td></tr>
+<tr><td class="num">16,384</td><td class="num lo">7.86</td><td class="num lo">2,871</td><td class="num lo">3.1 h</td><td class="num hide-s">0.0%</td></tr>
+</table>
+<p class="cap">Our arithmetic: GPUs × 24 ÷ 50,000 per day, assuming independent failures at Kiely's average rate. The 16,384 row gives back Llama 3's 7.76 unexpected failures a day, as it should.</p>
+<p>The difference from training is that a serving fleet doesn't have to stop. Each replica is independent, so a failure takes down only the group that runs in lockstep with the dead GPU. <a href="../perf-6-scaling-out/sizing-deployment.html">Sizing a deployment</a> (course 6) already worked this out for 500 users of Llama-3.1-70B on 16 H100s: a TP8 group's mean time between failures is 6,250 h, and after one failure TP8 × 2 still holds <b>386</b> of 500 users while TP4 × 4 holds <b>498</b>. Two things change that picture.</p>
+<ul>
+<li><b>GPU health is node-level.</b> Kiely: "When a single GPU fails, other GPUs on the node often fail next or need to be taken offline for maintenance. Proactively noting failures, cordoning nodes, and cycling pods keeps individual clusters healthy." If the whole node is drained, TP4 × 4 loses two replicas and keeps only 332 users, fewer than TP8 × 2's 386.</li>
+<li><b>Spares decide availability more than layout does.</b> A warm spare node that already holds the weights turns a day-long outage into minutes (see <a href="autoscaling-cold-starts.html">cold starts</a> for why "warm" matters).</li>
+</ul>
+<div class="tw"><table>
+<tr><th>Layout (16 H100s)</th><th>One failure takes</th><th>Spare</th><th class="num">Users left</th><th class="num">Availability, a year</th><th class="num">Nines</th><th class="num hide-s">Worst 1% of years</th></tr>
+<tr><td>TP8 × 2</td><td>its node</td><td>none</td><td class="num">386</td><td class="num">99.825%</td><td class="num">2.8</td><td class="num hide-s">99.548%</td></tr>
+<tr><td>TP4 × 4</td><td>its group</td><td>none</td><td class="num">498</td><td class="num">99.997%</td><td class="num">4.5</td><td class="num hide-s">99.959%</td></tr>
+<tr><td>TP4 × 4</td><td>its whole node</td><td>none</td><td class="num lo">332</td><td class="num lo">99.742%</td><td class="num lo">2.6</td><td class="num hide-s lo">99.356%</td></tr>
+<tr><td>TP8 × 2</td><td>its node</td><td>+1 node</td><td class="num">386</td><td class="num">99.998%</td><td class="num">4.7</td><td class="num hide-s">99.995%</td></tr>
+<tr><td>TP4 × 4</td><td>its whole node</td><td>+1 node</td><td class="num">332</td><td class="num">99.997%</td><td class="num">4.6</td><td class="num hide-s">99.993%</td></tr>
+<tr class="best"><td>TP4 × 4</td><td>its group</td><td>+1 TP4 group</td><td class="num">498</td><td class="num hi">&gt; 99.9999%</td><td class="num hi">6.5</td><td class="num hide-s">100.000%</td></tr>
+</table></div>
+<div class="formula">availability = 1 − failures/yr × hours down × users dropped ÷ (500 users × 8,760 h)
+TP8 × 2, no spare:  1 − 2.80 × 24 h × 114 ÷ 4,380,000 = 1 − 0.175% = 99.825%
+TP4 × 4, node down: 1 − 2.80 × 24 h × 168 ÷ 4,380,000 = 1 − 0.258% = 99.742%
+with a spare:       same, with 15 min instead of 24 h down</div>
+<p class="cap">labs/failure-sim.py, checked against 20,000 simulated years (seeded). Availability here means the share of user-hours served. <b>Illustrative:</b> 24 h to repair or replace a node with no spare, and 15 min to fail over to a warm spare. Users per replica come from the sizing card. Kiely's preface puts closed APIs at "two nines of uptime" and dedicated deployments at "four nines or better".</p>
+<p>Availability isn't the only cost. Every request in flight on the failed group is cut off: with load spread evenly that's 250 requests for a TP8 replica and 125 for a TP4 one. Those clients retry, and the retries land in your <a href="../llm-latency/tail-latency.html">tail latency</a> (see <a href="../llm-latency/retries-timeouts.html">retries and timeouts</a>).</p>
+<p>At the scale of a whole cluster or cloud, Kiely names two postures. <b>Active-active</b>: "multiple regions or clusters actively serve live traffic at the same time. If any plane fails, traffic seamlessly continues on the others." <b>Active-passive</b>: "a 'hot standby' cluster or region is kept ready but idle", and traffic is cut over when the active one fails. Active-active uses every GPU but needs spare headroom in each region; active-passive pays for idle GPUs to get a simpler failover. Geography adds latency either way: Kiely's rule of thumb is "five milliseconds for a request to pass through a time zone".</p>
+
+<h2>4. Rolling out a new version: blue-green, canary, shadow</h2>
+<p>A new engine version, quantized checkpoint or kernel is a change like any other, and the way you release it decides how many users see a bad one. Kiely (§7.4.1): blue-green keeps two full environments, and "If the blue deployment is using 100 GPUs, the green deployment requires another 100 GPUs before traffic can cut over." A canary sends "a small percentage" of live traffic to the new version, watches it, reverts on trouble, and ramps up to 100%. "With autoscaling, canary deployments don't increase cost much at scale", because the old deployment scales down as traffic leaves it.</p>
+<table>
+<tr><th>Canary share</th><th class="num">Old replicas</th><th class="num">New replicas</th><th class="num">GPUs in use</th><th class="num">Extra GPUs</th></tr>
+<tr><td>Blue-green cut-over</td><td class="num">25</td><td class="num">25</td><td class="num lo">200</td><td class="num lo">+100</td></tr>
+<tr><td>1%</td><td class="num">25</td><td class="num">2</td><td class="num">108</td><td class="num">+8</td></tr>
+<tr><td>5%</td><td class="num">24</td><td class="num">2</td><td class="num">104</td><td class="num">+4</td></tr>
+<tr><td>25%</td><td class="num">19</td><td class="num">7</td><td class="num">104</td><td class="num">+4</td></tr>
+<tr><td>50%</td><td class="num">13</td><td class="num">13</td><td class="num">104</td><td class="num">+4</td></tr>
+<tr><td>100%</td><td class="num">0</td><td class="num">25</td><td class="num hi">100</td><td class="num hi">+0</td></tr>
+</table>
+<p class="cap">labs/failure-sim.py for Kiely's 100 GPUs, split into 25 TP4 replicas. <b>Illustrative:</b> the replica size and a floor of 2 warm canary replicas. That floor is Kiely's warning: "ensure that the new deployment has enough active replicas", otherwise canary users queue while autoscaling catches up.</p>
+<p>Before any of that, Kiely lists three ways to test: <b>manual</b> scripts, <b>load tests</b>, and <b>shadow traffic</b>, "copying live traffic to test deployments to measure performance under real-world conditions". Shadow responses are never returned to users, so a shadow can't hurt anyone, but it costs GPUs. Kiely suggests starting with "a random sample of production traffic".</p>
+
+<table class="parts" style="margin-top:14px">
+<tr><th>Term</th><th class="what">What it means</th><th>Example A</th><th>Example B</th></tr>
+<tr><td>Interruption</td><td class="what">Anything that stops a synchronous training job</td>
+  <td class="ex"><b>47 planned</b><span>firmware upgrades, config or dataset changes</span></td>
+  <td class="ex"><b class="lo">419 unexpected</b><span>148 of them a faulty GPU</span></td></tr>
+<tr><td>Effective training time</td><td class="what">Useful training time ÷ elapsed time</td>
+  <td class="ex"><b class="ok">&gt; 90%</b><span>Llama 3 405B, reported</span></td>
+  <td class="ex"><b>76%</b><span>our simulation with 30-min restarts</span></td></tr>
+<tr><td>Cordon, cycle</td><td class="what">Stop scheduling onto a node; move its pods elsewhere and repair it</td>
+  <td class="ex"><b>1 GPU fails</b><span>the node is cordoned before its neighbours fail too</span></td>
+  <td class="ex"><b class="lo">TP4 × 4 → 332 users</b><span>both replicas on that node drained</span></td></tr>
+<tr><td>Active-active / passive</td><td class="what">Every region serves, vs a hot standby waits idle</td>
+  <td class="ex"><b>active-active</b><span>traffic "seamlessly continues on the others"</span></td>
+  <td class="ex"><b>active-passive</b><span>idle GPUs, traffic cut over on failure</span></td></tr>
+<tr><td>Canary</td><td class="what">New version gets a small, growing share of live traffic</td>
+  <td class="ex"><b class="ok">+4 GPUs</b><span>at 5% on 100 GPUs (our example)</span></td>
+  <td class="ex"><b>revert</b><span>if errors, latency or quality slip</span></td></tr>
+<tr><td>Blue-green</td><td class="what">Two full environments; all traffic cuts over at once</td>
+  <td class="ex"><b class="lo">+100 GPUs</b><span>Kiely's 100-GPU example</span></td>
+  <td class="ex"><b>+8 GPUs</b><span>fine for a one-node service</span></td></tr>
+<tr><td>Shadow traffic</td><td class="what">Copy live requests to the new version; discard its answers</td>
+  <td class="ex"><b>a random sample</b><span>Kiely's suggested start</span></td>
+  <td class="ex"><b>full mirror</b><span>real load, but doubles GPU cost while it runs</span></td></tr>
+<tr><td>Eval recovery</td><td class="what">Score of the changed model ÷ score of the original</td>
+  <td class="ex"><b class="ok">99.9%</b><span>8-bit Llama 3.1 on HumanEval (Red Hat)</span></td>
+  <td class="ex"><b>≥ 96%</b><span>every quantized model on OpenLLM v2</span></td></tr>
+</table>
+
+<h2>5. Quality: a speed change can change the answers</h2>
+<p>This course is about making inference faster. Most speed tricks change arithmetic, and some change which tokens come out. Kiely (§4.5.1, p.113) says eval datasets such as MMLU, gsm8k, SWE-bench and HumanEval serve for "spot checking that performance optimizations haven't impacted model output quality", ideally one that matches your use, like "HumanEval when reducing latency for a code completion system".</p>
+<div class="tw"><table>
+<tr><th>Speed change</th><th>Same outputs?</th><th>Published evidence</th></tr>
+<tr><td><b>Quantization</b> (<a href="../perf-5-engines/quantization-serving.html">course 5</a>)</td><td class="lo">No: weights and activations are rounded</td><td>Red Hat, over half a million evaluations of Llama 3.1 8B/70B/405B: on OpenLLM v1 "all quantization schemes … recover over 99%"; on v2 "close to 99% … with all models maintaining at least 96% recovery"; HumanEval "8-bit … 99.9% … 4-bit … 98.9%". Speedups: W8A8 "an average 1.8×", W4A16 "2.4× for single-stream".</td></tr>
+<tr><td><b>Speculative decoding, exact</b> (<a href="../perf-5-engines/spec-decoding-math.html">course 5</a>)</td><td class="ok">Yes, in distribution</td><td>Leviathan et al.'s accept rule min(1, p/q) plus resampling gives exactly the target model's distribution. EAGLE-style drafts are verified the same way and stay exact.</td></tr>
+<tr><td><b>Medusa typical acceptance</b> (<a href="../perf-5-engines/medusa.html">course 5</a>)</td><td class="lo">No, when sampling</td><td>Accepts a draft token if it is "plausible enough" under an entropy-scaled threshold. At temperature 0 it is plain greedy decoding; with sampling it is not distribution-exact, and the paper's Figure 5 shows a quality vs speed trade-off.</td></tr>
+<tr><td><b>New kernels, batch sizes, TP degree</b></td><td>Bit-for-bit: no. Usually close</td><td>Floating-point addition isn't associative, so a different reduction order changes the last bits. Thinking Machines (He, 2025): 1,000 temperature-0 completions of Qwen3-235B on one vLLM server gave <b>80 unique outputs</b>, identical for 102 tokens, because batch size varies with load.</td></tr>
+</table></div>
+<p>Two warnings from the sources. Llama 3 (§6.2) found that for FP8 "standard benchmarks do not adequately reflect the effects": without capping the scaling factors, "the model occasionally produces corrupted responses even though the benchmark performance is strong". They checked instead with the reward-model score distribution of 100,000 responses in FP8 vs BF16. And because of the nondeterminism above, a raw "outputs changed" diff always shows some change. Measure the baseline against itself first, then compare the candidate against that noise floor.</p>
+
+<div class="ours"><span class="tag">OUR CHECKLIST FOR SHIPPING A SPEED CHANGE, NOT FROM A SOURCE</span>
+<ol>
+<li><b>Pick the eval set before the change.</b> One general set (gsm8k or MMLU) plus one matched to your traffic (HumanEval for code), and a few hundred real prompts sampled from production.</li>
+<li><b>Run lm-eval against both servers</b>, same prompts, same settings: <code>lm_eval --model local-completions --tasks gsm8k --model_args model=M,base_url=http://HOST:8000/v1/completions</code>. Ship only if recovery is within your bar (for example ≥ 99% for an 8-bit change) on each task, not just on average.</li>
+<li><b>Diff greedy outputs.</b> Temperature 0 on the production sample: first baseline vs baseline to measure the noise floor, then baseline vs candidate. Read the prompts that diverge early.</li>
+<li><b>For quantization, also look at a quality distribution</b> (a reward model or judge over many responses) and at long inputs with outliers such as dates and numbers, which is where Llama 3 saw FP8 break.</li>
+<li><b>Check the latency SLO</b> at P50, P90 and P99 for TTFT, TPS and end-to-end, at the batch sizes you run (<a href="../perf-5-engines/benchmarking.html">benchmarking</a>). Kiely's §7.4.3 dashboard adds error rates, queue depth and utilization.</li>
+<li><b>Canary it:</b> 1% then 5% with at least two warm replicas, watch errors, latency and your quality signal for a full daily cycle, then 25%, 50%, 100%. Keep the old version ready to take traffic back.</li>
+</ol></div>
+
+<h2>Why it beats the alternatives</h2>
+<div class="grid2">
+  <div class="cell"><h3><span class="x">&#10007;</span> Big-bang cut-over</h3><p>Every user hits a bad version at once, and in-flight requests die mid-answer. At 7.9 GPU failures a day on 16k GPUs, you also can't wait for a quiet moment.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Blue-green on a big fleet</h3><p>Safe and instant to roll back, but it needs a second full fleet: another 100 GPUs for 100. Fine for one node, too expensive at scale.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Ship on a benchmark score</h3><p>An average can hide a broken slice. Llama 3's uncapped FP8 kept strong benchmark scores while "occasionally" producing corrupted responses.</p></div>
+  <div class="cell win"><h3><span class="ok">&#10003;</span> Spares, canary and eval gates</h3><p>Small replicas plus a warm spare keep the fleet above four nines (our model). A canary costs about 4 extra GPUs in 100, and evals plus a greedy diff catch quality changes before users do.</p></div>
+</div>
+
+<h2>Is a canary always the right rollout?</h2>
+<div class="note">
+  <p>No. A canary only catches what it can measure at the traffic it gets. <b>Low traffic:</b> 1% of a few hundred requests an hour is too little to see a 1-point quality drop, so use shadow traffic or an offline eval on logged prompts. <b>Tiny deployments:</b> blue-green on one 8-GPU node costs 8 GPUs for an hour and gives a clean, instant rollback, which is often simpler. <b>Changes that are exact by construction</b>, like switching to Leviathan-style speculative decoding with verified rejection sampling, need a latency check more than a quality one, though a buggy implementation is still a reason to run the evals.</p>
+  <p>The availability numbers above are also only as good as their inputs. Kiely's 50,000 GPU-hours is one training cluster's average, the repair and failover times are illustrative, and failures in real fleets cluster by node, batch of hardware and age. Use the lab to test your own numbers, and trust your own fleet's failure log once you have one.</p>
+</div>
+
+<h2>Run it yourself</h2>
+<p><a class="lab-link" href="https://github.com/seyonv/explainers/blob/main/perf-7-training-economics/labs/failure-sim.py">Run it: labs/failure-sim.py</a> <b>[L]</b> runs on your Mac in about 5 seconds (stdlib + numpy, seeded). It prints Table 5 with the recomputed percentages, the effective-training-time model and its Monte Carlo check, expected failures for fleets of 8 to 16,384 GPUs, the availability table for TP8 × 2 vs TP4 × 4 with and without spares (20,000 simulated years), and the blue-green vs canary GPU counts. Try <code>RATE = 1 / 25_000</code> with <code>REPAIR_H = 72</code>: TP8 × 2 without a spare drops to about 98.9%, while with a spare node it still holds 99.996%.</p>
+
+<div class="foot">
+<p><b>Read next:</b> Llama 3 (<a href="https://arxiv.org/abs/2407.21783">arXiv 2407.21783</a>) §3.3.4 "Reliability and Operational Challenges" with Table 5, all of it, ~10 min, then the "Effect of quantization errors" paragraph of §6.2, ~3 min. Kiely, <i>Inference Engineering</i>, §7.3 "Multi-Cloud Capacity Management" through §7.4.1 "Zero-Downtime Deployment" (pp. 193–201), ~25 min. Red Hat, "We ran over half a million evaluations on quantized LLMs" (<a href="https://developers.redhat.com/articles/2024/10/17/we-ran-over-half-million-evaluations-quantized-llms">developers.redhat.com</a>), ~10 min.</p>
+<p><b>Related:</b> <a href="_overview.html">overview</a> · <a href="autoscaling-cold-starts.html">autoscaling and cold starts</a> · <a href="kv-aware-routing.html">KV-aware routing</a> · <a href="cost-per-token.html">$ per million tokens</a> · <a href="choosing-hardware.html">choosing hardware</a> · <a href="parallelism-4d.html">4D parallelism</a> · <a href="precision-recompute.html">mixed precision and FP8</a> · <a href="kernelbench.html">AI-written kernels</a> · course 6: <a href="../perf-6-scaling-out/sizing-deployment.html">sizing a deployment</a> (blast radius by group size) · course 5: <a href="../perf-5-engines/quantization-serving.html">quantization for serving</a>, <a href="../perf-5-engines/spec-decoding-math.html">speculative decoding I</a>, <a href="../perf-5-engines/medusa.html">Medusa</a>, <a href="../perf-5-engines/eagle.html">EAGLE and MTP</a>, <a href="../perf-5-engines/benchmarking.html">benchmarking</a> · <a href="../llm-latency/tail-latency.html">tail latency</a> · <a href="../llm-latency/retries-timeouts.html">retries and timeouts</a></p>
+<p><b>Sources:</b> Llama 3 herd, arXiv 2407.21783: §3.3.4 and Table 5 (466 / 47 / 419 interruptions, ~78% hardware, 58.7% GPU, counts, &gt; 90% effective training time, three manual interventions), §6.2 (FP8 caveat, 100,000-response reward check). P. Kiely, <i>Inference Engineering</i>, printed pages: p.12 (two vs four nines), p.113 (evals for spot-checking), pp.196–197 (50,000 GPU-hours, 70,000 GPU-hours, node-level health, active-active and active-passive), pp.199–201 (testing, blue-green "another 100 GPUs", canary steps and warm replicas). Red Hat Developer, 2024-10-17, link above (recovery and speedup figures). Leviathan et al., <a href="https://arxiv.org/abs/2211.17192">arXiv 2211.17192</a>. Medusa, Cai et al., <a href="https://arxiv.org/abs/2401.10774">arXiv 2401.10774</a> v3 §2.3.1. H. He, "Defeating nondeterminism in LLM inference", Thinking Machines Lab, 2025-09-10, <a href="https://thinkingmachines.ai/blog/defeating-nondeterminism-in-llm-inference/">thinkingmachines.ai</a>. lm-eval command adapted from the <a href="https://github.com/EleutherAI/lm-evaluation-harness">lm-evaluation-harness README</a>. Users per replica (386, 166) from course 6's labs/sizing.py. Every other number is our arithmetic in labs/failure-sim.py; repair time, failover time, checkpoint and restart times, replica size and the canary floor are illustrative.</p>
+</div>
+</article>
+<!-- series-nav:bottom -->
+<div class="snx"><a class="nx" href="index.html#kernelbench" target="_top">
+<span class="mini" aria-hidden="true"><span class="m1">AI-written kernels: KernelBench and the frontier</span><span class="m2">Also called LLM kernel generation, automated kernel optimization, or "can a model write CUDA?". KernelBench (Ouyang et al., Stanford and Princeton, arXiv 2502.10517, Feb 2025) is the standard…</span><span class="m3">In one breath</span><span class="m4">A language model gets a PyTorch module and must write a custom GPU kernel that does the same thing faster. The harness runs both on random inputs to check that the outputs match, times both, and counts a task as solved only if the new kernel is correct and faster than PyTorch by more than a factor p. One-shot, the best frontier…</span></span>
+<span class="tx"><span class="lab">Next up · 13 / 13</span><span class="tt">AI-written kernels: KernelBench and the frontier</span><span class="ds">fast_p, reward hacking and the speed of light</span><span class="nd">Builds on: Profiling and benchmarking hygiene, Choosing hardware: FLOPS, bandwidth, memory and price.</span><span class="go">Continue →</span></span></a><div class="aux"><span><a href="index.html#kv-aware-routing" target="_top">← KV-aware routing: sending requests where their cache lives</a></span><a href="index.html" target="_top">All cards in 7 · Training &amp; cost per token</a></div></div>
+<!-- /series-nav:bottom -->
+</body>
+</html>

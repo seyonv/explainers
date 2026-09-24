@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>1 · How a GPU runs a language model</title>
+<title>7 · Training and the cost of a token</title>
 <style>
 :root{
   --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
@@ -74,11 +74,11 @@ h2{font-size:13px;font-weight:600;color:var(--muted);letter-spacing:.03em;text-t
 <body>
 <main class="wrap">
 <!-- series-nav -->
-<nav class="series" aria-label="Courses in the series"><a href="../perf-0-map/index.html">0 · Start here</a><a href="../perf-1-foundations/index.html" class="cur" aria-current="page">1 · How a GPU runs an LLM</a><a href="../perf-2-scaling-book-inference/index.html">2 · The math of serving</a><a href="../perf-3-kernels/index.html">3 · Writing fast kernels</a><a href="../perf-4-attention-kv/index.html">4 · Attention &amp; KV cache</a><a href="../perf-5-engines/index.html">5 · Inside inference engines</a><a href="../perf-6-scaling-out/index.html">6 · Serving across GPUs</a><a href="../perf-7-training-economics/index.html">7 · Training &amp; cost per token</a></nav>
+<nav class="series" aria-label="Courses in the series"><a href="../perf-0-map/index.html">0 · Start here</a><a href="../perf-1-foundations/index.html">1 · How a GPU runs an LLM</a><a href="../perf-2-scaling-book-inference/index.html">2 · The math of serving</a><a href="../perf-3-kernels/index.html">3 · Writing fast kernels</a><a href="../perf-4-attention-kv/index.html">4 · Attention &amp; KV cache</a><a href="../perf-5-engines/index.html">5 · Inside inference engines</a><a href="../perf-6-scaling-out/index.html">6 · Serving across GPUs</a><a href="../perf-7-training-economics/index.html" class="cur" aria-current="page">7 · Training &amp; cost per token</a></nav>
 <!-- /series-nav -->
-<h1>1 · How a GPU runs a language model</h1>
-<p class="sub">8 cards: what a transformer computes, what a GPU is, and why an inference step takes as long as it does. This is course 1 of the Fast LLM inference series (<a href="../perf-0-map/index.html">map</a> · next: <a href="../perf-2-scaling-book-inference/index.html">The math of serving an LLM</a>). Most cards have a runnable lab in <a href="https://github.com/seyonv/explainers/tree/main/perf-1-foundations/labs">labs/</a> (Python + numpy). Running example: Llama-3.1-8B on one H100, plus your own M3. Click a card to read it; ← → to page.</p>
-<!-- series-nav --><p class="needs"><b>Prerequisites:</b> No prerequisites. Start here. Each card says what it builds on, so you can see where it's safe to jump around.</p><!-- /series-nav -->
+<h1>7 · Training and the cost of a token</h1>
+<p class="sub">13 cards, and the capstone of the Fast LLM inference series. The first half is training breadth: a training step and its memory, compute budgets (6ND, Chinchilla, MFU), ZeRO and FSDP, 4D parallelism, mixed precision and recomputation, and post-training. The second half is production economics: $ per million tokens, choosing hardware, autoscaling and cold starts, KV-aware routing, reliability and quality, and AI-written kernels (KernelBench). This is course 7 (the training half needs <a href="../perf-1-foundations/index.html">How a GPU runs a language model</a>; the economics half needs <a href="../perf-2-scaling-book-inference/index.html">The math of serving an LLM</a> and <a href="../perf-5-engines/index.html">Inside an inference engine</a>; see the <a href="../perf-0-map/index.html">map</a>). Labs in <a href="https://github.com/seyonv/explainers/tree/main/perf-7-training-economics/labs">labs/</a>: calculators and simulators that run on a laptop, plus one rented-H100 cost sweep (not run by the author). Click a card to read it; ← → to page.</p>
+<!-- series-nav --><p class="needs"><b>Prerequisites:</b> The training half needs perf-1. The economics capstone needs perf-2 and perf-5. Each card says what it builds on, so you can see where it's safe to jump around.</p><!-- /series-nav -->
 <button class="start" data-go="0">Read all in order →</button>
 <div id="sections"></div>
 </main>
@@ -102,20 +102,23 @@ h2{font-size:13px;font-weight:600;color:var(--muted);letter-spacing:.03em;text-t
 // Overview cards go in the first group with bigTiles = true.
 const GROUPS = [
   ["Start here", true, [
-    ["_overview.html", "Foundations on one card", "One formula: step time = max(math, memory), and the levers ranked"],
+    ["_overview.html", "The whole stack, every lever ranked", "Every lever in the series, ranked by what it does to $/token and latency"],
   ]],
-  ["What the model computes", false, [
-    ["transformer-forward.html", "The transformer forward pass", "Where Llama-3.1-8B's 8.03B parameters live"],
-    ["attention.html", "Attention: Q, K, V, heads, and GQA", "Computed by hand, and why KV heads set the cache size"],
-    ["flops-per-token.html", "FLOPs per token", "2N to serve, 6N to train, and what the rule leaves out"],
+  ["Training, in breadth", false, [
+    ["training-step.html", "A training step and where its memory goes", "16 bytes per parameter, plus activations"],
+    ["compute-budgets.html", "Compute budgets: 6ND, Chinchilla and MFU", "How much a training run costs, and why models are over-trained"],
+    ["zero-fsdp.html", "Data parallelism, ZeRO and FSDP", "Sharding the optimizer state, gradients and weights"],
+    ["parallelism-4d.html", "4D parallelism: TP, PP, CP and EP in training", "Pipeline bubbles and Llama 3's layouts"],
+    ["precision-recompute.html", "Mixed precision, FP8 and activation checkpointing", "Loss scaling, master weights and selective recompute"],
+    ["post-training.html", "From pretrained to served: SFT, RL and distillation", "What each stage hands to inference"],
   ]],
-  ["What the machine does", false, [
-    ["gpu-machine.html", "The GPU as a machine", "SMs, tensor cores and the memory hierarchy of an H100"],
-    ["roofline-intuition.html", "Compute-bound or memory-bound?", "The roofline intuition: ops per byte against 295"],
-  ]],
-  ["What you measure", false, [
-    ["serving-metrics.html", "Serving metrics", "TTFT, TPOT, throughput, goodput and percentiles"],
-    ["prefill-vs-decode-mac.html", "Prefill vs decode on your Mac", "188 vs 14 tok/s, measured"],
+  ["The cost of a token", false, [
+    ["cost-per-token.html", "$ per million tokens and the batch dial", "49× cheaper, 5× slower"],
+    ["choosing-hardware.html", "Choosing hardware: FLOPS, bandwidth, memory and price", "Price the resource that binds"],
+    ["autoscaling-cold-starts.html", "Autoscaling, cold starts and scale to zero", "Idle GPUs cost as much as busy ones"],
+    ["kv-aware-routing.html", "KV-aware routing: sending requests where their cache lives", "Prefix caches only help if requests come back"],
+    ["reliability-quality.html", "Reliability and quality: failures, canaries and evals", "GPUs fail; speed changes can change answers"],
+    ["kernelbench.html", "AI-written kernels: KernelBench and the frontier", "fast_p, reward hacking and the speed of light"],
   ]],
 ];
 const CARDS = GROUPS.flatMap(g => g[2]);
@@ -180,7 +183,7 @@ frame.addEventListener("load", () => frame.blur());
 const start = CARDS.findIndex(c => "#" + c[0].replace(".html", "") === location.hash);
 if (start >= 0) show(start);
 // series-nav
-const SERIES = [{"slug":"perf-0-map","label":"0 · Start here","built":true},{"slug":"perf-1-foundations","label":"1 · How a GPU runs an LLM","built":true},{"slug":"perf-2-scaling-book-inference","label":"2 · The math of serving","built":true},{"slug":"perf-3-kernels","label":"3 · Writing fast kernels","built":true},{"slug":"perf-4-attention-kv","label":"4 · Attention & KV cache","built":true},{"slug":"perf-5-engines","label":"5 · Inside inference engines","built":true},{"slug":"perf-6-scaling-out","label":"6 · Serving across GPUs","built":true},{"slug":"perf-7-training-economics","label":"7 · Training & cost per token","built":true}], HERE = "perf-1-foundations";
+const SERIES = [{"slug":"perf-0-map","label":"0 · Start here","built":true},{"slug":"perf-1-foundations","label":"1 · How a GPU runs an LLM","built":true},{"slug":"perf-2-scaling-book-inference","label":"2 · The math of serving","built":true},{"slug":"perf-3-kernels","label":"3 · Writing fast kernels","built":true},{"slug":"perf-4-attention-kv","label":"4 · Attention & KV cache","built":true},{"slug":"perf-5-engines","label":"5 · Inside inference engines","built":true},{"slug":"perf-6-scaling-out","label":"6 · Serving across GPUs","built":true},{"slug":"perf-7-training-economics","label":"7 · Training & cost per token","built":true}], HERE = "perf-7-training-economics";
 const side = document.getElementById("side");
 {
   let h = "", n = 0;
