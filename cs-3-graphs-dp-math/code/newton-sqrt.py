@@ -3,7 +3,7 @@
 Source: cheat-sheet > Mathematics > sqrt(x).
 
 my_sqrt: integer-only Newton, exact floor(sqrt(x)) for any int.
-source_sqrt: the cheat-sheet's C++ version ported line for line;
+source_sqrt: the source guide's C++ version ported line for line;
 it is wrong on 3 of the 2**31 inputs (see the demo).
 """
 import math
@@ -23,7 +23,7 @@ def my_sqrt(x):
 
 
 def source_sqrt(x, y=8000.0, eps=1.0):
-    """The cheat-sheet's C++ (double SQRT0 = 8000, EPSILON = 1)."""
+    """The source guide's C++ (double SQRT0 = 8000, EPSILON = 1)."""
     while abs(y * y - x) > eps:
         y = (y + x / y) / 2
     return int(y)                      # truncates, like static_cast

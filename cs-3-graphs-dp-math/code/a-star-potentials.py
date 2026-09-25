@@ -1,6 +1,6 @@
-"""A* search, and why the cheat-sheet's reweighted Dijkstra is A*.
+"""A* search, and why the source guide's reweighted Dijkstra is A*.
 
-The cheat-sheet's algorithms.md > A* is empty. Its graphs.md >
+The source guide's algorithms.md > A* is empty. Its graphs.md >
 Distance solves Shortest Path in Binary Matrix with scipy's dijkstra
 on edges reweighted by a Chebyshev potential. No scipy here: plain
 heapq versions of A*, of that reweighted Dijkstra, and of BFS, with

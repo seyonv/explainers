@@ -1,4 +1,4 @@
-"""An algorithm beats a faster computer (CLRS 1.2, via the cheat-sheet).
+"""An algorithm beats a faster computer (CLRS 1.2, via the source guide).
 
 Computer A: 10**10 instructions/s running insertion sort, 2 n**2 steps.
 Computer B: 10**7 instructions/s running merge sort, 50 n lg n steps.

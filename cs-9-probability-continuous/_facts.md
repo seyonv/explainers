@@ -3,7 +3,7 @@
 Every card writer reads this file before writing. Reuse these values exactly.
 
 ## This course
-The continuous half of the cheat-sheet's Univariate Random Variables page, its applications, and the whole Multivariate page: every problem solved, empty sections filled, wrong answers corrected.
+The continuous half of the source guide's Univariate Random Variables page, its applications, and the whole Multivariate page: every problem solved, empty sections filled, wrong answers corrected.
 - 19 concept cards plus `_overview.html` (written last by the main agent).
 - **Running example / conventions for this course:** Same card recipe as cs-8: concept + formulas, the source's problem solved step by step (exact where possible, else to 4 significant figures), and a cheap simulation check. There is no scipy: write norm_cdf with math.erf and invert it by bisection if needed. Integrate numerically with a simple Simpson's rule where needed.
 

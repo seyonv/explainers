@@ -1,6 +1,6 @@
 """Normal approximation to the binomial, with a continuity correction.
 
-Worked example: the cheat-sheet's pharmacy counter. Orders take an
+Worked example: the source guide's pharmacy counter. Orders take an
 exponential time with mean 10 min, so each of 100 customers waits
 over 10 min with p = e^-1. P(at least 50 of them wait that long)?
 Python 3.10, standard library only.

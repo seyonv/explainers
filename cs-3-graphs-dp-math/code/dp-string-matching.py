@@ -1,6 +1,6 @@
 """DP on two strings: regex matching and distinct subsequences.
 
-Both problems from the cheat-sheet's Recursion page (C++ there),
+Both problems from the source guide's Recursion page (C++ there),
 rewritten in Python. dp[i][j] answers the question for the first
 i characters of s and the first j characters of the pattern / t.
 Runs under python3 (3.10).

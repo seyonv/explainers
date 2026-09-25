@@ -3,7 +3,7 @@
 Every card writer reads this file before writing. Reuse these values exactly.
 
 ## This course
-The cheat-sheet's System Design framing pages: requirements, trade-offs, simplicity, object-oriented design with every Java example in Python, and the estimation and performance habits under all of it.
+The source guide's System Design framing pages: requirements, trade-offs, simplicity, object-oriented design with every Java example in Python, and the estimation and performance habits under all of it.
 - 16 concept cards plus `_overview.html` (written last by the main agent).
 - **Running example / conventions for this course:** Framing cards reuse the source's own TinyURL example: 100M new URLs/month, 100:1 read:write, 500-byte records, 5-year retention (these sizing inputs are illustrative; the source gives none): compute storage and QPS once in back-of-envelope and reuse. Already computed on requirements-scoping (reuse exactly, 30-day month): 38.6 writes/s, 3,858 reads/s, 6,000,000,000 records, 3 TB over 5 years.
 

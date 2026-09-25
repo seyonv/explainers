@@ -1,6 +1,6 @@
 """Counting during a merge: Count Smaller and Reverse Pairs.
 
-Bottom-up merge sort (widths 1, 2, 4, ...) as in the cheat-sheet,
+Bottom-up merge sort (widths 1, 2, 4, ...) as in the source guide,
 rewritten in Python. Plus the two usual alternatives: bisect.insort
 (stdlib, O(n) per insert) and a Fenwick tree, checked against brute
 force on random lists.

@@ -1,4 +1,4 @@
-"""Bottom-up merge sort, like the cheat-sheet's C++ version.
+"""Bottom-up merge sort, like the source guide's C++ version.
 
 Merge runs of width 1, then 2, then 4, ... until one run covers the
 whole list. Each pass copies every element once into a buffer, and

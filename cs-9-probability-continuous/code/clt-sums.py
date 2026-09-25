@@ -1,6 +1,6 @@
 """Sums and the central limit theorem.
 
-The cheat-sheet's Linear Combinations problems, solved with one
+The source guide's Linear Combinations problems, solved with one
 recipe: the mean of a sum is n*mu, the variance is n*sigma^2, and
 for large n the sum is close to normal. A.J. and M.J.'s 20 jobs,
 the charity's 90th percentile and the Poisson trees; then checks:

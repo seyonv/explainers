@@ -2,7 +2,7 @@
 
 One template, first_true, finds the smallest x in [lo, hi] for which a
 monotone predicate ok(x) is True (False ... False True ... True).
-The cheat-sheet's two C++ binary searches, in Python:
+The source guide's two C++ binary searches, in Python:
   - k-th smallest pair distance: search the distance d itself
   - minimum of a rotated sorted array that may contain duplicates
 """

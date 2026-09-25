@@ -1,6 +1,6 @@
 """How much lies within k standard deviations? Six discrete answers.
 
-Solves the coverage problem in cheat-sheet > Univariate Random
+Solves the coverage problem in the source guide > Univariate Random
 Variables > Discrete Univariate Distributions: P(|X - mu| < k*sigma)
 for k = 1, 2, 3, exactly, for six distributions, next to the normal
 curve and Chebyshev's bound 1 - 1/k**2.

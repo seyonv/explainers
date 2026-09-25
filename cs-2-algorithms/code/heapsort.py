@@ -1,4 +1,4 @@
-"""Heapsort, in place, following the cheat-sheet's C++ HeapSort.
+"""Heapsort, in place, following the source guide's C++ HeapSort.
 
 Phase 1 (build): sift down every internal node, last one first, so
 the array becomes a max-heap (children of i live at 2i+1 and 2i+2).

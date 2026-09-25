@@ -1,6 +1,6 @@
 """How big a sample?
 
-The cheat-sheet's gas-mileage problem: sd 3.3 mpg, and Cassie wants
+The source guide's gas-mileage problem: sd 3.3 mpg, and Cassie wants
 to be at least 95% sure the sample mean is within 1 mpg of the true
 mean. Solve n >= (z * sigma / E)^2 and round up; check the coverage
 of n = 41, 42 and 43 exactly (normal) and by simulation; compare

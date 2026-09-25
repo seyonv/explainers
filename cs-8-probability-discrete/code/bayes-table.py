@@ -1,6 +1,6 @@
 """Bayes' theorem as a table: prior x likelihood, then normalise.
 
-Solves the three Bayes problems in cheat-sheet > General Probability >
+Solves the three Bayes problems in the source guide > General Probability >
 Basic Concepts of Probability (smokers, car model year, vaccine), then
 checks the vaccine answer with a simulation of 10**6 shipments.
 """

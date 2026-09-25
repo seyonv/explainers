@@ -1,6 +1,6 @@
 """Expected revenue: the overbooked bus.
 
-Solves the tour-bus problem in cheat-sheet > Univariate Random
+Solves the tour-bus problem in the source guide > Univariate Random
 Variables > Applications exactly, then asks how many tickets the
 operator should sell, and checks the answer by simulation.
 

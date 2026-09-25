@@ -3,7 +3,7 @@
 Every card writer reads this file before writing. Reuse these values exactly.
 
 ## This course
-Every heading of the cheat-sheet's Operating Systems page, which has headings but no content, filled in with measured Python experiments on an Apple M3: processes, threads and the GIL, locks to monitors, deadlock, context switches and scheduling.
+Every heading of the source guide's Operating Systems page, which has headings but no content, filled in with measured Python experiments on an Apple M3: processes, threads and the GIL, locks to monitors, deadlock, context switches and scheduling.
 - 13 concept cards plus `_overview.html` (written last by the main agent).
 - **Running example / conventions for this course:** Every card uses the measured M3 numbers in the series table (fib(27), pipe ping-pong, lost updates, asyncio). The source file is headings only, so every card is supplemented: cite OSTEP (https://pages.cs.wisc.edu/~remzi/OSTEP/) chapters and the Python docs.
 

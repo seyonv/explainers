@@ -1,7 +1,7 @@
 """Bellman-Ford and Floyd-Warshall.
 
 Cheapest Flights Within K Stops (Bellman-Ford limited to K + 1 rounds)
-and Find the City (Floyd-Warshall), from the cheat-sheet's Graphs page,
+and Find the City (Floyd-Warshall), from the source guide's Graphs page,
 in plain Python (no Graph class, no scipy). Runs under python3 (3.10).
 """
 import heapq

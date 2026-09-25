@@ -1,6 +1,6 @@
 """Eulerian paths: Reconstruct Itinerary with Hierholzer's algorithm.
 
-From the cheat-sheet's Data Structures page, Stacks section.
+From the source guide's Data Structures page, Stacks section.
 Runs under python3 (3.10).
 """
 from collections import Counter, defaultdict
@@ -26,7 +26,7 @@ def find_itinerary(tickets, trace=False):
 
 
 def find_itinerary_source(tickets):
-    """The cheat-sheet's version, unchanged apart from names."""
+    """The source guide's version, unchanged apart from names."""
     airports = ["JFK"]
     adjacency = defaultdict(list)
     for from_, to in sorted(tickets, reverse=True):

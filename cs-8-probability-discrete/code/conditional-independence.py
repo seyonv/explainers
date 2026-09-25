@@ -1,4 +1,4 @@
-"""Conditional independence: the 3-judge panel (cheat-sheet, exam P).
+"""Conditional independence: the 3-judge panel (source guide, exam P).
 
 Each judge votes guilty with prob 0.7 if the defendant is guilty and
 0.2 if innocent, independently GIVEN the truth. 70% are guilty.

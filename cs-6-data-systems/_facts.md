@@ -3,7 +3,7 @@
 Every card writer reads this file before writing. Reuse these values exactly.
 
 ## This course
-The cheat-sheet's storage, caching, MapReduce, graph-query and case-study pages: B-trees to RAMCloud, Bigtable to a GPU scheduler and a limit order book.
+The source guide's storage, caching, MapReduce, graph-query and case-study pages: B-trees to RAMCloud, Bigtable to a GPU scheduler and a limit order book.
 - 17 concept cards plus `_overview.html` (written last by the main agent).
 - **Running example / conventions for this course:** Storage cards use one table where they can: orders(id, customer, price, created_at), 10 million rows of ~100 bytes (≈ 1 GB), 4 KB pages (illustrative sizing; compute derived numbers like rows/page = 40, B-tree fan-out, height).
 

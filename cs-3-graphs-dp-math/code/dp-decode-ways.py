@@ -1,6 +1,6 @@
 """Decode Ways II: count decodings of digits and '*', mod 1e9+7.
 
-From the cheat-sheet's Recursion page (numpy and C++ versions),
+From the source guide's Recursion page (numpy and C++ versions),
 rewritten in plain Python. Three running counts replace the table:
   e   ways to decode the prefix so far (a letter just ended)
   one ways whose last char is a '1' still waiting for a partner

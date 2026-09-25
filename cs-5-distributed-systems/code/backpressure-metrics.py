@@ -1,6 +1,6 @@
 """Backpressure, percentiles, yield and harvest.
 
-The image-resize service from the cheat-sheet: one core converts 10
+The image-resize service from the source guide: one core converts 10
 images/s, the SLO is p99 < 500 ms and 99.9% availability. Arrival
 rates, the latency distribution and the traffic curve are
 illustrative; every number printed is computed here.

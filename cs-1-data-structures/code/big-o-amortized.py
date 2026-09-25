@@ -37,7 +37,7 @@ class RandomizedCollection:
 
 
 class SourceRandomizedCollection:
-    """The cheat-sheet's version: (value, slot in its index list)."""
+    """The source guide's version: (value, slot in its index list)."""
 
     def __init__(self):
         self.vals = []

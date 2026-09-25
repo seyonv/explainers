@@ -1,6 +1,6 @@
 """First Missing Positive: the array as its own hash table.
 
-Cyclic placement, as in the cheat-sheet's C++ version: send every
+Cyclic placement, as in the source guide's C++ version: send every
 value v in 1..n to its home slot v - 1 by swapping, then scan for the
 first slot that does not hold its own number. O(n) time, O(1) extra.
 """

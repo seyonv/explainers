@@ -1,4 +1,4 @@
-"""Insertion sort, swap-based like the cheat-sheet's C++ version.
+"""Insertion sort, swap-based like the source guide's C++ version.
 
 Each swap fixes exactly one inversion (a pair i < j with a[i] > a[j]),
 so the number of swaps equals the number of inversions.

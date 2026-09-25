@@ -1,6 +1,6 @@
 """The scheduler as a product: explain the wait, measure the waste.
 
-Numbers come from the cheat-sheet's big-product-design-picture page:
+Numbers come from the source guide's big-product-design-picture page:
 the 64-pods-with-46-free case and the GPU utilization PDF.
 """
 from collections import deque

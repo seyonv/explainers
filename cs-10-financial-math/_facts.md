@@ -3,7 +3,7 @@
 Every card writer reads this file before writing. Reuse these values exactly.
 
 ## This course
-The cheat-sheet lists Financial Mathematics under Research Engineering but has no page for it. This course writes one from scratch: interest and returns, portfolios, random walks, option pricing and bet sizing, each with Python you can run.
+The source guide lists Financial Mathematics under Research Engineering but has no page for it. This course writes one from scratch: interest and returns, portfolios, random walks, option pricing and bet sizing, each with Python you can run.
 - 12 concept cards plus `_overview.html` (written last by the main agent).
 - **Running example / conventions for this course:** Option cards share one contract: S₀ = 100, K = 100, r = 5% (continuous), σ = 20%, T = 1 year (Black–Scholes call ≈ 10.45, put ≈ 5.57: compute and use these exactly across cards). Every card is supplemented [S]: cite Hull (Options, Futures and Other Derivatives), Shreve, or other standard references; no scipy (norm_cdf via math.erf).
 

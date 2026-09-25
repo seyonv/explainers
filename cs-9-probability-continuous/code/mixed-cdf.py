@@ -1,6 +1,6 @@
 """Mixed distributions: split a CDF into jumps plus a density.
 
-Solves the two mixed-CDF problems in cheat-sheet > Univariate Random
+Solves the two mixed-CDF problems in the source guide > Univariate Random
 Variables > Continuous Univariate Distributions exactly (Fractions),
 then checks the moments by simulating with the generalised inverse.
 """

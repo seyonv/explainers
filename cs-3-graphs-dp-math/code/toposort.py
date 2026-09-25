@@ -1,6 +1,6 @@
 """Topological sort and cycle detection.
 
-Alien Dictionary (the cheat-sheet solves it with graphlib), Course
+Alien Dictionary (the source guide solves it with graphlib), Course
 Schedule I and II, solved here with Kahn's algorithm in plain Python,
 plus a three-colour DFS for comparison. Runs under python3 (3.10).
 """
@@ -117,7 +117,7 @@ def dfs_order(succ):
 
 
 def source_alien_order(words):
-    """The cheat-sheet's version, verbatim apart from layout."""
+    """The source guide's version, verbatim apart from layout."""
     from itertools import zip_longest
     graph = {letter: set() for word in words for letter in word}
     for word1, word2 in pairwise(words):

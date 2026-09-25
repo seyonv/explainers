@@ -1,6 +1,6 @@
 """Quicksort: iterative, explicit stack, Lomuto partition.
 
-Python rewrite of the cheat-sheet's C++ version. One change: the
+Python rewrite of the source guide's C++ version. One change: the
 larger side is pushed first, so the smaller side is popped (and
 finished) first and the stack never holds more than ~log2(n) ranges.
 """

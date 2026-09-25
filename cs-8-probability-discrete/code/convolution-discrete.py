@@ -1,6 +1,6 @@
 """Adding independent random variables: the convolution sum.
 
-Solves the weekly-claims problem in cheat-sheet > General Probability >
+Solves the weekly-claims problem in the source guide > General Probability >
 Basic Concepts of Probability: P(N = n) = 1/2**(n+1) each week, weeks
 independent; P(exactly 7 claims in two weeks) = 1/64. Then checks it
 three ways: the generating-function formula, numpy.convolve, and a

@@ -1,6 +1,6 @@
 """Reading a distribution off its MGF.
 
-Solves the two MGF problems in cheat-sheet > Univariate Random
+Solves the two MGF problems in the source guide > Univariate Random
 Variables: m(t) = 1/6 e^t + 2/6 e^2t + 3/6 e^3t (mean, variance,
 distribution) and M(t) = (0.7 / (1 - 0.3 e^t))^5 (which distribution?).
 Moments come from derivatives at t = 0; the NB match is checked

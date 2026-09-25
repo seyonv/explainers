@@ -1,6 +1,6 @@
 """Fair-share GPU scheduling: a hierarchical split and DRF.
 
-1. The cheat-sheet's split: users share the cluster equally, and each
+1. The source guide's split: users share the cluster equally, and each
    user's share is divided among its jobs in proportion to priority.
 2. Dominant resource fairness (DRF) with two resources, GPUs and CPU
    cores: always give the next task to the user whose dominant share

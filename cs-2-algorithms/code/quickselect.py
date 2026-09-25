@@ -1,6 +1,6 @@
 """Quickselect: the k-th smallest element (k = 1 is the minimum).
 
-Same three-way split as the cheat-sheet's version (smaller / equal /
+Same three-way split as the source guide's version (smaller / equal /
 larger than the pivot), but written as a loop, because the recursive
 version with pivot arr[0] hits Python's recursion limit (1,000) on
 sorted input of about 1,000 elements.
@@ -30,7 +30,7 @@ def first(a):
 
 
 def source_quickselect(arr, k):
-    """The cheat-sheet's recursive version, pivot arr[0]."""
+    """The source guide's recursive version, pivot arr[0]."""
     smaller = [x for x in arr if x < arr[0]]
     larger = [x for x in arr if x > arr[0]]
     n = len(arr) - len(larger)

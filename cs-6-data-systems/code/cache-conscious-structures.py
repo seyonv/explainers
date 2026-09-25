@@ -10,7 +10,7 @@ finding one of 10**7 8-byte keys:
   3. a cache-conscious tree: one 64-byte line per node, 8 keys
   4. a linear-probing hash table at load 0.5
 
-It also redoes the Shore arithmetic from the cheat-sheet.
+It also redoes the Shore arithmetic from the source guide.
 """
 import math
 import random

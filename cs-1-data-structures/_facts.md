@@ -3,7 +3,7 @@
 Every card writer reads this file before writing. Reuse these values exactly.
 
 ## This course
-The cheat-sheet's Coding and Data Structures pages, one card per structure or pattern, with every problem's idea traced by hand and solved in Python.
+The source guide's Coding and Data Structures pages, one card per structure or pattern, with every problem's idea traced by hand and solved in Python.
 - 20 concept cards plus `_overview.html` (written last by the main agent).
 - **Running example / conventions for this course:** Where a card has no source problem with its own example, use the array a = [5, 2, 9, 1, 5, 6] and the string s = "ADOBECODEBANC" (t = "ABC").
 

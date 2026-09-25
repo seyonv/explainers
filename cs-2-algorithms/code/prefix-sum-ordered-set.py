@@ -1,6 +1,6 @@
 """Prefix sums with an ordered set: Max Sum of Rectangle <= k.
 
-The cheat-sheet's C++ uses std::set::lower_bound. Python has no
+The source guide's C++ uses std::set::lower_bound. Python has no
 ordered set in the standard library, so this keeps a sorted list
 with bisect: O(log n) to search, O(n) to insert (the list shifts).
 Checked against brute force on random matrices.

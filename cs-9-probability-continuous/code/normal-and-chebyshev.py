@@ -1,6 +1,6 @@
 """The normal distribution and Chebyshev's bound.
 
-Blood pressure data (n = 15) from the cheat-sheet: range rule,
+Blood pressure data (n = 15) from the source guide: range rule,
 mean and sample sd, the Chebyshev k = 2 interval and how many
 readings it actually holds; then Chebyshev vs the normal model for
 k = 1, 2, 3, a distribution where Chebyshev is exact, and a

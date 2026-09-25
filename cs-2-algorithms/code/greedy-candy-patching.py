@@ -3,7 +3,7 @@
 Candy: two passes. Left to right, a child rated above its left
 neighbour gets one more than that neighbour; right to left, the same
 against the right neighbour. Each child takes the larger of the two.
-The cheat-sheet's C++ counts up-runs and down-runs instead; the
+The source guide's C++ counts up-runs and down-runs instead; the
 run-counting version below is a Python rewrite and gives the same sum.
 
 Patching Array: keep `miss`, the smallest sum not yet formable, so

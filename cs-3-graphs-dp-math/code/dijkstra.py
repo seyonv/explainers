@@ -1,6 +1,6 @@
 """Dijkstra's algorithm with heapq (no Graph class, no scipy).
 
-The cheat-sheet's algorithms.md > Dijkstra's is empty; its graphs.md >
+The source guide's algorithms.md > Dijkstra's is empty; its graphs.md >
 Distance calls scipy's csgraph.dijkstra (Network Delay Time) or a
 Graph.dijkstra from a code/graph.py that is missing from the repo
 (Shortest Path with Alternating Colors). Plain Python versions here.

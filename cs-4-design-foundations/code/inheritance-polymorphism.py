@@ -1,4 +1,4 @@
-"""Inheritance and polymorphism: the cheat-sheet's Shape hierarchy.
+"""Inheritance and polymorphism: the source guide's Shape hierarchy.
 
 The source is Java (Shape, Rectangle, Ellipse, paintShapes). Here it
 is Python with abc.ABC. Circle is added because the source says

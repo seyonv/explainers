@@ -1,4 +1,4 @@
-"""Queues as rolling state: two deque problems from the cheat-sheet.
+"""Queues as rolling state: two deque problems from the source guide.
 
 Source: ljeng/cheat-sheet, coding-algorithms/data-structures.md,
 Queues > Number of People Aware of a Secret and Integer to English
@@ -74,7 +74,7 @@ def number_to_words(num):
 
 
 def source_number_to_words(num):
-    """The cheat-sheet's version, kept to cross-check (tables above)."""
+    """The source guide's version, kept to cross-check (tables above)."""
     one = ONES
     ten = ["", "Ten"] + TENS[2:]
     superwords = deque()

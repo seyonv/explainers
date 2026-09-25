@@ -1,6 +1,6 @@
 """Bipartite graphs: BFS 2-colouring and the odd-cycle certificate.
 
-Possible Bipartition and Is Graph Bipartite? from the cheat-sheet's
+Possible Bipartition and Is Graph Bipartite? from the source guide's
 Graphs page (Cycle Detection), in plain Python. The source calls a
 Graph.bipartite() method whose code/graph.py is missing from the repo.
 Runs under python3 (3.10).

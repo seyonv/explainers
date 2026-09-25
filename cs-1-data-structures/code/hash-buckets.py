@@ -59,7 +59,7 @@ def trace(nums, index_diff, value_diff):
 
 
 def source_version(nums, indexDiff, valueDiff):
-    """The cheat-sheet's code, verbatim apart from line wrapping."""
+    """The source guide's code, verbatim apart from line wrapping."""
     import collections
     valueDiff += 1
     buckets = collections.defaultdict(lambda: sys.maxsize)

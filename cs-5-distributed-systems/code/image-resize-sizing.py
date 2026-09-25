@@ -1,4 +1,4 @@
-"""Sizing the cheat-sheet's image-resize service, step by step.
+"""Sizing the source guide's image-resize service, step by step.
 
 Source: ljeng/cheat-sheet, distributed-systems.md, The Reality.
 Inputs are the source's; everything else is computed here.

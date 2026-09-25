@@ -1,6 +1,6 @@
 """State-machine DP: Best Time to Buy and Sell Stock III and IV.
 
-From the cheat-sheet's Recursion page (III in C++ with four states,
+From the source guide's Recursion page (III in C++ with four states,
 IV in Python with a k-row table), rewritten in Python. A state is
 "what I am holding after j buys / j sells"; each day every state
 either rests or takes one edge (buy or sell) from its neighbour.

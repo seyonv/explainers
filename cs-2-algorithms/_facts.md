@@ -3,7 +3,7 @@
 Every card writer reads this file before writing. Reuse these values exactly.
 
 ## This course
-The cheat-sheet's Sorting and Algorithms pages: every sort, binary search in its three disguises, the string-matching classics and greedy proofs, with hand traces and Python.
+The source guide's Sorting and Algorithms pages: every sort, binary search in its three disguises, the string-matching classics and greedy proofs, with hand traces and Python.
 - 21 concept cards plus `_overview.html` (written last by the main agent).
 - **Running example / conventions for this course:** Sorting cards all trace the same array: a = [38, 27, 43, 3, 9, 82, 10] (sorted: [3, 9, 10, 27, 38, 43, 82]). Use the measured sort timings from the table.
 

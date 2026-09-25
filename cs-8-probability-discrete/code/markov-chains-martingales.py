@@ -1,6 +1,6 @@
 """Markov chains and martingales: absorption by linear equations.
 
-1. The Markov thief (cheat-sheet > Univariate Random Variables >
+1. The Markov thief (source guide > Univariate Random Variables >
    Applications): a two-state chain with hours attached to each step;
    the fundamental matrix gives E[time to escape] = 18 h.
 2. Gambler's ruin on 0..10 from 3: solve the linear equations exactly

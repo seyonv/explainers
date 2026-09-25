@@ -5,7 +5,7 @@ The worked example is an LFU cache (see lfu-cache.html). Three
 versions are tested against the same 1,000 random op sequences:
   LFU        correct O(1) version
   BuggyLFU   evicts BEFORE checking whether the key already exists
-  LeakyLFU   the cheat-sheet's own bug: forgets the evicted key's
+  LeakyLFU   the source guide's own bug: forgets the evicted key's
              count (outputs stay right, internal state is wrong)
 Run: python3 testing-your-code.py
 Tests: python3 -m pytest -q --import-mode=importlib <this file>

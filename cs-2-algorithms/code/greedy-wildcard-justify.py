@@ -1,6 +1,6 @@
 """Greedy I: wildcard matching and text justification.
 
-Python rewrite of the cheat-sheet's Wildcard Matching (C++) and its
+Python rewrite of the source guide's Wildcard Matching (C++) and its
 Text Justification (Python, reshaped here). Run: python3 this file.
 """
 import random

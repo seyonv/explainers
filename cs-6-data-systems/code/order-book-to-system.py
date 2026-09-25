@@ -1,4 +1,4 @@
-"""Limit order book: the cheat-sheet's math spec turned into a system.
+"""Limit order book: the source guide's math spec turned into a system.
 
 Prices live on a tick grid P = {k * delta}, so the engine stores the
 integer k ("ticks"), never a float. Submission time t becomes a

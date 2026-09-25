@@ -1,6 +1,6 @@
 """Poisson distribution: sums of Poissons, moments, the binomial limit.
 
-Solves the two problems in cheat-sheet > Univariate Random Variables >
+Solves the two problems in the source guide > Univariate Random Variables >
 Poisson (three highways; the claims problem the source leaves unsolved),
 checks that Poisson(0.3) + Poisson(0.5) + Poisson(0.7) is Poisson(1.5)
 by convolution and by a 10**6-day simulation, and measures how fast

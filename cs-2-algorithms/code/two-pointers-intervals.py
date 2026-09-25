@@ -1,6 +1,6 @@
 """Two pointers and intervals.
 
-Three patterns the cheat-sheet uses without naming them:
+Three patterns the source guide uses without naming them:
   1. opposite ends  - two-sum on a sorted array
   2. same direction - count pairs within distance d (the counting
                       loop inside the source's kth-pair-distance)

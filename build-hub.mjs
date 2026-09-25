@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 
 const root = new URL(".", import.meta.url).pathname;
-const text = (html, re) => (html.match(re)?.[1] || "").replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim();
+const text = (html, re) => (html.match(re)?.[1] || "").replace(/<[^>]+>/g, "").replace(/&amp;/g, "&").replace(/\s+/g, " ").trim();
 const clip = (s, n) => (s.length > n ? s.slice(0, s.lastIndexOf(" ", n)) + "…" : s);
 
 function firstCommitDate(dir) {
@@ -46,6 +46,25 @@ for (const slug of readdirSync(root).sort()) {
   });
 }
 entries.sort((a, b) => b.date.localeCompare(a.date) || a.title.localeCompare(b.title));
+
+// Each <prefix>-series.json folds its courses into one "series" tile on the map entry;
+// the member courses stay in the list (search still finds them) but carry `series`.
+for (const f of readdirSync(root).filter((f) => f.endsWith("-series.json"))) {
+  const series = JSON.parse(readFileSync(join(root, f), "utf8"));
+  const map = entries.find((e) => e.slug === series.map);
+  if (!map) continue;
+  map.kind = "series";
+  map.title = series.title;
+  map.courses = [];
+  for (const c of series.courses) {
+    const e = entries.find((x) => x.slug === c.slug);
+    if (!e || e === map) continue;
+    e.series = series.title;
+    map.courses.push({ n: c.n, title: c.short, href: e.href, cards: e.cards });
+  }
+  map.total = map.courses.reduce((n, c) => n + c.cards, map.cards);
+}
+entries.sort((a, b) => (b.kind === "series") - (a.kind === "series"));
 
 const page = readFileSync(join(root, "hub-template.html"), "utf8")
   .replace("/*ENTRIES*/[]", () => JSON.stringify(entries, null, 1).replace(/</g, "\\u003c"))

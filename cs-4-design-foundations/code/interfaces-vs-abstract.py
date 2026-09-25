@@ -1,6 +1,6 @@
 """Interfaces vs abstract classes, in Python.
 
-The cheat-sheet's StatusCallback (C++ and Java) and XMLReader /
+The source guide's StatusCallback (C++ and Java) and XMLReader /
 XMLReaderImpl (Java) examples, rewritten with typing.Protocol for the
 interface and abc.ABC for the abstract class. Run: python3 (3.10+).
 """

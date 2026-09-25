@@ -1,6 +1,6 @@
 """Breadth-first search in layers.
 
-Bus Routes, Jump Game III and Snakes and Ladders from the cheat-sheet's
+Bus Routes, Jump Game III and Snakes and Ladders from the source guide's
 Graphs page, all solved with plain BFS (no Graph class, no scipy).
 Runs under python3 (3.10).
 """
@@ -69,7 +69,7 @@ def num_buses(routes, source, target, trace=False):
 
 
 def num_buses_source(routes, source, target):
-    """The cheat-sheet's version, queue of (stop, buses), to check."""
+    """The source guide's version, queue of (stop, buses), to check."""
     graph = defaultdict(set)
     for i, route in enumerate(routes):
         for stop in route:

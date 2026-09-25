@@ -3,7 +3,7 @@
 Every card writer reads this file before writing. Reuse these values exactly.
 
 ## This course
-The cheat-sheet's General Probability page and the discrete half of Univariate Random Variables: every problem solved, the theory the source leaves out added, and the source's wrong answers corrected.
+The source guide's General Probability page and the discrete half of Univariate Random Variables: every problem solved, the theory the source leaves out added, and the source's wrong answers corrected.
 - 16 concept cards plus `_overview.html` (written last by the main agent).
 - **Running example / conventions for this course:** The source is an exam-P style problem set with no theory and many unsolved problems. Each card: (1) the concept and its formulas, (2) the source's problem, solved step by step with every number computed in Python (fractions.Fraction for exact answers), (3) a simulation check where it's cheap (fixed seed, ≤ 10⁶ trials). Include a small reference strip (pmf, mean, variance, MGF) on every distribution card.
 

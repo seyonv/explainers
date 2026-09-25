@@ -3,7 +3,7 @@
 Every card writer reads this file before writing. Reuse these values exactly.
 
 ## This course
-The cheat-sheet's distributed systems, networks, consistency and service discovery pages, section by section, plus the consensus, hashing and retry cards the source assumes you know.
+The source guide's distributed systems, networks, consistency and service discovery pages, section by section, plus the consensus, hashing and retry cards the source assumes you know.
 - 20 concept cards plus `_overview.html` (written last by the main agent).
 - **Running example / conventions for this course:** The source's own running system: an image-resize service. 100K users, 10K requests/s per region, p99 < 500 ms for images < 1 MB, 99.9% availability; 256 KB average image → 10 conversions/s per core → 1K cores → ~32 × 32-core servers, 40+ with 20% headroom (distributed-systems.md). Reuse it wherever a card needs a system. Shared sourced RTTs (from partial-failure-cap; Azure median RTTs, learn.microsoft.com/en-us/azure/networking/azure-network-latency, 30 days to 2026-07-30): East US→East US 2 8 ms, East US→West US 69 ms, East US→West Europe 83 ms, East US→Japan East 162 ms; fibre ≈ 200,000 km/s; zones in a region: single-digit ms (AWS). Image-service sizing (image-resize-sizing): 40 machines = 78.1% busy; 32 machines = 97.7% busy with 592 ms p99 queue wait (M/M/c model).
 

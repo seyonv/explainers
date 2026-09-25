@@ -3,7 +3,7 @@
 Every card writer reads this file before writing. Reuse these values exactly.
 
 ## This course
-The cheat-sheet's Graphs, Recursion and Mathematics pages: traversals, shortest paths, the DP patterns behind its hard problems, and the number theory tricks, all in Python.
+The source guide's Graphs, Recursion and Mathematics pages: traversals, shortest paths, the DP patterns behind its hard problems, and the number theory tricks, all in Python.
 - 27 concept cards plus `_overview.html` (written last by the main agent).
 - **Running example / conventions for this course:** Graph cards reuse this weighted directed graph where they can: edges A→B 4, A→C 2, C→B 1, B→D 5, C→D 8, C→E 10, D→E 2 (shortest A→E = 10 via A-C-B-D-E). The source's graphs.md uses scipy; this series has no scipy, so write plain Python. Shared computed values (from finished cards, reuse exactly): naive fib(30) makes 2,692,537 calls, memoized 31 computed states; Binet's formula in float64 is first wrong at n = 71.
 

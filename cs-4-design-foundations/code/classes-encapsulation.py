@@ -1,4 +1,4 @@
-"""Classes, objects and encapsulation: the cheat-sheet's Point.java
+"""Classes, objects and encapsulation: the source guide's Point.java
 rewritten in Python.
 
 1. The idiomatic version: a frozen dataclass. relative_to returns a

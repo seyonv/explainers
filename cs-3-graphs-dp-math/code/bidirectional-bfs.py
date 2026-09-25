@@ -1,4 +1,4 @@
-"""Bidirectional BFS on Word Ladder (cheat-sheet > Graphs > BFS).
+"""Bidirectional BFS on Word Ladder (source guide > Graphs > BFS).
 
 Grow one BFS layer at a time from both ends, always from the smaller
 frontier, and stop the first time a new word lies on the other

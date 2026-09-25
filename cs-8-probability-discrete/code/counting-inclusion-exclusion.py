@@ -1,7 +1,7 @@
 """Inclusion-exclusion: add the singles, subtract the pairs, add back
 the triples, and so on.
 
-Solves the two inclusion-exclusion problems in cheat-sheet > General
+Solves the two inclusion-exclusion problems in the source guide > General
 Probability > Discrete Mathematics (multiples of neither 6 nor 9, and
 young female single policyholders), then checks both by brute force.
 """

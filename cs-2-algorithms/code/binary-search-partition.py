@@ -30,7 +30,7 @@ def median_two(a, b):
 
 
 def source_median(nums1, nums2):
-    """The cheat-sheet's version (needs Python 3.10 for key=)."""
+    """The source guide's version (needs Python 3.10 for key=)."""
     nums1, nums2 = sorted((nums1, nums2), key=len)
     m, n = len(nums1), len(nums2)
     j = (m + n - 1) // 2 - 1

@@ -1,6 +1,6 @@
 """Exponential distribution: tail, memorylessness, min of exponentials.
 
-Worked example: the cheat-sheet's pharmacy counter, where processing
+Worked example: the source guide's pharmacy counter, where processing
 times are exponential with mean 10 minutes. Python 3.10, stdlib only.
 """
 import math

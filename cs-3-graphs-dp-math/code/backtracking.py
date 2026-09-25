@@ -1,4 +1,4 @@
-"""Backtracking: Expression Add Operators (cheat-sheet, Recursion).
+"""Backtracking: Expression Add Operators (source guide, Recursion).
 
 Insert +, - or * between the digits of num so the expression equals
 target. Iterative DFS over partial expressions; each state carries

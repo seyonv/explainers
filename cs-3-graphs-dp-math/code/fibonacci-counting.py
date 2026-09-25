@@ -1,5 +1,5 @@
 """Fibonacci counting: Climbing Stairs and Non-negative Integers
-without Consecutive Ones (cheat-sheet > Mathematics). Python 3.10."""
+without Consecutive Ones (source guide > Mathematics). Python 3.10."""
 import math
 
 

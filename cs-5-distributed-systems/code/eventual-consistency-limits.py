@@ -1,7 +1,7 @@
 """What eventual consistency can't promise: four failures, simulated.
 
 Two (or three) replicas that accept writes locally and merge later,
-Dynamo-style. Each demo breaks one guarantee from the cheat-sheet.
+Dynamo-style. Each demo breaks one guarantee from the source guide.
 
 Run: python3 eventual-consistency-limits.py   (Python 3.10, stdlib)
 """
