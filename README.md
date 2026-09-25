@@ -46,7 +46,7 @@ has a `GROUPS` list. Each card gets breadcrumbs with prev/next at the top and a 
 preview at the bottom, and each course index gets a contents sidebar in the reader. `publish.sh`
 runs it on every publish (papers included), so a new course picks it up with no extra step.
 
-The `perf-*` folders form one linked series. `perf-series.json` lists the courses in order, what each course needs, and each card's prerequisites. For those courses the navigation also adds a course strip, a "before this" line on each card, and "next up" links that cross into the next course. Adding a course to the series only needs an entry in `perf-series.json`. `cs-series.json` does the same for the `cs-*` courses ("Core reference: CS interviews").
+The `perf-*` folders form one linked series. `perf-series.json` lists the courses in order, what each course needs, and each card's prerequisites. For those courses the navigation also adds a course strip, a "before this" line on each card, and "next up" links that cross into the next course. Adding a course to the series only needs an entry in `perf-series.json`. `cs-series.json` does the same for the `cs-*` courses ("The core CS canon").
 
 On the hub, each series shows as one wide tile (on its map folder) that lists its courses. Its member courses are hidden from the grid unless a search matches them.
 
