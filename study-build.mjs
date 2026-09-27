@@ -3,14 +3,15 @@
 // stepper into <course>/<slug>.html (see study-lib.mjs). Cards whose JSON was removed get their blocks stripped.
 // Usage: node study-build.mjs [course ...]   (default: every folder). Idempotent; publish.sh runs it before course-nav.
 //        node study-build.mjs --card course/slug   touches only that card (safe for parallel card writers).
-import { readFileSync, writeFileSync, existsSync, readdirSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { inject, strip } from "./study-lib.mjs";
 
 const root = new URL(".", import.meta.url).pathname;
 const args = process.argv.slice(2);
 const card = args[0] === "--card" ? args[1] : null;
-const courses = card ? [card.split("/")[0]] : args.length ? args : readdirSync(root, { withFileTypes: true })
+// Only real folders count: a shell glob like paper-* also matches paper-template.html.
+const courses = card ? [card.split("/")[0]] : args.length ? args.filter((a) => existsSync(join(root, a)) && statSync(join(root, a)).isDirectory()) : readdirSync(root, { withFileTypes: true })
   .filter((e) => e.isDirectory() && !e.name.startsWith(".") && !["tasks", "test", "launchd", "node_modules"].includes(e.name)).map((e) => e.name);
 
 const titleOf = (ref) => {
