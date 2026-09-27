@@ -135,3 +135,24 @@ test("each stage links to its principle, and field-guide backlinks render in Pri
   assert.match(out, /Used in the field guides:<\/b> <a href="https:\/\/example.com\/#p2">p2 coding tools<\/a> \(Agents\)/);
   assert.doesNotMatch(inject(card, study, ctx), /Used in the field guides/);
 });
+
+test("inject keeps its CSS where it was, so another script's CSS appended after it doesn't make them swap", () => {
+  const once = inject(card, study, ctx);
+  const withNav = once.replace("</style>", "/* series-nav */\n.sn{}\n/* /series-nav */\n</style>");
+  assert.equal(inject(withNav, study, ctx), withNav);
+});
+
+test("inject is idempotent when the footer is indented rather than on a fresh line", () => {
+  const indented = card.replace('<div class="foot">', '  <div class="foot">').replace("\n  <div", "\n\n  <div");
+  const once = inject(indented, study, ctx);
+  assert.equal(inject(once, study, ctx), once);
+  assert.equal(strip(once), indented);
+});
+
+test("a card without a footer anchors the panel inside </article>, clear of course-nav's bottom block", () => {
+  const paper = card.replace('<div class="foot">Watch · Code</div>\n', "").replace("<h1>", "<article><h1>").replace("<!-- series-nav:bottom -->", "</article>\n<!-- series-nav:bottom -->");
+  const once = inject(paper, study, ctx);
+  assert.ok(once.indexOf("<!-- /study:panel -->") < once.indexOf("</article>"));
+  const renav = once.replace(/\n?<!-- series-nav:bottom -->[\s\S]*?<!-- \/series-nav:bottom -->/, "").replace("</body>", "<!-- series-nav:bottom -->y<!-- /series-nav:bottom -->\n</body>");
+  assert.equal(inject(renav, study, ctx), renav);
+});

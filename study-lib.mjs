@@ -104,14 +104,19 @@ export const CSS = `/* study:css */
 /* /study:css */`;
 
 export function inject(html, s, ctx) {
+  // The CSS stays where it already is: re-appending it before </style> would swap it with CSS other scripts append there.
+  const cssAt = html.search(/\n?\/\* study:css \*\//);
   html = strip(html);
   const sub = html.match(/<p class="sub"[\s\S]*?<\/p>/) || html.match(/<\/h1>/);
   if (!sub) throw new Error("no <h1> or subtitle to anchor Prime");
   const at = sub.index + sub[0].length;
   html = html.slice(0, at) + "\n" + prime(s, ctx) + html.slice(at);
   const foot = html.search(/<(div|footer|p) class="foot"/);
-  const at2 = foot >= 0 ? foot : html.includes("<!-- series-nav:bottom -->") ? html.indexOf("<!-- series-nav:bottom -->") : html.lastIndexOf("</body>");
-  html = html.slice(0, at2) + panel(s, ctx) + "\n" + html.slice(at2);
+  // Anchor: the footer, else the end of the card's <article>, else course-nav's bottom block, else </body>.
+  const art = html.lastIndexOf("</article>");
+  const at2 = foot >= 0 ? foot : art >= 0 ? art : html.includes("<!-- series-nav:bottom -->") ? html.indexOf("<!-- series-nav:bottom -->") : html.lastIndexOf("</body>");
+  html = html.slice(0, at2) + "\n" + panel(s, ctx) + html.slice(at2);
+  if (cssAt >= 0) return html.slice(0, cssAt) + "\n" + CSS + html.slice(cssAt);
   const style = html.indexOf("</style>");
   return html.slice(0, style) + CSS + "\n" + html.slice(style);
 }
