@@ -1,0 +1,64 @@
+{
+  "prime": {
+    "problem": "Fix 2 tamed the saturated tanh layer with <code>W1*0.2</code>, a number found by staring at histograms. With more layers, different widths or a different nonlinearity you would need a new magic number for every layer, and a deep stack whose scales are slightly off either explodes or fades to nothing.",
+    "fits": "It replaces the hand-tuned fix from the saturated-tanh card with a rule. It leans on the variance idea from the toolkit's mean-and-variance card, and it sets up BatchNorm, the next card, which removes the need to get this rule exactly right.",
+    "expect": ["fan_in", "variance of a sum of products", "the gain (1, √2, 5/3)", "effective gain of a hand-tuned scale"],
+    "goal": "Derive the init scale for any linear layer from its shape and nonlinearity, compute (5/3)/√30 = 0.3043 for W1, and predict how a wrong scale shows up in a deep stack."
+  },
+  "attend": [
+    "Why does summing 10 unit-variance products give a std of √10 and not 10?",
+    "Which assumption in Var(y) = fan_in · Var(w) · Var(x) holds at init but stops holding once training starts?",
+    "Why does tanh need a gain above 1 when ReLU's gain comes from throwing away half the inputs?",
+    "The hand-tuned 0.2 and the Kaiming 0.3043 give almost the same final loss; so what exactly does Kaiming buy you?",
+    "What goes wrong if you pass Karpathy's (30, 200) <code>W1</code> straight to <code>torch.nn.init.kaiming_normal_</code>?"
+  ],
+  "core": {
+    "must": [
+      "A unit's output is a sum of fan_in products → variances of independent zero-mean terms add → Var(y) = fan_in · Var(w) · Var(x) → with std-1 weights the spread grows √fan_in per layer (3.161 for fan_in 10)",
+      "Divide the weights by √fan_in → the fan_in cancels → Var(y) = Var(x) → the signal keeps its size layer after layer instead of multiplying by √fan_in each time (3.16⁵ ≈ 316× over five layers)",
+      "A nonlinearity changes the spread after the linear layer (ReLU halves the mean square, tanh squashes std 1 to 0.628) → multiply by a gain to put it back (√2, 5/3) → a 5-layer tanh stack holds std 0.75 → 0.66 instead of fading 0.62 → 0.32 at gain 1",
+      "Init scale sets hpreact's spread → too big saturates tanh (W1 × 1: 61.0% at ±1) → gain/√fan_in gives 0.3043 for W1 with no tuning → same result as the hand-tuned 0.2 (val 2.1070 vs 2.1027), but it carries to any layer shape"
+    ],
+    "elevated": [
+      "The rule only holds at step 0 (independent, zero-mean weights) → training breaks the assumption → deep nets also need normalisation (BatchNorm), residual connections or Adam to keep the statistics healthy",
+      "PyTorch stores <code>nn.Linear</code> weights as (out, in) → <code>kaiming_normal_</code> reads fan_in from dimension 1 → on a (30, 200) in-by-out matrix it uses fan_in 200 and gives std 0.1165 instead of 0.3043"
+    ],
+    "reference": [
+      "<code>torch.nn.init.calculate_gain('tanh')</code> = 5/3, <code>('relu')</code> = √2, <code>('linear')</code> = 1",
+      "<code>kaiming_normal_(w, mode='fan_in', nonlinearity='tanh')</code> and its fan_out mode",
+      "<code>nn.Linear</code>'s default: uniform in ±1/√fan_in (std 0.1051 for 30 inputs)",
+      "He et al. 2015, arXiv 1502.01852"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, derive in 3–5 sentences why a layer's weights should have std gain/√fan_in, then plug in W1's numbers. Or draw the chain from \"sum of products\" to \"0.3043\".",
+    "checklist": [
+      "an output is a sum of fan_in products, and the variances add",
+      "so std grows by √fan_in; dividing the weights by √fan_in cancels it",
+      "the gain makes up for the nonlinearity's squeeze (tanh 5/3, ReLU √2)",
+      "W1: fan_in = 10 · 3 = 30, so (5/3)/√30 = 0.3043",
+      "it fixes step 0 only; normalisation keeps things healthy during training"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why the right weight scale depends on how many inputs a layer has, using the toy's numbers.", "kind": "concept", "answer": ["each output sums fan_in products, each with variance Var(w)·Var(x)", "the variances add: 10 inputs give variance 10, std √10 ≈ 3.16 (measured 3.161)", "so the weight std must shrink as 1/√fan_in to keep std 1"]},
+    {"q": "Walk through what happens to one minibatch's hpreact when W1 is drawn with <code>randn</code> and then multiplied by (5/3)/√30.", "kind": "mechanism", "answer": ["embcat has std about 0.914 (30 numbers per example)", "each hpreact unit sums 30 products; with std(W1) = 1.667/√30 the √30 cancels", "hpreact std ≈ 1.667 · 0.914 = 1.524, measured 1.524", "tanh then sees mostly moderate inputs: 8.1% of units at |h| &gt; 0.99 instead of 61.0%"]},
+    {"q": "Kaiming W1 saturates 8.1% of units at init versus 1.0% for the hand-tuned 0.2, and ends at val 2.1070 vs 2.1027. Would you still pick Kaiming? What are you trading?", "kind": "tradeoff", "answer": ["yes for anything bigger: it is a rule, not a per-layer experiment", "the 0.2 was tuned for this exact net and is slightly gentler here", "the cost is a small, measurable gap on a one-layer net", "neither holds up during training on its own; deep nets add BatchNorm"]},
+    {"q": "A colleague stacks 5 Linear → tanh layers initialised with 1/√fan_in and no gain. What will the activation histograms show, and what is the fix?", "kind": "mechanism", "answer": ["each tanh squeezes the spread, and nothing puts it back", "measured: act std 0.62, 0.48, 0.41, 0.35, 0.32 over the layers", "multiply by gain 5/3: std holds near 0.66"]}
+  ],
+  "compare": [
+    {"with": "z2h-5-batchnorm/saturated-tanh", "q": "Both cards shrink W1 to stop tanh saturating. What is fundamentally different between multiplying by 0.2 and by (5/3)/√30, and when would each one fail you?", "answer": ["0.2 is read off histograms for one net; Kaiming is derived from fan_in and the nonlinearity", "0.2 is an effective gain of 0.2·√30 = 1.095; Kaiming's is 1.667", "0.2 fails when the shape changes (new width, context length, depth)", "Kaiming fails when its assumptions break: during training, or with non-Gaussian inputs"]},
+    {"with": "z2h-5-batchnorm/batchnorm-forward", "q": "Kaiming init sets the preactivations' scale once, at step 0; BatchNorm standardises them on every forward pass. Which design choice makes BatchNorm robust to a bad init, and what does it cost you that Kaiming doesn't?", "answer": ["BN measures the batch's actual mean and std and divides them out, so any init scale is corrected", "Kaiming only predicts the scale from shapes and never re-checks", "BN couples the examples in a batch and needs running statistics at test time", "Kaiming costs nothing at run time but drifts once the weights train"]}
+  ],
+  "predict": {"q": "You swap tanh for ReLU in the MLP and keep fan_in 30. Which W1 scale should you use, and if you forgot to change the gain from 5/3, would ReLU units saturate the way tanh did?", "answer": "√2/√30 = 1.4142/5.477 = 0.2582. Leaving 5/3 makes the preactivations about 18% too big (1.667/1.414 = 1.18), but ReLU has no upper flat region, so nothing saturates at the top: outputs just grow, and in a deep stack they compound by about 1.18 per layer. ReLU's risk is the other side: units whose preactivation is negative for every example get zero gradient (the dead-neurons card)."},
+  "apply": {"task": "Run the Build-it toy with <code>x</code> of shape (1000, 30) and <code>w</code> of shape (30, 200). Predict std(y) for plain <code>w</code> and for <code>w * (5/3)/30**0.5</code> before running, then pipe the second result through <code>torch.tanh</code> and measure its std.", "done": "Your predictions are √30 ≈ 5.48 and 5/3 ≈ 1.67, the measured values land within a few percent of them, and you can say why tanh's output std is below 1 even though its input std is 1.67.", "hint": "The variance rule predicts the input to tanh, not its output: tanh squeezes anything past ±2 toward ±1."},
+  "reflect": [
+    "Which prediction did you get wrong: the toy's √10, or the ReLU gain question?",
+    "What couldn't you explain cleanly: why variances add, or why tanh needs 5/3 specifically?",
+    "Which relationship is still fuzzy: fan_in → output spread, or output spread → tanh saturation?",
+    "Where in your own code would the (out, in) vs (in, out) weight layout bite you?",
+    "What will you look for in the activation histograms when you meet the 6-layer net?"
+  ],
+  "revisit": ["z2h-1-toolkit/mean-variance-gaussian", "z2h-5-batchnorm/saturated-tanh", "z2h-1-toolkit/matmul-by-shapes"],
+  "prereq": ["z2h-5-batchnorm/saturated-tanh"]
+}

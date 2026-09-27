@@ -1,0 +1,66 @@
+{
+  "prime": {
+    "problem": "Stacking more blocks and widening them makes the numbers flowing through the network drift in size from layer to layer, and a 10.8M-parameter model on 1M characters starts memorising the training text instead of learning Shakespeare.",
+    "fits": "The residual card gave the block a clean <code>x + f(x)</code> path and reached val 2.08. This card adds the two stabilisers that let Karpathy scale that block up: LayerNorm (BatchNorm from the makemore course, turned to work per token) and dropout.",
+    "expect": ["LayerNorm: normalise each token's features, not each feature across the batch", "pre-norm: <code>x = x + sa(ln1(x))</code>", "dropout: zero 20%, scale the rest by 1.25", "the scaled-up gpt.py config and its 10,788,929 parameters"],
+    "goal": "Explain why LayerNorm replaces BatchNorm in a Transformer, where the norms and dropouts sit in a pre-norm block, and count gpt.py's parameters yourself; then decide how to train it on your own laptop."
+  },
+  "attend": [
+    "Which one-character change turns Karpathy's <code>BatchNorm1d</code> into a LayerNorm, and why does it remove the need for running averages?",
+    "Why does the block normalise the <i>input</i> to each sublayer rather than the residual stream itself?",
+    "Why are dropout's survivors multiplied by 1.25, and what would break at test time if they weren't?",
+    "Which of gpt.py's knobs add most of the 10.79M parameters, and which barely add any?",
+    "Why does the lecture only switch dropout on at the moment the model gets big?"
+  ],
+  "core": {
+    "must": [
+      "LayerNorm takes the mean and variance over one token's C features (dim 1), not over the batch (dim 0) → each token's output depends only on itself → no running averages, identical behaviour in training and at batch-1 generation → it fits a Transformer where BatchNorm doesn't",
+      "Pre-norm puts LayerNorm inside the branch, <code>x + sa(ln1(x))</code> → the residual stream itself is never normalised → gradients still have a plain addition path from the loss back to the embeddings → deeper stacks keep training; post-norm puts a norm on that path in every block",
+      "Dropout zeroes a random 20% each step and scales the rest by 1/0.8 = 1.25 → the expected value of every activation is unchanged → the net can't rely on any single unit and trains an ensemble of thinned sub-networks → less memorisation; in <code>eval()</code> it is switched off with nothing to rescale",
+      "Scaling C from 32 to 384 → parameters grow roughly with n_layer × C² (12 × 6 × 384² ≈ 10.6M of the 10.79M) → a model with about 10.7 parameters per training character → val drops to 1.48 only because dropout 0.2 holds back the overfitting"
+    ],
+    "elevated": [
+      "Karpathy's hand-written <code>x.var</code> divides by C − 1 while <code>nn.LayerNorm</code> divides by C → outputs differ slightly (max 0.0161 at C = 100) → matching the two in a test needs <code>unbiased=False</code>",
+      "gpt.py on MPS measured 1.27 s per training step → 5,000 steps ≈ 1.8 h plus ≈ 30 min of evals → the Colab's 209,729-parameter config (1.83 in 158 s on CPU) is the practical laptop run"
+    ],
+    "reference": [
+      "<code>nn.LayerNorm(n_embd)</code>, eps 1e-5, <code>gamma</code>/<code>beta</code> as weight/bias (2 × C parameters)",
+      "<code>nn.Dropout(dropout)</code> at three places: attention weights after softmax, after the multi-head <code>proj</code>, end of <code>FeedFoward</code>",
+      "gpt.py hyperparameters: batch 64, block 256, n_embd 384, 6 heads, 6 layers, dropout 0.2, lr 3e-4, 5000 iters",
+      "the Colab's small config: n_embd 64, 4 heads, 4 layers, block 32, batch 16, lr 1e-3, dropout 0",
+      "lab flags <code>--colab</code>, <code>--gpt</code>, <code>--gpt --quick</code>"
+    ]
+  },
+  "compress": {
+    "prompt": "Without scrolling up, draw one pre-norm Block as a flow from <code>x</code> to the next <code>x</code>, marking every LayerNorm and every dropout. Then say in 3–4 sentences why LayerNorm and not BatchNorm, and why dropout arrives only when the model is scaled up.",
+    "checklist": [
+      "LayerNorm normalises each token's C features on its own; BatchNorm normalises each feature across the batch",
+      "no batch dependence, so no running stats and the same behaviour in training and generation",
+      "pre-norm: ln1 before sa, ln2 before ffwd, ln_f before lm_head; the residual stream is only ever added to",
+      "dropout after the softmax, after proj, and at the end of ffwd; off in <code>eval()</code>",
+      "survivors scaled by 1/(1 − p) = 1.25 so the expected value is unchanged",
+      "10.79M parameters on ~1M training characters would overfit, so dropout 0.2 comes in with the scale-up"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain what LayerNorm guarantees about the vector each sublayer receives, and why that is useful when blocks are stacked six deep.", "kind": "concept", "answer": ["every token vector enters sa and ffwd with mean 0 and std 1 across its features (before γ, β)", "so the input scale no longer depends on how much earlier blocks have added to the stream", "γ and β let the net learn a different scale where that helps"]},
+    {"q": "Walk through what one <code>nn.Dropout(0.2)</code> does to a vector of ten 1s in training mode and then after <code>model.eval()</code>.", "kind": "mechanism", "answer": ["training: each entry is zeroed with probability 0.2, the rest become 1/0.8 = 1.25 (the lab got two zeros)", "the expected value stays 0.8 × 1.25 = 1.0", "a fresh mask is drawn on every forward pass", "eval: the vector passes through unchanged, all 1.0"]},
+    {"q": "Trace where LayerNorm is applied in a (B, T, C) tensor: which numbers share one mean and variance?", "kind": "mechanism", "answer": ["the C = 384 features of one token at one position in one sequence", "B and T both act as batch dimensions: B × T separate normalisations", "no statistics are shared across tokens or sequences"]},
+    {"q": "You have one evening on the M3. Choose between running gpt.py in full, <code>--gpt --quick</code>, and <code>--colab</code>. What does each cost and what does each show you?", "kind": "tradeoff", "answer": ["full gpt.py: about 2¼ h (1.27 s/step × 5,000 plus ~30 min of evals); should approach the video's 1.48", "--gpt --quick: 533 s for 250 steps, val 2.39: shows the loss falling and the speed, not the result", "--colab: 158 s on CPU to val 1.83 with 209,729 params: the full training curve of a real (small) Transformer"]}
+  ],
+  "compare": [
+    {"with": "z2h-5-batchnorm/batchnorm-forward", "q": "BatchNorm vs LayerNorm: they share the formula, so what is fundamentally different, which choice of axis causes it, and when would you still pick BatchNorm?", "answer": ["BatchNorm: statistics per feature across the batch; LayerNorm: per example across its features", "the axis choice makes BatchNorm couple examples and need running mean/var for test time; LayerNorm needs neither", "BatchNorm still suits conv nets on images with large, stable batches", "BatchNorm fails at batch size 1 and with variable-length sequences; LayerNorm can't use cross-example statistics at all"]},
+    {"with": "z2h-8-gpt/feedforward-residual", "q": "Residual connections and pre-norm LayerNorm both address \"deep stacks train badly\". Which part of the problem does each solve, and what would each alone fail at?", "answer": ["residual: gives gradients a plain addition path, so depth doesn't strangle them (3 blocks without it: 2.33; with it, plus projections and a 4× FFN: 2.08)", "pre-norm LayerNorm: keeps each sublayer's input at a steady scale as the stream grows", "residual alone lets the stream's size drift; LayerNorm alone (without the skip) still leaves a long multiplicative chain", "pre-norm is designed to sit on top of the residual path without breaking it"]}
+  ],
+  "predict": {"q": "Before training, γ = 1 and β = 0 in <code>ln_f</code>. For gpt.py (C = 384), every token vector leaving <code>ln_f</code> has the same length, whatever came in. Commit to a number for that length (its L2 norm, the square root of the sum of squares).", "answer": "About <b>√384 ≈ 19.60</b>. After normalising, the 384 numbers have mean 0 and variance 1 (dividing by C), so their squares sum to 384. On 1,000 random rows with mean 5 and std 3, <code>nn.LayerNorm(384)</code> gives an average norm of 19.5959. LayerNorm doesn't only centre a vector. It puts every token on the same sphere, so <code>lm_head</code> sees inputs of a fixed size until γ learns otherwise."},
+  "apply": {"task": "With pencil and paper, count the parameters of the Colab's small config (n_embd 64, 4 heads, 4 layers, block 32, vocab 65) the way the card counts gpt.py: q/k/v, proj, the two ffwd layers and the two LayerNorms per Block, then the token and position tables, ln_f and lm_head. Then predict how many parameters doubling <code>block_size</code> to 64 would add.", "done": "You get 49,792 per Block, 199,168 for 4 Blocks, plus 4,160 + 2,048 + 128 + 4,225 = 209,729 (what the lab prints), and doubling block_size adds only 32 × 64 = 2,048 (one bigger position table).", "hint": "Each Linear has in × out weights plus out biases, except q, k and v, which have no bias. Each LayerNorm has 2 × 64."},
+  "reflect": [
+    "Which prediction did you get wrong: which slice LayerNorm normalises, or the √384 length?",
+    "What couldn't you explain cleanly: why pre-norm keeps the residual path clean, or why dropout needs the 1.25 scaling?",
+    "Which relationship is still fuzzy: bigger model → overfitting, or dropout → less overfitting?",
+    "Could you add LayerNorm and dropout to your own gpt.py from memory, getting all six locations right?",
+    "Which run will you actually do on your M3, and what val loss do you expect from it?"
+  ],
+  "revisit": ["z2h-5-batchnorm/batchnorm-forward", "z2h-8-gpt/feedforward-residual", "z2h-6-backprop-ninja/bessel-correction", "z2h-4-mlp/splits-and-fit"],
+  "prereq": ["z2h-8-gpt/feedforward-residual", "z2h-5-batchnorm/batchnorm-forward"]
+}

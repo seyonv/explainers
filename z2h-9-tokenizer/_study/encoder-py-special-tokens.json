@@ -1,0 +1,67 @@
+{
+  "prime": {
+    "problem": "You've built a tokenizer, but a real model ships with someone else's. If you can't read OpenAI's files, you can't reproduce GPT-2's ids, and a model fed the wrong ids is fed nonsense. And a tokenizer made only of merges has no way to say \"this document ended\", because any marker spelled in text can also appear in ordinary text.",
+    "fits": "This is where the from-scratch tokenizer meets the real one. It reuses your <code>vocab</code>, <code>merges</code> and <code>encode</code> loop from the encode card and the regex split from the previous card, then adds the one thing BPE can't give you: ids reserved for control.",
+    "expect": ["<code>encoder.json</code> = vocab, <code>vocab.bpe</code> = merges", "the <code>byte_encoder</code> alphabet (<code>Ġ</code> = space)", "special tokens (<code>&lt;|endoftext|&gt;</code> = 50256)", "<code>allowed_special</code>", "model surgery to add a token"],
+    "goal": "Map every part of OpenAI's encoder.py onto the tokenizer you wrote, explain why special tokens sit outside BPE, and predict what tiktoken does with a special string in user text."
+  },
+  "attend": [
+    "Which line of <code>bpe()</code> does the same job as the <code>min</code> over merge indices in your <code>encode</code>?",
+    "Why is the letter <code>a</code> id 64 in GPT-2 rather than its byte value 97, and does that change which merges happen?",
+    "Why can no amount of BPE on ordinary text ever produce id 50256?",
+    "Why does tiktoken raise an error on <code>&lt;|endoftext|&gt;</code> in text by default instead of quietly encoding it?",
+    "When you add a new special token to a trained model, which weights must change and which can stay exactly as they were?"
+  ],
+  "core": {
+    "must": [
+      "<code>encoder.json</code> is the vocab (inverted) and <code>vocab.bpe</code> is the merge list in rank order, with merge #r → id 256 + r → <code>bpe()</code>'s min-rank loop is our <code>encode</code> → load the two files and you reproduce GPT-2's ids exactly (300 tokens on the Colab string)",
+      "Merges only ever create ids 256–50255 → 50256 lies outside anything BPE can reach → only code can insert <code>&lt;|endoftext|&gt;</code> → the model gets a document boundary that ordinary text can't fake",
+      "If encode parsed special strings in any input → a user could type <code>&lt;|endoftext|&gt;</code> and inject a real boundary → so tiktoken raises by default and you opt in with <code>allowed_special</code> (or encode it as 7 plain tokens with <code>disallowed_special=()</code>)",
+      "New special token → new id past the end → the embedding table and <code>lm_head</code> each grow one row → old rows and old logits stay unchanged → only the new row gets gradient, so you can train just that row"
+    ],
+    "elevated": [
+      "The 256 byte tokens are numbered in <code>byte_encoder</code> order (printable bytes first) → <code>a</code> = 64, space = 220, byte 0 = 188 → a from-scratch tokenizer must remap bytes before its ids match GPT-2 or GPT-4 (the <code>byte_shuffle</code> in the GPT-4 exercise)",
+      "cl100k's <code>n_vocab</code> is 100,277 but only 100,256 BPE ids + 5 specials exist → 16 ids are unused → sizing a model by <code>n_vocab</code> includes rows no text ever selects"
+    ],
+    "reference": [
+      "the download URLs for <code>encoder.json</code> and <code>vocab.bpe</code>, and the <code>#version: 0.2</code> header line that <code>[1:-1]</code> skips",
+      "<code>Ġ</code> is code point 288 (space), <code>Ċ</code> is newline",
+      "cl100k special ids: endoftext 100257, fim_prefix/middle/suffix 100258–100260, endofprompt 100276",
+      "tiktoken's <code>allowed_special='all'</code> / <code>disallowed_special=()</code> arguments and the private <code>_special_tokens</code> dict",
+      "encoder.py's <code>self.cache</code> and <code>get_pairs</code> helpers"
+    ]
+  },
+  "compress": {
+    "prompt": "Card closed: in 3–5 sentences, explain how OpenAI's two GPT-2 files correspond to what you built, and why <code>&lt;|endoftext|&gt;</code> is a separate id rather than a string. Or draw the path of <code>'&lt;|endoftext|&gt;hello world'</code> through encode twice: once as plain text, once with specials allowed.",
+    "checklist": [
+      "<code>encoder.json</code> = vocab (string → id), <code>vocab.bpe</code> = merges in training order; merge rank r gives id 256 + r",
+      "<code>bpe()</code> repeatedly merges the lowest-rank pair, the same loop as our <code>encode</code>",
+      "50,257 = 256 bytes + 50,000 merges + 1 special",
+      "the special id is outside the merge range, so only code can insert it; it marks document boundaries",
+      "tiktoken refuses special strings in text by default because otherwise users could inject them",
+      "the <code>byte_encoder</code> layer is cosmetic, except that it sets the byte ids' order"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain what a special token is, and why it has to live outside the BPE merges rather than being a very common merge.", "kind": "concept", "answer": ["an id with a meaning set by the training setup (document boundary, FIM sentinel, chat turn), inserted by code", "a merge can be produced from ordinary text, so a merged token could appear by accident or be typed by a user", "an id outside the merge range can only come from your code, so it's unambiguous"]},
+    {"q": "Walk <code>' world'</code> through OpenAI's <code>encode()</code>: what does each of the regex, <code>byte_encoder</code>, <code>bpe()</code> and <code>encoder.json</code> steps turn it into?", "kind": "mechanism", "answer": ["regex: <code>' world'</code> stays one chunk (space + letters)", "byte_encoder: its bytes become characters, so the space becomes <code>Ġ</code>: <code>'Ġworld'</code>", "bpe(): merges lowest-rank pairs until none apply, ending with the single symbol <code>'Ġworld'</code>", "encoder.json: <code>'Ġworld'</code> → 995"]},
+    {"q": "You're building a chat app on GPT-2's tokenizer and user messages are pasted straight into the prompt. Choose between <code>allowed_special='all'</code>, <code>disallowed_special=()</code> and the default for user text, and say what each costs.", "kind": "tradeoff", "answer": ["<code>'all'</code> on user text lets anyone inject 50256 and end the document mid-prompt: unsafe", "<code>disallowed_special=()</code> encodes the marker as 7 plain tokens: safe, and the model sees harmless text", "the default raises: safe but crashes on any message that contains the string, so you must catch it", "use <code>allowed_special</code> only for text your own code wrote"]},
+    {"q": "GPT-2's vocab is 50,257 and cl100k's <code>n_vocab</code> is 100,277. Break each number into its parts.", "kind": "mechanism", "answer": ["GPT-2: 256 bytes + 50,000 merges + 1 special", "cl100k: 100,256 BPE ids (256 bytes + 100,000 merges) + 5 specials + 16 unused ids"]}
+  ],
+  "compare": [
+    {"with": "z2h-9-tokenizer/encode", "q": "Your <code>encode</code> vs OpenAI's <code>bpe()</code>: what is the same algorithm, what representation choice differs, and could the difference ever change the output ids?", "answer": ["same: repeatedly pick the pair with the lowest merge rank and merge it, stop when no pair is in the table", "different: ours works on integer ids, theirs on strings of <code>byte_encoder</code> characters joined with spaces", "the ids come out identical once the bytes are mapped through GPT-2's byte order (checked: 300 tokens on the Colab string)", "theirs also caches each chunk's result, which only changes speed"]},
+    {"with": "z2h-9-tokenizer/sentencepiece-llama", "q": "GPT-2 puts its only special token at the <i>end</i> of the vocab (50256); sentencepiece puts <code>&lt;unk&gt;</code>, <code>&lt;s&gt;</code>, <code>&lt;/s&gt;</code> at the <i>start</i> (0, 1, 2). What does each choice cost?", "answer": ["end: byte and merge ids stay clean (byte tokens are 0–255), and adding a special is just appending", "start: every byte token is shifted (byte id = byte + 3), a classic off-by-offset trap", "both keep specials out of the merge process; only the numbering differs"]},
+    {"with": "z2h-9-tokenizer/build-gpt4-tokenizer", "q": "To match tiktoken, minbpe's GPT4Tokenizer needs <code>byte_shuffle</code> and special-token registration. Which of those follow from this card, and why?", "answer": ["byte_shuffle: the byte tokens are numbered in <code>byte_encoder</code> order, so raw byte b isn't id b (a → 64)", "specials: <code>&lt;|endoftext|&gt;</code> 100257, FIM and endofprompt must be registered by hand because no merge produces them"]}
+  ],
+  "predict": {"q": "You append <code>&lt;|im_start|&gt;</code> to GPT-2 as id 50257 with a small random embedding row and don't train yet. For the prompt <code>'hello world'</code>, do the logits of the old 50,257 tokens change? Do their <i>probabilities</i> change?", "answer": "The old logits are identical (the lab measures <code>old logits unchanged: True</code>): the old rows of <code>lm_head</code> didn't change and the input ids don't use the new row. The probabilities do change slightly, because softmax divides by a sum that now includes one more term, exp(new logit), so every old probability shrinks a little. Until you fine-tune, the new token gets a small, arbitrary share of probability."},
+  "apply": {"task": "Load <code>encoder.json</code> and <code>vocab.bpe</code> into <i>your</i> tokenizer instead of OpenAI's code. Build <code>shuffle = {b: encoder[byte_encoder[b]]}</code> for the 256 bytes and <code>merges = {(encoder[a], encoder[b]): encoder[a+b]}</code> for all 50,000 lines. Then run your <code>encode</code> on each GPT-2 regex chunk of the Colab example string (map bytes through <code>shuffle</code> first) and compare with <code>tiktoken.get_encoding('gpt2')</code>. Then skip the regex split and encode the whole string at once.", "done": "With the regex split you get exactly 300 ids, equal to tiktoken's list; without it you get 296. You should be able to explain why skipping the split changes the count (merges then cross category boundaries).", "hint": "Import <code>bytes_to_unicode</code> from encoder.py for <code>byte_encoder</code>. Every merge maps to id 256 + its rank, so the <code>min</code> over <code>merges.get</code> in your <code>encode</code> already picks the lowest rank."},
+  "reflect": [
+    "Which prediction did you get wrong: <code>a</code> = 64, or what happens to the probabilities after model surgery?",
+    "What couldn't you explain cleanly: why 50256 can't come out of BPE, or why tiktoken raises by default?",
+    "Which relationship is still fuzzy: byte_encoder order → byte ids, or byte ids → the byte_shuffle you'll need for GPT-4?",
+    "If you designed a tokenizer today, where would you put the special ids, and would you leave gaps like cl100k's?",
+    "What will you reread before starting the GPT-4 exercise?"
+  ],
+  "revisit": ["z2h-9-tokenizer/encode", "z2h-9-tokenizer/decode", "z2h-9-tokenizer/regex-presplit", "z2h-9-tokenizer/tiktokenizer-tour"],
+  "prereq": ["z2h-9-tokenizer/encode"]
+}

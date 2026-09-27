@@ -1,0 +1,59 @@
+{
+  "prime": {
+    "problem": "Filling in grads by hand works for 10 nodes and falls apart at 41 parameters, let alone millions. You'd also have to work out the right order yourself every time the expression changes.",
+    "fits": "The neuron card did backprop by hand, one local derivative at a time. This card hands that job to the graph the <code>Value</code> object already records: each node learns to do its own step, and one call runs them all in the right order.",
+    "expect": ["<code>_backward</code> closures", "the base case <code>o.grad = 1.0</code>", "topological order (<code>build_topo</code>)", "<code>o.backward()</code>"],
+    "goal": "Write <code>backward()</code> yourself, explain why it must run output-first, and diagnose the three classic ways it breaks."
+  },
+  "attend": [
+    "At what moment does each op write its <code>_backward</code>, and which variables does that closure still need when it finally runs?",
+    "Why must a node's <code>_backward</code> wait until every node that <i>uses</i> it has run?",
+    "Where does <code>build_topo</code> append a node, and why does that position make the list run inputs → output?",
+    "What does setting <code>o.grad = 1.0</code> stand for, and what happens to every other grad if you skip it?",
+    "The lab's topological order changes from run to run. Why do the grads not change?"
+  ],
+  "core": {
+    "must": [
+      "Each op creates <code>out</code> inside its own method → it defines <code>_backward</code> right there as a closure over <code>self</code>, <code>other</code>, <code>out</code> → later it can apply its local derivative × <code>out.grad</code> to its inputs → backprop needs no central table of ops",
+      "A node's grad is complete only after every node that uses it has passed its share down → so its <code>_backward</code> must run after theirs → <code>build_topo</code> appends a node after its children, and <code>reversed(topo)</code> runs output-first → each <code>_backward</code> runs once, with its full grad",
+      "Every closure multiplies by the grad above it → the chain has to start from something non-zero → <code>o.grad = 1.0</code> (do/do) is the base case → skip it and every grad stays 0.0",
+      "Order comes from dependencies, not from <code>_prev</code> → <code>_prev</code> is a set, so the topological list differs between runs → any order with each node after its children gives the same grads (b 0.5, w1 1.0, x1 −1.5, w2 0, x2 0.5)"
+    ],
+    "elevated": [
+      "<code>out._backward = _backward</code> stores the function; <code>_backward()</code> would call it now and store <code>None</code> → the error only shows up later, at backward time, as <code>'NoneType' object is not callable</code>",
+      "<code>build_topo</code> is recursive → recursion depth equals the graph's depth → in micrograd's <code>engine.py</code> a chain of 1000 additions hits Python's default limit of 1000 and raises <code>RecursionError</code>"
+    ],
+    "reference": ["leaves default to <code>self._backward = lambda: None</code>", "the <code>visited</code> set in <code>build_topo</code>", "Karpathy's <code>engine.py</code> L24–L33 (<code>__mul__</code>) and L54–L70 (<code>backward</code>)", "the <code>1.0 *</code> in <code>__add__</code>'s closure is only for readability"]
+  },
+  "compress": {
+    "prompt": "Without scrolling up, explain in 3–5 sentences how <code>o.backward()</code> fills every grad. Or draw the neuron graph, number the nodes in the order their <code>_backward</code> runs, and write what one <code>*</code> node's closure adds to each input.",
+    "checklist": [
+      "each op defines a <code>_backward</code> closure when it creates its output",
+      "the closure does input.grad += local derivative × <code>out.grad</code> (+ → 1, * → the other input's data, tanh → 1 − t²)",
+      "the base case sets the output's grad to 1.0",
+      "a topological sort puts each node after its children; walking it in reverse runs each node after everything that uses it",
+      "each <code>_backward</code> runs exactly once, so the cost is one pass over the graph"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain what a closure is and why <code>_backward</code> has to be one rather than a plain method written once on the class.", "kind": "concept", "answer": ["a closure is an inner function that keeps access to the outer function's variables after it returns", "<code>_backward</code> needs this op's specific <code>self</code>, <code>other</code> and <code>out</code> (and <code>t</code> for tanh)", "each op writes its own rule next to its forward code, so adding an op never touches <code>backward()</code>"]},
+    {"q": "Walk through <code>o.backward()</code> on the neuron up to the moment <code>x1.grad</code> is set. Which nodes have run, and what numbers were multiplied?", "kind": "mechanism", "answer": ["<code>o.grad = 1.0</code>", "tanh: n.grad = (1 − 0.7071²) × 1 = 0.5", "the two + nodes copy 0.5 down to <code>x1*w1</code>", "<code>x1*w1</code>'s closure: x1.grad += w1.data × 0.5 = −3 × 0.5 = −1.5"]},
+    {"q": "Someone proposes skipping the topological sort: just recurse from <code>o</code> and call each child's <code>_backward</code> as you reach it. When does that give the right grads and when does it fail?", "kind": "tradeoff", "answer": ["on a tree (every node used once, like this neuron) it works", "when a node feeds two ops, it can pass its gradient on before the second share arrives, or run twice", "the sort costs one extra walk of the graph and guarantees each node runs once with its complete grad"]},
+    {"q": "You run <code>o.backward()</code> and every grad prints 0.0. Name the most likely cause and how you'd confirm it in one line.", "kind": "mechanism", "answer": ["the base case <code>o.grad = 1.0</code> is missing, so every closure multiplies by 0", "print <code>o.grad</code> right before the loop: it's 0.0 instead of 1.0"]}
+  ],
+  "compare": [
+    {"with": "z2h-2-micrograd/a-neuron", "q": "Same neuron, same grads. What does the neuron card's by-hand backprop have that this card's <code>backward()</code> replaces, and how does each one fail when you make a mistake?", "answer": ["by hand: you apply each local derivative and choose the order yourself", "automatic: each op stores its rule and the sort picks the order", "by hand fails with arithmetic slips and doesn't scale past a few nodes", "automatic fails silently when a local derivative is coded wrong, or when <code>=</code> is used instead of <code>+=</code>"]},
+    {"with": "z2h-2-micrograd/accumulate-gradients", "q": "This card gets the <i>order</i> right; that card gets <i>reused nodes</i> right. Why does the right order alone not save <code>b = a + a</code> if the closure uses <code>=</code>?", "answer": ["in <code>a + a</code>, <code>self</code> and <code>other</code> are the same object", "the closure writes a's grad twice in one call; with <code>=</code> the second write replaces the first", "order controls <i>when</i> a node runs; <code>+=</code> controls whether shares from several paths add up"]}
+  ],
+  "predict": {"q": "Build the neuron, then call <code>o.backward()</code> twice in a row without resetting anything. What is <code>x1.grad</code> after the second call: still −1.5, doubled to −3.0, or something else?", "answer": "Something else: <b>−7.5</b> (computed with the card's code). <code>backward()</code> resets only <code>o.grad</code> to 1.0. On the second pass n.grad becomes 0.5 + 0.5 = 1.0, and each node then passes its <i>accumulated</i> grad down, so the error compounds on the way to the leaves: the sum node reaches 1.5, <code>x1*w1</code> reaches 2.0, and x1.grad = −1.5 + (−3 × 2.0) = −7.5. A third call gives −22.5. This is why the training loop must zero the grads before each backward."},
+  "apply": {"task": "Rebuild Karpathy's first expression with your new <code>Value</code>: a=2, b=−3, c=10, e=a*b, d=e+c, f=−2, L=d*f. Call <code>L.backward()</code> once, print every grad, and print the labels in the topological list <code>build_topo</code> made (return <code>topo</code> from <code>backward()</code> or build it separately).", "done": "L is −8.0; the grads are a 6.0, b −4.0, c −2.0, e −2.0, d −2.0, f 4.0, L 1.0 (the numbers you got by hand on the chain-rule card); the list has 7 Values, ends with L, and every node comes after the Values in its <code>_prev</code>.", "hint": "No new code is needed for the ops: <code>+</code> and <code>*</code> already have their closures. If a grad comes out 0.0, check that <code>backward()</code> sets <code>self.grad = 1.0</code> before the loop."},
+  "reflect": [
+    "Which prediction did you get wrong: the forgotten <code>reversed()</code>, or calling <code>backward()</code> twice?",
+    "What couldn't you explain cleanly without looking: why a closure, or why the reversed topological order?",
+    "Which relationship is still fuzzy: node used by others → must run after them, or append-after-children → list runs inputs-first?",
+    "Could you write <code>build_topo</code> from memory, and say what each line guarantees?",
+    "What will you check first the next time a backward pass gives all zeros?"
+  ],
+  "revisit": ["z2h-2-micrograd/value-object", "z2h-2-micrograd/chain-rule-by-hand", "z2h-1-toolkit/chain-rule"],
+  "prereq": ["z2h-2-micrograd/a-neuron"]
+}

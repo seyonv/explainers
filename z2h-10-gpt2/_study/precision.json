@@ -1,0 +1,66 @@
+{
+  "prime": {
+    "problem": "Your training step works but is slow: about 1000 ms per step even on an A100, and you have 19,073 steps to run. Every number is a 32-bit float by default, and the GPU's fastest matmul paths are locked behind formats with fewer bits.",
+    "fits": "You have a correct training loop that prints ms per step (the overfit card). This is the first card of \"make it fast\": it changes <i>how numbers are stored and multiplied</i>, not what the model computes.",
+    "expect": ["fp32, TF32, fp16 and bf16 (exponent vs mantissa bits)", "tensor cores and TFLOPS", "memory-bound vs compute-bound", "<code>torch.autocast</code> around the forward pass", "gradient scalers (and why bf16 skips them)"],
+    "goal": "Explain why TF32 gave 3× instead of 8×, pick bf16 over fp16 with a reason, and add TF32 plus bf16 autocast to your loop, timed honestly with a synchronize."
+  },
+  "attend": [
+    "If TF32 matmuls are 8× faster on paper, which part of a 1000 ms step does that 8× not reach?",
+    "TF32 keeps 32 bits in memory but bf16 autocast stores 16. Why does that difference matter for a memory-bound step?",
+    "Which single design difference between fp16 and bf16 removes the need for a gradient scaler?",
+    "Why does Karpathy wrap only the forward pass and the loss in autocast, and keep the weights and optimizer in fp32?",
+    "On the M3, why can the same autocast line give 0.97× at T=256 but 1.41× at T=1024?"
+  ],
+  "core": {
+    "must": [
+      "TF32 rounds only inside the tensor cores → tensors still sit in memory as 32-bit fp32 → the time spent moving numbers is unchanged → 1000 → 333 ms (3×), not the datasheet's 8×",
+      "bf16 keeps fp32's 8 exponent bits and cuts the mantissa to 7 → same range (tiny gradients like 1e-8 survive) but coarse steps (eps 7.8e-3) → no gradient scaler needed, yet small updates and long sums round away",
+      "autocast covers only the forward pass and loss → matmuls run in bf16 while the stored weights, gradients and AdamW stay fp32 → speed from the matmuls without losing lr × grad updates that bf16 would round to nothing",
+      "the GPU runs asynchronously → <code>time.time()</code> right after <code>step()</code> measures only the queueing → you need <code>torch.cuda.synchronize()</code> / <code>torch.mps.synchronize()</code> before reading the clock, or every speedup you measure is fiction"
+    ],
+    "elevated": [
+      "build-nanogpt sets <code>device_type = \"cpu\"</code> for anything that isn't CUDA → on MPS tensors that autocast does nothing (logits stay fp32) → on a Mac the script silently trains in fp32 unless you pass <code>'mps'</code>",
+      "fp16 has only 5 exponent bits → 70000 becomes inf and 1e-8 becomes 0 → fp16 training needs a <code>GradScaler</code> that scales the loss up before backward and back down after"
+    ],
+    "reference": [
+      "<code>torch.set_float32_matmul_precision('high')</code> turns on TF32 (train_gpt2.py L336, commit <code>5265b20</code>)",
+      "<code>with torch.autocast(device_type=device_type, dtype=torch.bfloat16):</code> (train_gpt2.py L492, commit <code>177e4cd</code>)",
+      "A100 non-sparse peaks: FP32 19.5, TF32 156, BF16 312 TFLOPS",
+      "bit layouts (sign/exponent/mantissa): fp32 1/8/23, TF32 1/8/10, fp16 1/5/10, bf16 1/8/7",
+      "<code>torch.finfo(dtype)</code> prints max, smallest normal and eps"
+    ]
+  },
+  "compress": {
+    "prompt": "Card closed: draw the four bit layouts side by side, then write 3–4 sentences explaining why the A100 step went 1000 → 333 → 300 ms and not 1000 → 125 → 63 ms.",
+    "checklist": [
+      "exponent bits set the range, mantissa bits set the precision",
+      "TF32 is fp32 in memory, rounded only inside the matmul unit",
+      "the step is partly memory-bound, so faster arithmetic alone gives ~3×",
+      "bf16 halves the bytes of the tensors autocast produces, but most of the win was already taken",
+      "bf16 has fp32's range, so no gradient scaler; fp16 does need one",
+      "weights and optimizer stay fp32 so small updates survive"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain the difference between range and precision in a float format, and say which one fp16 lacks and which one bf16 lacks.", "kind": "concept", "answer": ["range: how big or small a number can be, set by the exponent bits", "precision: how finely values are spaced, set by the mantissa bits (eps)", "fp16 lacks range (5 exponent bits, max 65,504)", "bf16 lacks precision (7 mantissa bits, eps 7.8e-3)"]},
+    {"q": "Walk through one training step with bf16 autocast: which tensors are bf16, which stay fp32, and where does the gradient of <code>lm_head.weight</code> end up?", "kind": "mechanism", "answer": ["inside autocast, matmuls take bf16 copies of the fp32 weights and activations", "softmax, LayerNorm and the loss may stay fp32", "the logits come out bf16", "<code>backward()</code> runs outside the block; gradients flow back to the fp32 weights and land in fp32 <code>.grad</code>", "AdamW updates the fp32 weights"]},
+    {"q": "The datasheet promised 8× from TF32 and 16× from bf16, and the step got 3.0× and 3.3×. Using the toy Amdahl model, what share of the fp32 step must have been tensor-core arithmetic, and what should you attack next?", "kind": "tradeoff", "answer": ["333 = 1000 × ((1 − f) + f/8) gives f ≈ 0.76", "so about 240 ms per step is memory traffic, elementwise ops and overhead", "more arithmetic speed can't help that part", "next: cut memory round trips and Python overhead (kernel fusion, torch.compile)"]},
+    {"q": "Your teammate calls <code>model.bfloat16()</code> to save memory and training stalls. Give two concrete numeric reasons, and the fix.", "kind": "tradeoff", "answer": ["an update of 3e-4 to a weight of 1.0 rounds back to 1.0 in bf16", "adding 0.01 a thousand times in bf16 stalls at 4.0", "fix: keep the weights and optimizer fp32 and use autocast for the forward only"]}
+  ],
+  "compare": [
+    {"with": "z2h-10-gpt2/compile-flash", "q": "Both this card and torch.compile / flash attention make the step faster. What is each one actually shrinking, and why does compile's 300 → 130 ms beat bf16's 333 → 300 ms?", "answer": ["precision shrinks the cost of arithmetic (and, with bf16, the bytes per number)", "fusion shrinks the number of round trips to GPU memory and the Python overhead", "after TF32, the step is mostly memory-bound, so cutting trips pays more than cutting bits", "precision can hurt accuracy if overdone; fusion gives the same loss to 6 decimals"]},
+    {"with": "z2h-10-gpt2/nice-numbers", "q": "Padding the vocabulary to 50,304 and switching to bf16 both target the GPU's matmul units. What does each change, and why can either one show no gain on the M3?", "answer": ["bf16 changes the number format so the fast tensor-core path can be used", "padding changes the shape so the matmul tiles evenly", "both depend on NVIDIA hardware details (tensor cores, tile sizes)", "on MPS the measured effects are within noise: bf16 0.97–1.06× at T=256, padding 0.98–1.07×"]}
+  ],
+  "predict": {"q": "The next card adds <code>torch.compile</code> and changes no precision at all, yet takes the A100 step from 300 ms to about 130 ms. Before reading it: where must those ~170 ms have been going, given what bf16 could and couldn't fix?", "answer": "Into memory traffic and overhead, not arithmetic. bf16 already had the fast matmuls and only saved 33 ms, so most of the remaining 300 ms is reading and writing tensors between GPU memory and the chip (every elementwise op like GELU or the residual add is a separate round trip) plus the Python interpreter launching each kernel. torch.compile fuses those ops into fewer kernels, which cuts the round trips."},
+  "apply": {"task": "In your scratch folder, fill a (1000,) tensor with 0.01 in bf16. Add its elements one at a time into a bf16 accumulator and print the step at which the sum stops changing. Then compare with <code>x.sum()</code> on the same bf16 tensor and with <code>x.float().sum()</code>. Before running, use eps = 2<sup>−7</sup> to predict the value where it stalls.", "done": "The loop stalls at 4.0 after 350 additions (at 4.0 the gap between bf16 numbers is 4 × 2<sup>−7</sup> = 0.03125, and 0.01 is less than half of it). <code>x.sum()</code> prints 10.0 and <code>x.float().sum()</code> prints 10.009765625, because torch accumulates internally in fp32 and 0.01 is stored as 0.010009765625.", "hint": "Stop when <code>acc + x[i] == acc</code>. The spacing between bf16 numbers in [2<sup>k</sup>, 2<sup>k+1</sup>) is 2<sup>k</sup> × 2<sup>−7</sup>."},
+  "reflect": [
+    "Which prediction did you get wrong: the 333 ms, or where the bf16 sum stalls?",
+    "What couldn't you explain cleanly: why TF32 doesn't reduce memory traffic, or why bf16 needs no scaler?",
+    "Which relationship is still fuzzy: fewer bits → faster matmuls, or faster matmuls → a faster step?",
+    "If your own loop showed a 10× speedup from autocast, what would you check first before believing it?",
+    "What will you revisit before the compile-flash card?"
+  ],
+  "revisit": ["z2h-10-gpt2/overfit-then-load", "z2h-1-toolkit/matmul-by-shapes", "z2h-1-toolkit/softmax-and-cross-entropy"],
+  "prereq": ["z2h-10-gpt2/overfit-then-load"]
+}

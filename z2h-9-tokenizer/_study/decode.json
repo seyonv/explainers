@@ -1,0 +1,73 @@
+{
+  "prime": {
+    "problem": "Training gave you a list of merges and a model will give you a list of ids, but people read text. Without a decoder you can't see what the model said, and a naive decoder crashes the first time the model emits bytes that aren't valid UTF-8.",
+    "fits": "The training loop minted ids 256–275 as pairs of older ids. This card turns that merge table into <code>vocab</code> (id → bytes) and uses the UTF-8 rules from the code points card to explain when bytes are, and aren't, text.",
+    "expect": ["<code>vocab</code>: id → bytes", "join bytes, then decode once", "UTF-8 lead vs continuation bytes", "<code>errors=\"replace\"</code> and the � character"],
+    "goal": "Write <code>decode</code>, explain why <code>decode([128])</code> fails while <code>decode([263, 153])</code> works, and choose between strict, replace, ignore and streaming decoding."
+  },
+  "attend": [
+    "Why can <code>vocab</code> be built in a single pass over <code>merges</code>, and what would break if the dict lost its insertion order?",
+    "Byte 128 is a perfectly good vocab entry. What exactly about <code>10000000</code> makes it invalid as the first byte of text?",
+    "Why must the bytes of all tokens be joined <i>before</i> calling <code>.decode</code>, rather than decoding token by token?",
+    "Nothing stops a model from sampling <code>[128]</code>. What does that say about where a � in LLM output comes from?",
+    "What information does <code>errors=\"replace\"</code> throw away, and which later operation notices the loss?"
+  ],
+  "core": {
+    "must": [
+      "each merged id = its two parents' bytes concatenated → built in merge order, both parents already exist → one pass over <code>merges</code> gives every id's bytes (<code>vocab[275]</code> = <code>b'th'</code> + <code>b'e '</code> = <code>b'the '</code>)",
+      "tokens are byte runs, not characters → a character can be split across tokens (’ = 263 + 153) → join all bytes first, then decode once, or split characters turn into �",
+      "the model picks any id at every step → nothing forces valid UTF-8 → a lone continuation byte like 128 (<code>10xxxxxx</code>) or a cut-off emoji can appear → strict decode raises <code>UnicodeDecodeError</code>, so use <code>errors=\"replace\"</code> and show �",
+      "replace maps many different bad byte runs to the same � → decode is lossy on invalid input → <code>encode(decode(ids))</code> can't recover the ids (<code>[128]</code> comes back as <code>[239, 191, 189]</code>)"
+    ],
+    "elevated": [
+      "Half the base ids are fragments: all 128 bytes ≥ 128 fail to decode alone, and a learned merge can be a fragment too (263 = <code>e2 80</code>) → 129 of the 276 ids can't be printed on their own → streaming output must hold back bytes until a character completes (an incremental decoder)"
+    ],
+    "reference": [
+      "<code>vocab = {idx: bytes([idx]) for idx in range(256)}</code>, then <code>vocab[idx] = vocab[p0] + vocab[p1]</code>",
+      "<code>b\"\".join(...)</code> and <code>.decode(\"utf-8\", errors=\"replace\")</code>",
+      "Python dicts keep insertion order since 3.7",
+      "� is U+FFFD, UTF-8 bytes <code>[239, 191, 189]</code>",
+      "byte ranges: 0–127 ASCII, 128–191 continuation, 194–244 lead, 192, 193 and 245–255 never valid",
+      "minbpe <code>basic.py</code> L51–L55 and <code>base.py</code> <code>_build_vocab</code>; GPT-2 <code>encoder.py</code> also uses <code>errors='replace'</code>"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw the decode pipeline for <code>[104, 105, 256, 275]</code> and for <code>[128]</code>: ids → bytes → text. Mark the one place it can fail and say in 2–3 sentences why it fails and what <code>errors=\"replace\"</code> changes.",
+    "checklist": [
+      "<code>vocab</code> is built from merges in order: base bytes, then each child = parent bytes + parent bytes",
+      "decode = look up every id, join all the bytes, decode as UTF-8 once",
+      "failure point: the bytes aren't valid UTF-8 (128 = <code>10000000</code> is a continuation byte with no lead byte)",
+      "the model can emit any id sequence, so this isn't a rare bug",
+      "replace turns bad bytes into � instead of crashing, at the cost of losing the exact bytes"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why a byte-level vocab can contain tokens that are not text at all, using one base id and one learned id as examples.", "kind": "concept", "answer": ["tokens are byte runs chosen by frequency, not characters", "base id 128 is a lone continuation byte", "learned id 263 is <code>e2 80</code>, the first two bytes of ’ “ ”", "they only become text next to the right neighbouring bytes"]},
+    {"q": "Walk through <code>decode([104, 105, 256, 275])</code>: what does each lookup return, what is the joined byte string, and what comes out?", "kind": "mechanism", "answer": ["<code>b'h'</code>, <code>b'i'</code>, <code>b'e '</code>, <code>b'the '</code>", "joined: <code>b'hie the '</code> (8 bytes)", "decoded: <code>'hie the '</code>"]},
+    {"q": "Walk through what happens in a strict decode of <code>[240, 159]</code>, and then with <code>errors=\"replace\"</code>.", "kind": "mechanism", "answer": ["240 is a 4-byte lead byte, 159 a continuation", "the bytes end after 2 of the 4 the lead byte promised", "strict: <code>UnicodeDecodeError</code>; replace: one <code>'�'</code>"]},
+    {"q": "You're building a chat UI that prints tokens as they are sampled. Compare strict decode, <code>errors=\"ignore\"</code>, per-token replace, and an incremental decoder. Which do you ship, and what does each cost?", "kind": "tradeoff", "answer": ["strict: crashes on the first bad sample", "ignore: never crashes, but silently deletes bytes, so garbage goes unnoticed", "per-token replace: splits multi-byte characters (👋 in two tokens → <code>'���'</code>)", "incremental decoder with replace: holds back an unfinished character and prints it whole, and still shows � for truly bad bytes"]}
+  ],
+  "compare": [
+    {"with": "z2h-8-gpt/char-tokenizer-split", "q": "The GPT lecture's <code>decode</code> was <code>''.join(itos[i] for i in l)</code> and could never fail. What design choice made it safe, what did that choice cost, and why did byte-level BPE give it up?", "answer": ["each id there is a whole character, so any sequence of ids is valid text", "cost: only the 65 characters seen in Shakespeare, so any other character can't be encoded at all", "byte-level BPE can encode any string, but its ids are byte runs that can form invalid UTF-8, so decode needs a fallback"]},
+    {"with": "z2h-9-tokenizer/encode", "q": "Decode and encode are inverses on paper. Which round trip always holds, which one doesn't, and which property of decode causes the asymmetry?", "answer": ["<code>decode(encode(text)) == text</code> holds for any string, because encode starts from valid UTF-8", "<code>encode(decode(ids))</code> fails for invalid id sequences", "cause: replace maps many byte runs to the same �, so decode isn't one-to-one", "example: <code>[128]</code> and <code>[240, 159]</code> both come back as <code>[239, 191, 189]</code>"]},
+    {"with": "z2h-9-tokenizer/sentencepiece-llama", "q": "sentencepiece works on code points and only falls back to byte tokens like <code>&lt;0xEC&gt;</code> for rare characters. When does its decoder face the same invalid-byte problem as ours, and when can't it?", "answer": ["code-point pieces are whole characters, so they always decode", "byte-fallback tokens are UTF-8 fragments, so a model that emits them in a bad order produces invalid bytes", "so the trap is limited to the byte-fallback part of the vocab, rather than every id above 127"]}
+  ],
+  "predict": {
+    "q": "Take <code>decode([240, 159])</code>, the first half of 👋, and feed the resulting string straight into this course's <code>encode</code>. How many ids come back, and are they the ones you started with?",
+    "answer": "Three ids, <code>[239, 191, 189]</code>, not the original two. <code>decode</code> turned the two bytes into one <code>'�'</code> (U+FFFD), and encoding that character gives its own 3 UTF-8 bytes. None of the 20 merges touches them. You get the same three ids back from <code>[128]</code>, which shows the information is really gone."
+  },
+  "apply": {
+    "task": "Write <code>stream_decode(ids)</code> that returns a list with the text to print after each id, using <code>codecs.getincrementaldecoder('utf-8')(errors='replace')</code> and your <code>vocab</code>. Run it on <code>[104, 105, 263, 153]</code> (h, i, then ’ split across two tokens) and on <code>[240, 159, 145, 139]</code> (👋 as four byte tokens).",
+    "done": "The first run prints <code>['h', 'i', '', '’']</code> and the second <code>['', '', '', '👋']</code>. For comparison, decoding each id on its own with <code>decode([i])</code> gives <code>'�'</code> pieces instead.",
+    "hint": "Create the decoder once, outside the loop, and call <code>d.decode(vocab[i])</code> for each id. It keeps an unfinished character's bytes until the rest arrive. Call <code>d.decode(b'', final=True)</code> at the end to flush anything left over."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: that <code>decode([128])</code> could fail at all, or how many ids came back from encoding the �?",
+    "What couldn't you explain cleanly: why 128 is invalid alone but fine inside 263?",
+    "Which relationship is still fuzzy: byte roles → which sequences are valid, or valid bytes → why join before decoding?",
+    "Could you now read a � in a chatbot's answer and say what the model actually did?",
+    "What will you check first on the encoding card, now that you know decode is lossy?"
+  ],
+  "revisit": ["z2h-9-tokenizer/unicode-utf8", "z2h-9-tokenizer/train-loop", "z2h-8-gpt/char-tokenizer-split"],
+  "prereq": ["z2h-9-tokenizer/train-loop"]
+}

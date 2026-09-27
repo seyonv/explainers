@@ -1,0 +1,64 @@
+{
+  "prime": {
+    "problem": "Training gave you a merge table, but a model needs ids for text it has never seen: a prompt, a validation file. If new text were cut differently from the training text, the same id would mean different bytes, and the model's learned embeddings would stop lining up with its input.",
+    "fits": "The train-loop card learned 20 merges on the blog post and the decode card turned ids back into text. This card goes the other way: string → bytes → ids, reusing <code>get_stats</code> and <code>merge</code> from the stats-and-merge card.",
+    "expect": ["the merge index as a priority", "<code>min</code> with an <code>inf</code> default", "the stopping check and the length &lt; 2 edge case", "one-way round trips"],
+    "goal": "Trace <code>encode</code> by hand on a short string, explain why the order must be training order, and predict when <code>encode(decode(ids))</code> won't give <code>ids</code> back."
+  },
+  "attend": [
+    "In <code>\"the \"</code>, <code>th</code> sits to the left of <code>e␣</code>. Why does the right-hand pair merge first?",
+    "What does <code>min</code> return when none of the pairs was ever learned, and how does the loop notice it's finished?",
+    "Why must a merge like 275 = (259, 256) wait for other merges, and what guarantees that it does?",
+    "Which two different reasons make <code>encode(decode(ids))</code> differ from <code>ids</code>?",
+    "If encode picked the newest merge first, which strings would come out different, and why would the model care?"
+  ],
+  "core": {
+    "must": [
+      "Training applied merges one at a time in index order → the training text was cut by that exact history → encode replays the same order (lowest merge index first) → new text is cut the way the model saw during training",
+      "A merged token can be built from earlier merged tokens (275 = 259 + 256) → it can only appear after its parts exist → processing lowest index first always creates the parts before the merge that needs them",
+      "Merges only group bytes, and decode ungroups them → <code>decode(encode(text)) == text</code> always holds → but an arbitrary id list may be invalid UTF-8 (→ �) or not what encode would produce ([101, 32] → [256]) → the round trip only works in one direction"
+    ],
+    "elevated": [
+      "The key is <code>merges.get(p, inf)</code> → when nothing applies, <code>min</code> still returns an arbitrary pair → without the <code>pair not in merges</code> check the loop would crash on <code>merges[pair]</code> (a KeyError)",
+      "Each round recounts every pair from scratch → cost is about (merges that fire) × (length of the text) → fine for learning, which is why real tokenizers split text into chunks first and tiktoken runs this in Rust"
+    ],
+    "reference": [
+      "<code>float(\"inf\")</code> as the default key",
+      "minbpe's <code>BasicTokenizer.encode</code> (basic.py L57–L74)",
+      "the ids from this card's 20 merges: 256 = <code>e␣</code>, 259 = <code>th</code>, 266 = <code>or</code>, 275 = <code>the␣</code>",
+      "GPT-2's <code>encoder.py</code> calls its merge table <code>bpe_ranks</code>"
+    ]
+  },
+  "compress": {
+    "prompt": "Without scrolling up, explain in 3–5 sentences how <code>encode</code> turns a string into ids and why its order is fixed. Or draw the loop as a flowchart and label the two ways it can stop.",
+    "checklist": [
+      "start from the UTF-8 bytes of the string",
+      "each round: count neighbouring pairs, pick the one with the lowest merge index, merge it everywhere",
+      "the lowest index is the earliest-learned merge, so this replays training order",
+      "stop when no pair is in the merge table, or when fewer than 2 tokens remain",
+      "decode(encode(text)) always gives the text back; encode(decode(ids)) need not give the ids back"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why encode uses the merge index to choose the next pair, rather than how often each pair occurs in the string being encoded.", "kind": "concept", "answer": ["counting pairs in the new text would be training again, and would produce different ids (for \"hello world\", 256 would mean <code>he</code>)", "the model learned what each id means from the training cuts", "the merge index records the training order, so using it reproduces those cuts"]},
+    {"q": "Walk through <code>encode(\"hello world\")</code> with the 20 blog-post merges: what is the byte list, which pair merges, and exactly why does the loop stop?", "kind": "mechanism", "answer": ["11 bytes", "the only learned pair is (111, 114) = <code>or</code> → 266, leaving 10 tokens", "next round every pair scores <code>inf</code>; <code>min</code> returns the first pair, (104, 101), which isn't in merges → break"]},
+    {"q": "You could instead loop over the merge table once, applying each merge everywhere in order. What do you get, and what does it cost with GPT-2's merge table?", "kind": "tradeoff", "answer": ["the same tokens (checked on the whole post)", "one pass over the text per merge, whatever the text: 50,000 passes for GPT-2, even for \"h\"", "the <code>min</code> loop only runs once per merge that actually fires"]},
+    {"q": "Why does <code>encode(decode([128]))</code> return three ids, and why is that not a bug in encode?", "kind": "mechanism", "answer": ["byte 128 alone isn't valid UTF-8", "decode with <code>errors=\"replace\"</code> turns it into �", "� (U+FFFD) is 3 bytes in UTF-8: 239, 191, 189, which encode faithfully returns"]}
+  ],
+  "compare": [
+    {"with": "z2h-9-tokenizer/train-loop", "q": "Training and encoding both call <code>get_stats</code> and <code>merge</code>. What does each one choose the next pair by, what does each produce, and what breaks if you swap their rules?", "answer": ["training picks the most frequent pair (<code>max</code> by count) and creates a new merge each round", "encoding picks the earliest-learned pair (<code>min</code> by merge index) and creates nothing new", "encoding by count re-trains on the input and yields ids the model never learned", "training by index is impossible: there is no index before the merge exists"]},
+    {"with": "z2h-9-tokenizer/decode", "q": "Decode is a table lookup plus one bytes-to-text step, and encode is a loop. Why is one so much simpler, and where does each one fail?", "answer": ["decode just concatenates each id's bytes; there is only one way to do it", "encode has to choose how to group bytes, so it needs the priority rule and a stopping check", "decode fails on invalid UTF-8 (fixed with <code>errors=\"replace\"</code>)", "encode never fails on a string, but it may not reproduce a given id list"]},
+    {"with": "z2h-8-gpt/char-tokenizer-split", "q": "The GPT lecture's character tokenizer encodes with one dictionary lookup per character. What does BPE's encode add, and what does it buy?", "answer": ["char: one lookup, one id per character, and no choices to make", "BPE: a merge loop that groups bytes, and whose result depends on merge order", "BPE buys shorter sequences (24,597 bytes → 19,438 ids with only 20 merges) and covers any text through bytes", "the char tokenizer fails on any character outside its 65-character vocabulary"]}
+  ],
+  "predict": {"q": "A model generates the ids <code>[101, 32]</code>, which decode to <code>\"e \"</code>. You re-encode that text with the same 20 merges. What ids come back, and what does this mean for checking a model's output by comparing id lists?", "answer": "<code>[256]</code>. The bytes are valid UTF-8, but encode always merges <code>e␣</code> into 256, so <code>[101, 32]</code> is a legal but non-standard way to spell the same text. Two different id lists can decode to the same string, so compare decoded strings, not id lists."},
+  "apply": {"task": "Copy <code>encode</code> into <code>encode_newest</code>, where the next pair is the learned pair with the <i>highest</i> merge index. Run both on the whole blog post with the 20 merges, and compare each against the ids training produced (the second value <code>train</code> returns in <code>labs/common.py</code>). Then find a word they cut differently.", "done": "<code>encode(text)</code> equals the training ids exactly (19,438 of them). <code>encode_newest(text)</code> doesn't: <code>co</code> (261) appears 125 times vs 121, and \"corner\" comes out <code>c | or</code> instead of <code>co | r</code>.", "hint": "Filter <code>stats</code> to the pairs that are in <code>merges</code>, return if the list is empty, then take <code>max</code> by <code>merges[p]</code>. Use <code>list.count(261)</code> for the comparison."},
+  "reflect": [
+    "Which prediction did you get wrong: the order in <code>\"the \"</code>, or the <code>[101, 32]</code> round trip?",
+    "What couldn't you explain cleanly: why <code>min</code> needs the <code>pair not in merges</code> check, or why the length &lt; 2 guard exists?",
+    "Which relationship is still fuzzy: merge index → training order, or training order → what the model's embeddings mean?",
+    "Could you rewrite <code>encode</code> from memory right now, including both stopping conditions?",
+    "What will you look for when the regex card adds pre-splitting on top of this loop?"
+  ],
+  "revisit": ["z2h-9-tokenizer/stats-and-merge", "z2h-9-tokenizer/train-loop", "z2h-9-tokenizer/decode"],
+  "prereq": ["z2h-9-tokenizer/train-loop", "z2h-9-tokenizer/decode"]
+}

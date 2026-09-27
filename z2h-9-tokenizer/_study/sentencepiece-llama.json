@@ -1,0 +1,63 @@
+{
+  "prime": {
+    "problem": "A tokenizer trained on mostly English will meet characters it never kept, like Korean or a rare symbol. If it has no plan for them, it either throws the text away as \"unknown\" or needs a vocabulary row for every character in Unicode.",
+    "fits": "You built byte-level BPE (minbpe, tiktoken's way) and saw how UTF-8 turns a character into 1–4 bytes. Llama 2's tokenizer runs the same BPE on characters instead, and uses those UTF-8 bytes only as a fallback.",
+    "expect": ["BPE on code points vs on bytes", "<code>byte_fallback</code> and <code>&lt;unk&gt;</code>", "<code>character_coverage</code>", "<code>▁</code> and the dummy prefix", "Meta's Llama 2 options (32,000 vocab, <code>split_digits</code>)"],
+    "goal": "Predict how a sentencepiece model encodes text it never saw, explain the id layout of its vocabulary, and train your own with Llama 2's settings."
+  },
+  "attend": [
+    "Where in the pipeline does sentencepiece turn text into bytes, and why only for some characters?",
+    "Why does the byte token for 0xEC get id 239 rather than 236?",
+    "What decides whether a character counts as \"rare\" enough to fall back to bytes?",
+    "With <code>byte_fallback=False</code>, why does a whole Korean word shrink to a single id, and can decode recover it?",
+    "Why does the dummy prefix make <code>\"world\"</code> match mid-sentence text but give <code>\" world\"</code> an extra piece?"
+  ],
+  "core": {
+    "must": [
+      "sentencepiece merges code points, not bytes → a character outside the kept set has no piece → it must go somewhere: <code>&lt;unk&gt;</code> (text lost, decodes as \" ⁇ \") or, with <code>byte_fallback</code>, its UTF-8 bytes (1–4 byte tokens, always round-trips)",
+      "<code>character_coverage</code> keeps the most frequent characters covering that share of the training text → characters from languages rare in the training data are dropped → those languages cost one byte token per UTF-8 byte (3 per Korean syllable) instead of merged pieces",
+      "Reserving 256 byte tokens costs vocabulary slots (256 of tok400's 400) → but guarantees any string can be encoded and decoded → which is why Llama 2 turns fallback on, and why tiktoken's bytes-first design gets the same guarantee for free"
+    ],
+    "elevated": [
+      "Specials come first (<code>&lt;unk&gt;</code>=0, <code>&lt;s&gt;</code>=1, <code>&lt;/s&gt;</code>=2) → byte b lives at id b + 3 → code that assumes byte token = byte value is off by 3",
+      "<code>add_dummy_prefix</code> prepends a space → a word at the start of the text gets the same pieces as mid-sentence → but text that already starts with a space gets an extra <code>▁</code>"
+    ],
+    "reference": [
+      "the full option list (<code>input_sentence_size</code>, <code>seed_sentencepiece_size</code>, <code>shuffle_input_sentence</code>, <code>split_by_*</code>, <code>num_threads</code>)",
+      "<code>▁</code> is U+2581; <code>&lt;unk&gt;</code> decodes as \" ⁇ \" (U+2047)",
+      "Llama 2 values: <code>vocab_size</code> 32,000, <code>character_coverage</code> 0.99995, <code>max_sentencepiece_length</code> 16, <code>max_sentence_length</code> 4,192",
+      "the API: <code>SentencePieceTrainer.train(**options)</code>, <code>SentencePieceProcessor().load()</code>, <code>encode</code>, <code>decode</code>, <code>id_to_piece</code>"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw the two pipelines (tiktoken and sentencepiece) side by side, from text to ids, and mark where each one handles a character it never saw. Then say in 2–3 sentences what <code>byte_fallback</code> buys and what it costs.",
+    "checklist": [
+      "tiktoken / minbpe: text → UTF-8 bytes → BPE on bytes, so nothing is ever unknown",
+      "sentencepiece: BPE on code points; only characters kept by <code>character_coverage</code> get pieces",
+      "a leftover character becomes <code>&lt;unk&gt;</code> (lost) or, with <code>byte_fallback</code>, its UTF-8 bytes",
+      "byte tokens sit after the 3 specials, so id = byte + 3",
+      "cost: 256 reserved ids, and rare-language text is long (3 byte tokens per Korean syllable)"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain the difference between running BPE on code points and running it on bytes, and why the code-point version needs a fallback plan at all.", "kind": "concept", "answer": ["bytes: 256 base symbols cover every possible string, so there is always a way to encode", "code points: over a hundred thousand possible characters; only the kept ones have pieces", "anything else needs <code>&lt;unk&gt;</code> or byte fallback"]},
+    {"q": "Walk through how tok400 encodes <code>\"hello 안녕하세요\"</code>: which pieces appear, why the Korean looks the way it does, and how you get from 안 to id 239.", "kind": "mechanism", "answer": ["dummy prefix and the space give <code>▁</code> pieces; hello becomes <code>h</code>, <code>e</code>, <code>l</code>, <code>lo</code>", "Korean was never in the training text, so each syllable falls back to its 3 UTF-8 bytes (15 byte tokens)", "안 starts with byte 0xEC = 236; 236 + 3 specials = 239", "21 ids in total, and decode gives the string back exactly"]},
+    {"q": "You're training a tokenizer for a mostly-English model that will occasionally see Korean. Compare <code>byte_fallback=False</code>, <code>byte_fallback=True</code>, and raising <code>character_coverage</code> to keep more characters. What does each cost?", "kind": "tradeoff", "answer": ["no fallback: the Korean becomes <code>&lt;unk&gt;</code> and is lost for good", "fallback: always round-trips, but 3 byte tokens per syllable, and 256 ids reserved", "higher coverage: more characters get their own row, but rare rows are barely trained, and unseen characters still need a plan"]},
+    {"q": "Why does <code>\" world\"</code> encode to one more piece than <code>\"world\"</code> in tok400?", "kind": "mechanism", "answer": ["<code>add_dummy_prefix</code> prepends a space to every input", "\"world\" becomes \" world\" → <code>▁w</code>, <code>or</code>, <code>l</code>, <code>d</code>", "\" world\" becomes \"  world\": the extra space is a lone <code>▁</code> in front"]}
+  ],
+  "compare": [
+    {"with": "z2h-9-tokenizer/build-gpt4-tokenizer", "q": "Your GPT-4 tokenizer (bytes first, regex split) vs Llama 2's sentencepiece tokenizer (code points first, byte fallback): what is fundamentally different about the base symbols, which design choice makes each one handle unseen text, and how does each fail?", "answer": ["GPT-4: 256 byte symbols are the base, merged upward; unseen text is just bytes, with no special path", "Llama 2: characters are the base; bytes appear only for dropped characters, and ids are offset by the specials", "both round-trip any string (Llama 2 only because <code>byte_fallback</code> is on)", "failure: sentencepiece without fallback loses text as <code>&lt;unk&gt;</code>; both bloat rare languages"]},
+    {"with": "z2h-9-tokenizer/unicode-utf8", "q": "That card argued raw code points and raw bytes both fail as a vocabulary. How does sentencepiece combine the two to get around each one's problem?", "answer": ["raw code points: too many (about 150k) and they keep changing, so keep only the common ones", "raw bytes: sequences too long, so use them only for rare characters", "result: common text is short, and rare text is long but never lost"]}
+  ],
+  "predict": {"q": "The toy text has no digits at all. With <code>split_digits=True</code> and <code>byte_fallback=True</code>, what pieces and ids does tok400 give for <code>\"2024\"</code>?", "answer": "<code>['▁', '&lt;0x32&gt;', '&lt;0x30&gt;', '&lt;0x32&gt;', '&lt;0x34&gt;']</code> with ids <code>[362, 53, 51, 53, 55]</code>. The digits were never seen, so they aren't in the vocabulary and fall back to bytes. Each is a single ASCII byte (0x32 = 50 for \"2\"), so the id is 50 + 3 = 53. <code>split_digits</code> never gets a chance to matter here, because there are no digit pieces to split. (Scratch run with tok400.)"},
+  "apply": {"task": "Retrain tok400 with <code>character_coverage=0.99</code> instead of 0.99995 and encode <code>\"BPE, Kudo\"</code> with both models. List which characters were dropped from the vocabulary and why those ones.", "done": "At 0.99995 you get 7 pieces (<code>▁ BP E , ▁ Ku do</code>); at 0.99 you get 9, with <code>B</code>, <code>E</code>, <code>,</code> and <code>K</code> as byte tokens (<code>&lt;0x42&gt;</code>, <code>&lt;0x45&gt;</code>, <code>&lt;0x2C&gt;</code>, <code>&lt;0x4B&gt;</code>). The dropped set is <code>, / B E K</code>: 5 characters seen once each, and 498 / 503 = 0.990 still meets the 0.99 target.", "hint": "Count each character in <code>toy.txt</code> with <code>collections.Counter</code> and sort by count. sentencepiece rejects a coverage below 0.98."},
+  "reflect": [
+    "Which prediction did you get wrong: the 21 ids, the 239, or the <code>\"2024\"</code> bytes?",
+    "What couldn't you explain cleanly: why the byte ids are offset, or why the no-fallback model splits \"hello\" differently?",
+    "Which relationship is still fuzzy: <code>character_coverage</code> → which characters are dropped, or dropped characters → longer sequences for rare languages?",
+    "Would you pick sentencepiece or tiktoken for a new model, and what would change your mind?",
+    "What will you revisit before the vocabulary-size card?"
+  ],
+  "revisit": ["z2h-9-tokenizer/unicode-utf8", "z2h-9-tokenizer/train-loop", "z2h-9-tokenizer/decode"],
+  "prereq": ["z2h-9-tokenizer/unicode-utf8", "z2h-9-tokenizer/train-loop"]
+}

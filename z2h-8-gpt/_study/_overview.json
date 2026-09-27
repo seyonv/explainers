@@ -1,0 +1,60 @@
+{
+  "prime": {
+    "problem": "Seventeen cards add one piece each, and the val loss drops a little every time. Without the causal map that joins them, you can retype gpt.py but can't say why the mask, the √head_size, the <code>x +</code> or the LayerNorm has to be there, or which one to suspect when a loss looks wrong.",
+    "fits": "This is the front page of course 8, read first as the map or last as the recap. It reuses the makemore machinery (embeddings, cross-entropy, train/val splits, BatchNorm, the WaveNet habit of fusing context) and replaces the fixed way context is combined with weights computed from the data.",
+    "expect": ["out = softmax(mask(QKᵀ / √d_k)) V", "(B, T) chunks where every prefix is a training example", "the causal mask: −∞ above the diagonal", "Blocks: x + attn(ln1(x)), then x + ffwd(ln2(x))", "the val ladder 4.87 → 2.49 → 2.29 → 2.08 → 2.06 → 1.48"],
+    "goal": "Draw the whole course as one causal map, from 65 character ids to val 1.48, and for each lever (mask, scaling, heads, residual, LayerNorm, dropout, lr, size) say what it changes and the number it produced."
+  },
+  "attend": [
+    "The averaging on the self-attention cards had no parameters at all. Which single change turns it into something that learns, and which card makes it?",
+    "Three different things stop information leaking in this model: the mask, the batch dimension, and the val split. What does each one protect, and what number shows it working?",
+    "The ladder's biggest drop comes from scaling up, but it only works after two earlier changes. Which two, and what goes wrong at 10.79M parameters without each?",
+    "Which levers in the table change what a token can see, and which only change how well the same computation trains?",
+    "Where does the lecture stop short of ChatGPT, and which of those gaps does the next course (the tokenizer) close?"
+  ],
+  "core": {
+    "must": [
+      "Every prefix of a chunk predicts its next character → one (B, T) batch holds B·T examples scored in one pass → but position t's target sits at t + 1 inside the same input → a causal mask (−∞ above the diagonal, then softmax) is required, or the loss falls by reading the answer",
+      "Equal weights 1/(t + 1) blur the past (row 7 is 0.125 everywhere) → let each token's query dot each earlier token's key → weights now differ per sequence and are learned → but q·k has variance ≈ head_size, so scale by 1/√head_size or softmax starts near one-hot (17.47 → 1.09)",
+      "Attention only gathers → a per-token feed-forward then processes what was gathered → stacking these Blocks as x = f(x) made 3 Blocks worse (2.33) → x = x + f(x) keeps a gradient path of 1 through every layer (2.16, then 2.08 with projections and 4× FFN)",
+      "A bigger stack amplifies drifting activations and memorisation → pre-norm LayerNorm keeps each sublayer's input at mean 0, std 1 (2.06) and dropout 0.2 blocks memorising → only then does 255× more parameters pay off: 10,788,929 params, val 1.48"
+    ],
+    "elevated": [
+      "Attention treats its inputs as a set → without a position table \"tab\" and \"atb\" give the last token identical output → so order must be added as a learned position embedding, which also caps context at block_size and forces the crop in generate",
+      "Multi-head attention splits one 32-wide softmax into four 8-wide ones at the same 7,553 parameters → several independent looks per token → 2.41 to 2.29; nanoGPT computes all heads as one batched tensor with identical results (590,208 params either way)"
+    ],
+    "reference": ["the chapter timestamps and each card's numbers (4.8786, 0.1574 / 0.8426, 41,921 params)", "gpt.py hyperparameters: batch 64, block 256, n_embd 384, 6 heads, 6 layers, dropout 0.2, lr 3e-4, 5000 iters", "APIs: <code>torch.tril</code>, <code>masked_fill</code>, <code>register_buffer</code>, <code>torch.multinomial</code>, <code>F.cross_entropy</code> wants (B·T, C)", "Adam's defaults: betas (0.9, 0.999), eps 1e-8, AdamW weight decay 0.01", "GPT-3 175B's shape (96 layers, 12,288 wide, 96 heads)"]
+  },
+  "compress": {
+    "prompt": "Course-level compress: without looking, draw the whole course's causal map on one page. Start from \"a language model predicts the next character\" and end at \"val 1.48\". Put the seventeen cards as boxes in the order they are needed, draw an arrow for each <i>because</i>, write the val loss next to each step of the model, and mark the places where a missing piece gives a number instead of an error.",
+    "checklist": [
+      "data: 65 ids, 90 / 10 split, random (B, T) chunks, every prefix an example",
+      "the bigram baseline and the training loop (AdamW, estimate_loss) set the bar: 4.87 untrained, 2.49 trained",
+      "averaging the past → tril matmul → masked softmax → query · key weights, scaled by 1/√head_size, plus position embeddings",
+      "heads (2.41 → 2.29), feed-forward, residual stream (2.08), pre-norm LayerNorm (2.06), dropout and scale (1.48)",
+      "silent failures: no mask, √C instead of √head_size, x = f(x) instead of x + f(x), measuring with dropout still on",
+      "nanoGPT is the same model batched; ChatGPT adds fine-tuning stages on top of pretraining"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain to a programmer who has used the makemore MLP why self-attention is a better way to use 256 characters of context than concatenating their embeddings into one long input.", "kind": "concept", "answer": ["concatenation fixes which position feeds which weight, and the input grows with context (256 × 384 = 98,304 numbers)", "attention keeps one C-wide vector per token and mixes past tokens with weights computed from their content", "the same q, k, v matrices work at every position and every context length up to block_size", "order comes back through the position table, which concatenation had built in"]},
+    {"q": "Walk one training step of gpt.py from <code>get_batch</code> to <code>optimizer.step()</code>, giving the tensor shape after each stage and saying which card's idea runs there.", "kind": "mechanism", "answer": ["get_batch: xb, yb (64, 256) ids, yb shifted one to the left (batches-of-chunks)", "tok_emb + pos_emb: (64, 256, 384) (embeddings-and-positions)", "each of 6 Blocks: LayerNorm, 6 heads with q·kᵀ (64, 6, 256, 256) scaled, masked, softmaxed, @ v and concatenated back to 384, projection, add; then LayerNorm, FFN 384 → 1536 → 384, add", "ln_f, lm_head: (64, 256, 65) logits; cross-entropy on the (16,384, 65) view against yb", "backward fills every .grad; AdamW moves all 10,788,929 weights by about lr each"]},
+    {"q": "Your first gpt.py run prints a val loss of 0.9 after 500 steps and generates gibberish. Rank the levers you'd suspect, and say which check from the course confirms each.", "kind": "tradeoff", "answer": ["the mask first: a loss far below 1.48 that doesn't show in samples means position t can read t + 1; check wei is 0 above the diagonal (masked-softmax, attention-notes note 4)", "then the split: val must be the untouched last 10%; if val and train overlap, both look good (char-tokenizer-split)", "then the targets: yb must be xb shifted by one; xb[:, 1:] == yb[:, :-1]", "scaling or LayerNorm bugs make training worse, not suspiciously good, so they come later"]},
+    {"q": "The ladder's steps (bigram 2.49, one head 2.41, four heads 2.29, FFN 2.27, residual Blocks 2.08, LayerNorm 2.06, scaled 1.48) each cost something. Which steps add almost no parameters, and which buy their gain with size?", "kind": "tradeoff", "answer": ["four heads instead of one: same 7,553 parameters, a pure design gain", "residual connections: same 16,865 parameters, 2.33 → 2.16", "LayerNorm: 448 extra (42,369 vs 41,921), 2.08 → 2.06", "scaling: 42,369 → 10,788,929 parameters and a GPU for 2.06 → 1.48, and it needs dropout because the model is large next to 1M characters"]}
+  ],
+  "compare": [
+    {"with": "z2h-7-wavenet/wavenet-tree-idea", "q": "WaveNet and GPT both refuse to crush a long context into one layer at once. WaveNet fuses neighbours two at a time in a fixed tree; GPT lets every token weight every earlier token. Which design choice makes GPT's mixing depend on the data, and what does each approach cost?", "answer": ["WaveNet's tree has fixed wiring: which positions combine, and at which level, never changes with the input", "GPT's weights are softmax(q·k) of the tokens themselves, so each sequence gets its own mixing pattern", "WaveNet's work grows about linearly with context and needs no position table, since position is built into the wiring", "attention's work grows with T² (65,536 scores per head per sequence at 256) and it needs position embeddings, but any token can reach any earlier one in one step"]},
+    {"with": "z2h-8-gpt/big-ideas", "q": "The big-ideas card states six claims; this overview gives one formula and a pipeline. Which claims does <code>softmax(mask(QKᵀ/√d_k))V</code> already contain, and which only appear in the Block lines or the levers table?", "answer": ["in the formula: data-dependent weights (query · key), the causal mask, the √head_size scaling, message passing via V", "only in the Block lines: communicate then compute, the residual stream, pre-norm LayerNorm", "only in the levers and ladder: dropout, heads vs head_size, and that scale pays off only after the stabilisers", "not in either: the data side (the loss is next-character prediction on (B, T) chunks)"]}
+  ],
+  "predict": {"q": "The next course swaps characters for GPT-2's tokenizer: 50,257 tokens, and tiny Shakespeare becomes 338,025 tokens instead of 1,115,394 characters. With block_size still 256 and n_embd 384, predict how much text the model sees at once, and how big the token embedding table becomes next to all of gpt.py.", "answer": "Each GPT-2 token covers 1,115,394 / 338,025 = 3.30 characters on average, so 256 tokens cover about 845 characters of Shakespeare instead of 256: 3.3× more context for the same attention cost. But the token table grows from 65 × 384 = 24,960 to 50,257 × 384 = 19,298,688 weights, nearly twice the whole 10,788,929-parameter model, and lm_head grows the same way. That's the trade the tokenizer course explains, and why the GPT-2 course ties the two tables together."},
+  "apply": {"task": "Rebuild the lecture's ladder in one script on your M3's CPU. Start from bigram.py, then add, one at a time and rerunning each: n_embd 32 with a position table and lm_head; one head of 32 (lr 1e-3, 5000 iters, crop in generate); four heads of 8; a Linear + ReLU feed-forward; three Blocks with residuals, projections and a 4× FFN; pre-norm LayerNorm with an ln_f. Log params and final val loss for each.", "done": "Your table reads about 4,225 → 2.49, 4,481 → 2.52, 7,553 → 2.41, 7,553 → 2.29, 8,609 → 2.27, 41,921 → 2.08, 42,369 → 2.06 (the labs' values; within about 0.02 is fine), and each step's parameter count matches exactly.", "hint": "If the head runs crash at generation time, you forgot <code>idx[:, -block_size:]</code>. If four heads don't beat one, check you scale by head_size (8), not C (32). If the three-Block model is worse than one Block, look for a missing <code>x +</code>."},
+  "reflect": [
+    "Which prediction did you get wrong: the context gain from GPT-2 tokens, or the size of their embedding table?",
+    "What couldn't you explain cleanly: why the mask is needed during training even though generation never has the future, or why the residual lets depth pay off?",
+    "Which relationship is still fuzzy: averaging the past → query · key weights (what exactly becomes learnable), or query · key → √head_size (why the variance grows with head size)?",
+    "Which lever in the table would you check first if val loss were suspiciously low, and which if it stopped falling at 2.3?",
+    "Can you redraw the mental-model sketch from memory, including the red line of silent failures?"
+  ],
+  "revisit": ["z2h-3-bigram/train-neural-bigram", "z2h-4-mlp/embedding-lookup", "z2h-5-batchnorm/batchnorm-forward", "z2h-7-wavenet/wavenet-tree-idea"],
+  "prereq": []
+}

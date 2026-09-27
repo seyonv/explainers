@@ -1,0 +1,66 @@
+{
+  "prime": {
+    "problem": "The GPT lecture fed its model one id per character, 65 in all, which only works for one small English text. Real models read about 50,000 to 100,000 learned chunks, and without knowing how those chunks are made you can't explain why an LLM miscounts letters, stumbles on arithmetic, costs more in Korean or breaks on a stray space.",
+    "fits": "This is the map of course z2h-9, read first or as a recap. It replaces the character tokenizer from the GPT lecture (z2h-8) and reuses that lecture's embedding table and <code>lm_head</code>, which are the only places the vocabulary size reaches the model. The next course, z2h-10, trains GPT-2 on this lecture's 50,257-token vocabulary.",
+    "expect": ["UTF-8 bytes as the 256 base tokens", "BPE training: count pairs, merge the top, repeat", "encode by merge rank, decode by joining bytes", "the regex split, special tokens and GPT-4's merges", "what vocab_size costs the model, and the quirks it causes"],
+    "goal": "Draw the tokenizer pipeline and write its one rule from memory, then, given an odd LLM behaviour, name the tokenizer choice behind it and the lever that would change it."
+  },
+  "attend": [
+    "In the one rule, why does training take the pair with the highest count while encoding takes the pair with the lowest rank?",
+    "Which parts of the pipeline are learned from data (and from which data), and which are hand-written choices like the regex or the special tokens?",
+    "Of the levers in the table, which change how text is cut into tokens and which only change what the LLM pays for the vocabulary?",
+    "Why does starting from 256 bytes make encode total but leave decode able to fail?",
+    "For each quirk on the last card, which single stage of the picture above is responsible?"
+  ],
+  "core": {
+    "must": [
+      "Code points are ~150k and still growing, raw bytes make text several times longer → start from the 256 UTF-8 bytes so anything encodes → merge the most frequent pair into a new id, again and again → 24,597 bytes become 19,438 tokens after 20 merges, 1.27×",
+      "Merges are learned by counting on the tokenizer's own text, once, before the LLM → whatever that text is dense in gets short tokens → the blog tokenizer compresses the blog 1.27× but Korean barely at all (158 → 155) → non-English and code cost more context",
+      "Later merges are built from earlier ones (275 = 259 + 256) → encode must replay them lowest rank first, and stop when no learned pair is left → the ids match what training produced (19,438 on the post) → decode just joins each id's bytes, but some byte runs aren't UTF-8 → <code>errors=\"replace\"</code>",
+      "The token id is all the model sees → letters inside a token, arbitrary digit groups and a lone trailing space (220) are invisible or rare → spelling, arithmetic and completion quirks; an id the LLM never trained on (43453) has an untrained embedding row → SolidGoldMagikarp"
+    ],
+    "elevated": [
+      "V sets the embedding rows and the <code>lm_head</code> outputs → in gpt.py's shape each id costs 769 parameters, so V = 50,257 is 78.3% of a 49.39M model → bigger vocabularies shorten sequences but cost compute and leave rare rows undertrained",
+      "The regex split forbids merges across letters, numbers, punctuation and spaces → compression drops (2.36× → 2.13× on the Taylor Swift page) but no token glues a word to its punctuation (110 of 256 basic merges did)"
+    ],
+    "reference": [
+      "GPT-2: 50,257 = 256 + 50,000 + 1, <code>&lt;|endoftext|&gt;</code> = 50256; cl100k n_vocab 100,277",
+      "the example string: 300 gpt2 tokens, 185 cl100k",
+      "<code>encoder.json</code> = vocab, <code>vocab.bpe</code> = merges, <code>bpe_ranks</code> = merge rank",
+      "<code>enc._mergeable_ranks</code>, <code>recover_merges</code>, <code>byte_shuffle</code> (a → 64, space → 220)",
+      "sentencepiece options: <code>byte_fallback</code>, <code>character_coverage=0.99995</code>, <code>split_digits</code>, <code>add_dummy_prefix</code>; Llama 2 vocab 32,000"
+    ]
+  },
+  "compress": {
+    "prompt": "Course-level compress: on one sheet, draw the whole course's causal map from memory. Start from <i>why neither code points nor raw bytes work</i>, then the training loop in its own dashed box, then encode and decode on either side of the LLM, then the regex, special tokens and vocab-size choices hanging off it. Label each arrow with the number that justified it, and end at two quirks you can trace back.",
+    "checklist": [
+      "~150k growing code points vs 256 bytes that make text long → bytes plus BPE",
+      "count pairs, merge the max, repeat vocab_size − 256 times: 24,597 → 19,438 (1.27×)",
+      "the tokenizer's own training text decides what compresses (Korean 158 → 155)",
+      "encode = min merge rank until ∞; decode = join bytes, UTF-8 with replace; round trip holds one way",
+      "regex split (2.36× → 2.13×) and special tokens outside BPE (50256)",
+      "V reaches the model only in the embedding and lm_head; untrained rows → SolidGoldMagikarp"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain to someone who has only seen the GPT lecture's 65-character tokenizer why GPT-2 needs a trained tokenizer at all, and what exactly is learned when it is trained.", "kind": "concept", "answer": ["65 characters only cover one text; any new character can't be encoded", "starting from the 256 UTF-8 bytes covers every string", "but bytes make sequences long, so frequent pairs are merged into new ids", "what's learned is the ordered merge table, from counting on the tokenizer's own text; there are no gradients"]},
+    {"q": "Walk the string <code>\"the \"</code> through the lecture's 20-merge tokenizer and back: encode it step by step, then decode the result.", "kind": "mechanism", "answer": ["bytes 116, 104, 101, 32", "pairs th (rank 259) and e␣ (256) are learned; 256 is lower, so e␣ merges first", "then th → 259, leaving (259, 256), which is merge 275", "one pair-less token left → stop: [275]", "decode: vocab[275] = b'the ', one UTF-8 decode → 'the '"]},
+    {"q": "You're training a tokenizer for a model that will read a lot of Korean and Python. Using this course's measurements, which levers would you set, and what does each one cost?", "kind": "tradeoff", "answer": ["put Korean and code into the tokenizer's training text: its data mixture decides what gets merges (Korean stayed 158 → 155 when it was absent)", "merge runs of spaces as GPT-4 does (FizzBuzz 108 → 71 tokens)", "a larger vocab_size shortens sequences but adds 769 parameters per id in gpt.py's shape and more rarely-trained rows", "keep byte fallback (or byte-level BPE) so rare characters still round-trip"]},
+    {"q": "Which of this course's numbers are exact checks with a known target, and which only compare one tokenizer against another?", "kind": "concept", "answer": ["exact: 616 → 596 after one merge, 19,438 after 20, <code>[275]</code> for \"the \", ids equal to tiktoken's on the exercise strings, 50,257 = 256 + 50,000 + 1", "relative: compression ratios (1.27×, 2.36× vs 2.13×), 300 vs 185 tokens, parameter shares", "the exact ones catch bugs in your code; the relative ones choose settings"]}
+  ],
+  "compare": [
+    {"with": "z2h-8-gpt/char-tokenizer-split", "q": "The GPT lecture's tokenizer was <code>sorted(set(text))</code>: 65 characters, no training. What is fundamentally different about a byte-level BPE tokenizer, which design choice causes it, when would you still pick characters, and how does each fail?", "answer": ["characters: the vocabulary is read off one text, one id per character, nothing learned", "BPE: 256 bytes as the base plus learned merges, so any text encodes and common chunks are one id", "characters fit a small single-language demo: 65 rows, every row trained, no training step", "characters fail on any unseen character and spend one position per character; BPE fails through its merges: hidden letters, arbitrary digit groups, untrained rows"]},
+    {"with": "z2h-8-gpt/embeddings-and-positions", "q": "The GPT lecture's model looks each token id up in an embedding table and scores every id with <code>lm_head</code>. How does this course's choice of V change that model, and what doesn't it change?", "answer": ["V sets the number of embedding rows and <code>lm_head</code> outputs, nothing else", "the Blocks between them only see vectors of width n_embd, so they are unchanged", "each id costs 769 parameters at n_embd 384; 65 → 50,257 takes the model from 10.79M to 49.39M", "more ids also means each row is updated less often, which is where glitch tokens come from"]}
+  ],
+  "predict": {"q": "The next course trains GPT-2 124M (n_embd 768) on exactly this lecture's 50,257-token vocabulary. Before watching: what loss should the freshly initialised model print at step 0, and how many parameters does the token embedding table alone cost?", "answer": "A uniform guess over 50,257 ids scores −ln(1/50257) = 10.82 (z2h-10's first-loss lab prints 10.96). The embedding table is 50,257 × 768 = 38,597,376 parameters. GPT-2 shares that one matrix with <code>lm_head</code> (weight tying), which saves 31.0% of the 124M model, and the course later pads V to 50,304 because it divides evenly by 128."},
+  "apply": {"task": "Run <code>python labs/train-loop.py</code> and note its compression ratios (1.27× at vocab 276, 1.71× at 356, 2.15× at 512). Before changing anything, predict whether the vocab-512 tokenizer will compress the Korean line of the example string much better than the vocab-276 one, and write your reason. Then encode that line (158 bytes) with both and compare.", "done": "You have the two Korean token counts next to your written prediction, and one sentence on why more merges help English far more than Korean here (the train-loop card measured 158 → 154 at 256 merges, against 76 → 42 for the English line).", "hint": "The merges come only from counting pairs in the blog post, which contains almost no Korean; more merges add more English pairs."},
+  "reflect": [
+    "Which prediction did you get wrong: how little 20 merges compress, the Korean cost, or what the regex split does to compression?",
+    "What couldn't you explain cleanly without the page: why encode uses the minimum rank, why decode can fail, or why GPT-2 needs byte_shuffle to match GPT-4?",
+    "Which relationship is still fuzzy: the tokenizer's training text → which strings get short, or which strings get short → which quirks the LLM shows?",
+    "If you had to train a tokenizer tomorrow, which lever would you set first, and which card would you reopen before touching it?",
+    "Can you redraw the pipeline, with the dashed training box and the vocab feeding decode, and write the one rule beneath it without looking?"
+  ],
+  "revisit": ["z2h-8-gpt/char-tokenizer-split", "z2h-8-gpt/embeddings-and-positions"],
+  "prereq": []
+}

@@ -1,0 +1,63 @@
+{
+  "prime": {
+    "problem": "PyTorch broadcasts silently: a (32, 1) column used against a (32, 27) grid is copied 27 times without any line of code saying so. If you backprop through that line as if nothing was copied, your gradient has the wrong shape or the wrong size, and nothing warns you.",
+    "fits": "You just walked dlogprobs back to <code>dnorm_logits</code> atom by atom, and micrograd taught you that a value used twice gets its gradients added with <code>+=</code>. This card turns that rule into the tensor version: a broadcast is a value used many times at once.",
+    "expect": ["broadcast forward → sum backward", "sum forward → copy (broadcast) backward", "<code>keepdim=True</code> and why shapes must match", "why <code>dlogit_maxes</code> ≈ 0", "<code>F.one_hot</code> routing the max's gradient"],
+    "goal": "Look at any forward line where shapes change and write its backward line by flipping sum ↔ broadcast, then finish <code>dlogit_maxes</code> and the second <code>dlogits</code> branch so <code>cmp</code> prints exact."
+  },
+  "attend": [
+    "In <code>(a + b).sum()</code> with <code>b</code> of shape (2, 1), how many separate paths lead from one entry of <code>b</code> to the loss, and what does that do to <code>b.grad</code>?",
+    "Which axis do you sum over in the backward pass: the one that was stretched, or the one that was already full size?",
+    "Why does subtracting each row's maximum leave the loss unchanged, and what must that mean for <code>dlogit_maxes</code>?",
+    "What local derivative does <code>max</code> have for the entries that didn't win, and how does <code>F.one_hot</code> encode it?",
+    "What goes wrong in the next broadcast if you drop <code>keepdim=True</code> from the backward sum?"
+  ],
+  "core": {
+    "must": [
+      "Broadcast copies one entry into k places → each copy is a separate use with its own gradient → the chain rule adds uses (micrograd's <code>+=</code>) → backward is a sum over the stretched axis, keeping it as size 1",
+      "A sum gives every input a coefficient of 1 in the output → each input's local derivative is 1 → each gets the output's gradient unchanged → backward is a copy (broadcast) of the output gradient back to the input's shape",
+      "Softmax is unchanged by shifting a whole row by c → the loss doesn't depend on <code>logit_maxes</code> → its true gradient is 0 → the measured <code>dlogit_maxes</code> (up to 1.02e-8) is float rounding, so skipping its branch still passes <code>allclose</code>",
+      "<code>max</code> passes one entry per row through and ignores the rest → local derivative is 1 at the winner, 0 elsewhere → <code>one_hot(indices) * dlogit_maxes</code> routes the gradient only to the winner → the same pattern explains max-pooling's backward"
+    ],
+    "elevated": [
+      "<code>keepdim=True</code> on the backward sum → result is (32, 1), not (32,) → it broadcasts along the right axis next time; a (32,) tensor aligns with the <i>last</i> axis and fails (27 vs 32) or, worse, silently mis-broadcasts when the sizes happen to match"
+    ],
+    "reference": [
+      "<code>F.one_hot(ix, num_classes=logits.shape[1])</code> returns an integer (32, 27) tensor",
+      "<code>logits.max(1)</code> returns <code>.values</code> and <code>.indices</code>",
+      "<code>keepdim=True</code> vs <code>keepdims=True</code> (both spellings work on <code>sum</code>)",
+      "float32 <code>exp</code> overflows to <code>inf</code> just above 88.7"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw the two small graphs (one value copied into three places; three values summed into one) and write the gradient on every edge. Then in 3–4 sentences explain why <code>dlogit_maxes</code> is a sum and why it comes out ≈ 0.",
+    "checklist": [
+      "broadcast = one value used several times → backward adds the gradients from each use",
+      "sum = each input enters with coefficient 1 → backward copies the output gradient to each input",
+      "sum over the stretched axis with <code>keepdim=True</code> so <code>d&lt;name&gt;</code> has <code>&lt;name&gt;</code>'s shape",
+      "shifting a row doesn't change softmax, so the true <code>dlogit_maxes</code> is 0; what you measure is rounding",
+      "the max branch goes back through <code>one_hot</code>: only the winning position gets gradient"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain, using the chain rule, why a forward broadcast turns into a backward sum rather than a backward copy.", "kind": "concept", "answer": ["a broadcast is one value used in several places", "each use contributes its own ∂L/∂(copy) × 1", "contributions from several uses of the same value add", "so the gradient is the sum of the gradients at all copies"]},
+    {"q": "Walk through <code>norm_logits = logits - logit_maxes</code> backward: what gradient flows into <code>logits</code>, what flows into <code>logit_maxes</code>, and what shape is each?", "kind": "mechanism", "answer": ["into logits: <code>dnorm_logits</code> unchanged (local derivative +1), shape (32, 27)", "into logit_maxes: −<code>dnorm_logits</code>, summed over axis 1 with keepdim, shape (32, 1)", "logits then gets a second contribution through <code>max</code>: <code>one_hot(indices) * dlogit_maxes</code>, added with <code>+=</code>"]},
+    {"q": "The max branch changes <code>dlogits</code> by at most about 1e-8. Argue for and against writing it in exercise 1, and say what the fused cross-entropy does instead.", "kind": "tradeoff", "answer": ["for: it makes <code>cmp</code> bit-exact and practises the one-hot routing that max-pooling needs", "against: it doesn't change training; the true gradient is exactly 0", "fused cross-entropy computes <code>dlogits</code> as softmax − one-hot directly and never mentions <code>logit_maxes</code>"]},
+    {"q": "A forward line is <code>y = x * w</code> with x (32, 64) and w (1, 64). Which of <code>dx</code>, <code>dw</code> needs a sum, over which axis, and why?", "kind": "mechanism", "answer": ["w was stretched along axis 0 (32 rows), so <code>dw = (x * dy).sum(0, keepdim=True)</code>, shape (1, 64)", "x was not stretched, so <code>dx = w * dy</code> with no sum, shape (32, 64)"]}
+  ],
+  "compare": [
+    {"with": "z2h-6-backprop-ninja/matmul-backward-by-shapes", "q": "The bias gradient <code>db2 = dlogits.sum(0)</code> on the matmul card and <code>dlogit_maxes</code> here are both sums. What is the common cause, and why is one summed over axis 0 and the other over axis 1?", "answer": ["both variables were broadcast in the forward pass", "b2 (27,) was stretched across the 32 rows → sum over axis 0", "logit_maxes (32, 1) was stretched across the 27 columns → sum over axis 1", "the rule is the same; which axis follows from which dimension was size 1"]},
+    {"with": "z2h-2-micrograd/accumulate-gradients", "q": "micrograd's <code>+=</code> fix for a Value used twice and this card's backward sum: is the sum just the tensor version of <code>+=</code>? How does each one fail if you forget it?", "answer": ["yes: a broadcast is one value used k times at once, and the sum adds the k contributions", "forget <code>+=</code> in micrograd → the later use overwrites the earlier one; gradient too small", "forget the sum here → the gradient has the wrong shape (e.g. (32, 27) for a (32, 1) variable) or you pick one copy and lose the rest"]}
+  ],
+  "predict": {"q": "Suppose the forward pass subtracted each row's <i>mean</i> instead of its max: <code>m = logits.mean(1, keepdim=True)</code>. Would <code>dm</code> still be ≈ 0? What would the second branch into <code>dlogits</code> look like, and how is it different from the one-hot branch?", "answer": "Still ≈ 0: any per-row shift cancels in the softmax, so the loss doesn't depend on <code>m</code>. But the mean uses <i>every</i> entry with coefficient 1/27, so its backward is a copy of <code>dm</code>/27 to all 27 positions, a dense broadcast, instead of the one-hot's single winner. Both contributions are float noise here."},
+  "apply": {"task": "In <code>labs/sum-broadcast-duality.py</code>, change the toy's forward sum <code>x.sum(1, keepdim=True)</code> to <code>x.mean(1, keepdim=True)</code>, keeping the weights 10 and 20. Predict <code>x.grad</code> on paper first, then run it.", "done": "Your prediction matches the run: <code>x.grad</code> is 3.3333 in every entry of row 0 and 6.6667 in every entry of row 1 (10/3 and 20/3).", "hint": "A mean is a sum times 1/3, so its backward is a copy of the upstream gradient times 1/3."},
+  "reflect": [
+    "Which prediction did you get wrong: <code>b.grad</code> = 3, or <code>dlogit_maxes</code> ≈ 0?",
+    "What couldn't you explain cleanly without looking: why a broadcast is several uses, or why the shift cancels in softmax?",
+    "Which relationship is still fuzzy: broadcast → several uses, or several uses → a sum over a specific axis?",
+    "Could you pick the right axis and <code>keepdim</code> for a (1, 64) BatchNorm parameter without trial and error?",
+    "Before the tanh and BatchNorm card, which of the four table rows would you want to rewrite from memory?"
+  ],
+  "revisit": ["z2h-2-micrograd/accumulate-gradients", "z2h-1-toolkit/broadcasting-rules", "z2h-3-bigram/broadcasting-keepdim-trap"],
+  "prereq": ["z2h-6-backprop-ninja/softmax-chain-backward"]
+}

@@ -1,0 +1,62 @@
+{
+  "prime": {
+    "problem": "The GPT-2 lecture is four hours of changes to one script: a module, checks, an init, a dozen speed tricks, a borrowed recipe and two scorecards. Without a map of the few ideas they add up to, it is easy to finish with a working <code>train_gpt2.py</code> but unable to say which line matters for correctness, which for speed, and which for the final claim.",
+    "fits": "This card spans the whole course and compresses its 15 cards into six claims. It leans on ideas from earlier courses you already have: the Transformer block from z2h-8, the expected initial loss and Kaiming init from z2h-5, and <code>+=</code> gradient accumulation from micrograd.",
+    "expect": ["a module that matches OpenAI's checkpoint, checked by its logits", "numbers you can predict before training: 10.82 and the one-batch overfit", "the 1/√(2·n_layer) residual scale", "speed as memory traffic, not FLOPs", "GPT-3's recipe with a 2<sup>19</sup>-token accumulated batch, and the held-out scorecards"],
+    "goal": "Draw the whole reproduction from memory: the module from ids to logits, the step-0 checks, one full training step, where each speed trick saves bytes, and the scorecards, and say for each line whether it serves correctness, speed or the claim."
+  },
+  "attend": [
+    "Why is loading OpenAI's weights into your own module a stronger check than counting its 124,439,808 parameters?",
+    "Which two numbers can you predict before training starts, and which kind of bug does each one catch that the other misses?",
+    "Why does the residual scale use √(2·n_layer) rather than √n_layer, and what would the stream's std look like at block 12 without it?",
+    "If TF32 makes the matmul arithmetic 8× faster, why does the step only get 3× faster, and what does that say about where the next speedups must come from?",
+    "Why does accumulating 32 micro-batches need each loss divided by 32, when clipping and AdamW would hide the difference in the step anyway?",
+    "Why is beating GPT-2's 3.2924 val loss on FineWeb-Edu weaker evidence than beating its 29.4% on HellaSwag?"
+  ],
+  "core": {
+    "must": [
+      "Module names and shapes match OpenAI's checkpoint → the 149 tensors copy by name (four Conv1D kinds transposed) → logits agree with Hugging Face to 4.58e-05 → the architecture is proven before any training, and later edits are changes to checked code",
+      "An untrained model spreads its bets over 50,257 tokens → step-0 loss ≈ ln 50257 = 10.82 (lab 10.96) checks the init → a big model must memorise one small batch (10.96 → 0.36 in 50 steps) → that checks backward, zero_grad and the optimizer before any long run",
+      "Each Block adds to the residual stream twice → 24 independent adds and variances add → std grows like √24 → scale the two c_proj layers to 0.02/√24 = 0.00408 → the stream ends at 0.30 instead of 1.54 at block 12",
+      "The step is memory-bound (8× faster maths gave 3×) → the wins come from moving fewer bytes: bf16, fused kernels, flash attention never writing T × T, full tiles at 50,304 → 1000 → 93 ms on one A100 with the same loss → which is what makes a 10B-token run a ~2-hour job on 8 GPUs"
+    ],
+    "elevated": [
+      "<code>backward()</code> adds into <code>.grad</code> while the loss is a mean → accumulating N micro-batches without / N gives an N× gradient → clipping and AdamW's per-parameter scaling hide it, so only the printed loss and norm (N× too big) give it away",
+      "Val loss is measured on shard 0 of our own training distribution → it favours our model over GPT-2's WebText-trained checkpoint → the outside task (HellaSwag, completion-scored, ±0.47 points on 10,042 examples) is the fairer head-to-head"
+    ],
+    "reference": ["config: 12 layers, 12 heads, 768 wide, context 1024, vocab 50257 padded to 50304 (124,475,904 params)", "recipe constants: AdamW betas (0.9, 0.95), eps 1e-8, weight decay 0.1 on 2-D tensors, clip 1.0, max lr 6e-4, min lr 6e-5, warmup 715, max_steps 19,073", "the A100 ladder: ~1000 → 333 → 300 → 130 → 96 → 93 → 90 ms", "<code>torchrun --standalone --nproc_per_node=8 train_gpt2.py</code>", "baselines: val 3.2924, HellaSwag 0.294463 (GPT-2), 0.337 (GPT-3)"]
+  },
+  "compress": {
+    "prompt": "Card closed, one sheet of paper: draw the course's whole pipeline from memory. Start with GPT-2's module from token ids to logits, then the two step-0 checks, then one training step from micro-batches to <code>optimizer.step()</code>, then the speed tricks placed where they cut memory traffic, then the two scorecards against GPT-2's lines. Label each part as correctness, speed or claim.",
+    "checklist": [
+      "idx → wte + wpe → 12 pre-norm Blocks on the residual stream → ln_f → lm_head, with wte and lm_head one tensor",
+      "loading OpenAI's weights (by name, four kinds transposed) and matching Hugging Face's logits as the architecture check",
+      "step 0 ≈ 10.82 and one batch crushed toward 0 as the plumbing checks",
+      "std 0.02, with c_proj at 0.02/√(2·12) because 24 adds land on the stream",
+      "micro-batches with loss / N → grads add → clip to 1.0 → lr from warmup + cosine → one step per 524,288 tokens; DDP splits the micro-batches",
+      "bf16, compile, flash attention and 50,304 as fewer bytes moved (1000 → 93 ms), then val loss on shard 0 and HellaSwag vs GPT-2's 3.2924 and 29.4%"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why this lecture can promise to <i>beat</i> GPT-2 when OpenAI never published how GPT-2 was trained.", "kind": "concept", "answer": ["the released weights give fixed targets to beat: val loss 3.2924 on the same shard, HellaSwag 29.4%", "the GPT-3 paper supplies a full recipe for a model of the same shape", "the module is checked against the real weights first, so the from-scratch model is the same architecture", "better data (FineWeb-Edu) lets 10B tokens pass GPT-2's ~100B"]},
+    {"q": "Walk through one optimizer step of the final <code>train_gpt2.py</code> on one GPU at B = 16, T = 1024, from the first micro-batch to the weight update.", "kind": "mechanism", "answer": ["grad_accum_steps = 524,288 / (16 × 1024) = 32", "each micro-step: next batch, forward under bf16 autocast, loss / 32, backward adds into <code>.grad</code>", "after 32 micro-steps: clip the global norm to 1.0", "set every param group's lr to <code>get_lr(step)</code>", "<code>optimizer.step()</code> (AdamW, weight decay on 2-D tensors only), then zero_grad for the next step"]},
+    {"q": "You have one afternoon on a rented A100 and can apply only two of: TF32, bf16 autocast, torch.compile, flash attention, vocab 50,304. Which two do you pick, and why?", "kind": "tradeoff", "answer": ["the step is memory-bound, so pick the tricks that cut the most traffic", "the two biggest rungs: TF32, one line, 1000 → 333 ms (3×), and torch.compile, 300 → 130 ms (about 2.3×)", "flash attention (130 → 96) and 50,304 (96.5 → 93) are smaller once compile is in", "none of them changes the loss, so the choice is purely about time"]},
+    {"q": "Your from-scratch run prints step-0 loss 24.0 instead of about 10.9. Name the most likely cause, and what the one-batch overfit test would and would not tell you.", "kind": "tradeoff", "answer": ["the logits start far too large: a broken init (the lab's ×10 logits gave 24.01)", "check the std of every weight: 0.02, and 0.00408 on c_proj", "the overfit test would still likely drive the loss down, so it can't catch a bad init", "the 10.82 check catches init problems; the overfit test catches wiring and optimizer problems"]}
+  ],
+  "compare": [
+    {"with": "z2h-8-gpt/big-ideas", "q": "The z2h-8 GPT and GPT-2 use the same block: communicate, then compute, added onto a residual stream. What does this lecture add that the character-level GPT didn't need, and which of those additions are about correctness and which about scale?", "answer": ["correctness: matching OpenAI's names and loading its weights, the residual-scaled init, tied wte/lm_head", "scale: a 50,257-token BPE vocabulary instead of 65 characters, context 1024", "speed: bf16, compile, flash attention, padded vocab, fused AdamW, DDP", "recipe: GPT-3's hyperparameters and a 2<sup>19</sup>-token accumulated batch, judged on held-out data and HellaSwag"]},
+    {"with": "z2h-5-batchnorm/big-ideas", "q": "Makemore kept activations healthy with gain/√fan_in init and BatchNorm. GPT-2 uses a fixed std 0.02, a 1/√(2·n_layer) residual scale and LayerNorm. What is fundamentally different about the problem each is solving?", "answer": ["makemore: activations shrink or saturate through a stack of tanh layers → scale by fan_in, normalise per batch", "GPT-2: a residual stream that is only ever added to → its std grows with the number of adds → scale the writers by depth", "LayerNorm normalises each token alone, so no batch coupling and nothing special at test time", "both check the result the same way: a step-0 loss near ln V (ln 27 = 3.30 there, ln 50257 = 10.82 here)"]},
+    {"with": "z2h-2-micrograd/mlp-and-training-loop", "q": "micrograd's loop was forward, zero_grad, backward, update. Which of GPT-2's additions live inside that same loop, and which one is micrograd's <code>+=</code> bug turned into a feature?", "answer": ["the four steps are unchanged; GPT-2 wraps forward in autocast, and adds clip and set-lr before the update", "gradient accumulation deliberately skips zero_grad between micro-batches so the grads add", "because they add, each micro-loss must be divided by N to get the mean", "the same accumulation is why tied wte/lm_head gets the sum of both uses' gradients"]}
+  ],
+  "predict": {"q": "You keep everything in the final script but switch the config to GPT-2 medium (24 layers, width 1024), same vocab 50,304 and same 2<sup>19</sup>-token batch. Commit first: what are the c_proj init std, the expected step-0 loss, and does grad_accum_steps change?", "answer": "c_proj std = 0.02/√(2 × 24) = 0.00289 (the init card's table). The step-0 loss is still ≈ ln 50304 = 10.826, because it depends only on the vocabulary, not the depth. grad_accum_steps = 524,288 / (B·T·GPUs) doesn't depend on the model either, so it stays the same unless the bigger model forces a smaller B to fit in memory, which raises the number of micro-steps."},
+  "apply": {"task": "Plan the real run on paper, using only the ideas on this card, then check each number against the labs. Compute: grad_accum_steps at B = 16, T = 1024 on 1 GPU and on 8 GPUs; warmup_steps from GPT-3's 375M tokens and max_steps from 10B tokens; the expected step-0 loss once the vocabulary is padded to 50,304; the c_proj std for 12 layers; and the M3's days for 10B tokens at ~1,300 tok/s.", "done": "grad_accum_steps = 32 and 4 (big-batch lab); warmup 375e6 / 2<sup>19</sup> = 715.3 → 715 and max_steps 10e9 / 2<sup>19</sup> = 19,073.5 → 19,073 (optimizer-recipe lab); ln 50304 = 10.826; c_proj std 0.02 × 24<sup>−0.5</sup> = 0.00408 (init lab); 19,073 × 2<sup>19</sup> / 1,300 s = 2136.7 h = 89.0 days (results lab).", "hint": "Every step covers 2<sup>19</sup> = 524,288 tokens however it is split. A token budget divided by that is a step count."},
+  "reflect": [
+    "Which prediction did you get wrong: the step-0 loss for GPT-2 medium, or whether grad_accum_steps depends on the model?",
+    "Which panel could you not redraw cleanly from memory, and which part of it was missing?",
+    "Which relationship is still fuzzy: memory-bound → fusion helps, or backward adds → divide by N?",
+    "Could you say, for each line of the final training loop, whether it is there for correctness, speed or the final claim?",
+    "Which card of this course will you reopen first, and which earlier-course card does it lean on?"
+  ],
+  "revisit": ["z2h-8-gpt/big-ideas", "z2h-5-batchnorm/kaiming-init", "z2h-2-micrograd/accumulate-gradients", "z2h-4-mlp/splits-and-fit"],
+  "prereq": []
+}

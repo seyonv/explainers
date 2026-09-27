@@ -1,0 +1,63 @@
+{
+  "prime": {
+    "problem": "<code>loss.backward()</code> always returns <i>some</i> gradient. If a flat operation, a dead unit or a badly placed clip zeroes it, training quietly slows or stops and nothing raises an error.",
+    "fits": "You built autograd yourself in micrograd and saw saturated tanh and dead neurons in the BatchNorm lecture. This card explains why the whole next lecture throws <code>loss.backward()</code> away and does every tensor's backward pass by hand.",
+    "expect": ["local gradient (the slope of one op)", "the clip-the-loss bug vs Huber loss", "saturated tanh: 1 − tanh(x)²", "dead ReLU", "backprop as a leaky abstraction"],
+    "goal": "Look at a loss or a layer and predict where the gradient will be zeroed, then explain why that happens even though autograd computed it correctly."
+  },
+  "attend": [
+    "In the clip-the-loss code, autograd computes a gradient of exactly 0 for the outliers. Is autograd wrong, or is the loss wrong?",
+    "Which single factor in the chain rule is responsible for zeroing the outliers' gradient?",
+    "What does Huber loss keep that clamping inside the loss throws away?",
+    "Why does a saturated tanh unit or a dead ReLU slow learning without ever producing an error?",
+    "If manual backprop was standard until about 2014, what made everyone switch, and what did they lose?"
+  ],
+  "core": {
+    "must": [
+      "Backward pass multiplies local gradients along the path → one local gradient of 0 zeroes everything behind it → a flat op silently cuts off learning for its inputs",
+      "Clamping the error <i>inside</i> the loss → clamp has slope 0 outside ±1 → the outliers (the examples the model is most wrong about) get gradient 0 → the fix is to cap the <i>gradient</i> (Huber loss, or clip after <code>backward()</code>), not the loss",
+      "tanh flattens for large |x| → 1 − tanh(x)² falls from 1.0 at x = 0 to 0.00987 at x = 3 → saturated units barely learn; ReLU with every input negative → slope 0 → a dead unit never gets the push to recover",
+      "Autograd differentiates whatever you wrote, exactly → it can't warn you that the gradient is useless → you need to know each op's local gradient to spot and debug these leaks"
+    ],
+    "elevated": [
+      "Huber loss is δ² (×½ in PyTorch) inside ±1 and linear outside → its gradient is capped at a constant instead of dropping to 0 → outliers still push, just not wildly"
+    ],
+    "reference": [
+      "<code>F.huber_loss(pred, target, delta=1.0)</code> is ½δ² inside ±delta (the card multiplies it by 2 to match δ²)",
+      "<code>torch.clamp(x, -1, 1)</code> syntax",
+      "the history: Hinton &amp; Salakhutdinov 2006, Karpathy's 2010 MATLAB RBM code, his 2014 numpy code with a gradient checker",
+      "<code>clip_grad_norm_</code>, the gradient clipping used in the GPT-2 lecture"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, explain in 3–5 sentences why Karpathy calls backprop a leaky abstraction. Or draw the clip-the-loss graph for one outlier and mark where the gradient becomes 0 and why.",
+    "checklist": [
+      "the backward pass multiplies local gradients, so a zero slope anywhere cuts off everything behind it",
+      "clipping the error in the loss makes the clamp flat for |δ| &gt; 1, so outliers get 0 gradient",
+      "the intended behaviour caps the gradient (Huber, or clip after backward), not the loss",
+      "saturated tanh and dead ReLU are the same mechanism: a local slope near or at 0",
+      "autograd is correct about the function you wrote; it can't tell you the function is wrong"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why the clip-the-loss code is a bug even though autograd computes every gradient correctly.", "kind": "concept", "answer": ["autograd gives the true derivative of the loss as written", "that loss is constant in the prediction once |δ| &gt; 1, so the true derivative is 0", "the intent was to limit how hard outliers push, not to ignore them"]},
+    {"q": "Walk the gradient backwards for the prediction 2.5 (target 0) through mean, square and clamp. What number leaves each op?", "kind": "mechanism", "answer": ["loss → 1", "mean and square: 2·clamp(δ)/5 = 2·1.0/5 = 0.4", "clamp: × slope 0 (outside ±1) → 0", "delta and pred: 0"]},
+    {"q": "Your model has a few examples with huge errors. Compare clamping δ inside the loss, Huber loss and plain squared error. Which one do you pick and what does each cost?", "kind": "tradeoff", "answer": ["clamp inside the loss: outliers get 0 gradient, so they're ignored", "Huber: outliers push with a capped, constant gradient; you pick the threshold", "squared error: outliers push with a gradient proportional to δ, which can dominate the batch"]},
+    {"q": "tanh units show 1 − tanh(x)² values of 0.07, 0.0099 and 0.00018 at x = 2, 3, 5. What does that tell you about those units, and what earlier fixes address it?", "kind": "mechanism", "answer": ["their inputs sit in tanh's flat tails, so almost no gradient passes back", "the weights feeding them barely change", "fixes from the BatchNorm lecture: smaller init (Kaiming-style scaling) and BatchNorm to keep preactivations near 0"]}
+  ],
+  "compare": [
+    {"with": "z2h-5-batchnorm/saturated-tanh", "q": "That card found saturation by looking at histograms of activations. This card looks at the local gradient 1 − tanh(x)². What does each view show that the other doesn't, and when would you reach for each?", "answer": ["the histogram shows how many units sit near ±1 across the batch", "the local-gradient view shows how much gradient each one lets through (1% at x = 3)", "histogram for diagnosing a whole layer, local gradient for explaining why the weights stop moving"]},
+    {"with": "z2h-10-gpt2/optimizer-recipe", "q": "GPT-2 training clips the gradient with <code>clip_grad_norm_(…, 1.0)</code>. Why is that safe while clamping δ inside the loss is a bug? What does each one change?", "answer": ["clip_grad_norm_ rescales the whole gradient vector after backward, so every example keeps its direction and a non-zero share", "clamp in the loss changes the function, so outliers' derivative becomes exactly 0", "one limits the size of a step; the other deletes the signal from the examples that need it most"]}
+  ],
+  "predict": {"q": "Keep the buggy loss, but now every prediction is an outlier: deltas of −3.0, −1.5, 2.0, 4.0 and 2.5. What is the loss, what are the five gradients, and what happens over training?", "answer": "The loss is exactly 1.0 (every clipped δ² is 1) and all five gradients are 0.0. The model never moves, the loss curve is a flat line at 1.0, and nothing errors. A model that starts out badly wrong on every example learns nothing at all."},
+  "apply": {"task": "Write the backward pass of both losses by hand for the five predictions [−3.0, −0.5, 0.2, 0.8, 2.5] (targets 0, n = 5): the bug is <code>2*clamp(δ)*(|δ| &lt; 1)/n</code>, Huber×2 is <code>2*clamp(δ)/n</code>. Compare each with autograd using <code>torch.allclose</code>.", "done": "Your hand-written gradients are [0.0, −0.2, 0.08, 0.32, 0.0] and [−0.4, −0.2, 0.08, 0.32, 0.4], and <code>torch.allclose</code> prints True for both.", "hint": "Use <code>(d.abs() &lt; 1).float()</code> for the indicator. Detach <code>pred</code> first so your manual formula doesn't build a graph."},
+  "reflect": [
+    "Which prediction did you get wrong: the 0 gradient for 2.5, or the flat loss of 1.0 when every example is an outlier?",
+    "What couldn't you explain cleanly: why autograd is \"right\" and the code still wrong?",
+    "Which relationship is still fuzzy: zero local slope → zero gradient behind it, or zero gradient → a unit that never recovers?",
+    "Where in your own code might a clamp, a <code>max</code> or a threshold sit inside a loss?",
+    "What will you check first on the next card, when you write every backward step yourself?"
+  ],
+  "revisit": ["z2h-2-micrograd/automatic-backward", "z2h-5-batchnorm/saturated-tanh", "z2h-5-batchnorm/dead-neurons"],
+  "prereq": ["z2h-2-micrograd/chain-rule-by-hand"]
+}

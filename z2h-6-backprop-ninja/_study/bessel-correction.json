@@ -1,0 +1,63 @@
+{
+  "prime": {
+    "problem": "BatchNorm measures each neuron's variance on a batch of only 32 examples. Divide by n there and the estimate comes out low on average, and if training and test divide differently, the same input gives a slightly different output at test time than it did during training.",
+    "fits": "You just wrote <code>dbnvar</code> and saw <code>bnvar</code> divide by <code>n-1</code>. This digression explains that choice, building on the variance from the toolkit and the running statistics from the BatchNorm-at-inference card.",
+    "expect": ["biased (÷n) vs unbiased (÷(n − 1)) variance", "why the batch's own mean makes ÷n too small", "the running variance BatchNorm keeps for test time", "the train/test mismatch in the paper and <code>nn.BatchNorm1d</code>"],
+    "goal": "Explain why ÷n underestimates a small batch's variance by (n − 1)/n on average, and say which divisor BatchNorm uses in training and which it stores for test time."
+  },
+  "attend": [
+    "Why does measuring distances from the batch's own mean, rather than the true mean, shrink the sum of squares?",
+    "The lab's single batch gives 2.8750 and 2.9677, both below the truth of 3.0906. Why doesn't that alone prove the ÷(n − 1) version is biased?",
+    "Which job does <code>nn.BatchNorm1d</code> do with the ÷n variance, and which with the ÷(n − 1) one?",
+    "How does the size of the mismatch scale with batch size, and at what batch size would you stop caring?",
+    "Where does the choice of n − 1 reappear in the backward pass you are writing?"
+  ],
+  "core": {
+    "must": [
+      "The batch mean is computed from the same values → it is the centre that minimises their squared distances → Σ(xᵢ − x̄)² is smaller than around the true mean → ÷n underestimates by (n − 1)/n on average (lab: 0.9679 of the truth at n = 32, theory 0.9688) → ÷(n − 1) cancels that (0.9991)",
+      "The bias is 1/n of the truth → 50% at n = 2, 3.1% at n = 32, 0.1% at n = 1024 → it only matters for small batches, which is exactly what BatchNorm trains with",
+      "BatchNorm (paper and <code>nn.BatchNorm1d</code>) normalises with ÷n in training but stores ÷(n − 1) in <code>running_var</code> for test time → test-time variance is n/(n − 1) larger → on the lab's batch the output std drops from 1.0000 to 0.9842 → a train/test shift Karpathy calls a bug; his notebook uses ÷(n − 1) in both places"
+    ],
+    "elevated": [
+      "Choosing ÷(n − 1) in the forward pass → <code>dbndiff2 = 1.0/(n-1) * ones * dbnvar</code> in the atomic backward and an <code>n/(n-1)</code> factor in the one-line BatchNorm backward → using the wrong divisor makes <code>cmp</code> fail even though every other line is right"
+    ],
+    "reference": [
+      "<code>x.var(unbiased=False)</code> is ÷n; <code>torch.var</code> defaults to ÷(n − 1) (also spelled <code>correction=1</code>)",
+      "<code>nn.BatchNorm1d(momentum=0.1)</code> updates <code>running_var = 0.9·running_var + 0.1·batch_var</code>; the lab sets momentum 1.0 so it equals one batch",
+      "BatchNorm's eps = 1e-5, added to the variance before the square root",
+      "<code>nn.BatchNorm1d</code> in training mode refuses a batch of 1: \"Expected more than 1 value per channel when training\""
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, in 3–5 sentences: why does dividing by n underestimate a batch's variance, what does dividing by n − 1 fix, and what exactly is inconsistent about how BatchNorm uses the two? Or draw the chain from \"batch mean\" to \"output 1.6% quieter at test time\".",
+    "checklist": [
+      "the batch mean comes from the same values, so it minimises their squared distances",
+      "÷n is low by a factor (n − 1)/n on average; ÷(n − 1) is right on average",
+      "bias is about the average over many batches, not one batch",
+      "the gap is 1/n, so it matters at n = 32 (3.1%) and fades for large batches",
+      "BatchNorm uses ÷n to normalise in training and ÷(n − 1) for <code>running_var</code>, so test outputs are scaled by about √((n − 1)/n)",
+      "Karpathy's fix: ÷(n − 1) in both places"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why the variance of a small sample, divided by n, is on average smaller than the variance of the data it was drawn from.", "kind": "concept", "answer": ["the sample mean is fitted to the sample, so squared distances to it are the smallest possible", "distances to the true mean would be larger on average", "the expected shortfall is a factor (n − 1)/n"]},
+    {"q": "Walk through what <code>nn.BatchNorm1d</code> does with one batch of 32 in training mode, and then what it does with one example at test time. Which variance is used at each step?", "kind": "mechanism", "answer": ["training: batch mean and ÷n variance normalise the batch (output std exactly 1.0000 on the lab's batch)", "same step: the ÷(n − 1) variance (2.9677) goes into <code>running_var</code>", "test: normalise with <code>running_mean</code>/<code>running_var</code>, so the spread is divided by a variance 32/31 larger", "result on that batch: std 0.9842 instead of 1.0000"]},
+    {"q": "You train with batches of 1,024 and a colleague wants to patch PyTorch's BatchNorm to use ÷(n − 1) in training. Is it worth it? Would your answer change at batch size 4?", "kind": "tradeoff", "answer": ["at 1,024 the gap is 1/1024 ≈ 0.1%: not worth a custom layer", "at 4 the gap is 25% in variance, about 13% in std: worth it, or switch to a layer without batch statistics", "the cost is a non-standard layer the rest of the team must know about"]},
+    {"q": "The lab's single batch has var 2.8750 (÷n) and 2.9677 (÷(n − 1)), both under the true 3.0906. Does that show ÷(n − 1) is biased too? What measurement settles it?", "kind": "mechanism", "answer": ["no: one batch can land above or below the truth", "bias is the average error over many batches", "averaging 10,000 batches gives 0.9991 of the truth for ÷(n − 1) vs 0.9679 for ÷n"]}
+  ],
+  "compare": [
+    {"with": "z2h-5-batchnorm/batchnorm-inference", "q": "That card solves \"what do I use at test time when there is no batch?\" with running statistics or calibration. This card finds a flaw in how those statistics are estimated. What is fundamentally the same problem, and how does each approach fail?", "answer": ["both are about test-time statistics matching the ones used in training", "running stats and calibration answer <i>which data</i> to measure; Bessel answers <i>which divisor</i>", "running stats fail if the momentum average lags the weights; the divisor mismatch fails by a constant factor n/(n − 1) even with perfect data", "Karpathy's notebook calibrates after training and uses ÷(n − 1) in both places, fixing both"]},
+    {"with": "z2h-6-backprop-ninja/batchnorm-analytic-and-train", "q": "Where does the n − 1 you chose here show up in the one-line BatchNorm backward, and what would you change if you switched the forward pass to ÷n?", "answer": ["the one-liner has an <code>n/(n-1)</code> factor on the <code>bnraw*(dhpreact*bnraw).sum(0)</code> term", "it comes from differentiating the ÷(n − 1) variance", "with ÷n the factor becomes 1 and the check against autograd must use <code>unbiased=False</code> too"]}
+  ],
+  "predict": {"q": "Shrink the batch all the way to n = 1 and put it through BatchNorm in training mode. What does ÷n give for the variance, what does ÷(n − 1) give, and what does <code>nn.BatchNorm1d</code> do?", "answer": "÷n gives 0: the lone value <i>is</i> the mean, so every output collapses to the bias β and the input's information is erased. ÷(n − 1) divides 0 by 0, and <code>torch.randn(1).var()</code> returns <code>nan</code> with a degrees-of-freedom warning. <code>nn.BatchNorm1d</code> refuses: \"Expected more than 1 value per channel when training\" (measured on torch 2.14). Batch statistics need a batch, which is why test time uses running statistics."},
+  "apply": {"task": "Modify <code>labs/bessel-correction.py</code> to draw 10,000 batches of size n = 2, 8 and 32 instead of only 32, and print both averaged ratios (÷n and ÷(n − 1), divided by the full-data variance) next to (n − 1)/n. Before running, write down what you expect for n = 2.", "done": "Your ÷n ratios land near 0.5, 0.875 and 0.969 and the ÷(n − 1) ratios near 1. With <code>torch.Generator().manual_seed(0)</code> for the batch indices, the check run gave ÷n 0.4901 / 0.8722 / 0.9676 and ÷(n − 1) 0.9803 / 0.9968 / 0.9988.", "hint": "Replace the fixed 32 in <code>torch.randint(0, x_all.shape[0], (trials, 32))</code> with a loop variable, and keep <code>true_var</code> from the full data."},
+  "reflect": [
+    "Which prediction did you get wrong: the 0.9679 ratio, or what happens at n = 1?",
+    "What couldn't you explain cleanly: why the batch mean makes ÷n too small, or why one batch can't show bias?",
+    "Which relationship is still fuzzy: batch mean → smaller squared distances, or ÷n in training + ÷(n − 1) in <code>running_var</code> → quieter test outputs?",
+    "Would you change PyTorch's default in your own code, and at what batch size would you stop caring?",
+    "Before the next backward step, can you point to the line where n − 1 enters the gradient?"
+  ],
+  "revisit": ["z2h-1-toolkit/mean-variance-gaussian", "z2h-5-batchnorm/batchnorm-forward", "z2h-5-batchnorm/batchnorm-inference"],
+  "prereq": ["z2h-1-toolkit/mean-variance-gaussian", "z2h-5-batchnorm/batchnorm-inference"]
+}

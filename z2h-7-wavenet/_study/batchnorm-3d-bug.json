@@ -1,0 +1,62 @@
+{
+  "prime": {
+    "problem": "The tree-shaped net scored val 2.029, no better than the flat net's 2.027 at the same size. Part of the reason was a layer that ran without errors but computed the wrong statistics, because its code was written for 2-D input and was now fed 3-D.",
+    "fits": "You built <code>BatchNorm1d</code> for <code>(batch, channels)</code> input in the BatchNorm lecture, and <code>FlattenConsecutive</code> just added a position axis. This card makes the two agree before the network is scaled up.",
+    "expect": ["reducing over several dimensions (<code>dim=(0,1)</code>)", "per-channel vs per-position statistics", "broadcasting that hides a shape bug", "NLC vs NCL layouts"],
+    "goal": "Predict the shape of every BatchNorm buffer in the tree net, explain why the per-position version is wrong for this model, and add the <code>(0,1)</code> branch that fixes it."
+  },
+  "attend": [
+    "Why does <code>running_mean</code>, created as <code>zeros(68)</code>, end up with shape <code>(1, 4, 68)</code> without a single error?",
+    "What fact about the <code>Linear</code> weights justifies pooling the 4 positions into one statistic per channel?",
+    "How many numbers feed each mean before and after the fix, and why does that change the noise?",
+    "Why is the last BatchNorm layer (<code>layers[11]</code>) untouched by the bug?",
+    "Why does PyTorch's own <code>nn.BatchNorm1d</code> fail loudly on the same tensor, while the hand-written one fails silently?"
+  ],
+  "core": {
+    "must": [
+      "FlattenConsecutive keeps a position axis → BatchNorm gets <code>(32, 4, 68)</code> → <code>x.mean(0)</code> averages only over examples → a separate mean and variance for each of the 4 positions, each from 32 numbers",
+      "The same <code>Linear</code> weights produce every position → channel c means the same feature at each position → it should have one mean and variance → reduce over <code>(0,1)</code>: 68 statistics from 128 numbers each",
+      "<code>running_mean</code> starts as <code>(68,)</code> → the update broadcasts it against <code>(1, 4, 68)</code> → the buffer silently grows a position axis, and eval-time <code>x - running_mean</code> broadcasts too → no error anywhere, only a slightly worse loss (val 2.0265 vs 2.0202)"
+    ],
+    "elevated": [
+      "Karpathy's layer expects channels last (NLC); <code>nn.BatchNorm1d</code> expects them in the middle (NCL) and reduces over (0, 2) → feeding it <code>(32, 4, 68)</code> raises <code>running_mean should contain 4 elements not 68</code> → you transpose to <code>(32, 68, 4)</code> first, and the statistics then match the fixed version exactly"
+    ],
+    "reference": [
+      "the exact branch: <code>if x.ndim == 2: dim = 0</code> / <code>elif x.ndim == 3: dim = (0,1)</code>",
+      "the BatchNorm layers sit at <code>model.layers[3]</code>, <code>[7]</code>, <code>[11]</code> in the 3-level model",
+      "n_hidden 68 gives 22,397 parameters, the same with or without the fix",
+      "the lab's measured losses: buggy 1.9411 / 2.0265, fixed 1.9110 / 2.0202 (notebook 1.941 / 2.029 and 1.912 / 2.022)"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw one channel's <code>(32, 4)</code> slice of the BatchNorm input and circle the numbers that get averaged together in the buggy and the fixed version. Then write 3–4 sentences on why the fixed grouping is right and why the bug never raised an error.",
+    "checklist": [
+      "buggy: 4 groups of 32 (one per position); fixed: 1 group of 128",
+      "the positions share one <code>Linear</code>, so a channel is the same feature everywhere",
+      "the fix reduces over <code>(0,1)</code> and keeps 68 statistics instead of 272",
+      "broadcasting let <code>running_mean</code> grow from <code>(68,)</code> to <code>(1, 4, 68)</code> silently",
+      "effect: val 2.0265 → 2.0202 on torch 2.14, small and from one seed"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain what \"per-channel statistics\" means for a <code>(32, 4, 68)</code> input and why this model wants them rather than per-position ones.", "kind": "concept", "answer": ["one mean and one variance for each of the 68 channels", "computed over all 32 examples and all 4 positions", "because one set of <code>Linear</code> weights produced every position, so channel c is the same feature at every position"]},
+    {"q": "Walk through the first training step of the buggy layer on <code>(32, 4, 68)</code>: what shape is <code>xmean</code>, what happens to <code>running_mean</code>, and what happens at eval time?", "kind": "mechanism", "answer": ["<code>x.mean(0, keepdim=True)</code> is <code>(1, 4, 68)</code>", "<code>0.9 * zeros(68) + 0.1 * xmean</code> broadcasts to <code>(1, 4, 68)</code>, so the buffer changes shape", "at eval, <code>(x - running_mean)</code> still broadcasts against <code>(B, 4, 68)</code>, so each position gets its own stored stats with no error"]},
+    {"q": "Why does the second BatchNorm (<code>layers[7]</code>) gain less from the fix than the first, and the third not at all?", "kind": "mechanism", "answer": ["layers[7] sees <code>(32, 2, 68)</code>: 32 → 64 numbers per statistic, versus 32 → 128 for layers[3]", "layers[11] sees 2-D <code>(32, 68)</code> after the final squeeze, so <code>dim=0</code> was already right"]},
+    {"q": "You could either fix your hand-written layer or switch to <code>nn.BatchNorm1d</code>. What does each cost, and which failure would you rather hit?", "kind": "tradeoff", "answer": ["own layer: one extra branch, keeps NLC, but future shape mistakes stay silent", "<code>nn.BatchNorm1d</code>: needs a transpose to NCL (and back) around it, but a wrong layout raises an error", "a loud error is cheaper to find than a 0.006 loss difference"]}
+  ],
+  "compare": [
+    {"with": "z2h-7-wavenet/torch-nn-containers", "q": "That card's bug (sampling with BatchNorm left in training mode) and this one both live in BatchNorm. What is fundamentally different about how each fails, and which design choice causes each?", "answer": ["train-mode bug: a batch of 1 has no variance, so nan appears and sampling crashes (loud)", "3-D bug: wrong reduction dimensions, every shape still broadcasts, only the loss is a little worse (silent)", "cause of the first: BatchNorm's state and mode flag; cause of the second: code written for 2-D input and broadcasting that hides the mismatch"]},
+    {"with": "z2h-5-batchnorm/batchnorm-forward", "q": "In the BatchNorm lecture, the layer normalized <code>(32, 200)</code> over dimension 0. What stays the same when the input gets a position axis, and what has to change?", "answer": ["same: one mean and variance per channel, <code>gamma</code>/<code>beta</code> of size C, running stats for eval", "change: \"the batch\" now means every (example, position) pair, so the reduction becomes <code>(0,1)</code>", "a convolutional net's BatchNorm does the same: it pools over batch and spatial positions because the filter is shared"]}
+  ],
+  "predict": {"q": "Suppose you grow the net to block_size 16 with four levels of <code>FlattenConsecutive(2)</code> and keep the <b>buggy</b> layer. What shape does each BatchNorm's <code>running_mean</code> get, and from how many numbers is the first layer's fixed statistic computed?", "answer": "The inputs are <code>(32, 8, 68)</code>, <code>(32, 4, 68)</code>, <code>(32, 2, 68)</code> and then 2-D <code>(32, 68)</code>, so the buggy buffers are <code>(1, 8, 68)</code>, <code>(1, 4, 68)</code>, <code>(1, 2, 68)</code> and <code>(1, 68)</code>. The fixed first layer averages 32 × 8 = 256 numbers per channel. A deeper tree makes the bug worse at the bottom, where positions are most numerous."},
+  "apply": {"task": "Check that PyTorch's layer, used the right way round, computes the same statistics as your fix. Make <code>x = torch.randn(32, 4, 68)</code>. First call <code>nn.BatchNorm1d(68)(x)</code> and read the error. Then compare <code>x.mean((0,1))</code> with <code>x.transpose(1, 2).mean((0, 2))</code>, and run <code>nn.BatchNorm1d(68)</code> on the transposed tensor.", "done": "The first call raises <code>RuntimeError: running_mean should contain 4 elements not 68</code>; <code>torch.allclose</code> of the two means prints <code>True</code>; and after the transposed call the layer's <code>running_mean</code> has shape <code>(68,)</code>.", "hint": "<code>transpose(1, 2)</code> turns NLC <code>(32, 4, 68)</code> into NCL <code>(32, 68, 4)</code>, which is the layout PyTorch expects."},
+  "reflect": [
+    "Which prediction did you get wrong: the <code>(1, 4, 68)</code> shape, or the claim that nothing raises an error?",
+    "What couldn't you explain cleanly about why sharing weights across positions justifies sharing statistics?",
+    "Which relationship is still fuzzy: 3-D input → wrong reduction, or wrong reduction → silent broadcasting?",
+    "Would you trust a 0.006 val improvement from one seed? What would you run to find out?",
+    "Where else in your code could a buffer quietly change shape through broadcasting?"
+  ],
+  "revisit": ["z2h-5-batchnorm/batchnorm-forward", "z2h-5-batchnorm/batchnorm-inference", "z2h-1-toolkit/broadcasting-rules", "z2h-7-wavenet/flatten-consecutive"],
+  "prereq": ["z2h-7-wavenet/flatten-consecutive"]
+}

@@ -1,0 +1,65 @@
+{
+  "prime": {
+    "problem": "The output layer <code>logits = h @ W2 + b2</code> mixes whole matrices, so the scalar chain rule from micrograd doesn't say directly which matrix to multiply by which, or where the transpose goes. Get the order wrong and the code either crashes or, worse, runs and gives wrong gradients.",
+    "fits": "You've just backpropagated through the softmax chain down to <code>dlogits</code>, and seen that a broadcast forward becomes a sum backward. This card crosses the first linear layer and hands <code>dh</code> on to tanh and BatchNorm. Linear layer 1 on the embedding card reuses exactly the same three lines.",
+    "expect": ["the upstream gradient (<code>dD</code>, <code>dlogits</code>)", "the transpose and the inner dimension of a matmul", "<code>dA = dD @ B.T</code>, <code>dB = A.T @ dD</code>", "the bias gradient as a sum over the batch", "shape matching as a derivation shortcut"],
+    "goal": "Derive the matmul backward on a 2×2 example, then write <code>dh</code>, <code>dW2</code> and <code>db2</code> from the shapes alone and know when shapes are not enough."
+  },
+  "attend": [
+    "In the 2×2 example, why does <code>dL/da11</code> use a <i>row</i> of B rather than a column, and how does that turn into <code>B.T</code>?",
+    "Which dimension gets summed away in <code>h.T @ dlogits</code>, and what does that sum mean in terms of the 32 examples?",
+    "Why is <code>db2</code> a sum over dim 0 and not a copy of one row of <code>dlogits</code>?",
+    "Why does shape matching give exactly one answer for this layer, and what property of 32, 64 and 27 makes that true?",
+    "How many multiply-adds does each backward matmul cost compared with the forward matmul?"
+  ],
+  "core": {
+    "must": [
+      "a<sub>ij</sub> multiplies row j of B in every entry of row i of D → the chain rule sums dD<sub>ik</sub>·B<sub>jk</sub> over k → that is row i of dD dotted with row j of B → <code>dA = dD @ B.T</code> (and by symmetry <code>dB = A.T @ dD</code>)",
+      "Every <code>dX</code> has the shape of <code>X</code> → only one way to combine <code>dlogits</code> (32,27) with <code>W2</code> (64,27) into (32,64) → the 27s must meet, so W2 is transposed → <code>dh = dlogits @ W2.T</code> falls out without calculus",
+      "<code>W2</code> and <code>b2</code> are reused by all 32 rows of the batch → a forward reuse becomes a backward sum → <code>dW2</code> contracts over the 32 examples (<code>h.T @ dlogits</code>) and <code>db2 = dlogits.sum(0)</code>",
+      "Shape matching only picks the arrangement when the dimensions differ → equal dimensions (a square weight, or the 2×2 example) let a wrong formula have the right shape → it runs silently, so derive or <code>cmp</code>"
+    ],
+    "elevated": [
+      "Each backward matmul does the same work as the forward one (32·64·27 = 55,296 multiply-adds) → a linear layer's backward pass costs about twice its forward pass, and no Jacobian (1,769,472 numbers for dlogits/dh) is ever built"
+    ],
+    "reference": [
+      "the notebook's variable names <code>dh</code>, <code>dW2</code>, <code>db2</code>",
+      "the exact PyTorch error text for mismatched shapes (<code>mat1 and mat2 shapes cannot be multiplied</code>)",
+      "the lab's trick <code>L = (D * dD).sum()</code> to inject an arbitrary upstream gradient",
+      "the toy matrices A, B, c, dD used in the 2×2 example"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw <code>logits = h @ W2 + b2</code> with every shape, then write the three backward lines and, next to each, which dimension is summed away and why. Or explain in 3–5 sentences where the transpose in <code>dh = dlogits @ W2.T</code> comes from.",
+    "checklist": [
+      "each gradient has the shape of its tensor: dh (32,64), dW2 (64,27), db2 (27,)",
+      "<code>dh = dlogits @ W2.T</code>: sums over the 27 logits",
+      "<code>dW2 = h.T @ dlogits</code>: sums over the 32 examples, because W2 is shared by every row",
+      "<code>db2 = dlogits.sum(0)</code>: b2 was broadcast down the batch",
+      "the transpose appears because each input entry is dotted with a <i>row</i> of the other matrix (the 2×2 derivation)",
+      "shape matching works only when the dimensions are all different"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain, without quoting the formula, why the gradient of the <i>left</i> matrix in a matmul ends up multiplied by the transpose of the <i>right</i> one.", "kind": "concept", "answer": ["a<sub>ij</sub> contributes to every entry D<sub>ik</sub> in row i, each time multiplied by B<sub>jk</sub>", "the chain rule adds those uses: Σ<sub>k</sub> dD<sub>ik</sub>·B<sub>jk</sub>", "that pairs row i of dD with row j of B, which is what <code>dD @ B.T</code> computes"]},
+    {"q": "Walk through deriving <code>dW2</code> from shapes alone: what must its shape be, which two tensors can you use, and how do you arrange them?", "kind": "mechanism", "answer": ["dW2 must be (64,27), the shape of W2", "available: h (32,64) and dlogits (32,27)", "the shared 32 must be the inner dimension, so transpose h: (64,32) @ (32,27) = <code>h.T @ dlogits</code>", "summing over the 32 is adding up every example's contribution to the shared weight"]},
+    {"q": "With the 2×2 example A=[[1,2],[3,4]], B=[[5,6],[7,8]], dD=[[1,0],[2,−1]], compute <code>dA[2,1]</code> and <code>dc</code> by hand.", "kind": "mechanism", "answer": ["dA[2,1] = dD21·b11 + dD22·b12 = 2·5 + (−1)·6 = 4", "dc = dD.sum(0) = [1+2, 0−1] = [3, −1]"]},
+    {"q": "You're backpropagating through a layer whose weight is 64×64 with a batch of 64. Can you still rely on shape matching? What would you do instead, and what does it cost?", "kind": "tradeoff", "answer": ["no: <code>dD @ W</code> and <code>dD @ W.T</code> both have the right shape, and so do several other arrangements", "derive it (the 2×2 argument generalises) or check each candidate with <code>cmp</code> against autograd", "the cost is a derivation or one extra autograd run, which is cheap next to a silently wrong gradient"]}
+  ],
+  "compare": [
+    {"with": "z2h-6-backprop-ninja/sum-broadcast-duality", "q": "<code>db2 = dlogits.sum(0)</code> and <code>dW2 = h.T @ dlogits</code> both add up over the batch. How is the bias case an instance of the sum/broadcast duality, and how does the matmul hide the same sum inside its inner dimension?", "answer": ["b2 is broadcast (copied) to 32 rows forward, so its gradient sums the 32 rows backward", "W2 is also reused by all 32 rows; the matmul <code>h.T @ dlogits</code> performs that sum as its inner-dimension contraction", "both come from the same rule: a value used many times collects the sum of its gradients", "failure mode for both: forget the sum (or the transpose) and you get a shape error or a per-example gradient"]},
+    {"with": "z2h-1-toolkit/matmul-by-shapes", "q": "The toolkit card used shapes to check a <i>forward</i> matmul; this card uses them to <i>choose</i> a backward formula. What extra rule makes the backward use possible, and where does it stop working?", "answer": ["the extra rule: every gradient has the same shape as the tensor it belongs to", "forward: shapes confirm an expression is valid; backward: they also pin down the only valid arrangement", "stops working when dimensions coincide, because then several arrangements fit"]},
+    {"with": "z2h-6-backprop-ninja/tanh-bn-atomic", "q": "Crossing the linear layer takes three lines found from shapes; crossing tanh needs <code>(1 - h**2) * dh</code>. Why can't shapes derive the tanh line, and what kind of knowledge does it need instead?", "answer": ["tanh is elementwise: input, output and gradient all have the same shape, so shapes don't constrain anything", "you need the local derivative of tanh (1 − tanh²), which is calculus, not bookkeeping", "matmul backward is determined by structure; elementwise backward is determined by the function"]}
+  ],
+  "predict": {"q": "Suppose <code>n_hidden</code> were 27 instead of 64, so <code>W2</code> is a square 27×27 matrix. You mistakenly write <code>dh = dlogits @ W2</code> (no transpose). What happens when it runs, and what catches the mistake?", "answer": "It runs without any error: (32,27) @ (27,27) gives (32,27), which is exactly <code>h.shape</code>. The values are wrong unless W2 happens to be symmetric. Shape matching can't see it, so only the derivation or <code>cmp</code> (exact: False, approximate: False) catches it. That's why Karpathy keeps the dimensions distinct and checks every line."},
+  "apply": {"task": "Cross linear layer 1 the same way: <code>hprebn = embcat @ W1 + b1</code>, with <code>embcat</code> (32,30), <code>W1</code> (30,64), <code>b1</code> (64,), and <code>dhprebn</code> (32,64) as the upstream gradient. Write <code>dembcat</code>, <code>dW1</code> and <code>db1</code> from shapes alone, writing each shape next to its line, then <code>cmp</code> them in the notebook (or run <code>labs/embedding-backward.py</code>).", "done": "<code>embcat</code>, <code>W1</code> and <code>b1</code> each print <code>exact: True | maxdiff: 0.0</code>, as measured on the M3.", "hint": "dembcat must be (32,30), so the 64s must meet. dW1 must be (30,64), so the 32 examples must meet. b1 was broadcast down the 32 rows."},
+  "reflect": [
+    "Which prediction did you get wrong: the row of B in the 2×2 example, or the silent square-matrix bug?",
+    "What couldn't you explain cleanly: why the transpose appears, or why the batch dimension gets summed?",
+    "Which relationship is still fuzzy: reuse across the batch → sum in the backward pass, or sum → the inner dimension of <code>h.T @ dlogits</code>?",
+    "Would you now trust a formula you found only by shapes, and what would make you run <code>cmp</code> anyway?",
+    "Before the tanh card, can you rewrite all three lines for this layer from scratch in under a minute?"
+  ],
+  "revisit": ["z2h-1-toolkit/matmul-by-shapes", "z2h-6-backprop-ninja/sum-broadcast-duality", "z2h-2-micrograd/chain-rule-by-hand"],
+  "prereq": ["z2h-6-backprop-ninja/chunked-forward-and-cmp", "z2h-1-toolkit/matmul-by-shapes"]
+}

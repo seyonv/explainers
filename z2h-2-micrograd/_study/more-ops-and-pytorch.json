@@ -1,0 +1,63 @@
+{
+  "prime": {
+    "problem": "Your <code>Value</code> only knows <code>+</code>, <code>*</code> and <code>tanh</code>. Real models need division, subtraction, exp and powers, and <code>2 * a</code> or <code>a + 1</code> crash outright. And so far nothing independent has confirmed that your gradients are right.",
+    "fits": "It extends the engine you automated with <code>backward()</code> and the <code>+=</code> fix. It reuses the neuron (o = 0.7071) so you can compare numbers you already know, before the MLP card puts the engine to work.",
+    "expect": ["a local derivative per op (exp, power)", "composite ops built from primitives (<code>/</code>, <code>-</code>, tanh)", "<code>__radd__</code>/<code>__rmul__</code> and wrapping plain numbers", "PyTorch tensors, <code>requires_grad</code>, <code>.double()</code>", "float32 vs float64"],
+    "goal": "Add any op to the engine by giving only its forward and local derivative, and verify your gradients against PyTorch, explaining any tiny mismatch."
+  },
+  "attend": [
+    "Why do <code>exp</code> and <code>**</code> need their own <code>_backward</code>, while <code>/</code> and <code>-</code> need none?",
+    "When the tanh graph grows from 10 to 18 nodes, which rule guarantees the leaf grads don't change?",
+    "In the broken-up tanh, why does node <code>e</code> receive gradient from two places, and which earlier fix makes that come out right?",
+    "What does <code>2 * a</code> do in Python when <code>int</code> doesn't know about <code>Value</code>?",
+    "Where exactly do PyTorch's red digits (…6904 instead of …7811) come from, and what removes them?"
+  ],
+  "core": {
+    "must": [
+      "Backprop only ever needs each node's local derivative → an op is fully defined by its forward plus that derivative → so <code>/</code>, <code>-</code> and even tanh can be composed from <code>*</code>, <code>+</code>, <code>**</code> and <code>exp</code> with no new backward code",
+      "Chain rule multiplies local derivatives along a path and sums over paths → splitting a function into smaller ops just factors the same product differently → identical grads (x1 −1.5, w1 1.0, x2 0.5, w2 0.0) with 18 nodes instead of 10",
+      "A node used twice (e feeds e−1 and e+1) → its grad is a sum of paths (0.14645 + (−0.10355) = 0.0429) → composite ops silently depend on <code>+=</code> accumulation being right",
+      "<code>torch.Tensor([...])</code> stores float32 first → b loses digits (6.881373405…) before <code>.double()</code> → PyTorch's grads differ in the 7th decimal → build in float64 from the start and it matches micrograd"
+    ],
+    "elevated": [
+      "Granularity is a cost choice: more primitive ops → fewer hand-written derivatives but more nodes to store and walk; one fused op (PyTorch's <code>tanh</code>, backward <code>a*(1-b*b)</code>) → shorter graph and faster backward"
+    ],
+    "reference": [
+      "the dunder names: <code>__rmul__</code>, <code>__radd__</code>, <code>__neg__</code>, <code>__sub__</code>, <code>__truediv__</code>, <code>__rtruediv__</code>",
+      "<code>other = other if isinstance(other, Value) else Value(other)</code>",
+      "<code>.item()</code>, <code>.data</code>, <code>.grad</code> on a tensor; <code>requires_grad</code> defaults to <code>False</code>",
+      "micrograd's <code>__pow__</code> asserts an int/float exponent"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, explain in 3–5 sentences how you'd add a new operation to micrograd, why the broken-up tanh gives the same gradients, and why PyTorch's numbers differ slightly. Or draw the path from n to o through exp and mark where two gradients add.",
+    "checklist": [
+      "a new op needs a forward value and a local derivative that <code>_backward</code> multiplies by <code>out.grad</code>",
+      "division and subtraction are compositions (<code>a * b**-1</code>, <code>a + (-b)</code>), so they need no new derivative",
+      "the chain rule makes the result independent of how finely you split: same leaf grads, more nodes",
+      "a node reused inside the composition gets the sum of its paths (<code>+=</code>)",
+      "PyTorch agrees; the 1e-7 differences come from float32 rounding in <code>torch.Tensor</code>, not from autograd"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why micrograd needs a new <code>_backward</code> for <code>exp</code> but not for <code>a / b</code>.", "kind": "concept", "answer": ["exp is a new function with its own local derivative (e<sup>x</sup> = <code>out.data</code>)", "<code>a / b</code> is rewritten as <code>a * b**-1</code>, and <code>*</code> and <code>**</code> already know their derivatives", "backprop only needs local derivatives at each node, so composition inherits them"]},
+    {"q": "Walk through what happens, in Python and in the graph, when you evaluate <code>2 * n</code> and then <code>e - 1</code>.", "kind": "mechanism", "answer": ["<code>int.__mul__</code> fails, so Python calls <code>n.__rmul__(2)</code>, which does <code>n * 2</code>", "<code>__mul__</code> wraps 2 in a constant <code>Value</code> and makes a <code>*</code> node", "<code>e - 1</code> becomes <code>e + (-1)</code>: another hidden constant Value and a <code>+</code> node", "those hidden constants are why the graph has 18 nodes, not 15"]},
+    {"q": "Backward through <code>(e - 1)/(e + 1)</code>: which two contributions reach <code>e</code>, and what do they add up to?", "kind": "mechanism", "answer": ["through e−1: 0.14645 (= 1/(e+1))", "through e+1: −0.10355 (= −(e−1)/(e+1)²)", "sum 0.0429, times de/dn = 11.6569 gives n.grad = 0.5 = 1 − o²"]},
+    {"q": "You're adding GELU to your engine. Would you compose it from existing ops or write it as one op with its own derivative? What does each choice cost?", "kind": "tradeoff", "answer": ["composing: no new derivative to get wrong, but more nodes, more memory and a slower backward", "one op: shorter graph and faster, but you must derive and code the local derivative correctly", "either way, check the gradients against PyTorch"]}
+  ],
+  "compare": [
+    {"with": "z2h-2-micrograd/a-neuron", "q": "There you pushed the tanh gradient back with one local derivative, 1 − o². Here tanh is a chain of five small ops. What is fundamentally the same, what design choice differs, and how would each one fail if you made a mistake?", "answer": ["same: the product of local derivatives from o to n is 0.5 either way", "one op: the whole derivative is one formula, and a typo there breaks every grad below it", "composed: each piece is simple, but a missing <code>+=</code> on the reused node <code>e</code> would silently give a wrong n.grad"]},
+    {"with": "z2h-2-micrograd/accumulate-gradients", "q": "The <code>+=</code> card used a toy <code>b = a + a</code>. Why does the broken-up tanh make the same bug matter in a realistic setting?", "answer": ["composite ops reuse intermediate nodes (e feeds two ops) without you writing it that way on purpose", "with <code>=</code>, e.grad would keep only one path (0.14645 or −0.10355) instead of 0.0429", "the grads would still look plausible, which is why the PyTorch cross-check is worth running"]}
+  ],
+  "predict": {"q": "You try yet another form, <code>o = 2/(1 + (-2*n).exp()) - 1</code> (tanh written with a sigmoid), using exactly the ops on this card. What happens when you run it, and once it runs, will x1.grad still be −1.5?", "answer": "First it crashes: <code>TypeError: unsupported operand type(s) for /: 'int' and 'Value'</code>, because <code>2 / Value</code> needs <code>__rtruediv__</code>, which the card's class doesn't have. Add <code>__rtruediv__</code> (<code>other * self**-1</code>) and it runs: o = 0.7071067811865475, x1.grad = −1.4999999999999996, with 19 nodes. It's the same gradient up to float64 rounding in the last digits."},
+  "apply": {"task": "Add <code>__rtruediv__</code> to your <code>Value</code>, then build the neuron with <code>o = 2/(1 + (-2*n).exp()) - 1</code> and run <code>o.backward()</code>. Count the graph's nodes by walking <code>_prev</code> from o. Then feed the same neuron to PyTorch with <code>torch.tensor([...], dtype=torch.double, requires_grad=True)</code> instead of <code>torch.Tensor(...).double()</code>.", "done": "Your micrograd run prints o ≈ 0.7071067811865475, x1.grad ≈ −1.4999999999999996, w1.grad ≈ 0.9999999999999997 and 19 nodes. The float64 PyTorch run gives x1.grad −1.4999999999999998 (no 1e-7 drift).", "hint": "<code>2/x</code> calls <code>x.__rtruediv__(2)</code>. Without it you'll see <code>TypeError: unsupported operand type(s) for /: 'int' and 'Value'</code>."},
+  "reflect": [
+    "Which prediction did you get wrong: that the grads stay the same after splitting tanh, or that the sigmoid form crashes first?",
+    "What couldn't you explain cleanly: why <code>/</code> needs no new derivative, or why <code>e</code> gets two gradient contributions?",
+    "Which relationship is still fuzzy: local derivative → composed op, or composed op → reused node → <code>+=</code>?",
+    "Could you now explain to someone why PyTorch's …6904 isn't an autograd error?",
+    "Before the MLP card, do you trust your engine enough to train with it? What check would you run first?"
+  ],
+  "revisit": ["z2h-2-micrograd/a-neuron", "z2h-2-micrograd/accumulate-gradients", "z2h-1-toolkit/exp-and-log"],
+  "prereq": ["z2h-2-micrograd/automatic-backward"]
+}

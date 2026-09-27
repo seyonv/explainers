@@ -1,0 +1,62 @@
+{
+  "prime": {
+    "problem": "You can't reason about why an LLM stumbles on arithmetic, spelling, Korean or Python until you've seen what it actually receives. It isn't letters: it's a list of integer ids for chunks that often cut words and numbers in surprising places.",
+    "fits": "The GPT lecture fed the model one character per token from a 65-character vocabulary. This card looks at real tokenizers (GPT-2's and GPT-4's) before the next cards build one from scratch.",
+    "expect": ["token and token id", "vocabulary size (50,257 vs 100,277)", "the leading space inside a token", "tokens per character as a cost"],
+    "goal": "Predict roughly how a GPT tokenizer will cut a piece of text, and explain why numbers, capitalisation, non-English text and indentation behave strangely."
+  },
+  "attend": [
+    "Why does <code>␣is</code> get a different id from <code>is</code>, and what does that force the model to learn?",
+    "Why is <code>127</code> one token while <code>677</code> is two, and what does that do to arithmetic?",
+    "Where does the Korean paragraph's cost come from, given that the tokenizer can still encode it?",
+    "What changed between gpt2 and cl100k_base that cut Python from 108 to 71 tokens?",
+    "Which paragraph got <i>worse</i> with the bigger vocabulary, and why?"
+  ],
+  "core": {
+    "must": [
+      "The tokenizer learned its chunks from how often text appeared in its own training data → common English words and <code>␣word</code> forms became single tokens → rare words, other scripts and odd digit runs fall back to small pieces → the same meaning costs very different numbers of tokens (English 20 vs Korean 132 in gpt2)",
+      "Case, a leading space and position each produce a different chunk → <code>E|gg</code>, <code>␣Egg</code>, <code>egg</code>, <code>EG|G</code> are unrelated ids → the model must learn from data that they mean the same thing, and it can't see letters inside a token",
+      "Numbers are chunked by what was frequent, not by place value → <code>␣6|77</code>, <code>12|75</code>, <code>␣8|041</code> differ from number to number → the model gets no consistent digit columns → arithmetic is harder",
+      "More tokens per text → the fixed context holds less text and every step costs more compute → a bigger vocabulary (cl100k: 300 → 185) packs more text per token, but at the price of a bigger embedding table and output layer"
+    ],
+    "elevated": [
+      "gpt2 makes each indent space its own token (220) while cl100k groups runs of spaces (7 spaces = 286) → FizzBuzz drops from 108 to 71 tokens → GPT-4 fits more code into its context"
+    ],
+    "reference": [
+      "the exact ids: <code>␣is</code> = 318, <code>␣the</code> = 262, <code>␣Egg</code> = 14562, space = 220",
+      "<code>tiktoken.get_encoding('gpt2')</code> / <code>'cl100k_base'</code>, <code>.encode()</code>, <code>.decode()</code>",
+      "the tiktokenizer web app and its colour-per-token display",
+      "n_vocab values 50,257 and 100,277"
+    ]
+  },
+  "compress": {
+    "prompt": "Without scrolling up, explain in 3–5 sentences what a model actually receives when you type a paragraph, and why the number of tokens isn't simply proportional to the number of characters.",
+    "checklist": [
+      "text is cut into chunks (tokens), and each chunk becomes an integer id",
+      "the space before a word is part of its token; case and position change the chunk",
+      "chunk boundaries come from frequency in the tokenizer's training data, so English is dense and Korean or indentation is not",
+      "numbers split inconsistently, which hurts arithmetic",
+      "a bigger vocabulary (gpt2 → cl100k) means fewer tokens, but a bigger model"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why a model's token count, not its character count, sets how much text fits in its context and how much each request costs.", "kind": "concept", "answer": ["the model processes one position per token, and the context length is counted in tokens", "the same characters can cost very different token counts (Korean 72 chars → 132 gpt2 tokens vs English 76 → 20)", "so compute and context scale with tokens"]},
+    {"q": "Walk through what gpt2 does with the line <code>        print(\"FizzBuzz\")</code> (8 spaces), and what cl100k_base does differently.", "kind": "mechanism", "answer": ["gpt2: seven separate space tokens (220), then the 8th space joins <code>␣print</code>", "then <code>(\"</code>, <code>F</code>, <code>izz</code>, <code>Buzz</code>, <code>\")</code>", "cl100k: one token for 7 spaces (286), then <code>␣print</code>, so the indentation costs 1 token instead of 7"]},
+    {"q": "You could halve token counts again with a vocabulary of 200k. What do you gain, what do you pay, and which paragraph of the example string shows that more vocabulary isn't a pure win?", "kind": "tradeoff", "answer": ["gain: more text per token, so more fits in the context and fewer steps per text", "pay: a bigger embedding table and output layer, and rarer tokens get less training each", "the arithmetic line went from 16 to 18 tokens with cl100k"]}
+  ],
+  "compare": [
+    {"with": "z2h-8-gpt/char-tokenizer-split", "q": "The GPT lecture's character tokenizer vs GPT-2's tokenizer: what's fundamentally different about the vocabulary, which design choice causes it, and how does each one fail?", "answer": ["characters: 65 symbols, taken from one text, one token per character", "gpt2: 50,257 chunks learned from a large corpus, many characters per token", "character-level fails on any character outside the 65, and it makes sequences long", "chunk-level fails in stranger ways: split numbers, case-dependent ids, costly non-English text"]},
+    {"with": "z2h-9-tokenizer/regex-presplit", "q": "This card shows cl100k splitting <code>1275</code> as <code>127|5</code> while gpt2 gives <code>12|75</code>. What rule change causes that, and what does each rule get wrong?", "answer": ["GPT-4's pre-split pattern takes digits in runs of at most 3 and separates the space before them", "gpt2 lets frequency decide, so splits vary from number to number", "cl100k is consistent from the left but still doesn't line digits up by place value"]}
+  ],
+  "predict": {"q": "The same number, <code>6773</code>, appears at the start of a line in one prompt and after a space in another. Does gpt2 tokenize it the same way both times? Commit to the pieces before you check.", "answer": "No. At the start of a line it's <code>67</code> + <code>73</code>. After a space it's <code>␣6</code> + <code>773</code>. The leading space changes which chunks exist, so even the split point moves. The quirks card measures this."},
+  "apply": {"task": "Take the FizzBuzz code from the example string (from <code>for i in</code> to the end). Before running anything, predict the gpt2 and cl100k_base token counts if you re-indent it with tabs (one tab per 4 spaces), and again with 2 spaces per level. Then measure all three versions with tiktoken.", "done": "Your measurements read: 4 spaces 108 / 71, tabs 80 / 67, 2 spaces 84 / 71 (gpt2 / cl100k). Explain why cl100k barely moves while gpt2 drops by about a quarter.", "hint": "In gpt2 each indent space is its own token (220), and a tab is one token (197). cl100k already groups a run of spaces into one token."},
+  "reflect": [
+    "Which prediction did you get wrong: the 7 tokens for <code>127 + 677 = 804</code>, or the 6773 split?",
+    "What couldn't you explain cleanly: why the space goes <i>before</i> the word, or why Korean is so expensive?",
+    "Which relationship is still fuzzy: training-data frequency → which chunks exist, or chunks → model behaviour (arithmetic, spelling)?",
+    "Would you now check the tokenizer before blaming a model for an odd answer?",
+    "What do you want the next cards to explain about <i>how</i> the chunks get chosen?"
+  ],
+  "revisit": ["z2h-8-gpt/char-tokenizer-split", "z2h-9-tokenizer/why-tokenization"],
+  "prereq": ["z2h-9-tokenizer/why-tokenization"]
+}

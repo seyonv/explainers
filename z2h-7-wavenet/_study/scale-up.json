@@ -1,0 +1,64 @@
+{
+  "prime": {
+    "problem": "After the BatchNorm fix the tree net sits at val 2.0202, barely better than the flat 8-character net. At 22K parameters each tree node has only 68 numbers to describe a pair of characters. Unless you give it more room, you can't tell whether the tree is a dead end or just starved.",
+    "fits": "This is the last training run of the lecture. It takes the fixed hierarchical net from the <i>BatchNorm bug</i> card, leaves its structure alone, and only widens <code>n_embd</code> and <code>n_hidden</code>. It also closes the performance log that began with the 3-character baseline.",
+    "expect": ["<code>n_embd</code> and <code>n_hidden</code> as width knobs", "parameter count growing as <code>n_hidden</code>²", "the performance log, 2.1065 → 1.9937", "the train–val gap", "the challenge to beat 1.993"],
+    "goal": "Predict where a width change puts the parameters, read the whole performance log honestly (including what it can't prove), and train the 76,579-parameter model to val 1.9937 yourself."
+  },
+  "attend": [
+    "Which two layers hold 85.6% of the 76,579 parameters, and why do they grow with the square of <code>n_hidden</code> while the embedding grows only linearly?",
+    "Raising <code>n_embd</code> from 10 to 24 adds under 4,000 parameters. Why does it cost so little compared with raising <code>n_hidden</code>?",
+    "Train falls by 0.142 but val by only 0.0265. What does the widening gap say about what the extra parameters are being spent on?",
+    "The flat net was never scaled to 76K. What exactly can the 1.9937 result not tell you about the tree structure?",
+    "Why does the 20,000-step quick run stay above 2.0 when the full run gets below it?"
+  ],
+  "core": {
+    "must": [
+      "Levels 2 and 3 map 2·n_hidden inputs to n_hidden outputs → each is a (2h × h) matrix → parameters grow as h² → going 68 → 128 multiplies them by about 3.54×, and they end up as 85.6% of the model",
+      "More width → more capacity to fit the training names → train drops much further than val (−0.142 vs −0.0265) → the gap doubles to 0.225 → the gains start to go into memorising rather than generalising",
+      "Only one run per row, and the flat net was never widened → the log can't separate \"tree beats flat\" from \"more parameters beat fewer\" → a fair claim needs equal-parameter controls, several seeds and a harness",
+      "Training length matters as much as size → the 20k-step quick run of the 76K net stops at val 2.0478 (the 22K tree's quick run: 2.097), above every 22K net's full 200k-step val → compare two models only at the same number of steps and the same lr schedule"
+    ],
+    "elevated": [
+      "BatchNorm must be switched to eval mode (<code>training = False</code>) before <code>split_loss</code> → otherwise train/val are computed with batch statistics of the whole split and sampling one context at a time breaks, so the 1.9937 would not be how the model scores when it predicts one name at a time"
+    ],
+    "reference": [
+      "the exact settings: <code>n_embd = 24</code>, <code>n_hidden = 128</code>, 200,000 steps, batch 32, lr 0.1 then 0.01 from step 150,000",
+      "the last layer's weights are scaled by 0.1 at init (<code>model.layers[-1].weight *= 0.1</code>)",
+      "the per-layer counts 648 / 6,144 / 768 / 32,768 / 32,768 / 3,483",
+      "the notebook's cells: 9 (model), 10 (loop), 14 (performance log), 15 (sampling)",
+      "the 20 sampled names (arlij., chetta., heago., …)"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, explain in 3–5 sentences what changed between the 22K and the 76K tree net, where the new parameters went, and what the train and val numbers do and don't prove. Or draw the parameter formula and circle the term that dominates.",
+    "checklist": [
+      "same tree (three FlattenConsecutive(2) levels), only n_embd 10 → 24 and n_hidden 68 → 128",
+      "the middle levels are (2h × h) matrices, so parameters grow as h²; they are most of the model",
+      "val 2.0202 → 1.9937, the first result below 2.0; train 1.9110 → 1.7690",
+      "the train–val gap doubles, so the model is starting to memorise",
+      "single runs and no scaled-up flat control, so the log can't say whether the tree or the size did the work"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why widening a model can lower val loss, and why the same widening lowers train loss even more.", "kind": "concept", "answer": ["more parameters = more capacity to represent pairs, quads and 8-character contexts", "train loss measures fit to seen names, so extra capacity shows up there first and in full", "val only improves as far as the extra capacity captures patterns that carry over to new names; the rest shows up as a bigger gap"]},
+    {"q": "Walk through where the 76,579 parameters live, level by level, and show the arithmetic for one middle level.", "kind": "mechanism", "answer": ["embedding 27 × 24 = 648", "level 1: 48 × 128 = 6,144 (no bias)", "levels 2 and 3: 256 × 128 = 32,768 each", "three BatchNorms: 3 × 2 × 128 = 768", "output: 128 × 27 + 27 = 3,483; total 76,579"]},
+    {"q": "You have the budget for one more experiment to test whether the tree structure itself helps. Which one do you run, and what does it cost you?", "kind": "tradeoff", "answer": ["a flat block_size-8 MLP widened to about the same parameter count (n_hidden 700 gives 76,597)", "same steps, same lr schedule, ideally several seeds for both", "costs at least one more full 200k-step run per seed (about 2.5 min each on the M3)", "if the flat net matches 1.9937, the gain was size, not structure"]},
+    {"q": "Your quick 20k-step run of the 76K net gives val 2.0478, worse than the 22K net's full-run 2.0202. Is scaling up a failure?", "kind": "tradeoff", "answer": ["no: the comparison mixes model size with training length", "a wider model needs more steps to use its capacity; the full run gets 1.9937", "compare models at the same number of steps (and the same schedule)"]}
+  ],
+  "compare": [
+    {"with": "z2h-7-wavenet/more-context-baseline", "q": "Both cards buy a lower val loss by adding parameters. The block_size card widens the input, and this card widens the hidden layers. Where do the new parameters go in each, what does each do to the train–val gap, and what does each leave unanswered?", "answer": ["block_size 3 → 8: +10,000 weights, all in the first Linear; val 2.1065 → 2.0342, gap 0.048 → 0.118", "scale-up: +54,182, mostly in the middle tree levels (h²); val 2.0202 → 1.9937, gap 0.109 → 0.225", "both widen the gap, so both push toward memorisation", "the first leaves open whether a smarter structure helps; this one leaves open whether the structure or the size did the work"]},
+    {"with": "z2h-7-wavenet/batchnorm-3d-bug", "q": "The BatchNorm fix and the scale-up are both single-run improvements (0.0063 and 0.0265 on val). What makes one a bug fix you'd keep regardless of the number, and the other a result you'd want to re-check?", "answer": ["the fix makes BatchNorm compute what it is supposed to (68 channel statistics from 32 × 4 numbers); it is correct whatever the loss says", "the scale-up is a hyperparameter choice whose value is judged only by the val number", "a single run can't separate a 0.0265 gain from seed noise and from the effect of size alone", "keep the fix on principle; confirm the scale-up with controls and seeds"]}
+  ],
+  "predict": {"q": "You double <code>n_hidden</code> again, to 256, and keep <code>n_embd = 24</code> and the same 200,000 steps. About how many parameters does the model have, and what do you expect to happen to train loss, val loss and the gap?", "answer": "283,555 parameters (computed with the lab's model code), 3.7× more, and the two middle levels are now 92% of the model. Expect train to drop again and the gap to widen further. Val could go either way: the doubled gap at 76K suggests extra width is already going partly into memorisation. This one isn't measured on the card, so run it before you believe any answer, including this one."},
+  "apply": {"task": "Build Karpathy's honest control: a <i>flat</i> block_size-8 MLP (<code>Embedding → Flatten → Linear → BatchNorm1d → Tanh → Linear</code>, <code>n_embd = 10</code>) widened to match the 76K tree. First solve P = 27·10 + 80h + 2h + 27h + 27 = 76,579 for the hidden width h by hand, then build it and train it with the same 200k-step schedule (start with a quick 20k-step run to check it works).", "done": "Your hand solution gives h ≈ 700, the built model prints 76,597 parameters, and you've written its val loss next to the tree's 1.9937 with one sentence on what the comparison shows.", "hint": "The parameter count is 297 + 109h, so h = (76,579 − 297) / 109 ≈ 699.8. In the lab code, <code>flat_model(8, n_embd=10, n_hidden=700)</code> builds it."},
+  "reflect": [
+    "Which prediction did you get wrong: how far train fell compared with val, or where the new parameters went?",
+    "What couldn't you explain cleanly: why the middle levels grow as h², or why a bigger gap is a warning?",
+    "Which relationship is still fuzzy: more width → lower train loss, or lower train loss → lower val loss?",
+    "If a friend said \"the tree architecture got val below 2.0\", what would you say the log actually supports?",
+    "Which idea from the challenge list would you try first to beat 1.993, and what control would you run next to it?"
+  ],
+  "revisit": ["z2h-7-wavenet/flatten-consecutive", "z2h-7-wavenet/batchnorm-3d-bug", "z2h-7-wavenet/more-context-baseline", "z2h-4-mlp/splits-and-fit"],
+  "prereq": ["z2h-7-wavenet/batchnorm-3d-bug"]
+}

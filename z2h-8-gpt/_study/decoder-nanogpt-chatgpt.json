@@ -1,0 +1,65 @@
+{
+  "prime": {
+    "problem": "You now have a working GPT in about 200 lines, but it doesn't look like the code you'll read elsewhere, it isn't the shape of the original Transformer paper, and it isn't ChatGPT. Without mapping those three gaps, nanoGPT's tensors look like new magic and ChatGPT looks like a different kind of model.",
+    "fits": "This closes the lecture. It reuses the multi-head attention you wrote on the heads card and the encoder/decoder distinction from the attention notes, and points ahead to the GPT-2 course, where nanoGPT-style code loads real weights.",
+    "expect": ["decoder-only vs. encoder-decoder (cross-attention)", "batched heads: the (B, nh, T, hs) tensor", "GELU, the flash-attention call and other nanoGPT changes", "pretraining vs. SFT, reward model and PPO (RLHF)"],
+    "goal": "Rewrite your multi-head attention as nanoGPT's single batched class and prove it gives identical outputs, and explain which parts of ChatGPT are the same network and which are only more training."
+  },
+  "attend": [
+    "Our model generates from nothing. What would it need to attend to for cross-attention to have any job, and where would those keys and values come from?",
+    "When 18 small <code>Linear(384, 64)</code> layers become one <code>Linear(384, 1152)</code>, why can't the parameter count change?",
+    "Which <code>view</code> and <code>transpose</code> turn the channel dimension into a head dimension, and why must the head sit next to the batch before the <code>@</code>?",
+    "Which of ChatGPT's four stages change the architecture, and which only change the data and the objective?",
+    "GPT-3 has 16,220× our parameters but only 16× the layers and 32× the width. Why does a 32× wider model need far more than 32× the weights per layer?"
+  ],
+  "core": {
+    "must": [
+      "No second text to condition on → nothing for cross-attention to read → drop the encoder and cross-attention → a stack of masked self-attention + feed-forward blocks = decoder-only, exactly GPT's shape",
+      "Each head's q, k, v is a 384 → 64 linear map → stacking all of them row-wise is one 384 → 1152 map with the same 442,368 weights → <code>view(B, T, nh, hs).transpose(1, 2)</code> makes heads a batch dimension → one batched <code>@</code> computes every head at once, identical to our loop and cat",
+      "Pretraining on internet text → the model learns to continue documents, not to answer → SFT on question/answer documents, then a reward model trained from human rankings, then PPO against it → same network, different data and objective → an assistant"
+    ],
+    "elevated": [
+      "The row order inside <code>c_attn</code>'s weight must match the order of <code>.split</code> (q, then k, then v) → swapping q and k rows gives the transposed score table, and the outputs no longer match",
+      "The flash path fuses scores, mask, softmax and <code>@ v</code> into one call → the T × T attention matrix never has to be stored in full → the same maths with far less memory traffic on a GPU"
+    ],
+    "reference": [
+      "nanoGPT names: <code>c_attn</code>, <code>c_proj</code>, the buffer called <code>bias</code>, <code>attn_dropout</code>, <code>resid_dropout</code>",
+      "<code>F.scaled_dot_product_attention(q, k, v, is_causal=True)</code> signature",
+      "GELU values: GELU(−1) = −0.1587, GELU(0.5) = 0.3457",
+      "GPT-3 175B shape: 96 layers, d_model 12,288, 96 heads of 128, context 2,048",
+      "nanoGPT's padded vocab 50,304 and weight tying of <code>wte</code> with <code>lm_head</code>"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw our model next to the 2017 encoder-decoder and mark what we removed and why. Then write the shape of the tensor at each step of <code>CausalSelfAttention</code> for B=4, T=32, C=384, 6 heads.",
+    "checklist": [
+      "encoder: no mask; decoder: masked self-attention plus cross-attention to the encoder's output",
+      "ours has no source text, so no encoder and no cross-attention",
+      "(4,32,384) → c_attn (4,32,1152) → split → view (4,32,6,64) → transpose (4,6,32,64) → scores (4,6,32,32) → att @ v (4,6,32,64) → back to (4,32,384)",
+      "same 590,208 parameters as six Heads plus the projection",
+      "ChatGPT = this architecture scaled up, plus SFT, a reward model and PPO"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why a model that only continues text has no use for an encoder, and name a task where the encoder-decoder shape still earns its place.", "kind": "concept", "answer": ["the encoder exists to read a separate, complete source text", "cross-attention is how the decoder consults it", "unconditioned generation has no source, so both go", "translation: read French in full, write English token by token"]},
+    {"q": "Walk the tensor for one batch through nanoGPT's attention, naming the operation that creates the head dimension and the one that removes it again.", "kind": "mechanism", "answer": ["c_attn gives (B,T,3C); split into q, k, v of (B,T,C)", "view to (B,T,nh,hs) then transpose(1,2) to (B,nh,T,hs): heads become batch", "q @ kᵀ × hs^-0.5, mask, softmax: (B,nh,T,T); @ v: (B,nh,T,hs)", "transpose(1,2).contiguous().view(B,T,C) removes the head dimension, the same as torch.cat of head outputs"]},
+    {"q": "You have a loop over six Head modules that already works. What do you gain and what do you risk by switching to the batched class?", "kind": "tradeoff", "answer": ["gain: one big matmul and one attention call instead of six small ones, which keeps a GPU busy; the flash path becomes available", "no change in parameters or maths", "risk: silent bugs from wrong weight order or a wrong view/transpose, which is why you check allclose against the loop", "on a CPU with a tiny model the speed difference barely matters"]},
+    {"q": "GPT-3 has 16,220× our parameters and ChatGPT adds three training stages. Which of those differences would you need to reproduce ChatGPT-like answering on a small model, and which only buy quality?", "kind": "tradeoff", "answer": ["answering behaviour comes from SFT on question/answer data (then RLHF), not from size", "scale buys knowledge and fluency", "a small pretrained model plus SFT would likely answer in the right format, but with little knowledge behind it"]}
+  ],
+  "compare": [
+    {"with": "z2h-8-gpt/heads-in-the-model", "q": "The heads card and nanoGPT compute the same numbers. What design choice differs, and where would each one break first as the model grows?", "answer": ["heads card: a Python list of modules, outputs concatenated", "nanoGPT: one Linear for all q, k, v, heads as a batch dimension", "the loop's cost grows with the number of small launches and Python overhead; the batched version is limited by memory for the (B,nh,T,T) scores, which flash attention avoids"]},
+    {"with": "z2h-8-gpt/attention-notes", "q": "Note 4 contrasted encoder and decoder blocks by one line of code. What does a full encoder-decoder add beyond deleting the mask, and what goes wrong if you train our next-character model without the mask?", "answer": ["it adds cross-attention: queries from the decoder, keys and values from the encoder", "without the mask each position sees the character it must predict", "training loss collapses because the model can copy the answer, while generation fails because at sampling time the future isn't there"]},
+    {"with": "z2h-10-gpt2/the-module", "q": "In the GPT-2 course you write this same module to load OpenAI's weights. Which choices from this card are forced by those weights rather than by the maths?", "answer": ["the names and layout (c_attn with q, k, v stacked, c_proj)", "GELU instead of ReLU", "biases on the linear layers", "vocab 50,257 (nanoGPT pads to 50,304 for speed)"]}
+  ],
+  "predict": {"q": "You change your batched class to 12 heads of 32 (n_embd still 384) and copy the weights from a 12-head <code>MultiHeadAttention</code>. Does the parameter count change? And if you then stack the weights as key, query, value instead of query, key, value, what does <code>allclose</code> say?", "answer": "The count stays 590,208: <code>c_attn</code> is 384 × 1152 no matter how you slice the 384 channels into heads. The outputs match (True) with the right order, but swapping q and k gives False. The scores become kᵀq instead of qᵀk, so every head's T × T table is transposed before the mask cuts it."},
+  "apply": {"task": "Take your Build-it check and run it three ways: (1) as written with <code>n_head = 6</code>; (2) with <code>n_head = 12</code> for both classes; (3) with 12 heads but <code>qkv = torch.cat([W('key'), W('query'), W('value')])</code>. Record the two parameter counts and <code>allclose</code> each time.", "done": "Runs 1 and 2 print 590208 590208 and True; run 3 prints the same counts and False (measured with the lab's modules, seed 1337, input 4 × 32 × 384).", "hint": "In run 2, <code>hs</code> becomes 32, and your forward must use <code>C // n_head</code> everywhere, including the scale."},
+  "reflect": [
+    "Which prediction did you get wrong: the parameter count, or whether the outputs match exactly?",
+    "What couldn't you explain cleanly: why the <code>transpose(1, 2)</code> is needed, or why it has to be undone before <code>c_proj</code>?",
+    "Which relationship is still fuzzy: pretraining → document completer, or SFT/RLHF → assistant?",
+    "Could you explain to someone why ChatGPT's architecture needs no cross-attention even though it answers your question?",
+    "What will you look for first when you open nanoGPT's model.py in the GPT-2 course?"
+  ],
+  "revisit": ["z2h-8-gpt/heads-in-the-model", "z2h-8-gpt/attention-notes", "z2h-8-gpt/masked-softmax"],
+  "prereq": ["z2h-8-gpt/heads-in-the-model"]
+}

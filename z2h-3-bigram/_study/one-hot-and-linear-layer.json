@@ -1,0 +1,63 @@
+{
+  "prime": {
+    "problem": "A neural net can only multiply inputs by weights and add them up. A character index like 13 is a label, not a quantity, so feeding it in raw tells the net that m is 13 times a, which is meaningless.",
+    "fits": "This is the first step of Part 2, the neural-net version of the bigram model. It reuses the neuron from micrograd (weighted sum of inputs) and matrix multiplication from the toolkit, and replaces the count table's row lookup with a weight matrix <code>W</code>.",
+    "expect": ["the (xs, ys) dataset of input and target indexes", "one-hot encoding with <code>F.one_hot(..., num_classes=27).float()</code>", "a layer of 27 neurons as one matrix multiply <code>xenc @ W</code>", "shapes (5, 27) @ (27, 27) → (5, 27)"],
+    "goal": "Turn a word into (input, target) pairs, one-hot encode the inputs, run them through a 27×27 linear layer, and explain why each output row is simply one row of <code>W</code>."
+  },
+  "attend": [
+    "Why does a one-hot vector carry no false sense of order or size, while the raw index 13 does?",
+    "In <code>xenc @ W</code>, which dimension is the 27 neurons and which is the 5 examples, and which 27 gets summed away?",
+    "Why do the two <code>m</code> examples in 'emma' produce identical output rows, and what does that say about what this model can know?",
+    "Which two silent-or-loud failures come from <code>F.one_hot</code>'s defaults (width guessed from the data, <code>int64</code> dtype)?",
+    "If only one product in each sum is non-zero, what is the matrix multiply actually doing?"
+  ],
+  "core": {
+    "must": [
+      "A neuron multiplies inputs by weights → a raw index would scale the weights by 0, 1 … 26 → '.' always outputs zeros and m is forced to be 13× a → one-hot gives each character its own input slot, so each gets its own independent row of weights",
+      "Each one-hot row has a single 1 at <code>xs[i]</code> → every product in the sum except slot <code>xs[i]</code> is zero → <code>(xenc @ W)[i] = W[xs[i]]</code> → the layer is a row lookup into <code>W</code>, the same shape of operation as reading row <code>xs[i]</code> of the count table",
+      "Stacking examples as rows and neurons as columns → (5, 27) @ (27, 27) → (5, 27) → one matmul evaluates 27 neurons on every example in parallel, with the inner 27 (input slots) summed away",
+      "The output depends only on the current character → identical inputs (the two m's) give identical rows → a bigram net, like the count table, can't use anything earlier than the last character"
+    ],
+    "elevated": [
+      "<code>F.one_hot</code> returns <code>int64</code> and guesses the width from the largest index unless you pass <code>num_classes</code> → forgetting <code>.float()</code> makes the matmul fail with a dtype error, and forgetting <code>num_classes</code> gives (5, 14) for 'emma', a width that changes with the batch"
+    ],
+    "reference": [
+      "<code>torch.tensor</code> (infers int64) vs <code>torch.Tensor</code> (always float32)",
+      "<code>torch.randn((27, 27), generator=g)</code> with seed 2147483647",
+      "<code>import torch.nn.functional as F</code>",
+      "the exact values <code>W[13, 13] = 0.0379</code> and <code>xs = [0, 5, 13, 13, 1]</code>"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw the pipeline from <code>'emma'</code> to the (5, 27) output, writing the shape at every arrow. Then in 2–3 sentences explain why <code>(xenc @ W)[3]</code> equals <code>W[13]</code>.",
+    "checklist": [
+      "'emma' gives 5 pairs: xs = [0, 5, 13, 13, 1], ys = [5, 13, 13, 1, 0]",
+      "one-hot turns each index into a row of 27 with a single 1 → xenc (5, 27), cast to float",
+      "W (27, 27): 27 neurons, each a column of 27 weights; xenc @ W → (5, 27)",
+      "the single 1 in row 3 sits in slot 13, so every other product vanishes and the row is W[13]",
+      "the outputs aren't probabilities yet (negative, don't sum to 1): softmax comes next"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why a net shouldn't be given the character index as a single number, and what one-hot encoding gives it instead.", "kind": "concept", "answer": ["an index is a label; its size and order mean nothing", "with a raw index, each output is index × weight: '.' always gives 0 and m is locked to 13× a", "one-hot gives each character its own slot, so each has its own independent weights"]},
+    {"q": "Walk through computing <code>(xenc @ W)[3, 13]</code> for 'emma': which row, which column, which products, and what result?", "kind": "mechanism", "answer": ["row 3 of xenc is the one-hot for m: a 1 in slot 13", "column 13 of W holds neuron 13's 27 weights", "multiply slot by slot and sum: 26 products are 0, one is 1 × W[13, 13]", "result 0.0379 (seed 2147483647)"]},
+    {"q": "One-hot times a matrix costs 729 multiply-adds per example to produce what an index lookup <code>W[xs]</code> gives for free. Why teach it this way anyway, and when would you switch?", "kind": "tradeoff", "answer": ["it shows the layer is an ordinary neuron layer, so the same matmul generalises to later nets", "at 27 characters the waste is negligible", "with bigger vocabularies or more inputs you index rows directly (an embedding lookup), which gives the same result"]},
+    {"q": "Your <code>xenc</code> comes out as shape (5, 14) and the next line crashes. What happened, and what else would break even if the shapes happened to line up?", "kind": "mechanism", "answer": ["<code>num_classes</code> was left out, so one_hot used the largest index (13) + 1", "the width then depends on each batch", "without <code>.float()</code> the int64 xenc still can't be multiplied by float32 W"]}
+  ],
+  "compare": [
+    {"with": "z2h-3-bigram/bigram-counts", "q": "The count table <code>N</code> and the weight matrix <code>W</code> are both 27×27 and both get read one row per input character. What is fundamentally different about how each gets its numbers, and what does that difference buy?", "answer": ["N is filled directly by counting; W starts random and must be learned from a loss", "both look up one row per current character, so for a bigram they can express the same model", "counting doesn't scale to longer contexts (the table explodes); the weights-and-matmul route does"]},
+    {"with": "z2h-2-micrograd/a-neuron", "q": "micrograd's neuron and one column of <code>W</code> here: what is the same, what's missing, and why can this card do 135 neuron evaluations in one line?", "answer": ["same: a weighted sum of inputs", "missing here: the bias and the tanh", "the matmul runs 27 neurons on 5 examples (135 weighted sums) as one tensor operation instead of one Python object per number"]}
+  ],
+  "predict": {"q": "Karpathy's bigram model could instead take the two previous characters as input (a trigram). If you one-hot each of them and concatenate the two vectors, what shape is <code>W</code> for 27 outputs, and how many 1s are in each input row?", "answer": "Each input row is 27 + 27 = 54 wide with exactly two 1s, so <code>W</code> is (54, 27). Each output row becomes the <i>sum</i> of two rows of <code>W</code>, one chosen by each character. That's the first step toward the next lecture, where each character's row is looked up and the lookups are joined."},
+  "apply": {"task": "Rebuild <code>xs</code>, <code>ys</code> and <code>xenc</code> for the first <b>three</b> words (<code>words[:3]</code>) instead of one. Predict the shape of <code>xenc</code> and of <code>xenc @ W</code> before running, then check that <code>torch.equal(xenc @ W, W[xs])</code> is True.", "done": "xs has 16 entries (the likelihood card's first-3-words count, n=16), xenc is (16, 27), xenc @ W is (16, 27), and the equality check prints True.", "hint": "Each word of length L gives L + 1 pairs: 'emma', 'olivia', 'ava' give 5 + 7 + 4 = 16."},
+  "reflect": [
+    "Which prediction did you get wrong: the number of non-zero products, or the trigram shape?",
+    "What couldn't you explain cleanly without saying \"it's just how neural nets take input\"?",
+    "Which relationship is still fuzzy: one-hot → row lookup, or row lookup → the count table?",
+    "Can you name both <code>F.one_hot</code> pitfalls and the symptom each one causes?",
+    "What will you check first on the softmax card, given these outputs are still negative and unnormalised?"
+  ],
+  "revisit": ["z2h-1-toolkit/matmul-by-shapes", "z2h-2-micrograd/a-neuron", "z2h-3-bigram/bigram-counts"],
+  "prereq": ["z2h-3-bigram/bigram-counts", "z2h-1-toolkit/matmul-by-shapes"]
+}

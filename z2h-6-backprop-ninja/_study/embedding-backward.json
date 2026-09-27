@@ -1,0 +1,65 @@
+{
+  "prime": {
+    "problem": "Without this step the manual backward pass stops at <code>hprebn</code>: you'd have gradients for W2, BatchNorm and tanh, but nothing for <code>W1</code>, <code>b1</code> or the embedding table <code>C</code>, so the character vectors could never learn.",
+    "fits": "It is the last stretch of Exercise 1. It reuses the matmul-by-shapes rule from layer 2 and the idea that a value used many times collects the sum of its gradients, now applied to a table lookup.",
+    "expect": ["linear layer 1 backward (the same three lines as layer 2)", "undoing <code>view</code> by viewing back", "a lookup as many copies of one row", "scatter-add with <code>+=</code> or <code>index_add_</code>"],
+    "goal": "Write <code>dembcat</code>, <code>dW1</code>, <code>db1</code>, <code>demb</code> and <code>dC</code> from memory, explain why repeated characters need an add, and spot the one-liner that silently gets it wrong."
+  },
+  "attend": [
+    "Why does undoing <code>view</code> need no arithmetic at all, while undoing <code>C[Xb]</code> does?",
+    "The character <code>'.'</code> is looked up 29 times in this batch. Where do those 29 gradient rows end up, and how are they combined?",
+    "Why does <code>dC[Xb] += demb</code> run without error yet give the wrong answer, and which rows does it get wrong?",
+    "What happens to the rows of C for characters that no example in the batch used?",
+    "Why is <code>db1</code> about 1e-9 even though the lab says it matches autograd exactly?"
+  ],
+  "core": {
+    "must": [
+      "<code>emb = C[Xb]</code> copies one row of C per lookup → a character looked up m times is used m times → by the multi-use rule its gradient is the sum of m <code>demb</code> rows → <code>dC[ix] += demb[k, j]</code>, a scatter-add",
+      "<code>view</code> only relabels the same 960 numbers in the same order → its local derivative is the identity → the backward is just <code>dembcat.view(emb.shape)</code>, with no arithmetic",
+      "fancy-index <code>dC[Xb] += demb</code> reads, adds, then writes each index → for a repeated index the writes overwrite each other instead of adding → only repeated characters go wrong (12 rows here, maxdiff 0.0367), so the bug hides behind the correct single-use rows",
+      "<code>hprebn = embcat @ W1 + b1</code> is a matmul plus a broadcast bias → same pattern as layer 2 → <code>dhprebn @ W1.T</code>, <code>embcat.T @ dhprebn</code>, <code>dhprebn.sum(0)</code>, chosen by matching (32,30), (30,64), (64,)"
+    ],
+    "elevated": [
+      "BatchNorm subtracts the batch mean right after linear 1 → a constant added to every example (b1) cancels → <code>db1</code> is about 2.3e-9, and b1 never learns anything useful",
+      "Rows of C that no example looked up get exactly 0 → those characters don't move this step → rare characters learn only on the batches that contain them"
+    ],
+    "reference": [
+      "<code>torch.zeros_like(C).index_add_(0, Xb.view(-1), demb.view(-1, 10))</code>, the vectorized scatter-add",
+      "<code>index_put_(..., accumulate=True)</code> as another correct one-liner",
+      "the lab batch's counts: 96 lookups, 21 distinct characters, <code>'.'</code> ×29, 6 unused rows",
+      "the double-loop indices <code>k</code> (example) and <code>j</code> (context slot)"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, write the three forward lines that start the net and, next to each, its backward line(s) with shapes. Then explain in 2–3 sentences why the embedding backward is a sum and not a copy.",
+    "checklist": [
+      "linear 1: <code>dembcat = dhprebn @ W1.T</code>, <code>dW1 = embcat.T @ dhprebn</code>, <code>db1 = dhprebn.sum(0)</code>",
+      "view: <code>demb = dembcat.view(emb.shape)</code>, no arithmetic",
+      "lookup: each of the 96 <code>demb</code> rows is added into row <code>Xb[k, j]</code> of <code>dC</code>",
+      "a forward copy (reuse) becomes a backward sum, so repeated characters must accumulate",
+      "unused characters get a zero row"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain, without code, what the gradient of the embedding table <code>C</code> means for one character, and why it depends on how often that character appears in the batch.", "kind": "concept", "answer": ["row c of dC says how the loss changes if that character's vector moves", "each lookup of c is one use, and uses add", "more lookups → more rows summed; zero lookups → zero gradient"]},
+    {"q": "Walk the double loop for example 25, whose context is <code>. k o</code>. Which rows of <code>dC</code> does it touch, with which rows of <code>demb</code>?", "kind": "mechanism", "answer": ["<code>dC[0] += demb[25, 0]</code> for <code>'.'</code>", "<code>dC[11] += demb[25, 1]</code> for <code>'k'</code>", "<code>dC[15] += demb[25, 2]</code> for <code>'o'</code>", "each adds to whatever other examples already put there"]},
+    {"q": "You need the embedding backward inside a 200k-step training loop. Compare the Python double loop, <code>index_add_</code> and the one-hot matmul: which do you pick, and what does each cost or risk?", "kind": "tradeoff", "answer": ["double loop: clearest, but 96 Python iterations every step", "<code>index_add_</code>: one call, bit-exact, adds repeats correctly", "one-hot matmul: also exact, but builds a 96 × 27 matrix and does 25,920 multiply-adds for 960 additions; grows with vocabulary", "avoid <code>dC[Xb] += demb</code>: wrong for repeats"]},
+    {"q": "Why is <code>demb = dembcat.view(emb.shape)</code> correct, and when would \"just view back\" be wrong?", "kind": "mechanism", "answer": ["view keeps the same numbers in the same order, so gradient entry i maps back to the same entry i", "it would be wrong if the forward reordered axes (permute or transpose); then you must reorder back"]}
+  ],
+  "compare": [
+    {"with": "z2h-6-backprop-ninja/softmax-chain-backward", "q": "<code>dcounts</code> needed <code>+=</code> because <code>counts</code> fed two branches. <code>dC</code> needs <code>+=</code> because rows are looked up many times. What is the same rule underneath, and how does the way each bug shows up in <code>cmp</code> differ?", "answer": ["same rule: a value used more than once gets the sum of its uses' gradients", "counts: every entry has two fixed paths, so forgetting one makes the whole tensor wrong", "dC: the number of uses depends on the data, so only repeated rows go wrong and single-use rows still match"]},
+    {"with": "z2h-6-backprop-ninja/matmul-backward-by-shapes", "q": "Linear 1 and linear 2 have the same backward formulas. What changes between them, and why can shape matching still choose the arrangement uniquely?", "answer": ["only the names and sizes: (32,30)@(30,64) vs (32,64)@(64,27)", "32, 30 and 64 are all different, so only one arrangement fits each gradient", "both biases get a sum over the batch, but db1 is about 0 because BatchNorm cancels it"]},
+    {"with": "z2h-4-mlp/embedding-lookup", "q": "The forward lookup <code>C[Xb]</code> is the same as a one-hot vector times C. How does that view explain the backward, and why don't we compute it that way?", "answer": ["one_hot @ C is a matmul, so its backward for C is one_hot.T @ demb, which is exactly the scatter-add", "it's exact but wastes work on the zeros: 25,920 multiply-adds for 960 useful additions", "indexing and scatter-add do only the useful part"]}
+  ],
+  "predict": {"q": "Delete the BatchNorm layer so <code>hprebn</code> goes straight into tanh. Would <code>db1</code> still be about 1e-9? Commit, then reason about which forward step made it vanish.", "answer": "No. The near-zero <code>db1</code> comes from BatchNorm subtracting the batch mean, which cancels any constant added to every example. Without BatchNorm, <code>b1</code> shifts each preactivation before tanh, so it changes the loss, and <code>db1 = dhprebn.sum(0)</code> becomes a real, non-zero gradient. The formula for db1 doesn't change; the incoming <code>dhprebn</code> does, since it no longer sums to zero across the batch."},
+  "apply": {"task": "Break it and debug it. In <code>labs/embedding-backward.py</code>, replace the double loop with <code>dC = torch.zeros_like(C); dC[Xb] += demb</code>. Run it, then print which characters' rows differ from <code>C.grad</code>. Fix it with a one-liner that isn't <code>index_add_</code>.", "done": "The broken version prints <code>exact: False | approximate: False</code> with maxdiff 0.0367, exactly 12 rows differ, and they are the 12 characters with a count above 1 in <code>torch.bincount(Xb.view(-1))</code>. Your fix prints <code>exact: True</code>.", "hint": "<code>index_put_((Xb.view(-1),), demb.view(-1, 10), accumulate=True)</code> is exact; the key word is accumulate."},
+  "reflect": [
+    "Which prediction did you get wrong: that <code>dC[Xb] += demb</code> fails, or which rows it fails on?",
+    "What couldn't you explain cleanly: why view needs no arithmetic, or why a lookup needs a sum?",
+    "Which relationship is still fuzzy: lookup → many uses of a row, or many uses → a sum in the backward?",
+    "Could you now write all 26 Exercise 1 gradients from a blank cell? Which one would you get stuck on?",
+    "What will you check first the next time a gradient is right for most rows but wrong for a few?"
+  ],
+  "revisit": ["z2h-4-mlp/embedding-lookup", "z2h-4-mlp/view-storage", "z2h-2-micrograd/accumulate-gradients"],
+  "prereq": ["z2h-6-backprop-ninja/matmul-backward-by-shapes", "z2h-4-mlp/embedding-lookup"]
+}

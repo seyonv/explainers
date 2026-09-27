@@ -1,0 +1,63 @@
+{
+  "prime": {
+    "problem": "Averaging the past gives every earlier token the same weight, in every sequence. A character can't pick out the one earlier character that actually tells it what comes next, so the model can't use context well.",
+    "fits": "This is the crux of the lecture. The tril-matmul and masked-softmax cards built <code>wei @ x</code> with fixed weights; this card makes the scores inside that softmax come from the tokens themselves.",
+    "expect": ["query, key and value vectors", "affinity scores <code>q @ k.transpose(-2, -1)</code>", "masked softmax over the scores", "aggregating <code>v</code> instead of <code>x</code>"],
+    "goal": "Explain how one head turns x into data-dependent weights and a weighted mix of values, compute one row by hand, and write the head in about a dozen lines."
+  },
+  "attend": [
+    "Why do queries and keys come from two <i>different</i> linear maps of the same <code>x</code>, instead of dotting <code>x</code> with itself?",
+    "At which line does <code>wei</code> start to differ between sequence 0 and sequence 1, and why didn't it before?",
+    "Why must <code>k.transpose(-2, -1)</code> swap only the last two axes, and what would go wrong if the batch axis moved?",
+    "What does a token gain by sending <code>v</code> rather than its raw embedding <code>x</code>?",
+    "If the raw scores in a row grow larger in size, what happens to the weights after softmax?"
+  ],
+  "core": {
+    "must": [
+      "Each token projects <code>x</code> into a query and a key → the score q<sub>t</sub>·k<sub>j</sub> depends on both tokens' contents → softmax of those scores gives weights that differ per sequence → aggregation becomes content-based instead of a fixed average",
+      "Future positions are set to −∞ before softmax → e<sup>−∞</sup> = 0 → token t mixes only tokens 0…t → the head stays usable for next-character prediction (delete the mask and it becomes an encoder that sees the answer)",
+      "Values are a separate projection → what a token advertises (key) is decoupled from what it hands over (v) → the output width is head_size, not C → heads can be stacked and concatenated later",
+      "Softmax is exponential in the scores → bigger score gaps give near one-hot rows (row 1 goes 0.1574/0.8426 → 0.0012/0.9988 when x doubles) → unscaled scores make attention peaky and gradients thin → the √head_size scaling on the next card"
+    ],
+    "elevated": [
+      "Scores form a (B, T, T) matrix per head → cost and memory grow with T² (65,536 scores per head per sequence at block_size 256) → context length is the expensive knob in a Transformer"
+    ],
+    "reference": [
+      "<code>nn.Linear(C, head_size, bias=False)</code> for key, query and value (512 weights each in the toy, 1,536 per head)",
+      "toy sizes <code>B,T,C = 4,8,32</code>, <code>head_size = 16</code>, seed 1337",
+      "<code>torch.tril(torch.ones(T, T))</code> and <code>masked_fill(tril == 0, float('-inf'))</code>",
+      "<code>F.softmax(wei, dim=-1)</code>: softmax along the last axis"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw one head as a flow from <code>x</code> to <code>out</code>, writing each tensor's shape for the toy (B=4, T=8, C=32, head_size=16). Then say in 2–3 sentences why the weights now differ between sequences.",
+    "checklist": [
+      "three Linear maps turn x (4, 8, 32) into q, k, v, each (4, 8, 16)",
+      "<code>q @ kᵀ</code> gives (4, 8, 8) scores: every query dotted with every key",
+      "the mask puts −∞ on future positions; softmax makes each row non-negative and sum to 1",
+      "<code>out = wei @ v</code> is (4, 8, 16): each token's weighted mix of earlier values",
+      "the weights depend on q and k, which depend on each sequence's tokens, so each sequence gets its own wei"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain the three roles a single token plays in one head, and why one vector couldn't play all three well.", "kind": "concept", "answer": ["query: what it's looking for in earlier tokens", "key: what it offers to later tokens' queries", "value: what it actually passes on when chosen", "separate projections let the head learn \"match on this, but send that\""]},
+    {"q": "Walk through how row 1 of <code>wei[0]</code> is produced, starting from the raw scores −3.3334 and −1.6556, and then how <code>out[0,1]</code> is formed.", "kind": "mechanism", "answer": ["exponentiate: 0.0357 and 0.1910, sum 0.2267", "divide: 0.1574 and 0.8426; positions 2–7 were −∞ and became 0", "<code>out[0,1]</code> = 0.1574·v₀ + 0.8426·v₁, a (16,) vector"]},
+    {"q": "A colleague proposes replacing q·k scores with a learned T×T weight table to save compute. What do you gain, and what capability do you lose?", "kind": "tradeoff", "answer": ["gain: no per-sequence T×T score computation, fewer matmuls", "lose: weights depend only on position, identical for every sequence", "the model can't attend to <i>where the relevant character is</i> in this particular text"]},
+    {"q": "Why does <code>wei</code> have shape (B, T, T) and not (B·T, B·T)? What does that say about which tokens can talk to each other?", "kind": "mechanism", "answer": ["the batched matmul pairs tokens only within one sequence", "no scores exist across sequences, so no information flows between batch rows", "the mask then limits each row further to earlier positions"]}
+  ],
+  "compare": [
+    {"with": "z2h-8-gpt/average-the-past", "q": "Both produce a weighted mix of earlier tokens. What single design choice separates them, and when would the plain average be good enough?", "answer": ["average: weights fixed at 1/(t+1), same in every sequence", "one head: weights from q·k, so they change with content", "the average is fine when every earlier token is equally informative, which almost never holds for text", "average fails by blurring the useful token with the rest; attention fails if scores saturate (the next card's problem)"]},
+    {"with": "z2h-8-gpt/heads-in-the-model", "q": "One 32-dim head vs four 8-dim heads with the same parameter count: what's different in what they can attend to, and which did the lecture measure as better?", "answer": ["one head gives each token a single weight row, so one pattern of attention", "four heads give four independent weight rows, attending to different things at once", "the lab measured val 2.41 for one head vs 2.29 for four (7,553 params each)"]}
+  ],
+  "predict": {"q": "Keep the same seed and weights, but multiply <code>x</code> by 2 before the head. Row 1 of <code>wei[0]</code> was 0.1574, 0.8426. Commit to a guess: does it stay the same, get flatter, or get sharper, and roughly how much?", "answer": "Much sharper: <b>0.0012, 0.9988</b>. q and k both double, so every score is multiplied by 4 (−3.33 → −13.33, −1.66 → −6.62), and softmax is exponential in the gap. Row 7's top weight rises from 0.2423 to 0.3591. The size of the scores, not just their order, controls how peaky attention is. That's exactly why the next card divides by √head_size."},
+  "apply": {"task": "In <code>labs/self-attention-head.py</code>, change <code>head_size</code> from 16 to 64 and rerun. Before running, predict the new shape of <code>out</code> and whether the raw score range grows or shrinks. Then compare row 1 of <code>wei[0]</code> with the head_size-16 run.", "done": "You see <code>out.shape</code> = (4, 8, 64), a raw range of −6.49 to 11.45 (vs −4.67 to 3.63), and row 1 = 0.0035, 0.9965 (vs 0.1574, 0.8426), and you can say why: a dot product sums over more dimensions, so its spread grows.", "hint": "The random weights change too (bigger Linear layers draw more numbers from the same seed), so compare the spread of the scores, not the individual values."},
+  "reflect": [
+    "Which prediction did you get wrong: uniform row 7, or how much doubling x sharpened row 1?",
+    "What couldn't you explain cleanly: why keys and queries are separate, or why values are?",
+    "Which relationship is still fuzzy: content → scores, or scores → how peaky the weights are?",
+    "Could you rewrite the head from memory, getting every shape right, without the transpose tripping you up?",
+    "What will you check first on the scaled-attention card?"
+  ],
+  "revisit": ["z2h-8-gpt/masked-softmax", "z2h-8-gpt/tril-matmul-trick", "z2h-1-toolkit/vectors-dot-product", "z2h-1-toolkit/softmax-and-cross-entropy"],
+  "prereq": ["z2h-8-gpt/masked-softmax"]
+}

@@ -1,0 +1,63 @@
+{
+  "prime": {
+    "problem": "Writing a backward pass by hand for a whole network gives you 26 gradients and one loss. If any one is wrong, training quietly gets worse, and nothing tells you which line broke.",
+    "fits": "This is the setup for all of Exercise 1. It reuses Lecture 4's MLP with BatchNorm and the micrograd idea that every intermediate has a gradient; now each intermediate becomes a named tensor you can check against PyTorch.",
+    "expect": ["the chunked (atomic) forward pass", "<code>retain_grad()</code> on intermediates", "<code>cmp</code>: exact vs <code>allclose</code> vs maxdiff", "non-zero inits that expose bugs"],
+    "goal": "Split a forward pass into checkable steps, make PyTorch keep every intermediate gradient, and read <code>cmp</code>'s three verdicts to tell a real bug from rounding."
+  },
+  "attend": [
+    "Why does splitting <code>F.cross_entropy</code> into eight lines make a backward bug easier to locate, not just easier to write?",
+    "Which tensors does PyTorch keep <code>.grad</code> for by default, and what does <code>retain_grad()</code> change?",
+    "When should <code>exact: False</code> worry you, and when is <code>approximate: True</code> enough?",
+    "How can initialising <code>bngain</code> to exactly 1 make a wrong gradient pass the check?"
+  ],
+  "core": {
+    "must": [
+      "Forward pass split into ~20 named tensors → each has its own <code>.grad</code> from autograd → you can check each hand-written <code>d&lt;name&gt;</code> the moment you write it → a mistake is pinned to one line instead of surfacing twenty lines later in <code>dW1</code>",
+      "PyTorch frees intermediate gradients to save memory → <code>t.grad</code> is <code>None</code> for non-leaf tensors → <code>retain_grad()</code> on all 19 intermediates before <code>loss.backward()</code> → autograd becomes an answer key for every step",
+      "Same math in a different order → float32 rounds differently (~1e-9) → <code>exact</code> can be False for a correct formula → trust <code>allclose</code> (1e-8 + 1e-5·|x|) and a tiny maxdiff; only approximate: False is a bug",
+      "Init of exactly 1 or 0 → multiplying by 1 or adding 0 changes nothing → a gradient that forgot that factor still matches (<code>dbnraw = dhpreact</code> is exact: True) → small random inits make the bug show (maxdiff 0.0017)"
+    ],
+    "elevated": [
+      "<code>counts_sum**-1</code> rather than <code>1.0/counts_sum</code> → autograd's backward for the power op matches the hand formula bit for bit → exact: True instead of maxdiff 9.3e-10"
+    ],
+    "reference": [
+      "the <code>cmp</code> print format (<code>{s:15s} | exact: … | approximate: … | maxdiff: …</code>)",
+      "<code>torch.allclose</code> defaults: <code>rtol=1e-05</code>, <code>atol=1e-08</code>",
+      "the exact retain_grad list and its order",
+      "parameter shapes: C (27, 10), W1 (30, 64), W2 (64, 27); 4,137 in total",
+      "the loss 3.3377 in the video vs 3.3444 in the lab (unseeded bngain/bnbias draw)"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, explain in 3–5 sentences how Karpathy sets up Exercise 1 so that every hand-written gradient can be checked. Or draw the pipeline: chunked forward → retain_grad → backward → cmp, and write under each box what goes wrong if you skip it.",
+    "checklist": [
+      "the forward pass is rewritten as ~20 atomic tensors (19 intermediates plus loss), one operation each",
+      "<code>retain_grad()</code> makes PyTorch keep <code>.grad</code> on the intermediates; one <code>loss.backward()</code> fills all 26",
+      "<code>cmp</code> reports exact (bit-equal), approximate (<code>allclose</code>) and maxdiff",
+      "exact: False with approximate: True is rounding, not a bug",
+      "biases and BatchNorm parameters get small random inits so a missing factor can't hide"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why a gradient checker needs the <i>intermediate</i> gradients and not only the 7 parameter gradients.", "kind": "concept", "answer": ["parameter gradients only say that something is wrong somewhere upstream", "intermediate gradients let you check each step as you write it", "so the first failing <code>cmp</code> line names the broken formula"]},
+    {"q": "Walk through what happens when you call <code>cmp('logprobs', dlogprobs, logprobs)</code>: where <code>t.grad</code> came from, and what each of the three printed values computes.", "kind": "mechanism", "answer": ["<code>logprobs.retain_grad()</code> was called before <code>loss.backward()</code>, so autograd stored its gradient in <code>logprobs.grad</code>", "exact: <code>torch.all(dt == t.grad)</code>, every entry bit-equal", "approximate: <code>torch.allclose</code>, each entry within 1e-8 + 1e-5·|t.grad|", "maxdiff: the largest absolute difference over all 864 entries"]},
+    {"q": "You add 2e-8 to every entry of a correct <code>dlogprobs</code>. Is it approximate? Would you rather the checker were stricter or looser, and what does each choice cost?", "kind": "tradeoff", "answer": ["approximate: False: most entries are 0, where only atol = 1e-8 of slack applies", "stricter (exact only) flags correct formulas that merely reorder float32 math", "looser tolerances let small real bugs through, like a missing factor close to 1"]},
+    {"q": "Your <code>dbnraw</code> prints exact: True, but training later diverges. Name one way the checker itself could have misled you.", "kind": "mechanism", "answer": ["an init of exactly 1 (bngain) or 0 hides a missing multiply or add", "the check passes for this batch and init but the formula is still wrong in general", "fix: randomise those parameters and re-check"]}
+  ],
+  "compare": [
+    {"with": "z2h-2-micrograd/more-ops-and-pytorch", "q": "In micrograd you checked your <code>Value</code> gradients against PyTorch too. What is fundamentally different about checking at tensor level, and what new way of failing appears?", "answer": ["micrograd compared a handful of scalars; here each check covers a whole tensor (up to 32×64 entries)", "at tensor level you need a verdict over many entries: exact vs allclose vs maxdiff", "new failure: shapes and broadcasting, so a gradient can have the right values in the wrong shape, or pass only because of a special init"]},
+    {"with": "z2h-6-backprop-ninja/cross-entropy-analytic", "q": "The atomic backward through cross-entropy checks exact: True; the three-line analytic <code>dlogits</code> only gets approximate: True. Which design choice causes the difference, and when would you pick each?", "answer": ["atomic: same operations in the same order as autograd, so bit-identical", "analytic: a simplified formula, so rounding differs (maxdiff about 1e-8)", "pick atomic to learn and debug one step at a time; analytic to train fast with less memory", "atomic fails by being long and easy to break; analytic fails silently if the derivation has an error and you don't check it"]}
+  ],
+  "predict": {"q": "You add one more intermediate to the forward pass but forget to put it in the <code>retain_grad</code> list. What does <code>cmp</code> do when you check its gradient?", "answer": "It crashes rather than printing False. The tensor's <code>.grad</code> is <code>None</code> (PyTorch warns that you're reading <code>.grad</code> of a non-leaf tensor), so <code>dt == t.grad</code> is a plain Python <code>False</code>, and <code>torch.all(False)</code> raises a <code>TypeError</code>. An error you can't miss is better than a silent pass."},
+  "apply": {"task": "In the lab, after the correct <code>dlogprobs</code>, add a constant eps to it for eps = 1e-9, 5e-9, 2e-8 and 1e-7, and call <code>cmp</code> on each. Before running, use the <code>allclose</code> rule (|dt − t.grad| ≤ 1e-8 + 1e-5·|t.grad|) to predict which ones are approximate: True. Remember 832 of the 864 true entries are exactly 0.", "done": "Your predictions match the run: 1e-9 and 5e-9 are approximate: True (maxdiff 1.86e-9 and 5.59e-9); 2e-8 and 1e-7 are approximate: False (maxdiff 2.05e-8 and 1.01e-7).", "hint": "At a zero entry, rtol adds nothing, so the only slack is atol = 1e-8."},
+  "reflect": [
+    "Which prediction did you get wrong: the bngain = 1 bug being invisible, or the 1.86e-9 instead of 1e-9?",
+    "What couldn't you explain cleanly: why <code>retain_grad</code> is needed, or why exact and approximate disagree?",
+    "Which relationship is still fuzzy: special init → hidden bug, or float32 rounding → exact: False?",
+    "Before the softmax card, can you say which of the 26 gradients you expect to need two branches?",
+    "Would you trust a backward pass that passed <code>cmp</code> on one batch? What else would you check?"
+  ],
+  "revisit": ["z2h-5-batchnorm/batchnorm-forward", "z2h-4-mlp/cross-entropy", "z2h-2-micrograd/more-ops-and-pytorch"],
+  "prereq": ["z2h-5-batchnorm/batchnorm-forward"]
+}

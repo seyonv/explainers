@@ -1,0 +1,65 @@
+{
+  "prime": {
+    "problem": "After fix 1 the step-0 loss looks right, yet most hidden units are pinned near ±1. There, tanh passes almost no gradient back, so the weights feeding those units barely learn, and nothing in the loss tells you.",
+    "fits": "It builds on tanh's backward rule from micrograd (<code>(1 - t**2) * out.grad</code>) and on fix 1, which tamed the output layer. This card does the same for the hidden layer; the next cards explain why ReLU has the same problem and how to pick the scale without guessing.",
+    "expect": ["preactivation <code>hpreact</code> vs activation <code>h</code>", "tanh's local gradient <code>1 − t²</code> as a gate", "saturation and <code>h.abs() &gt; 0.99</code>", "dead neurons (all-white columns)", "scaling <code>W1</code> and <code>b1</code> at init"],
+    "goal": "Diagnose saturated tanh units from a histogram and a saturation map, explain why they stall learning, and fix the init so the hidden layer starts in tanh's working range."
+  },
+  "attend": [
+    "Why does a unit whose output is 0.99 pass back only about 2% of its gradient, and where does that number come from?",
+    "What about the sum inside <code>hpreact</code> (30 inputs, std-1 weights) makes its values reach ±19?",
+    "Why does the step-0 loss barely change (3.3221 vs 3.3135) when the fraction of saturated units drops from 61% to 1%?",
+    "What separates a unit that is saturated on some examples from a dead one, and which picture shows the difference?",
+    "Why does this one-layer net still train reasonably with saturated units, and why would a 50-layer net not?"
+  ],
+  "core": {
+    "must": [
+      "tanh backward multiplies by <code>1 − t²</code> → near t = ±1 that factor is almost 0 (0.0199 at 0.99, exactly 0 in float32 past about 9) → almost no gradient reaches <code>hpreact</code> → <code>W1</code> and <code>b1</code> for that unit barely move",
+      "<code>hpreact</code> sums 30 embedding × weight products plus a bias → with std-1 <code>randn</code> its std is about √(30·0.83 + 1) ≈ 5 → most values land past ±2.65 → 61% of units saturated at step 0",
+      "Saturated on every example → the whole column of <code>h.abs() &gt; 0.99</code> is white → no example ever sends that unit a useful gradient → a dead neuron that never learns (saturated on only some examples is fine)",
+      "Multiply <code>W1</code> by 0.2 and <code>b1</code> by 0.01 → hpreact std about 1 → 1.0% saturated and 3.9× more gradient passes the gates at step 0 → dev loss 2.1311 → 2.1027"
+    ],
+    "elevated": [
+      "The loss only sees the output layer → fix 1 already made it 3.32 → saturation in the hidden layer is invisible to the step-0 loss, so you must look at <code>h</code> directly (histogram and <code>imshow</code>)"
+    ],
+    "reference": [
+      "<code>plt.hist(h.view(-1).tolist(), 50)</code> and <code>plt.imshow(h.abs() &gt; 0.99, cmap='gray', interpolation='nearest')</code>",
+      "the 0.99 threshold is a convention, not a law",
+      "the exact scales 0.2 and 0.01 (hand-picked; the Kaiming card replaces 0.2 with 0.3043)",
+      "float32 <code>torch.tanh</code> returns exactly 1.0 from about x = 9"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw the chain from <code>W1</code>'s scale to a stalled weight: what makes <code>hpreact</code> large, what tanh does to it on the way forward, and what it does to the gradient on the way back. Then write one sentence on how you would detect it and one on how you would fix it.",
+    "checklist": [
+      "many std-1 terms summed → large <code>hpreact</code>",
+      "tanh maps large inputs to about ±1 (saturation)",
+      "backward gate <code>1 − t²</code> ≈ 0 there, so the gradient to <code>W1</code>/<code>b1</code> vanishes",
+      "detect: <code>h</code> histogram piled at ±1, <code>h.abs() &gt; 0.99</code> map; a fully white column = dead neuron",
+      "the step-0 loss does not reveal it",
+      "fix: shrink <code>W1</code> (×0.2) and <code>b1</code> (×0.01) so hpreact is about unit-sized"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why a hidden unit whose output is always near +1 contributes almost nothing to learning, even though its output is large.", "kind": "concept", "answer": ["what matters for learning is the gradient, not the output size", "tanh's backward multiplies by 1 − t², about 0 near ±1", "so the unit's incoming weights and bias get almost no update", "its output is also nearly constant, so it carries little information about the input"]},
+    {"q": "Walk through one backward pass for a single unit with <code>hpreact</code> = 3 and a gradient of 1.0 arriving at <code>h</code>. What value reaches <code>hpreact</code>, and what happens to the update of its <code>W1</code> column?", "kind": "mechanism", "answer": ["t = tanh(3) = 0.995", "hpreact.grad = (1 − 0.995²) · 1.0 ≈ 0.0099", "W1's gradient for that column is the input times 0.0099, so about 100× smaller than at hpreact = 0", "with the same lr the column barely moves"]},
+    {"q": "You could shrink <code>W1</code> by 0.05 instead of 0.2: saturation drops to 0.0% and the mean gate rises to 0.944. What do you give up, and why isn't smaller always better?", "kind": "tradeoff", "answer": ["h's std falls to 0.237, so tanh runs in its nearly linear region", "the hidden layer then acts almost like a linear map at init and must grow its weights to use the nonlinearity", "too large saturates, too small linearises: the aim is hpreact of roughly unit size", "0.2 is a hand guess; Kaiming init computes the scale"]},
+    {"q": "A colleague's step-0 loss is 3.31 for a 27-class model, so they say the init is fine. What would you check next, and what would convince you the hidden layer is healthy?", "kind": "tradeoff", "answer": ["the loss only reflects the output layer", "histogram <code>h</code>: no big spikes at ±1", "<code>h.abs() &gt; 0.99</code> map: few white cells, no all-white columns", "mean of 1 − h² well above 0.2 (0.605 after the fix vs 0.154 before)"]}
+  ],
+  "compare": [
+    {"with": "z2h-5-batchnorm/squash-the-logits", "q": "Fix 1 and fix 2 both shrink weights at init. What problem does each solve, which signal reveals each one, and what goes wrong if you apply only fix 1?", "answer": ["fix 1 shrinks <code>W2</code>/<code>b2</code> so logits start near 0 and the loss starts near 3.30; visible in the step-0 loss", "fix 2 shrinks <code>W1</code>/<code>b1</code> so tanh units start unsaturated; visible only in <code>h</code>'s histogram and saturation map", "with only fix 1 the loss looks healthy while 61% of units are saturated, and dev ends at 2.1311 instead of 2.1027"]},
+    {"with": "z2h-5-batchnorm/dead-neurons", "q": "tanh saturates at both tails; ReLU is flat on its whole negative side. How does each go dead, and which is easier to revive?", "answer": ["tanh: large |hpreact| on every example, gate 1 − t² ≈ 0 but not exactly 0 until about |x| = 9", "ReLU: hpreact negative on every example gives a gradient of exactly 0, so no update can ever bring it back", "tanh's flat share of [−5, 5] is 40.1%, ReLU's 50.0%", "Leaky ReLU keeps a small slope everywhere, so it never fully dies"]},
+    {"with": "z2h-2-micrograd/a-neuron", "q": "In micrograd you computed tanh's local derivative for one neuron by hand. What changes when the same rule is applied to 32 × 200 units at once, and why does it suddenly matter?", "answer": ["same rule: <code>(1 - t**2) * out.grad</code>", "now it is an elementwise gate on a whole matrix, so you look at its distribution, not one value", "at scale, a bad init pushes most entries into the tails at once, and that is what stalls a layer"]}
+  ],
+  "predict": {"q": "Keep <code>b1 × 0.01</code> but scale <code>W1</code> by <b>5</b> instead of 0.2. Roughly what share of the 6,400 step-0 activations will be saturated, and will any of the 200 units be dead on all 32 examples?", "answer": "91.7% saturated, and 21 of 200 units are dead on the whole batch (mean gate 0.033). The spread of <code>hpreact</code> grows about 25× from the fixed init, so many units sit in a tail for every example. At W1 × 1 there were none: dead units appear only once the init is much too large."},
+  "apply": {"task": "In your Build-it code, keep <code>b1 × 0.01</code> and sweep the <code>W1</code> scale over 0.05, 0.2, 0.5 and 1. For each, print the saturated share, the mean of <code>1 - h**2</code>, and <code>h.std()</code>. Then pick the scale you would train with and justify it in one sentence using two of the three numbers.", "done": "Your table matches: 0.05 → 0.0%, 0.944, 0.237 · 0.2 → 1.0%, 0.605, 0.627 · 0.5 → 29.2%, 0.301, 0.834 · 1 → 59.7%, 0.158, 0.916, and your choice avoids both extremes.", "hint": "At 1 the numbers differ slightly from the card's (59.7% vs 61.0%) because the card's W1 × 1 row also kept b1 × 1."},
+  "reflect": [
+    "Which prediction did you get wrong: the 2% gate at t = 0.99, or the number of dead units at W1 × 5?",
+    "What couldn't you explain cleanly: why the loss can't see saturation, or why a dead unit never recovers?",
+    "Which relationship is still fuzzy: W1 scale → hpreact spread, or hpreact spread → vanishing gradient?",
+    "Could you explain to someone why 0.2 is a guess, and what a principled rule would need to know?",
+    "What will you check first in your own nets from now on, before the loss curve?"
+  ],
+  "revisit": ["z2h-2-micrograd/a-neuron", "z2h-4-mlp/hidden-and-output", "z2h-1-toolkit/mean-variance-gaussian"],
+  "prereq": ["z2h-5-batchnorm/squash-the-logits"]
+}

@@ -1,0 +1,68 @@
+{
+  "prime": {
+    "problem": "This lecture is two hours of writing gradients line by line. Without a map of the few rules they come from, it is easy to finish with 26 lines that match autograd and still be unable to write the backward pass of a layer you haven't seen, or to say why training stalls.",
+    "fits": "This card spans the whole course. It compresses the ten backprop-ninja cards into six claims, and it leans on micrograd's chain rule and += for reused nodes, now applied to whole tensors, and on the MLP with BatchNorm from the last two lectures.",
+    "expect": ["why autograd leaks, and how cmp checks each gradient", "sum ↔ broadcast, and += for tensors used twice", "matmul backward chosen by shapes", "softmax − one-hot, the pulley", "BatchNorm's three roads in one line, then training with no autograd"],
+    "goal": "Draw the MLP's whole backward pass from memory, from dlogits back to dC, with every shape, every sum, broadcast and +=, and say which of the six rules produced each line."
+  },
+  "attend": [
+    "In the clip-the-loss sketch, autograd computes the gradient correctly and the model still ignores its worst examples. Where exactly is the mistake, and what rule would have let you spot it by reading the code?",
+    "Why does the starter code avoid initialising bngain at exactly 1 and the biases at exactly 0, when those are the usual values?",
+    "When a (32, 1) tensor meets a (32, 27) tensor in the forward pass, which direction does the backward pass need a sum in, and why is that the same rule as micrograd's +=?",
+    "Shapes pick the matmul backward for dh and dW2. What would have to be true about the dimensions for shape matching to let a wrong formula through?",
+    "Why does every row of dlogits sum to zero, and what does that say about what a training step does to one example's 27 logits?",
+    "In BatchNorm, why does the gradient of one input depend on all 32 rows of the batch, and which edge of the graph turns out to carry nothing?"
+  ],
+  "core": {
+    "must": [
+      "The backward pass multiplies local gradients along the path → one op with slope 0 (a clamp outside ±1, a saturated tanh, a dead ReLU) zeroes everything behind it → autograd is exact about the function you wrote but can't tell you it's the wrong function → you need to know each op's local gradient to debug training",
+      "Each d&lt;name&gt; has the shape of &lt;name&gt; → a forward broadcast (one value used many times) becomes a backward sum over the stretched axis, and a forward sum becomes a backward copy → a tensor used on two paths adds both with <code>+=</code> → forget either and cmp prints False (e.g. dcounts off by 0.00613)",
+      "Matmul backward is two matmuls with a transpose (dh = dlogits @ W2.T, dW2 = h.T @ dlogits) and the bias gradient is a sum over the batch → when all dimensions differ only one arrangement fits the required shape → shapes choose the formula; with equal dimensions they can't, and cmp must",
+      "Deriving a whole block on paper lets terms cancel (the log cancels the exp; dσ²/dμ = 0 for the batch's own mean) → cross-entropy becomes (softmax − one-hot)/n and BatchNorm one three-term line → the whole backward pass fits in 14 lines → loss.backward() can be deleted and training still reaches val 2.1086"
+    ],
+    "elevated": [
+      "Fused formulas add the same numbers in a different order from autograd's small ops → float32 results differ by about 1e-9 to 1e-8 → cmp shows exact: False, approximate: True for correct code → judge with allclose, and treat a maxdiff near 1e-3 as a real bug",
+      "Every row of dlogits and every column of dhprebn sums to ≈ 0 → the loss can't change when you shift all logits in a row, or all 32 inputs of a BatchNorm neuron → the gradient has no component along directions the output ignores"
+    ],
+    "reference": [
+      "the Exercise 1 variable names (logprobs, counts_sum_inv, bnvar_inv, bndiff2, embcat, …) and their order",
+      "<code>cmp</code>'s print format and torch.allclose's defaults (rtol 1e-5, atol 1e-8)",
+      "the exact one-liner: <code>dhprebn = bngain*bnvar_inv/n * (n*dhpreact - dhpreact.sum(0) - n/(n-1)*bnraw*(dhpreact*bnraw).sum(0))</code>",
+      "<code>index_add_</code> as the vectorised dC scatter-add",
+      "the running numbers: 4,137 parameters (12,297 with n_hidden = 200), loss 3.3377 in the video vs 3.3444 in the lab"
+    ]
+  },
+  "compress": {
+    "prompt": "Card closed, one sheet of paper: draw the MLP's backward pass as a pipeline from the loss back to C (the embedding table), with each tensor's shape for a batch of n = 32. Beside every arrow write the backward line, and label it with the big idea that produced it: leaky local gradient, sum ↔ broadcast / +=, matmul by shapes, softmax − one-hot, or BatchNorm's three roads. Box the whole thing with cmp.",
+    "checklist": [
+      "dlogits = (softmax − one-hot)/n, rows sum to 0 (the pulley)",
+      "the two linear layers by the matmul rule, their biases as sums over the 32 rows",
+      "tanh as (1 − h²) · dh, the place where saturation cuts the gradient",
+      "BatchNorm: dbngain and dbnbias as row sums, dhprebn as three terms (direct, via μ, via σ²) with dσ²/dμ = 0",
+      "view undone by viewing back, and dC by scatter-add with += for repeated characters",
+      "every line checked with cmp: about 1e-9 is rounding, approximate: False is a bug"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain, without code, why Karpathy says backprop is a leaky abstraction, using the clip-the-loss bug as your example.", "kind": "concept", "answer": ["autograd returns the true derivative of whatever loss you wrote", "clamping δ inside the loss makes the loss flat for |δ| &gt; 1, so those examples get gradient exactly 0", "nothing errors and the loss still goes down, so only knowing the local gradients reveals that the worst examples are ignored", "the intended fix caps the gradient (Huber, or clip after backward), not the loss"]},
+    {"q": "Walk the gradient from dlogits back to dhpreact: name each line, the shape it produces, and which of the six ideas it uses.", "kind": "mechanism", "answer": ["dh = dlogits @ W2.T → (32, 64), matmul by shapes", "dW2 = h.T @ dlogits → (64, 27); db2 = dlogits.sum(0) → (27,), a sum because b2 was broadcast", "dhpreact = (1 − h²) · dh → (32, 64), tanh's local gradient using the stored output"]},
+    {"q": "You add one new op to the forward pass. Compare writing its backward atom by atom, deriving a fused formula on paper, and relying on autograd. When would you pick each, and how does each one fail?", "kind": "tradeoff", "answer": ["atomic: each line a known local rule, cmp pins a bug to one line, but many temporaries and slow", "fused: short and fast, but tied to one exact forward pass, only float-close to autograd, and a derivation slip gives one opaque wrong tensor", "autograd: always consistent, no derivation, but hides where a gradient dies", "whatever you write, check it against autograd once with cmp"]},
+    {"q": "Your hand-written dcounts prints exact: False, approximate: False, maxdiff 0.00613, while every earlier line was exact. What is the most likely cause, and how do you confirm it?", "kind": "mechanism", "answer": ["counts feeds two paths (into probs and into counts_sum), so its gradient needs both", "a plain = keeps only the first path", "the missing path adds 1/(n·counts_sum) to every entry of a row; the worst row (counts_sum 5.0985) gives 1/(32 × 5.0985) = 0.00613", "add the second branch with += and cmp turns True"]}
+  ],
+  "compare": [
+    {"with": "z2h-2-micrograd/chain-rule-by-hand", "q": "In micrograd you backpropagated by hand through a handful of scalars. What is fundamentally new when every node is a tensor, which design choice causes it, and what new ways of failing appear?", "answer": ["the chain rule is the same: gradient from above × local gradient, summed over uses", "a tensor op hides many scalar uses at once (broadcasts, matmuls), so the sums become .sum over an axis or a transpose inside a matmul", "new failures: wrong axis or missing keepdim, a gradient with the wrong shape that still broadcasts, a transpose on the wrong side", "the fix is the shape rule plus cmp against autograd"]},
+    {"with": "z2h-2-micrograd/automatic-backward", "q": "micrograd's automatic backward and this lecture's hand-written backward both compute every gradient. What does each choose, and when would each break down?", "answer": ["micrograd: one _backward closure per scalar op, run in reverse topological order; general and automatic, but one Python object per number", "here: one hand-written tensor line per op, or one fused formula per block; fast and transparent, but tied to one architecture", "micrograd breaks down on speed for real nets; the manual pass breaks as soon as the forward pass changes and nobody re-derives it"]},
+    {"with": "z2h-4-mlp/cross-entropy", "q": "In the MLP lecture you switched to <code>F.cross_entropy</code> instead of the exp, normalise, log chain. What does this course show about why that is better, in terms of the backward pass?", "answer": ["the chain's backward divides by probs, which blows up when a probability is tiny", "the fused gradient is (softmax − one-hot)/n: bounded by ±1/n and computed in one step", "the fused version keeps no intermediate (32, 27) tensors of the chain for the backward pass", "the cost: you can no longer inspect the intermediate gradients, which is what the atomic version is for"]}
+  ],
+  "predict": {"q": "Swap the net's tanh for a ReLU and keep everything else, including BatchNorm. Before touching the code: how many of the 14 backward lines change, what does the new line look like, and which earlier idea tells you how some hidden units could stop learning?", "answer": "<b>One line.</b> Every backward line depends only on its own op's local gradient, so only the tanh line changes, to <code>dhpreact = (hpreact &gt; 0).float() * dh</code> (the slope is 1 where the input was positive and 0 elsewhere). The first big idea tells you the risk: a unit whose preactivation is negative for the whole batch has slope 0 everywhere, so its column of dhpreact is all zeros, and nothing flows back into its BatchNorm parameters or its column of W1 on that step. That is the dead-neuron leak."},
+  "apply": {"task": "Rebuild Exercise 4 from memory. In a copy of <code>labs/batchnorm-analytic-and-train.py</code>, delete the manual backward pass and write all 14 lines again without looking (cross-entropy, layer 2, tanh, the BatchNorm parameter sums, the one-liner, layer 1, view, and the dC loop). Run the check against autograd first, then <code>--quick</code> training with <code>loss.backward()</code> removed.", "done": "The one-liner prints approximate: True with maxdiff 9.31e-10, all seven parameter gradients print approximate: True (maxdiffs 3.7e-9 to 1.5e-8), and the 20,000-step quick run ends near train 2.1894 / val 2.1975, as measured on the M3.", "hint": "Write the lines in the order the gradient flows, and before each one say which big idea it uses. If a check fails, print the shape of your gradient first."},
+  "reflect": [
+    "Which prediction did you get wrong: how many lines change for ReLU, or which cmp result is rounding and which is a bug?",
+    "Which panel could you not redraw from memory, and which part of it was missing?",
+    "Which relationship is still fuzzy: forward broadcast → backward sum, or forward sum → backward copy?",
+    "What couldn't you explain cleanly: why the rows of dlogits sum to zero, or why dσ²/dμ is zero?",
+    "Before the WaveNet lecture, which card will you reopen, and what will you check when a loss curve stalls with loss.backward() back in charge?"
+  ],
+  "revisit": ["z2h-2-micrograd/accumulate-gradients", "z2h-1-toolkit/broadcasting-rules", "z2h-1-toolkit/matmul-by-shapes", "z2h-5-batchnorm/batchnorm-forward"],
+  "prereq": []
+}

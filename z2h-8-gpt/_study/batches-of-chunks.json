@@ -1,0 +1,63 @@
+{
+  "prime": {
+    "problem": "You have one tensor of 1,003,854 training integers and a model that predicts the next character. Fed the whole thing at once it's far too long to process, and there's no obvious answer to \"what is one training example?\"",
+    "fits": "The previous card turned the text into integers and split off 10% for validation. This card decides how those integers reach the model each step. It reuses the makemore idea of a context window and a random minibatch, and widens it so every position in a window is a target.",
+    "expect": ["<code>block_size</code> (context length)", "a chunk of <code>block_size + 1</code> characters", "inputs <code>x</code> and targets <code>y</code> shifted by one", "the batch dimension B × time dimension T", "<code>get_batch</code> with random offsets"],
+    "goal": "Write <code>get_batch</code>, say how many (context → target) examples any B × T batch holds, and explain why the model is trained on every context length from 1 to <code>block_size</code>."
+  },
+  "attend": [
+    "Why does a chunk need <code>block_size + 1</code> characters when the model only ever reads <code>block_size</code> of them?",
+    "Which single index shift turns <code>x</code> into <code>y</code>, and what does <code>y[t]</code> mean in words?",
+    "Why is the upper bound of <code>torch.randint</code> <code>len(data) - block_size</code> and not <code>len(data)</code>?",
+    "What would generation lose if training only ever used full 8-character contexts?",
+    "Which examples in a batch share information, and which never can?"
+  ],
+  "core": {
+    "must": [
+      "A window of <code>block_size + 1</code> characters → <code>x</code> = first 8, <code>y</code> = last 8 → <code>y[t]</code> is the character after <code>x[:t+1]</code> → one window gives 8 (context → target) examples, from 1 to 8 characters of context",
+      "Training on every context length → the model has practised 1-character contexts → generation can start from a single character; but 8 is also the ceiling → at generation time only the last <code>block_size</code> characters can be fed in (the crop)",
+      "Random offsets from <code>randint(len(data) − block_size)</code> → B windows from unrelated places, stacked into (B, T) → one forward pass scores B·T examples (32 here, 16,384 in gpt.py) → a less noisy gradient per step and a busy processor",
+      "Rows in a batch never exchange information → each row is an independent sequence; positions within a row share their characters → a Transformer can compute all T predictions of a row in one pass, as long as a mask hides later positions"
+    ],
+    "elevated": [
+      "The bound <code>len(data) − block_size</code> → the largest offset is 1,003,845 → <code>y = data[i+1 : i+9]</code> ends exactly at the last element; use <code>len(data)</code> and any offset in the last 8 gives a short window, so <code>torch.stack</code> raises \"stack expects each tensor to be equal size\""
+    ],
+    "reference": [
+      "<code>torch.manual_seed(1337)</code> must come right before the first <code>get_batch</code> to reproduce the Colab's <code>xb</code>",
+      "<code>torch.stack</code> joins a list of 1-D tensors into a new leading dimension",
+      "the lab's offsets <code>ix = [76049, 234249, 934904, 560986]</code> and rows <code>\"Let's he\"</code> → <code>\"et's hea\"</code>",
+      "<code>bigram.py</code> uses batch 32 × block 8; <code>gpt.py</code> uses 64 × 256"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw one 9-character window, split it into <code>x</code> and <code>y</code>, and draw the 8 arrows from each context to its target. Then explain in 3–4 sentences how <code>get_batch</code> turns that into a (B, T) batch and why every prefix is kept.",
+    "checklist": [
+      "a window is <code>block_size + 1</code> long; <code>x</code> is its first T, <code>y</code> its last T",
+      "<code>y[t]</code> is the target for the context <code>x[:t+1]</code>, so T examples per window",
+      "short contexts are kept so generation can start from one character; <code>block_size</code> is also the maximum context",
+      "B random offsets, stacked into (B, T) tensors: B·T examples per step",
+      "rows are independent; the offset bound keeps <code>y</code> inside the data"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why one 9-character chunk counts as 8 training examples rather than 1.", "kind": "concept", "answer": ["each prefix <code>x[:t+1]</code>, t = 0…7, is its own context", "and each has its own target <code>y[t]</code>, the next character", "the model is scored on all 8 predictions, not only the last"]},
+    {"q": "Walk through <code>get_batch('train')</code> with batch_size 4 and block_size 8: what gets drawn, what gets sliced, and what shapes come out?", "kind": "mechanism", "answer": ["<code>torch.randint(len(data) − 8, (4,))</code> draws 4 offsets", "for each offset <code>i</code>: <code>data[i:i+8]</code> for x and <code>data[i+1:i+9]</code> for y", "<code>torch.stack</code> makes <code>x</code> and <code>y</code> each (4, 8)", "32 (context → target) pairs"]},
+    {"q": "You can raise batch_size or block_size to put more examples in a step. What does each buy, and what does each cost?", "kind": "tradeoff", "answer": ["bigger B: more independent rows, a less noisy gradient, more memory; no longer context", "bigger T: the model can use more context, and each row yields more targets", "but attention work per row grows with T², and the model can never use more than T characters at generation"]},
+    {"q": "Your <code>xb[:, 1:]</code> doesn't equal <code>yb[:, :-1]</code>. Name two bugs in <code>get_batch</code> that would cause this.", "kind": "mechanism", "answer": ["y sliced from the wrong start (e.g. <code>data[i:i+block_size]</code>, no shift)", "x and y using different offsets, e.g. calling <code>torch.randint</code> twice"]}
+  ],
+  "compare": [
+    {"with": "z2h-4-mlp/rolling-window-dataset", "q": "makemore's rolling window and this card's chunks both slide a context over text. What is fundamentally different about how many targets each window yields, which model design causes it, and when would you pick each?", "answer": ["makemore: one fixed 3-character context → one target per row; every row is its own example", "here: one 9-character window → 8 targets of every length 1…8", "the MLP needs a fixed-size input, so it can only score one target per row; a masked Transformer scores all positions of a row in one pass", "the one-target layout wastes compute for a Transformer; the chunk layout doesn't fit a fixed-input MLP"]},
+    {"with": "z2h-10-gpt2/overfit-then-load", "q": "Random-offset <code>get_batch</code> vs <code>DataLoaderLite</code>, which walks the token stream in order: what does each guarantee, and how does each go wrong?", "answer": ["random offsets: every step is a fresh mix, but some tokens repeat and others are skipped by chance", "in order: every token is used exactly once per pass, with no random access needed", "the ordered loader follows whatever order the data is in, so nearby batches can be similar", "small text reread ~80 times → random; billions of tokens read about once → in order"]}
+  ],
+  "predict": {"q": "You call <code>get_batch('val')</code> with block_size 8. How many different starting offsets are possible, and what would happen if <code>block_size</code> were 200,000?", "answer": "val_data has 111,540 integers, so <code>randint(111,540 − 8)</code> allows 111,532 offsets (0 … 111,531). With block_size 200,000 the bound goes negative: <code>torch.randint</code> refuses a high of −88,460 and raises a RuntimeError (\"random_ expects 'from' to be less than 'to'\"), because not even one full window fits in the validation split."},
+  "apply": {"task": "Modify the lab to count, for the lab's seeded 4 × 8 batch, how many of the 32 targets are a space (integer 1). Then change block_size to 256 and batch_size to 64 (gpt.py's shape), keep seed 1337, and check the shapes and the example count.", "done": "The 4 × 8 batch has 6 space targets (1, 2, 2 and 1 in rows 0–3), and the gpt.py-shaped batch has <code>xb.shape == (64, 256)</code>, i.e. 16,384 examples.", "hint": "<code>(yb == 1).sum()</code> counts spaces; <code>xb.numel()</code> counts examples."},
+  "reflect": [
+    "Which prediction did you get wrong: the shifted target row, or how many characters it shares with the input?",
+    "What couldn't you explain cleanly: why short contexts are trained, or why <code>block_size</code> is also a ceiling at generation?",
+    "Which relationship is still fuzzy: window of T+1 → T examples, or T examples per row → one Transformer pass?",
+    "When would you choose an ordered loader over random offsets for your own data?",
+    "What will you check first on the bigram card, now that you know the model gets (B, T) inputs and (B, T) targets?"
+  ],
+  "revisit": ["z2h-4-mlp/rolling-window-dataset", "z2h-4-mlp/minibatches", "z2h-1-toolkit/tensors-dims-and-indexing"],
+  "prereq": ["z2h-8-gpt/char-tokenizer-split"]
+}

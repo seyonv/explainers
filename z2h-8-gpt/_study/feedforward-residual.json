@@ -1,0 +1,65 @@
+{
+  "prime": {
+    "problem": "After attention, each token holds a weighted mix of earlier tokens' values but has no step to work on it. And when you try to add capacity by stacking more blocks, the deeper net trains <i>worse</i> than the shallow one.",
+    "fits": "The previous card got multi-head attention to val 2.29. This card finishes the Transformer block: it reuses the MLP from makemore as a per-token feed-forward layer, and reuses micrograd's rule that <code>+</code> passes gradients through unchanged to make depth trainable.",
+    "expect": ["position-wise feed-forward (Linear → ReLU → Linear)", "communication vs computation", "residual connection <code>x = x + f(x)</code>", "the projection back into the stream", "the 4× inner width"],
+    "goal": "Explain why a plain stack of blocks trains badly and why adding each sublayer's output to <code>x</code> fixes it, and write <code>FeedFoward</code> and <code>Block</code> that reach val ≈ 2.08."
+  },
+  "attend": [
+    "What can the feed-forward layer do that attention can't, and what can't it do that attention can?",
+    "Three plain blocks have twice the parameters of one block: which part of backprop makes them end up worse?",
+    "In <code>x = x + f(x)</code>, where exactly does the gradient's \"1\" come from, and why does it survive a stack of layers?",
+    "Why must the sublayer's output have the same shape as <code>x</code>, and which layer guarantees it?",
+    "The drop from 2.16 to 2.08 bundles two changes. Which two, and why can't you say which one mattered?"
+  ],
+  "core": {
+    "must": [
+      "Attention only mixes values across positions → each token ends with a weighted average but no per-token processing → a per-token MLP (feed-forward) after it lets every token transform what it gathered → val 2.29 → 2.27 (video 2.24)",
+      "Plain stack <code>x = f(f(f(x)))</code> → backprop multiplies one local derivative per layer → small factors shrink the gradient to early layers (toy: 7.06e-08) → deeper net trains worse (2.33 vs 2.27)",
+      "Residual <code>x = x + f(x)</code> → d(out)/dx = 1 + f′(x) → the product over layers stays near 1 (toy: 1.0021) → gradients reach every block, and the same 16,865-param stack drops to 2.16",
+      "Adding requires matching shapes → the projection maps each sublayer's output back to n_embd → the residual stream keeps width n_embd through every block, so blocks can be stacked freely"
+    ],
+    "elevated": [
+      "The feed-forward runs on each of the B×T vectors separately → it adds compute but moves no information between positions → a stack of feed-forward blocks without attention is stuck at bigram level (2.51)",
+      "The residual makes the net <i>trainable</i>, not regularised → train loss runs ahead of val (1.98 vs 2.08) → the next card needs LayerNorm and dropout before scaling up"
+    ],
+    "reference": [
+      "Karpathy's class name <code>FeedFoward</code> (sic) and <code>Block(n_embd, n_head)</code>",
+      "inner width 4 × n_embd (32 → 128 → 32 here; 512 → 2048 in the Transformer paper)",
+      "<code>proj = nn.Linear(head_size * num_heads, n_embd)</code> after the head concat",
+      "param counts: 8,609 / 16,865 / 41,921, and 12,480 per final Block",
+      "lab settings: batch 32, block 8, lr 1e-3, 5000 iters, seed 1337"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw one Block as a residual stream with two branches, labelling what each branch does and what happens at each <code>+</code>. Then in 2–3 sentences explain why three plain blocks lost to one block, and why adding <code>x +</code> fixed it.",
+    "checklist": [
+      "attention = communication between positions; feed-forward = computation per token",
+      "each branch forks off <code>x</code>, computes, and is added back (through a projection)",
+      "backprop multiplies local derivatives layer by layer; small ones make early layers nearly untrainable",
+      "with <code>x + f(x)</code> each factor is 1 + f′, so the gradient has a direct path to every block",
+      "outputs must match <code>x</code>'s shape, which is why the projections exist"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain the split Karpathy makes between attention and the feed-forward layer, and what each one can and can't see.", "kind": "concept", "answer": ["attention: each token reads earlier tokens (communication across positions)", "feed-forward: an MLP on each token's vector alone (computation)", "the feed-forward can't move information between positions; attention alone does no per-token processing"]},
+    {"q": "Walk the gradient backwards through <code>x = x + self.sa(x)</code>: what reaches the input <code>x</code>, and along which paths?", "kind": "mechanism", "answer": ["the <code>+</code> copies the incoming gradient to both its inputs unchanged", "one copy goes straight to <code>x</code> (the highway)", "the other flows through <code>sa</code> and adds its own contribution to <code>x.grad</code>", "so x's gradient = upstream × (1 + d sa/dx)"]},
+    {"q": "Plain stack vs residual stack with the same 16,865 parameters: what does each cost, what do you measure, and does the residual version have any downside here?", "kind": "tradeoff", "answer": ["same parameters and nearly the same compute (one add per sublayer)", "measured val 2.3318 plain vs 2.1560 residual", "the residual only fixes trainability; overfitting still has to be handled (the final run's train 1.98 vs val 2.08)", "it forces every sublayer's output to match n_embd"]},
+    {"q": "Where do the 41,921 parameters of the final three-block model come from? Break one Block down by layer.", "kind": "mechanism", "answer": ["heads 3,072 + proj 1,056", "FFN 32→128: 4,224; 128→32: 4,128", "12,480 per Block, × 3 = 37,440", "+ 4,481 for the embeddings and lm_head"]}
+  ],
+  "compare": [
+    {"with": "z2h-8-gpt/heads-in-the-model", "q": "Multi-head attention and the feed-forward layer both add parameters. What is fundamentally different about <i>which numbers</i> each one lets interact, and when would adding more of one not help without the other?", "answer": ["heads mix information across positions (T axis) using data-dependent weights", "the feed-forward mixes channels within a single position (C axis) with fixed weights", "more heads alone gathers more but never processes it; more FFN alone is stuck near bigram level (2.51)"]},
+    {"with": "z2h-5-batchnorm/resnet-and-torch-nn", "q": "The makemore BatchNorm course fought deep-net training with careful init and normalisation. How is a residual connection a different kind of fix, and how does each one fail?", "answer": ["init and BatchNorm keep each layer's activations and gradients well scaled", "a residual adds a gradient path that skips the layer's derivative altogether", "careful init can still leave a long product of factors; residuals need matching shapes and don't regularise", "real nets use both: gpt.py has residuals <i>and</i> LayerNorm"]}
+  ],
+  "predict": {"q": "Keep the residual Block but delete attention, so each Block is only <code>x = x + self.ffwd(x)</code> with the 4× FFN. Three of them give 29,537 parameters, over three times the single attention+FFN model. Commit: will val loss land nearer 2.08, 2.27, or 2.5?", "answer": "Near <b>2.5</b>: my run ends at <b>2.5111</b>. Without attention, every token sees only itself and its position, so the model can only learn \"which character tends to follow this one\", which is exactly what the bigram learns (bigram.py reached 2.49). Parameters that can't move information between positions don't buy context."},
+  "apply": {"task": "Separate the two changes the video bundles. In <code>labs/feedforward-residual.py</code>, add a fourth stage: three Blocks that keep <code>x = x + …</code> but use no projection (<code>proj=False</code> on <code>MultiHeadAttention</code>) and the first FFN, <code>Linear(32, 32)</code> + ReLU. Predict the parameter count and whether val lands nearer 2.33 or 2.08 before you run it (about 30 s).", "done": "It prints 16,865 params (the same as the plain stack) and ends near val 2.1560, so the residual alone accounts for most of the 2.33 → 2.08 gap, and the projections and 4× width account for the last 0.08.", "hint": "The lab's <code>Block</code> ties the residual flag to the projection and FFN width. Give it a separate <code>add</code> flag for the <code>x +</code>, or copy <code>Block</code> into a new class."},
+  "reflect": [
+    "Which prediction did you get wrong: the deeper plain stack losing, or the attention-free stack stalling near 2.5?",
+    "What couldn't you explain cleanly: why the plain gradient shrinks, or why the residual one doesn't?",
+    "Which relationship is still fuzzy: <code>+</code> → gradient of 1, or gradient of 1 → early blocks actually learning?",
+    "Could you rebuild the 41,921 count from the layer shapes without looking?",
+    "Given train 1.98 vs val 2.08, what do you expect the LayerNorm and dropout card to fix, and what not?"
+  ],
+  "revisit": ["z2h-8-gpt/heads-in-the-model", "z2h-2-micrograd/chain-rule-by-hand", "z2h-4-mlp/hidden-and-output", "z2h-5-batchnorm/resnet-and-torch-nn"],
+  "prereq": ["z2h-8-gpt/heads-in-the-model"]
+}

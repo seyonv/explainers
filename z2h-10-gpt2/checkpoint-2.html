@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Checkpoint 2: making it fast, then the recipe that beats GPT-2</title>
+<style>
+:root{
+  --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
+  --text:#1c1f23; --muted:#6b7068; --faint:#b9b9b3;
+  --accent:#4a9d77; --accent-bg:#dcefdf; --accent-border:#8cc79c;
+  --red:#c0492b; --red-bg:#fbeceb;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#15171a; --surface:#1d2024; --surface2:#24282d; --border:#32373d;
+    --text:#e6e8ea; --muted:#9aa1a9; --faint:#4a5057;
+    --accent:#5fb37f; --accent-bg:#1c2b22; --accent-border:#3f7a55;
+    --red:#e57368; --red-bg:#2e1f1e;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text)}
+a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+.card{max-width:820px;margin:0 auto;padding:28px 32px;font-family:-apple-system,"Inter",system-ui,sans-serif;line-height:1.45}
+h1{font-size:26px;font-weight:600;margin:0 0 6px;letter-spacing:-0.01em}
+.sub{font-size:15px;color:var(--muted);margin:0 0 20px}
+h2{font-size:17px;font-weight:600;margin:26px 0 10px}
+p{font-size:15px;margin:0 0 10px}
+.cap{font-size:13px;color:var(--muted);margin:8px 0 0;text-align:center}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+
+/* Horizontal bar chart with running total and cutoff */
+.bars{display:grid;grid-template-columns:110px 1fr 90px;column-gap:14px;row-gap:12px;align-items:center;font-size:14px}
+.bars .hd{font-size:13px;color:var(--muted)}
+.bars .hd.r,.bars .tot{text-align:right;font-variant-numeric:tabular-nums}
+.bars .tok{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:15px}
+.bars .track{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted)}
+.bars .bar{height:22px;border-radius:3px;background:var(--accent)}
+.bars .tot{font-size:15px}
+.bars .strong{font-weight:600}
+.bars .out,.bars .out .tok{color:var(--muted)}
+.bars .track.out .bar{background:var(--faint)}
+.bars .out .tot{font-size:13px}
+.cutoff{grid-column:1 / -1;border-top:2px dashed var(--red);margin-top:4px;padding-top:6px;text-align:center;font-size:13px;color:var(--red)}
+
+/* Tables and formulas */
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border)}
+th{font-size:12px;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:none}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+.hi{color:var(--accent);font-weight:600} .lo{color:var(--red)}
+.formula{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin:10px 0;white-space:pre;overflow-x:auto;line-height:1.55}
+
+/* 2x2 grid */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.cell{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.cell.win{background:var(--accent-bg);border-color:var(--accent-border)}
+.cell h3{font-size:16px;font-weight:600;margin:0 0 5px;display:flex;gap:8px;align-items:baseline}
+.cell p{font-size:14px;margin:0;color:var(--text)}
+.cell.win h3,.cell.win p{color:var(--accent)}
+.x{color:var(--red)} .ok{color:var(--accent)}
+
+/* Clarification box */
+.note{border:1px solid var(--border);border-radius:10px;padding:14px 18px;font-size:14px}
+.note p{font-size:14px} .note p:last-child{margin-bottom:0}
+
+.foot{margin-top:22px;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+svg{display:block;max-width:100%}
+.sl{font-size:12px;fill:var(--muted)} .st{font-size:13px;fill:var(--text)}
+@media (max-width:560px){.grid2{grid-template-columns:1fr}.bars{grid-template-columns:70px 1fr 64px}}
+
+/* z2h series: Build-it box, predict, code */
+.build{border:1.5px solid var(--accent-border);background:var(--accent-bg);border-radius:10px;padding:12px 16px 10px;margin:18px 0}
+.build .hd{display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px}
+.build .hd b{font-size:15px;color:var(--accent)}
+.build .where{font-size:12px;color:var(--muted);border:1px solid var(--border);background:var(--bg);border-radius:999px;padding:2px 9px;white-space:nowrap}
+.build p{font-size:14px;margin:6px 0}
+.build .code{background:var(--bg)}
+.build .out{color:var(--muted)}
+.build .done{border-top:1px dashed var(--accent-border);padding-top:7px;margin-top:8px}
+.predict{border:1px solid var(--border);border-radius:10px;padding:10px 14px;margin:14px 0;background:var(--surface)}
+.predict summary{cursor:pointer;font-size:15px}
+.predict summary b{color:var(--accent)}
+.predict[open] summary{margin-bottom:6px}
+.predict p{font-size:14px;margin:4px 0 0}
+.code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;line-height:1.5;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin:10px 0;white-space:pre;overflow-x:auto;tab-size:4;color:var(--text)}
+.code .k{color:var(--accent);font-weight:600}.code .c{color:var(--muted)}.code .o{color:var(--muted)}
+/* term table (patterns.md §3) */
+.parts td{vertical-align:top} .parts td:first-child{font-weight:600;white-space:nowrap}
+.parts .ex{font-size:13px} .parts .ex span{display:block;color:var(--muted)}
+@media (max-width:560px){.parts .what{display:none}}
+.foot p{font-size:13px;margin:0 0 4px;color:var(--muted)}
+
+/* checkpoint */
+.how{border:1px solid var(--accent-border);border-radius:10px;padding:10px 16px 6px;background:var(--accent-bg);margin:12px 0 18px}
+.how p{font-size:14px;margin:4px 0 8px}
+.how ul{margin:4px 0 8px;padding-left:22px;font-size:14px}
+.how li{margin:3px 0}
+.how-k{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--accent);font-weight:600;margin-bottom:4px}
+ol.qs{padding-left:24px;margin:6px 0}
+ol.qs>li{margin:0 0 16px;font-size:15px}
+.tag{display:inline-block;font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:var(--accent);border:1px solid var(--accent-border);border-radius:4px;padding:0 5px;margin-right:6px;vertical-align:1px}
+.tag.dbg{color:var(--red);border-color:var(--red)}
+details.chk{margin:6px 0 0;padding:4px 12px;border-left:3px solid var(--accent-border);background:var(--surface2);border-radius:0 6px 6px 0;font-size:14px}
+details.chk>summary{cursor:pointer;color:var(--accent);font-size:13px;font-weight:600}
+details.chk ul{margin:6px 0;padding-left:20px}
+details.chk li{margin:3px 0}
+.re{font-size:13px;color:var(--muted);margin:4px 0 6px}
+.tw{overflow-x:auto;margin:8px 0}
+table.cmp{min-width:680px;font-size:13.5px;table-layout:fixed}
+table.cmp th,table.cmp td{vertical-align:top}
+table.cmp td:first-child{font-weight:600;width:17%}
+table.cmp td.blank{height:64px;background:var(--surface);border:1px dashed var(--border)}
+.proj{border:1px solid var(--accent-border);border-radius:10px;padding:12px 18px;margin:8px 0}
+.proj p,.proj li{font-size:14px}
+.proj ol,.proj ul{padding-left:20px;margin:4px 0}
+.proj li{margin:5px 0}
+.proj .done{background:var(--accent-bg);border:1px solid var(--accent-border);border-radius:8px;padding:8px 12px;font-size:14px;margin:10px 0}
+.proj .where{font-size:12px;color:var(--muted);border:1px solid var(--border);background:var(--bg);border-radius:999px;padding:2px 9px;white-space:nowrap}
+ul.refl{padding-left:22px} ul.refl li{font-size:15px;margin:0 0 8px}
+/* series-nav */
+.sn{max-width:820px;margin:0 auto;padding:16px 32px 0;font-family:-apple-system,"Inter",system-ui,sans-serif;font-size:13px;line-height:1.5;color:var(--muted)}
+.sn a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
+.sn .crumbs{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 7px}
+.sn .crumbs b{color:var(--text);font-weight:600}
+.sn .sep{color:var(--faint,var(--border))}
+.sn .step{margin-left:auto;white-space:nowrap}
+.sn .dep{margin-top:5px;padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface)}
+.sn .dep .ok{color:var(--accent);font-weight:600}
+.snx{max-width:820px;margin:0 auto;padding:6px 32px 44px;font-family:-apple-system,"Inter",system-ui,sans-serif}
+.snx .nx{display:grid;grid-template-columns:280px 1fr;text-decoration:none;color:var(--text);background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.snx .nx:hover,.snx .nx:focus-visible{border-color:var(--accent-border,var(--accent));outline:none}
+.snx .mini{position:relative;height:210px;overflow:hidden;background:var(--bg);border-right:1px solid var(--border);padding:14px 16px}
+.snx .mini span{display:block}
+.snx .mini .m1{font-size:12.5px;font-weight:600;margin:0 0 4px;line-height:1.3}
+.snx .mini .m2{font-size:9px;color:var(--muted);margin:0 0 8px;line-height:1.4}
+.snx .mini .m3{font-size:8.5px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;margin:0 0 3px}
+.snx .mini .m4{font-size:9.5px;margin:0;line-height:1.45}
+.snx .tx{padding:16px 20px}
+.snx .lab{font-size:12px;font-weight:600;color:var(--accent);letter-spacing:.04em;text-transform:uppercase}
+.snx .tt{display:block;font-size:20px;font-weight:600;margin:5px 0 4px;line-height:1.25}
+.snx .ds{display:block;font-size:14px;color:var(--muted)}
+.snx .nd{display:block;font-size:13px;color:var(--muted);margin-top:10px}
+.snx .go{display:block;margin-top:12px;font-size:14px;font-weight:600;color:var(--accent)}
+.snx .aux{display:flex;justify-content:space-between;gap:12px;margin-top:10px;font-size:13px;color:var(--muted)}
+.snx .aux a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
+@media (max-width:560px){.sn,.snx{padding-left:16px;padding-right:16px}.snx .nx{grid-template-columns:1fr}.snx .mini{display:none}.sn .step{margin-left:0}}
+/* /series-nav */
+</style>
+</head>
+<body>
+<!-- series-nav:top -->
+<nav class="sn" aria-label="Course navigation"><div class="crumbs"><a href="../z2h-0-start/index.html" target="_top">Zero to hero: neural networks, built</a><span class="sep">›</span><a href="index.html" target="_top">10 · Reproducing GPT-2</a><span class="sep">›</span><b>19 / 19</b><span class="step"><a href="index.html#results" target="_top">← prev</a></span></div>
+<div class="dep"><span class="ok">Stands alone.</span> You can jump in here without reading earlier cards.</div></nav>
+<!-- /series-nav:top -->
+<article class="card">
+<h1>Checkpoint 2: making it fast, then the recipe that beats GPT-2</h1>
+<p class="sub">Ties together <a href="precision.html">fp32 → TF32 → bf16</a>, <a href="compile-flash.html">torch.compile and flash attention</a>, <a href="optimizer-recipe.html">the GPT-3 recipe</a>, <a href="big-batch.html">half-million-token batches</a>, <a href="data-and-evals.html">data and scorecards</a> and <a href="results.html">the results</a>, with <a href="nice-numbers.html">nice numbers</a>, the micrograd lecture's <a href="../z2h-2-micrograd/accumulate-gradients.html">+= rule</a>, the MLP lecture's <a href="../z2h-4-mlp/minibatches.html">minibatches</a>, <a href="../z2h-4-mlp/learning-rate-finder.html">learning-rate finder</a> and <a href="../z2h-4-mlp/splits-and-fit.html">train/dev/test</a>, the GPT lecture's <a href="../z2h-8-gpt/adam-optimizer.html">Adam and AdamW</a> and <a href="../z2h-8-gpt/masked-softmax.html">masked softmax</a>, and <a href="checkpoint-1.html">Checkpoint 1</a>'s checks. Lecture 9 · chapters 15–29 · <a href="https://www.youtube.com/watch?v=l8pRSuU81PU&amp;t=4938s">1:22:18</a> to <a href="https://www.youtube.com/watch?v=l8pRSuU81PU&amp;t=13385s">3:43:05</a></p>
+
+<div class="how">
+<div class="how-k">Prime · why this checkpoint, why now</div>
+<p>You've finished the lecture. Its second half did two different jobs to the model from <a href="checkpoint-1.html">Checkpoint 1</a>. Section 2 made one step about 11× cheaper (1000 → 93 ms on an A100) without changing what it computes. Section 3 changed what gets computed: GPT-3's optimizer settings, a 2<sup>19</sup>-token batch that must equal one big mean, and two scorecards honest enough to say "beats GPT-2". The skill to check now is telling the two kinds of change apart. A speed change should leave the loss alone, and a recipe change should leave the speed alone.</p>
+<ul>
+<li><a href="precision.html">Precision</a> → TF32 matmuls and bf16 autocast: 1000 → 333 → 300 ms, 3× where the datasheet promised 8×, because the step is memory-bound.</li>
+<li><a href="compile-flash.html">Kernel fusion</a> → fewer trips to HBM: compile 300 → 130 ms; flash attention never writes the T × T matrix, 130 → 96 ms, same loss.</li>
+<li><a href="optimizer-recipe.html">The GPT-3 recipe</a> → betas (0.9, 0.95), clip to norm 1.0, 715 warmup steps then cosine 6e-4 → 6e-5, decay only the 2-D tensors.</li>
+<li><a href="big-batch.html">Big batches</a> → 524,288 tokens per step through accumulation (loss / N) and DDP (all-reduce over 8 GPUs).</li>
+<li><a href="data-and-evals.html">Data and scorecards</a> → FineWeb-Edu in uint16 shards, shard 0 held out for val loss; HellaSwag scored by average ending loss.</li>
+<li><a href="results.html">The results</a> → below GPT-2's val loss of 3.2924 after 10B tokens; HellaSwag 33.24% at 40B vs GPT-3's 33.7%.</li>
+</ul>
+<p><b>How to use this page.</b> Close the cards. Answer each question in writing, in full sentences, <i>before</i> opening its Check. The questions are mixed on purpose and don't say which card they come from: working out which idea applies is half the exercise. A miss tells you exactly which section to reopen.</p>
+</div>
+
+<h2>1 · Mixed retrieval</h2>
+<ol class="qs">
+<li><span class="tag">which idea?</span>The A100 datasheet says TF32 matmuls are 8× faster than fp32, yet one line took Karpathy's step only from 1000 to 333 ms. Then torch.compile, which changes no number format at all, took 300 ms to 130 ms. Which single idea explains both results?
+<details class="chk"><summary>Check</summary><ul>
+<li>the step is largely memory-bound: much of the time goes to moving tensors between HBM and the chip and to launching kernels, not to arithmetic</li>
+<li>a toy model: if a fraction f of the step got 8× faster, 1000 × ((1 − f) + f/8) = 333 gives f ≈ 0.76, so about 240 ms is untouched by faster maths</li>
+<li>compile attacks exactly that part: it fuses chains of small ops and removes Python launch overhead. For a GELU written op by op, 3,624 MB of HBM traffic becomes 403 MB</li>
+</ul><p class="re">Missed it? Reopen <a href="precision.html">precision</a>, "Why 3× and not 8×: a toy model", and <a href="compile-flash.html">kernel fusion</a>, "Where the time goes: trips to memory".</p></details></li>
+
+<li>Your run uses warmup 715, max_steps 19,073, max_lr 6e-4. What is the learning rate at steps 0, 714 and 9,894? The job crashes at step 10,000 and you restart from the saved weights with the step counter back at 0: what goes wrong? And how is this schedule different from the makemore MLP's?
+<details class="chk"><summary>Check</summary><ul>
+<li>step 0: 6e-4 × 1/715 = 8.39e-7 (warmup uses it + 1); step 714: 6.0000e-04, the peak; step 9,894 is halfway through the decay, cos(π/2) = 0, so 6e-5 + 0.5 × 5.4e-4 = 3.3000e-04</li>
+<li>restart at 0: the half-trained model should get 3.2510e-04 and falling; instead the lr warms back up to the full 6e-4 by step 714 and the cosine starts over. Save the step (and the optimizer state) with the weights</li>
+<li>makemore trained at 0.1 and dropped to 0.01 at step 100,000, after sweeping for a good lr; here the settings are borrowed from GPT-3 Small and the lr changes smoothly, so only max_steps must be chosen</li>
+</ul><p class="re">Missed it? Reopen <a href="optimizer-recipe.html">the GPT-3 recipe</a>, "The learning-rate curve" and "Why it beats the alternatives", and the MLP lecture's <a href="../z2h-4-mlp/learning-rate-finder.html">learning-rate finder</a>, "Step 3: train at 0.1, then decay to 0.01".</p></details></li>
+
+<li><span class="tag dbg">debug</span>You rewrite the loop to accumulate 16 micro-steps. The step-0 log line prints loss 174.958267 and norm 460.7029, where the old loop printed 10.934891 and 28.7939. Yet the loss at step 1, divided by 16, is 9.4975, exactly what the correct loop reaches. What's wrong, why does training look fine, and when would it stop looking fine?
+<details class="chk"><summary>Check</summary><ul>
+<li>the micro-losses aren't divided by grad_accum_steps: 174.958267 / 10.934891 = 16.0 and 460.7029 / 28.7939 = 16.0</li>
+<li><code>backward()</code> adds into <code>.grad</code> (micrograd's += rule, here used on purpose), but the big batch's loss is a <i>mean</i>, so each micro-loss needs the 1/16</li>
+<li>it looks fine because clipping rescales any norm above 1.0 to exactly 1.0, and AdamW divides by each gradient's own running size, so a 16× gradient takes nearly the same step</li>
+<li>it stops looking fine when those stop hiding it: plain SGD would get a 16× learning rate, and every printed loss and norm in the log is 16× wrong</li>
+</ul><p class="re">Missed it? Reopen <a href="big-batch.html">big batches</a>, "The bug: backward() adds, but the loss averages" and "Why it beats the alternatives", and micrograd's <a href="../z2h-2-micrograd/accumulate-gradients.html">+= rule</a>, "Does += ever cause trouble?".</p></details></li>
+
+<li>Your laptop's 50-step run takes val loss from 10.9518 to 7.9795, and HellaSwag from 3/20 to 4/20. Which of the two tells you the model learned something? Then use the same reasoning on the results: is 33.24% vs GPT-3's 33.7% a real gap, and is 33.24% vs GPT-2's 29.45% one?
+<details class="chk"><summary>Check</summary><ul>
+<li>the val loss: held-out shard 0, the same tokens every check, and a 3-nat drop</li>
+<li>HellaSwag on 20 rows: SE = √(0.25 × 0.75 / 20) = 0.097, about ±9.7 points, so 3/20 → 4/20 is noise</li>
+<li>on all 10,042: SE ≈ √(0.337 × 0.663 / 10,042) = 0.0047; the 0.46-point gap to GPT-3 is about one SE ("almost GPT-3"), the 3.8-point gap over GPT-2 is about 8 SE (real)</li>
+<li>unlike the MLP lecture, where training looped over the same names and the train/dev gap was the thing to watch, one epoch of 10B tokens never repeats text, so val loss here mostly tracks progress</li>
+</ul><p class="re">Missed it? Reopen <a href="results.html">the results</a>, "Is 33.24% vs 33.7% a real gap?", <a href="data-and-evals.html">data and scorecards</a>, "Scorecard 1: loss on text the model never trains on", and the MLP lecture's <a href="../z2h-4-mlp/splits-and-fit.html">train/dev/test</a>, "Reading the two losses".</p></details></li>
+
+<li><span class="tag">which idea?</span>You rent 4 A100s instead of 8 and keep B = 64, T = 1024. What is grad_accum_steps now? Does the loss-versus-step curve change, and do the warmup and max_steps need recomputing?
+<details class="chk"><summary>Check</summary><ul>
+<li>524,288 / (64 × 1024 × 4) = 2</li>
+<li>the batch is defined in <b>tokens per optimizer step</b>, not per forward pass: every step still averages the gradient over 2<sup>19</sup> tokens, so the loss per step follows essentially the same curve (up to data order and rounding)</li>
+<li>warmup 715 = 375e6 / 2<sup>19</sup> and max_steps 19,073 = 10e9 / 2<sup>19</sup> are token budgets divided by that same batch, so nothing changes; each step just takes about twice as long</li>
+<li>contrast: the MLP lecture's minibatch of 32 was the whole batch, so changing it changed the noise of every step</li>
+</ul><p class="re">Missed it? Reopen <a href="big-batch.html">big batches</a>, "Why 2<sup>19</sup> tokens, and why it needs accumulation", <a href="optimizer-recipe.html">the GPT-3 recipe</a>, "Six settings, borrowed from GPT-3 Small", and the MLP lecture's <a href="../z2h-4-mlp/minibatches.html">minibatches</a>, "How noisy is noisy?".</p></details></li>
+
+<li>Karpathy wraps only the forward pass and the loss in <code>torch.autocast(..., dtype=torch.bfloat16)</code>. Why not call <code>model.bfloat16()</code> and save the memory, and why does bf16 need no gradient scaler when fp16 does? One Mac-specific trap too: what does build-nanogpt's autocast do on your M3?
+<details class="chk"><summary>Check</summary><ul>
+<li>bf16 keeps 7 mantissa bits (eps 7.81e-3): a weight update 1 + 3e-4 rounds back to 1.0, and adding 0.01 a thousand times stalls at 4.0, so weights, gradients and optimizer state stay fp32</li>
+<li>bf16 has fp32's 8 exponent bits: 1e-8 survives (1.001e-08). fp16 has 5: 1e-8 becomes 0 and 70,000 becomes inf, so fp16 needs a GradScaler</li>
+<li>on a Mac the script passes <code>device_type='cpu'</code> for MPS tensors, which leaves the logits fp32: it silently trains in fp32 (the labs pass 'mps')</li>
+</ul><p class="re">Missed it? Reopen <a href="precision.html">precision</a>, "What the bits buy" and "What autocast changes, and what it leaves alone".</p></details></li>
+
+<li>The first HellaSwag example, "A man is sitting on a roof. he", gets average ending losses 3.9474, 5.7732, 2.9486 and 4.0702 from GPT-2 (label 3). Which ending does acc_norm pick, does picking by the plain sum (acc) change the answer here, and why is only the ending masked in?
+<details class="chk"><summary>Check</summary><ul>
+<li>acc_norm picks the lowest average: ending 2 (the rubik's cube), which is wrong</li>
+<li>the sums are 43.42, 34.64, 23.59, 36.63 (average × tokens), so acc also picks 2 here; over all 10,042, acc is 28.58% and acc_norm 29.55%, because sums penalise long endings</li>
+<li>the context is the same in all 4 rows, so its loss can't separate them; the mask keeps ending tokens only, shifted by one so the first scored guess is made at "he"</li>
+<li>it scores a 124M model the way it was trained, by next-token loss, because the model can't answer "A, B, C or D"</li>
+</ul><p class="re">Missed it? Reopen <a href="data-and-evals.html">data and scorecards</a>, "Scorecard 2: HellaSwag, the completion way" and "How the scorecards differ".</p></details></li>
+
+<li><span class="tag">which idea?</span>Two changes add arithmetic and still make the A100 step faster: flash attention (it recomputes and rescales partial results) and padding the vocabulary from 50,257 to 50,304 (+0.094% FLOPs in the output matmul, 96.5 → 93 ms). What single idea covers both, and what different thing does each one fix?
+<details class="chk"><summary>Check</summary><ul>
+<li>step time depends on how the hardware is used, not on the FLOP count</li>
+<li>flash: memory traffic. Manual attention writes the T × T score matrix to HBM and reads it back (about 1,661 MB per layer at B = 4, T = 1024, fp32), flash reads q, k, v and writes y (50 MB); the online softmax rescales running sums so a whole row is never needed. The GPT lecture's masked softmax built that full matrix</li>
+<li>padding: kernel efficiency. 50,257 leaves a ragged last tile (81 of 128 columns) that runs the slower edge path; 50,304 = 393 × 128 fills every tile</li>
+<li>neither is guaranteed: flash gains less at short T (2.50× vs 7.88× on the M3), and padding showed no reliable gain on MPS</li>
+</ul><p class="re">Missed it? Reopen <a href="compile-flash.html">kernel fusion</a>, "Flash attention: never write the T × T matrix" and "The online softmax: normalise as you go", <a href="nice-numbers.html">nice numbers</a>, "Where the last tile goes", and the GPT lecture's <a href="../z2h-8-gpt/masked-softmax.html">masked softmax</a>, "Three steps, same matrix as before".</p></details></li>
+</ol>
+
+<h2>2 · Compare: seven levers on the same training step</h2>
+<p>Sections 2 and 3 pull seven levers on one step. Fill this table in on paper first. Rows are the levers; the columns ask what each does, which design choice causes its gain or its limit, when you'd pull it, and how it fails.</p>
+<div class="tw"><table class="cmp">
+<tr><th>Lever</th><th>Core mechanism</th><th>Design choice that causes the difference</th><th>When to choose it</th><th>How it fails</th></tr>
+<tr><td>TF32 matmuls</td><td class="blank"></td><td class="blank"></td><td class="blank"></td><td class="blank"></td></tr>
+<tr><td>bf16 autocast</td><td class="blank"></td><td class="blank"></td><td class="blank"></td><td class="blank"></td></tr>
+<tr><td>torch.compile</td><td class="blank"></td><td class="blank"></td><td class="blank"></td><td class="blank"></td></tr>
+<tr><td>Flash attention (SDPA)</td><td class="blank"></td><td class="blank"></td><td class="blank"></td><td class="blank"></td></tr>
+<tr><td>Vocab 50,304</td><td class="blank"></td><td class="blank"></td><td class="blank"></td><td class="blank"></td></tr>
+<tr><td>Gradient accumulation</td><td class="blank"></td><td class="blank"></td><td class="blank"></td><td class="blank"></td></tr>
+<tr><td>DDP</td><td class="blank"></td><td class="blank"></td><td class="blank"></td><td class="blank"></td></tr>
+</table></div>
+<details class="chk"><summary>Check: the filled-in table</summary>
+<div class="tw"><table class="cmp">
+<tr><th>Lever</th><th>Core mechanism</th><th>Design choice that causes the difference</th><th>When to choose it</th><th>How it fails</th></tr>
+<tr><td>TF32 matmuls</td><td>the matmul units round inputs to 10 mantissa bits; tensors stay fp32 in memory</td><td>only the arithmetic changes, every number still moves as 4 bytes: 3×, not 8×</td><td>any fp32 training on a recent NVIDIA GPU; one line (1000 → 333 ms)</td><td>does nothing on the M3; the memory-bound part is untouched; the loss no longer matches fp32 digit for digit</td></tr>
+<tr><td>bf16 autocast</td><td>forward and loss run matmuls on bf16 copies; weights, grads, optimizer stay fp32</td><td>8 exponent bits (fp32's range), so no GradScaler; 7 mantissa bits, so storage stays fp32</td><td>around the forward pass on bf16-capable GPUs (333 → 300 ms)</td><td>casting the whole model loses small updates; on a Mac, device_type='cpu' silently stays fp32; the M3 gain was 0.97–1.41×</td></tr>
+<tr><td>torch.compile</td><td>traces the forward and generates fused kernels</td><td>fewer HBM round trips and no per-op Python launches</td><td>long CUDA training runs (300 → 130 ms)</td><td>compile time up front (1.7 s here, 12.5 s on a first-ever run); off at build-nanogpt's HEAD because it broke eval and sampling; unreliable on MPS; can't discover flash attention</td></tr>
+<tr><td>Flash attention (SDPA)</td><td>tiles plus the online softmax; the T × T matrix never reaches HBM</td><td>recomputes instead of storing: more FLOPs, far less traffic</td><td>causal attention, and more so the longer T is (130 → 96 ms)</td><td>smaller win at short T (2.50× at T = 256 vs 7.88× at 1024 on the M3); on a Mac it's PyTorch's own backend, not the FlashAttention kernels</td></tr>
+<tr><td>Vocab 50,304</td><td>47 unused tokens make V a multiple of 128</td><td>every tile of the lm_head matmul is full, at +0.094% FLOPs</td><td>any size you choose freely: vocab, B (16 not 17) (96.5 → 93 ms)</td><td>the gain depends on the kernels (about 4% then, ~30% on older PyTorch, noise on MPS); the tokenizer can't decode the fake ids</td></tr>
+<tr><td>Gradient accumulation</td><td>many micro-steps' gradients add up before one optimizer step</td><td>each micro-loss ÷ grad_accum_steps turns the sum into the big batch's mean; trades time for memory</td><td>when 2<sup>19</sup> tokens don't fit in one forward pass (32 micro-steps on one A100)</td><td>no speed gain (32 × 93 ms ≈ 3 s per step); a missing ÷N inflates the gradient N× and clipping and AdamW hide it</td></tr>
+<tr><td>DDP</td><td>8 processes, same seed, gradients all-reduced (averaged) every step</td><td>same weights + same averaged gradient = the same update, so the copies never drift</td><td>several NVIDIA GPUs: ~1.5M tok/s on 8 × A100</td><td>CUDA/NCCL only; the loader must stride by rank or GPUs read the same tokens; rank 0 alone sees only its 1/8 of the loss unless it's all-reduced too</td></tr>
+</table></div>
+<p class="re">Shaky rows? Rows 1–2 are on <a href="precision.html">precision</a>, "Why it beats the alternatives"; rows 3–4 on <a href="compile-flash.html">kernel fusion</a>, "Why it beats the alternatives" and "When they don't help"; row 5 on <a href="nice-numbers.html">nice numbers</a>, "Is padding always a win?"; rows 6–7 on <a href="big-batch.html">big batches</a>, "DDP: eight copies of the model, one averaged gradient".</p>
+</details>
+
+<h2>3 · Build: the recipe at laptop size, every piece checked</h2>
+<div class="proj">
+<p><span class="where">runs on your M3 · about 25 s (CPU)</span></p>
+<p><b>What it reinforces:</b> <a href="big-batch.html">accumulation with ÷N</a> (and what happens without it), <a href="precision.html">bf16 autocast</a> leaving the weights fp32, <a href="compile-flash.html">SDPA</a> giving the manual attention's loss, the <a href="optimizer-recipe.html">GPT-3 recipe</a> (decay groups, betas, clipping, warmup + cosine) and the <a href="data-and-evals.html">held-out val loss</a> on FineWeb-Edu. New here: the speed levers are checked against the loss before the recipe runs, so a speed change can never pass for learning.</p>
+<ol>
+<li><b>Model and groups.</b> <code>torch.manual_seed(1337)</code>, <code>GPT(GPTConfig(vocab_size=50304))</code> from <a href="https://github.com/seyonv/explainers/blob/main/z2h-10-gpt2/labs/common.py">labs/common.py</a>; split the parameters by <code>p.dim() &gt;= 2</code> and count both groups.</li>
+<li><b>Accumulation = one big batch.</b> On the first 1,024 tokens of the mini train shard (from the <a href="data-and-evals.html">data card</a>'s lab), compare one 16 × 64 batch with 4 micro-steps of 4 × 64: the loss, the largest gradient difference and the gradient norm. Then repeat without the ÷4.</li>
+<li><b>Speed levers don't change the loss.</b> One 4 × 64 batch: fp32 vs <code>autocast('cpu', bfloat16)</code>, and SDPA vs <code>GPTConfig(flash=False)</code>.</li>
+<li><b>The recipe.</b> AdamW with the two groups, betas (0.9, 0.95), eps 1e-8; <code>get_lr</code> shrunk to warmup 2, max_steps 10; clip to 1.0; 10 steps of 1,024 tokens each (4 micro-steps).</li>
+<li><b>Scorecard.</b> Average loss over 8 batches of 4 × 64 from the val shard, before and after.</li>
+</ol>
+<pre class="code"><span class="k">for</span> step <span class="k">in</span> range(max_steps):
+    opt.zero_grad(); loss_accum = 0.0
+    <span class="k">for</span> m <span class="k">in</span> range(accum):                <span class="c"># 4 micro-steps of 4 x 64</span>
+        x, y = batch(train, pos); pos += B * T
+        _, loss = model(x, y)
+        loss = loss / accum                 <span class="c"># sum of grads -> mean</span>
+        loss_accum += loss.item()
+        loss.backward()
+    norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+    lr = get_lr(step)                       <span class="c"># warmup 2, cosine to 10</span>
+    <span class="k">for</span> g <span class="k">in</span> opt.param_groups: g[<span class="o">'lr'</span>] = lr
+    opt.step()</pre>
+<div class="done"><b>Done when:</b> the groups print 50 tensors / 124,354,560 parameters and 98 / 121,344; the accumulated loss equals the big batch's, 10.937843, with gradients within 9.69e-08 and the same norm, 17.6371, while the version without ÷4 prints 43.751370 and 70.5485 (both 4.000×); fp32 gives 10.932606 and bf16 autocast 10.932569, with bfloat16 logits and float32 weights; manual attention and SDPA both give 10.932606; the lr runs 3.0000e-04, 6.0000e-04, … 3.3000e-04 (step 6), … 8.0553e-05 (step 9); the norm falls 17.6371 → 2.1597 and the loss 10.9378 → 8.4313; and val goes 10.9411 → 8.5328 (ln 50,304 = 10.8258). All measured in this checkpoint's scratch run on the M3's CPU: 23 s in all, 1.34 s per step, 767 tok/s, with other jobs running. At 767 tok/s the real 19,073 × 2<sup>19</sup> tokens would take 151 days, against about 89 days on MPS and about 2 hours on 8 × A100.</div>
+<p><b>One trap this build hit:</b> computing the gradient norm as <code>torch.cat</code> of all 124M gradients, then <code>.norm()</code>, printed 17.2562 in fp32. Per-tensor norms, as <code>clip_grad_norm_</code> does it, give 17.6371, and float64 gives 17.6395. It's the <a href="precision.html">precision</a> card's point about long sums at a bigger scale: a 124-million-term fp32 sum drifted by about 2%.</p>
+</div>
+
+<h2>4 · Reflect</h2>
+<ul class="refl">
+<li>Which link is still fuzzy: <i>memory-bound step → faster maths can't help much → cut trips to HBM instead</i>? Reopen <a href="precision.html">precision</a>, "Why 3× and not 8×: a toy model", then <a href="compile-flash.html">kernel fusion</a>, "Where the time goes: trips to memory", and redo question 1.</li>
+<li><i>the running max m and sum l → rescale by e<sup>m−m′</sup> → no full row needed</i>? Reopen <a href="compile-flash.html">kernel fusion</a>, "The online softmax: normalise as you go", and redo its 3-key example by hand.</li>
+<li><i>token budget ÷ 2<sup>19</sup> → warmup and max_steps → the lr at any step</i>? Reopen <a href="optimizer-recipe.html">the GPT-3 recipe</a>, "Six settings, borrowed from GPT-3 Small" and "The learning-rate curve".</li>
+<li><i>backward adds, loss averages → ÷ grad_accum_steps → why the logs lie without it</i>? Reopen <a href="big-batch.html">big batches</a>, "The bug: backward() adds, but the loss averages".</li>
+<li><i>held-out shard → comparable val loss → the home-field caveat</i>? Reopen <a href="data-and-evals.html">data and scorecards</a>, "Can you trust these numbers?", and <a href="results.html">the results</a>, "So did it really beat GPT-2?".</li>
+<li><i>n examples → standard error → which gaps are real</i>? Reopen <a href="results.html">the results</a>, "Is 33.24% vs 33.7% a real gap?".</li>
+<li>Which question did you answer from the wrong card? That mix-up is the comparison to redo.</li>
+</ul>
+
+<div class="foot">
+  <p><b>Watch:</b> <a href="https://www.youtube.com/watch?v=l8pRSuU81PU&amp;t=4938s">1:22:18 make it fast</a> · <a href="https://www.youtube.com/watch?v=l8pRSuU81PU&amp;t=6495s">1:48:15 torch.compile</a> · <a href="https://www.youtube.com/watch?v=l8pRSuU81PU&amp;t=7218s">2:00:18 flash attention</a> · <a href="https://www.youtube.com/watch?v=l8pRSuU81PU&amp;t=8095s">2:14:55 hyperparameters</a> · <a href="https://www.youtube.com/watch?v=l8pRSuU81PU&amp;t=9249s">2:34:09 gradient accumulation</a> · <a href="https://www.youtube.com/watch?v=l8pRSuU81PU&amp;t=11421s">3:10:21 datasets</a> · <a href="https://www.youtube.com/watch?v=l8pRSuU81PU&amp;t=12503s">3:28:23 HellaSwag</a> · <a href="https://www.youtube.com/watch?v=l8pRSuU81PU&amp;t=13385s">3:43:05 results</a></p>
+  <p><b>Code:</b> <a href="https://github.com/karpathy/build-nanogpt/blob/master/train_gpt2.py">build-nanogpt/train_gpt2.py</a> · <a href="https://github.com/karpathy/build-nanogpt/blob/master/fineweb.py">fineweb.py</a> · <a href="https://github.com/karpathy/build-nanogpt/blob/master/hellaswag.py">hellaswag.py</a> · <a href="https://github.com/karpathy/build-nanogpt/blob/master/play.ipynb">play.ipynb</a></p>
+  <p><b>Labs:</b> <a href="https://github.com/seyonv/explainers/blob/main/z2h-10-gpt2/labs/precision.py">precision.py</a> · <a href="https://github.com/seyonv/explainers/blob/main/z2h-10-gpt2/labs/compile-flash.py">compile-flash.py</a> · <a href="https://github.com/seyonv/explainers/blob/main/z2h-10-gpt2/labs/optimizer-recipe.py">optimizer-recipe.py</a> · <a href="https://github.com/seyonv/explainers/blob/main/z2h-10-gpt2/labs/big-batch.py">big-batch.py</a> · <a href="https://github.com/seyonv/explainers/blob/main/z2h-10-gpt2/labs/data-and-evals.py">data-and-evals.py</a> · <a href="https://github.com/seyonv/explainers/blob/main/z2h-10-gpt2/labs/results.py">results.py</a></p>
+  <p><b>Related:</b> <a href="checkpoint-1.html">Checkpoint 1: from OpenAI's weights to a model you can trust to train</a> · <a href="nice-numbers.html">Nice numbers: 50,257 → 50,304</a> · <a href="../z2h-8-gpt/adam-optimizer.html">Adam and AdamW, explained</a> · <a href="../z2h-4-mlp/splits-and-fit.html">Train/dev/test</a></p>
+</div>
+</article>
+<!-- series-nav:bottom -->
+<div class="snx"><a class="nx" href="../z2h-0-start/index.html" target="_top"><span class="mini" aria-hidden="true"><span class="m1">You've reached the end of the published courses</span></span>
+<span class="tx"><span class="lab">End of the series so far</span><span class="tt">Back to the map</span><span class="ds"></span><span class="go">Open the map →</span></span></a><div class="aux"><span><a href="index.html#results" target="_top">← The results: beating GPT-2 on 10B tokens</a></span><a href="index.html" target="_top">All cards in 10 · Reproducing GPT-2</a></div></div>
+<!-- /series-nav:bottom -->
+</body>
+</html>

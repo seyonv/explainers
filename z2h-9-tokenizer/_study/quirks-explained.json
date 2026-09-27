@@ -1,0 +1,136 @@
+{
+  "prime": {
+    "problem": "LLMs miscount letters, fumble arithmetic, cost more in Korean, and derail on a stray space or a strange word. Without knowing what the model actually receives, these look like random flaws of \"intelligence\" that you can't predict or work around.",
+    "fits": "This is the payoff of the whole lecture. You've built BPE, the regex pre-split, special tokens and the vocab-size trade-off; now each of Karpathy's opening list of weird behaviours gets traced back to one of those pieces.",
+    "expect": [
+      "a token hiding its characters",
+      "the tokenizer's training data vs the LLM's",
+      "the lone-space token 220",
+      "untrained \"glitch\" tokens (SolidGoldMagikarp)",
+      "special tokens in user text"
+    ],
+    "goal": "Look at a strange LLM failure, print the token ids, and name which tokenization cause produced it and what to change."
+  },
+  "attend": [
+    "Why can a model that has read millions of words still not see the <code>l</code>s in <code>DefaultCellStyle</code>?",
+    "Which quirks come from what the tokenizer was trained on, and which from where the prompt cuts a token?",
+    "Why does a prompt ending in a space push the model somewhere it has rarely been?",
+    "How can a token be in the vocabulary yet have an embedding row that never learned anything?",
+    "Which fixes in GPT-4's tokenizer (space runs, 3-digit numbers) remove a quirk, and which quirks remain?"
+  ],
+  "core": {
+    "must": [
+      "The model's input is token ids, not characters → a long token like <code>.DefaultCellStyle</code> (98518) is one embedding row → its letters aren't in the input → spelling, counting and reversal fail unless the text is first spelled out one letter per token",
+      "BPE merges follow the tokenizer's training text → frequent text (English, common digit pairs) gets long tokens, rare text (Korean) gets short ones → more tokens for the same meaning and digit chunks that don't line up with place value → bloated context and shaky arithmetic",
+      "The tokenizer and the LLM are trained on different data → a token frequent in the first but absent from the second (<code>␣SolidGoldMagikarp</code>, 43453) never appears in a batch → its embedding row gets no gradient → feeding it gives the model a vector it never learned to read",
+      "The space usually belongs to the next token (<code>␣Oh</code> = 8840) → a prompt ending in a lone 220, or cut mid-token (<code>DefaultCellSta</code>), is a sequence the model rarely saw in training → strange continuations or an immediate stop"
+    ],
+    "elevated": [
+      "Special tokens are matched as strings before BPE → if user text is parsed for them, typing <code>&lt;|endoftext|&gt;</code> inserts the real id 50256 → so tiktoken refuses by default and you opt in with <code>allowed_special</code>"
+    ],
+    "reference": [
+      "the exact ids: 98518, 86662, 43453, 8840, 220, 50256",
+      "the GPT-2 four-digit split shares (2+2 64.5%, 1+3 28.2%, …)",
+      "tiktoken's <code>disallowed_special=()</code> / <code>allowed_special</code> arguments",
+      "the JSON vs YAML token counts for any one record",
+      "sentencepiece's <code>split_digits</code> option name"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, sort Karpathy's quirks into three causes and name one example of each. Then, in 3–4 sentences, explain why SolidGoldMagikarp breaks the model while a merely rare word does not.",
+    "checklist": [
+      "cause 1: a token hides its characters (spelling, reversal, arithmetic)",
+      "cause 2: the tokenizer's training text sets what is cheap or even present (non-English, GPT-2 Python, YAML vs JSON, SolidGoldMagikarp)",
+      "cause 3: the prompt breaks a token boundary (trailing space, partial token, <code>&lt;|endoftext|&gt;</code>)",
+      "a rare word splits into common, well-trained tokens; a glitch token is one id whose row got no gradient",
+      "the fix is usually in the text or the tokenizer settings, not the model"
+    ]
+  },
+  "retrieve": [
+    {
+      "q": "Explain why an LLM can fail to count the letters of a word it can use perfectly well in a sentence.",
+      "kind": "concept",
+      "answer": [
+        "the word may be one token, so the model receives one id, not its letters",
+        "using the word only needs its meaning; counting needs its spelling, which must be memorised per id",
+        "spelling it out with spaces gives one token per letter (16 tokens for <code>DefaultCellStyle</code>)"
+      ]
+    },
+    {
+      "q": "Walk through what happens when a user prompt ends with a space: what the tokenizer emits, what the model has usually seen at that position, and what it has to produce next.",
+      "kind": "mechanism",
+      "answer": [
+        "the prompt ends in the lone space token 220",
+        "in training, a space after <code>:</code> almost always came glued to the next word (<code>␣Oh</code> = 8840)",
+        "the model must now continue with a space-less token (<code>Oh</code> = 12174) after a bare 220, a rare pattern",
+        "result: worse or odd completions, hence the warning"
+      ]
+    },
+    {
+      "q": "Walk through how <code>␣SolidGoldMagikarp</code> ended up as one GPT-2 token whose embedding is useless.",
+      "kind": "mechanism",
+      "answer": [
+        "it was frequent in the tokenizer's training text (a Reddit username), so BPE merged it into id 43453",
+        "the LLM's training text didn't contain it, so id 43453 never appeared in a batch",
+        "embedding rows only get gradient from tokens in the batch, so the row stayed as initialised",
+        "at inference the model reads an untrained vector"
+      ]
+    },
+    {
+      "q": "You're choosing a tokenizer for a new model that must do arithmetic and serve Korean users. What would you take from GPT-4 and Llama 2, and what does each choice cost?",
+      "kind": "tradeoff",
+      "answer": [
+        "numbers: cap chunks at 3 digits (GPT-4) or split every digit (Llama 2's <code>split_digits</code>); digits give consistent place value but longer sequences",
+        "Korean: include enough Korean in the tokenizer's training text so it earns merges, at the cost of vocabulary slots for other text",
+        "a bigger vocabulary shortens sequences but grows the embedding and <code>lm_head</code>",
+        "keep the tokenizer's and the LLM's training data aligned to avoid untrained tokens"
+      ]
+    }
+  ],
+  "compare": [
+    {
+      "with": "z2h-9-tokenizer/tiktokenizer-tour",
+      "q": "The tour <i>showed</i> odd splits (numbers, Egg/egg, Korean, indents); this card <i>explains</i> the resulting behaviours. For the number splits, what is the observation, what design choice causes it, and how did GPT-4's tokenizer change the failure rather than remove it?",
+      "answer": [
+        "observation: <code>677</code> is one token but <code>␣677</code> is <code>␣6|77</code>",
+        "cause: BPE merges frequent digit pairs, with no notion of place value",
+        "GPT-4's regex caps chunks at 3 digits and splits off the space, so 4-digit numbers always go 3+1",
+        "consistent, but still not aligned with columns; per-digit splitting (Llama 2) is the stronger fix"
+      ]
+    },
+    {
+      "with": "z2h-9-tokenizer/vocab-size-new-tokens",
+      "q": "Adding a new token by model surgery vs a SolidGoldMagikarp-style glitch token: both start with an untrained embedding row. What makes one useful and the other harmful?",
+      "answer": [
+        "surgery: you add the row <i>and</i> train on data containing it, so it gets gradient (only row 50257 did in the lab)",
+        "glitch token: the row exists but the LLM's data never contains the token, so it never trains",
+        "failure mode of surgery: too little fine-tuning data leaves the new row near its initialisation, the same problem at a smaller scale"
+      ]
+    }
+  ],
+  "predict": {
+    "q": "GPT-2 spends a token on almost every indent space. If your Python used <b>tabs</b> instead of 4 spaces, predict how many GPT-2 tokens <code>\\t\\tprint(i)</code> takes compared with <code>        print(i)</code> (8 spaces), and what else changes about the <code>print</code> token.",
+    "answer": "6 tokens vs 11. Each tab is one token (197), while 8 spaces become seven 220s with the eighth space glued to <code>␣print</code> (3601). The catch: after a tab there is no space to glue on, so <code>print</code> becomes a different id (4798). The same keyword now has two ids depending on the indent style, and the model must learn both. Computed with tiktoken's gpt2 encoding."
+  },
+  "apply": {
+    "task": "Diagnose with token ids, not guesses. Using tiktoken's <code>cl100k_base</code>, encode <code>DefaultCellStyle</code>, its reverse <code>elytSlleCtluafeD</code>, and the spaced-out form <code>D e f a u l t C e l l S t y l e</code>. Then loop over <code>range(1000, 10000)</code> and count how gpt2 splits each number (as digit lengths per token).",
+    "done": "You get 1, 8 and 16 tokens for the three strings, and the gpt2 tally 2+2: 5,807 · 1+3: 2,538 · 3+1: 538 · single token: 88 · 1+2+1: 29 (sum 9,000); cl100k gives 3+1 for all 9,000.",
+    "hint": "For the split pattern, map each id to <code>len(enc.decode([i]))</code> and collect the tuples in a <code>collections.Counter</code>."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: the one-token <code>.DefaultCellStyle</code>, or the tab-indent question?",
+    "Which quirk couldn't you explain cleanly without looking back at the table?",
+    "Which relationship is still fuzzy: tokenizer training data → which tokens exist, or which tokens exist → which embedding rows get trained?",
+    "Next time an LLM output looks strange, what is the first thing you'll print?",
+    "Which of the three causes would you most want to design away if you built your own tokenizer?"
+  ],
+  "revisit": [
+    "z2h-9-tokenizer/tiktokenizer-tour",
+    "z2h-9-tokenizer/regex-presplit",
+    "z2h-9-tokenizer/encoder-py-special-tokens",
+    "z2h-9-tokenizer/vocab-size-new-tokens"
+  ],
+  "prereq": [
+    "z2h-9-tokenizer/tiktokenizer-tour"
+  ]
+}

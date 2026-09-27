@@ -1,0 +1,60 @@
+{
+  "prime": {
+    "problem": "The GPT lecture adds about ten pieces one at a time (batches, a bigram, averaging, masks, queries and keys, heads, feed-forward, residuals, LayerNorm, dropout). Without a map of the few ideas behind them, it is easy to finish with a working <code>gpt.py</code> and still be unable to say why each line is there or what it bought.",
+    "fits": "This card spans the whole course. It compresses the seventeen GPT cards into six claims, and leans on ideas from earlier courses: negative log likelihood from the bigram course, embedding lookups from the MLP course, BatchNorm from the BatchNorm course, and micrograd's rule that <code>+</code> passes gradients through unchanged.",
+    "expect": ["a language model as next-character probabilities scored by −ln p", "weighted averaging of the past as one masked matrix multiply", "self-attention: query · key scores, values mixed", "the Transformer block: attention, then feed-forward, on a residual stream", "LayerNorm and dropout as what makes scaling up pay off"],
+    "goal": "Draw the whole GPT from memory, from characters to logits, with one block and one head opened up, and say which val loss each piece bought on the way from 4.17 to 1.48."
+  },
+  "attend": [
+    "Which single number does every change in this lecture get judged by, and what value means \"knows nothing\"?",
+    "The averaging matrix and the self-attention matrix are used the same way (<code>wei @ x</code>). What exactly is different about how their rows are filled?",
+    "Why does attention need a position embedding added to <code>x</code>, when the average-the-past version never seemed to need one?",
+    "In the block sketch, which arrow carries the gradient to the first block, and what would it be multiplied by without the <code>+</code>?",
+    "Scaling up adds parameters and context. Which two additions stop that bigger model from simply memorising the 1M training characters?"
+  ],
+  "core": {
+    "must": [
+      "The model gives each of 65 characters a probability → loss is the average −ln p(true next char) → knowing nothing scores −ln(1/65) = 4.17 → every piece is kept only if it lowers val loss (bigram 2.49 → gpt.py 1.48)",
+      "Row t of a T×T weight matrix says how much of each token t hears → zeros above the diagonal (−inf before softmax) block the future → <code>wei @ x</code> mixes each token's past in one batched multiply → one chunk trains all T positions without seeing their answers",
+      "Each token's query dotted with earlier tokens' keys, scaled by 1/√head_size → softmax over the visible past → the weights depend on the text, not just the position → the output is a content-chosen mix of values (row 7: 0.24 on token 6 in one sequence, 0.37 on token 0 in another)",
+      "Each sublayer adds onto the stream, x = x + f(x) → d(out)/dx = 1 + f′(x) → gradients reach early blocks intact → stacking blocks helps instead of hurting (3 plain blocks 2.33, the same with residuals 2.16), and LayerNorm + dropout then let the block scale 255× to 1.48"
+    ],
+    "elevated": [
+      "Multi-head attention splits the same channels into several smaller heads → the parameter count is unchanged (7,553 for 1 × 32 and 4 × 8) → more independent attention patterns per token → val 2.41 → 2.29 for free"
+    ],
+    "reference": ["gpt.py hyperparameters: batch 64, block 256, n_embd 384, 6 heads, 6 layers, dropout 0.2, lr 3e-4, 5000 iters", "the per-step val losses 2.41, 2.29, 2.27, 2.08, 2.06 (video: 2.4, 2.28, 2.24, 2.08, 2.06)", "class names: <code>Head</code>, <code>MultiHeadAttention</code>, <code>FeedFoward</code>, <code>Block</code>; nanoGPT's <code>CausalSelfAttention</code>", "<code>register_buffer('tril')</code> and the <code>idx[:, -block_size:]</code> crop"]
+  },
+  "compress": {
+    "prompt": "Card closed, one sheet of paper: draw the course's whole pipeline from memory. Text → ids → a (B, T) batch → token + position embeddings → a stack of blocks with one block opened up (and one head inside it opened up) → final LayerNorm → <code>lm_head</code> → logits → loss or a sampled character. Beside it, write the val loss each addition bought. Label each part with the big idea it shows.",
+    "checklist": [
+      "65-character vocabulary and a 90/10 split; every position in a chunk is a training example",
+      "x = token row + position row, with a note on why attention needs the position row",
+      "the head: q·kᵀ × head_size<sup>−0.5</sup> → mask future with −inf → softmax → @ v",
+      "the block: x + sa(ln1(x)), then x + ffwd(ln2(x)), with dropout in the branches",
+      "the ladder 4.17 → 2.49 → 2.41 → 2.29 → 2.27 → 2.08 → 2.06 → 1.48 attached to the right pieces",
+      "decoder, not encoder: the mask is the one line that makes it generate left to right"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain, without code, why a character-level model can't get much below 2.49 without some form of attention, however long you train it.", "kind": "concept", "answer": ["a bigram sees only the current character, so the best it can learn is the pair frequencies (a counted bigram scores 2.48 on val)", "val tracks train and both flatten near 2.49: a ceiling, not overfitting", "going lower needs information from earlier characters, which is what attention supplies"]},
+    {"q": "Walk through how one head computes the output for token 3 of a sequence, from <code>x</code> to <code>out</code>, naming each shape for B, T, C = 4, 8, 32 and head_size 16.", "kind": "mechanism", "answer": ["q, k, v = three Linear(32, 16) maps of x, each (4, 8, 16)", "scores q @ kᵀ, (4, 8, 8), times 16<sup>−0.5</sup> = 0.25", "row 3: positions 4–7 set to −inf, softmax over 0–3 gives weights summing to 1", "out[3] = weighted sum of v[0…3], shape 16"]},
+    {"q": "Four heads of 8 beat one head of 32 at the same 7,553 parameters, and three residual blocks beat three plain ones at the same 16,865. What does each result say about where the gains come from?", "kind": "tradeoff", "answer": ["neither gain comes from more parameters", "heads: more independent attention patterns per token (2.41 → 2.29)", "residuals: a trainable gradient path through depth (2.33 → 2.16)", "architecture decides whether the parameters you have can be used"]},
+    {"q": "Karpathy grows the model 255× for the final run. Which additions made that pay off, and what would you expect without them?", "kind": "tradeoff", "answer": ["LayerNorm (pre-norm) keeps each sublayer's input at a steady scale while the residual path stays a plain sum", "dropout 0.2 holds back memorisation: 10.8M params on about 1M training characters", "without dropout, train would run further ahead of val (the gap already showed at 2.08: train 1.98)"]}
+  ],
+  "compare": [
+    {"with": "z2h-3-bigram/bigram-counts", "q": "The counting bigram and this GPT both predict the next character. What is fundamentally different about how each stores what it knows, and why can only one of them use 256 characters of context?", "answer": ["counts store one row per exact context: 65 rows for 1 character, 65<sup>8</sup> ≈ 3.2 × 10<sup>14</sup> for 8", "GPT stores shared weights that score any context by content", "counts are exact and instant for 1 character; they fail by running out of data as context grows", "GPT fails differently: it needs training, a GPU-sized budget, and can overfit"]},
+    {"with": "z2h-7-wavenet/wavenet-tree-idea", "q": "WaveNet fuses context in a fixed tree of pairs; attention lets each token weight every earlier token by content. Which design choice causes the difference, and when would the tree still be the better pick?", "answer": ["WaveNet: who combines with whom is fixed by position (neighbouring pairs, level by level)", "attention: the weights come from q·k, so they change with the text", "attention scores every earlier token, T² scores per head (65,536 at block 256); the tree has locality built in", "for short, local context on a small budget the tree (or a convolution) can be enough"]},
+    {"with": "z2h-5-batchnorm/batchnorm-forward", "q": "LayerNorm here and BatchNorm in the makemore course run the same standardise-then-scale code. What changes, and how does each fail inside a text generator?", "answer": ["BatchNorm averages each feature over the batch (dim 0); LayerNorm averages each token's features (dim 1)", "BatchNorm needs running statistics for test time and couples examples in a batch", "at batch-1 generation BatchNorm has no batch to average; LayerNorm behaves identically in training and eval"]}
+  ],
+  "predict": {"q": "You double gpt.py's <code>block_size</code> from 256 to 512 and change nothing else. Commit first: does the parameter count change, and if so by how much? And how many attention scores does one head compute per sequence?", "answer": "Only the position table grows: 256 more rows × 384 = <b>98,304</b> extra parameters, so 10,788,929 → 10,887,233. The <code>tril</code> mask grows too, but it is a buffer, not a parameter. Attention work grows with the square: 512² = <b>262,144</b> scores per head per sequence, 4× the 65,536 at block 256."},
+  "apply": {"task": "Rebuild the final model's size by hand. From gpt.py's settings (n_embd 384, 6 heads, 6 layers, block 256, vocab 65), compute the head size and its score scale, the parameters in one Block (q, k, v without bias; the projection; the 4× feed-forward; two LayerNorms), all six Blocks, and the rest (token table, position table, final LayerNorm, <code>lm_head</code>). Then check the total with <code>sum(p.numel() for p in model.parameters())</code> on your gpt.py.", "done": "head size 384 / 6 = 64 and scale 64<sup>−0.5</sup> = 0.125; one Block = 442,368 + 147,840 + 1,181,568 + 1,536 = 1,773,312; × 6 = 10,639,872; plus 24,960 + 98,304 + 768 + 25,025 = 149,057; total 10,788,929, which your model prints.", "hint": "The feed-forward is Linear(384, 1536) then Linear(1536, 384), both with biases; each LayerNorm has 384 γ and 384 β."},
+  "reflect": [
+    "Which prediction did you get wrong: the block_size parameter change, or the attention score count?",
+    "Which panel could you not redraw cleanly from memory, and which piece of it was missing?",
+    "Which relationship is still fuzzy: mask → why one chunk trains T positions at once, or residual add → why depth started helping?",
+    "Could you explain to a friend why four small heads beat one big head at the same parameter count?",
+    "Which GPT card will you reopen before starting the tokenizer lecture?"
+  ],
+  "revisit": ["z2h-3-bigram/likelihood-and-nll", "z2h-4-mlp/embedding-lookup", "z2h-5-batchnorm/batchnorm-forward", "z2h-2-micrograd/chain-rule-by-hand"],
+  "prereq": []
+}

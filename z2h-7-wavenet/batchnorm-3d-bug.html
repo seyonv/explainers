@@ -1,0 +1,338 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The silent BatchNorm bug: reduce over (0, 1)</title>
+<style>
+:root{
+  --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
+  --text:#1c1f23; --muted:#6b7068; --faint:#b9b9b3;
+  --accent:#4a9d77; --accent-bg:#dcefdf; --accent-border:#8cc79c;
+  --red:#c0492b; --red-bg:#fbeceb;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#15171a; --surface:#1d2024; --surface2:#24282d; --border:#32373d;
+    --text:#e6e8ea; --muted:#9aa1a9; --faint:#4a5057;
+    --accent:#5fb37f; --accent-bg:#1c2b22; --accent-border:#3f7a55;
+    --red:#e57368; --red-bg:#2e1f1e;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text)}
+a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+.card{max-width:820px;margin:0 auto;padding:28px 32px;font-family:-apple-system,"Inter",system-ui,sans-serif;line-height:1.45}
+h1{font-size:26px;font-weight:600;margin:0 0 6px;letter-spacing:-0.01em}
+.sub{font-size:15px;color:var(--muted);margin:0 0 20px}
+h2{font-size:17px;font-weight:600;margin:26px 0 10px}
+p{font-size:15px;margin:0 0 10px}
+.cap{font-size:13px;color:var(--muted);margin:8px 0 0;text-align:center}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+
+/* Horizontal bar chart with running total and cutoff */
+.bars{display:grid;grid-template-columns:110px 1fr 90px;column-gap:14px;row-gap:12px;align-items:center;font-size:14px}
+.bars .hd{font-size:13px;color:var(--muted)}
+.bars .hd.r,.bars .tot{text-align:right;font-variant-numeric:tabular-nums}
+.bars .tok{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:15px}
+.bars .track{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted)}
+.bars .bar{height:22px;border-radius:3px;background:var(--accent)}
+.bars .tot{font-size:15px}
+.bars .strong{font-weight:600}
+.bars .out,.bars .out .tok{color:var(--muted)}
+.bars .track.out .bar{background:var(--faint)}
+.bars .out .tot{font-size:13px}
+.cutoff{grid-column:1 / -1;border-top:2px dashed var(--red);margin-top:4px;padding-top:6px;text-align:center;font-size:13px;color:var(--red)}
+
+/* Tables and formulas */
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border)}
+th{font-size:12px;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:none}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+.hi{color:var(--accent);font-weight:600} .lo{color:var(--red)}
+.formula{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin:10px 0;white-space:pre;overflow-x:auto;line-height:1.55}
+
+/* 2x2 grid */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.cell{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.cell.win{background:var(--accent-bg);border-color:var(--accent-border)}
+.cell h3{font-size:16px;font-weight:600;margin:0 0 5px;display:flex;gap:8px;align-items:baseline}
+.cell p{font-size:14px;margin:0;color:var(--text)}
+.cell.win h3,.cell.win p{color:var(--accent)}
+.x{color:var(--red)} .ok{color:var(--accent)}
+
+/* Clarification box */
+.note{border:1px solid var(--border);border-radius:10px;padding:14px 18px;font-size:14px}
+.note p{font-size:14px} .note p:last-child{margin-bottom:0}
+
+.foot{margin-top:22px;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+svg{display:block;max-width:100%}
+.sl{font-size:12px;fill:var(--muted)} .st{font-size:13px;fill:var(--text)}
+@media (max-width:560px){.grid2{grid-template-columns:1fr}.bars{grid-template-columns:70px 1fr 64px}}
+
+/* z2h series: Build-it box, predict, code */
+.build{border:1.5px solid var(--accent-border);background:var(--accent-bg);border-radius:10px;padding:12px 16px 10px;margin:18px 0}
+.build .hd{display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px}
+.build .hd b{font-size:15px;color:var(--accent)}
+.build .where{font-size:12px;color:var(--muted);border:1px solid var(--border);background:var(--bg);border-radius:999px;padding:2px 9px;white-space:nowrap}
+.build p{font-size:14px;margin:6px 0}
+.build .code{background:var(--bg)}
+.build .out{color:var(--muted)}
+.build .done{border-top:1px dashed var(--accent-border);padding-top:7px;margin-top:8px}
+.predict{border:1px solid var(--border);border-radius:10px;padding:10px 14px;margin:14px 0;background:var(--surface)}
+.predict summary{cursor:pointer;font-size:15px}
+.predict summary b{color:var(--accent)}
+.predict[open] summary{margin-bottom:6px}
+.predict p{font-size:14px;margin:4px 0 0}
+.code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;line-height:1.5;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin:10px 0;white-space:pre;overflow-x:auto;tab-size:4;color:var(--text)}
+.code .k{color:var(--accent);font-weight:600}.code .c{color:var(--muted)}.code .o{color:var(--muted)}
+/* term table (patterns.md §3) */
+.parts td{vertical-align:top} .parts td:first-child{font-weight:600;white-space:nowrap}
+.parts .ex{font-size:13px} .parts .ex span{display:block;color:var(--muted)}
+@media (max-width:560px){.parts .what{display:none}}
+.foot p{font-size:13px;margin:0 0 4px;color:var(--muted)}
+
+
+/* MathML (patterns.md §1) */
+.mathbox{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px 16px 12px;margin:10px 0;overflow-x:auto}
+.mathbox math{font-size:21px;color:var(--text);font-family:"STIX Two Math","Latin Modern Math","Cambria Math",math}
+.mathbox .t1{color:var(--red)} .mathbox .t2{color:var(--accent)}
+.mathbox .lab{font-size:12px;font-family:-apple-system,"Inter",system-ui,sans-serif;padding-top:3px;border-top:1.5px solid currentColor;margin-top:2px}
+.mathbox .row{display:flex;flex-wrap:wrap;gap:12px 40px;justify-content:center}
+.legend{display:grid;grid-template-columns:auto 1fr auto;column-gap:14px;row-gap:5px;font-size:13px;margin-top:12px;align-items:baseline}
+.legend .sym{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;text-align:right}
+.legend .v{color:var(--muted);text-align:right;font-variant-numeric:tabular-nums}
+@media (max-width:560px){.legend{grid-template-columns:auto 1fr}.legend .v{display:none}}
+/* one channel's 32 x 4 slab: which numbers are averaged together */
+.slabs{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:10px 0}
+.slab{border:1px solid var(--border);border-radius:10px;padding:10px 12px;background:var(--bg)}
+.slab h3{font-size:14px;font-weight:600;margin:0 0 8px}
+.slab .rows{display:flex;flex-direction:column;gap:5px}
+.slab .rows.one{gap:3px;border:2px solid var(--accent);border-radius:6px;padding:4px}
+.slab .r{display:flex;align-items:center;gap:6px}
+.slab .r em{font-style:normal;font-size:11px;color:var(--muted);width:30px;flex:none;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.slab .cells{display:grid;grid-template-columns:repeat(32,1fr);gap:1px;flex:1;padding:2px;border-radius:4px}
+.slab .cells i{display:block;height:9px;border-radius:1px;background:var(--surface2)}
+.slab .bug .cells{border:2px solid var(--red)}
+.slab .bug .cells i{background:var(--red-bg)}
+.slab .one .cells i{background:var(--accent-bg)}
+.slab p{font-size:13px;margin:8px 0 0;color:var(--muted)}
+.slab p b{color:var(--text)}
+.slab .lo{color:var(--red)} .slab .hi{color:var(--accent)}
+@media (max-width:560px){.slabs{grid-template-columns:1fr}}
+
+/* study:css */
+.prime{border:1px solid var(--accent-border,var(--border));background:var(--accent-bg);border-radius:10px;padding:10px 16px 6px;margin:12px 0 18px;font-size:14px}
+.prime p{margin:4px 0}
+.prime-k{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--accent);font-weight:600;margin-bottom:4px}
+.prime .chip{display:inline-block;border:1px solid var(--border);background:var(--surface);border-radius:999px;padding:0 8px;margin:1px 2px;font-size:12.5px}
+.prime ol{margin:2px 0 6px;padding-left:22px}
+.prime li{margin:2px 0}
+.study{border:1px solid var(--border);border-radius:12px;padding:12px 16px;margin:26px 0 18px;background:var(--surface)}
+.study-head{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:4px 12px}
+.study-head h2{margin:0;font-size:18px}
+.study-head span,.study-all-l{font-size:12.5px;color:var(--muted)}
+.study-all{margin:8px 4px 8px 0;vertical-align:middle}
+.study details.st{border-top:1px solid var(--border);padding:8px 0}
+.study details.st>summary{cursor:pointer;font-size:15px}
+.study details.st>summary span{color:var(--muted);font-size:13px}
+.study-all:not(:checked)~details.st:not([open])~details.st{display:none}
+.st-body{font-size:14px;padding:4px 0 2px 2px}
+.st-body p{margin:6px 0}
+.st-body ul,.st-body ol{margin:4px 0;padding-left:22px}
+.st-body li{margin:3px 0}
+.st-rule,.st-how{color:var(--muted);font-size:13px}
+.st-why{font-size:12px;color:var(--muted);text-align:right;margin:2px 0 0}
+.core{display:grid;grid-template-columns:3fr 2fr;gap:6px 18px}
+.core h4{margin:4px 0;font-size:13px}
+.core .muted{color:var(--muted)}
+.up{font-size:11px;border:1px solid var(--accent-border,var(--border));color:var(--accent);border-radius:4px;padding:0 4px;white-space:nowrap}
+.study .kind{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--accent);margin-right:4px}
+.study details.ref{margin:4px 0 8px;padding:4px 10px;border-left:3px solid var(--accent-border,var(--border));background:var(--surface2);border-radius:0 6px 6px 0}
+.study details.ref>summary{cursor:pointer;font-size:13px;color:var(--accent)}
+@media (max-width:620px){.core{grid-template-columns:1fr}}
+/* /study:css */
+/* series-nav */
+.sn{max-width:820px;margin:0 auto;padding:16px 32px 0;font-family:-apple-system,"Inter",system-ui,sans-serif;font-size:13px;line-height:1.5;color:var(--muted)}
+.sn a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
+.sn .crumbs{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 7px}
+.sn .crumbs b{color:var(--text);font-weight:600}
+.sn .sep{color:var(--faint,var(--border))}
+.sn .step{margin-left:auto;white-space:nowrap}
+.sn .dep{margin-top:5px;padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface)}
+.sn .dep .ok{color:var(--accent);font-weight:600}
+.snx{max-width:820px;margin:0 auto;padding:6px 32px 44px;font-family:-apple-system,"Inter",system-ui,sans-serif}
+.snx .nx{display:grid;grid-template-columns:280px 1fr;text-decoration:none;color:var(--text);background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.snx .nx:hover,.snx .nx:focus-visible{border-color:var(--accent-border,var(--accent));outline:none}
+.snx .mini{position:relative;height:210px;overflow:hidden;background:var(--bg);border-right:1px solid var(--border);padding:14px 16px}
+.snx .mini span{display:block}
+.snx .mini .m1{font-size:12.5px;font-weight:600;margin:0 0 4px;line-height:1.3}
+.snx .mini .m2{font-size:9px;color:var(--muted);margin:0 0 8px;line-height:1.4}
+.snx .mini .m3{font-size:8.5px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;margin:0 0 3px}
+.snx .mini .m4{font-size:9.5px;margin:0;line-height:1.45}
+.snx .tx{padding:16px 20px}
+.snx .lab{font-size:12px;font-weight:600;color:var(--accent);letter-spacing:.04em;text-transform:uppercase}
+.snx .tt{display:block;font-size:20px;font-weight:600;margin:5px 0 4px;line-height:1.25}
+.snx .ds{display:block;font-size:14px;color:var(--muted)}
+.snx .nd{display:block;font-size:13px;color:var(--muted);margin-top:10px}
+.snx .go{display:block;margin-top:12px;font-size:14px;font-weight:600;color:var(--accent)}
+.snx .aux{display:flex;justify-content:space-between;gap:12px;margin-top:10px;font-size:13px;color:var(--muted)}
+.snx .aux a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
+@media (max-width:560px){.sn,.snx{padding-left:16px;padding-right:16px}.snx .nx{grid-template-columns:1fr}.snx .mini{display:none}.sn .step{margin-left:0}}
+/* /series-nav */
+</style>
+</head>
+<body>
+<!-- series-nav:top -->
+<nav class="sn" aria-label="Course navigation"><div class="crumbs"><a href="../z2h-0-start/index.html" target="_top">Zero to hero: neural networks, built</a><span class="sep">›</span><a href="index.html" target="_top">7 · makemore 5: WaveNet</a><span class="sep">›</span><b>08 / 11</b><span class="step"><a href="index.html#flatten-consecutive" target="_top">← prev</a> · <a href="index.html#scale-up" target="_top">next →</a></span></div>
+<div class="dep"><span class="ok">Stands alone.</span> You can jump in here without reading earlier cards.</div></nav>
+<!-- /series-nav:top -->
+<article class="card">
+<h1>The silent BatchNorm bug: reduce over (0, 1)</h1>
+<p class="sub">Also called: BatchNorm on 3-D input, per-channel statistics, NLC vs NCL. Lecture 6 · fixing batchnorm1d bug · <a href="https://www.youtube.com/watch?v=t3YJ5hKiMQ0&amp;t=2330s">0:38:50</a></p>
+<!-- study:prime -->
+<aside class="prime" aria-label="Prime: read this first">
+<div class="prime-k"><a href="../learning-principles/learning-principles.html#prime">Prime</a> · 2 minutes before you read</div>
+<p><b>The problem:</b> The tree-shaped net scored val 2.029, no better than the flat net's 2.027 at the same size. Part of the reason was a layer that ran without errors but computed the wrong statistics, because its code was written for 2-D input and was now fed 3-D.</p>
+<p><b>Where it fits:</b> You built <code>BatchNorm1d</code> for <code>(batch, channels)</code> input in the BatchNorm lecture, and <code>FlattenConsecutive</code> just added a position axis. This card makes the two agree before the network is scaled up.</p>
+<p class="prime-links"><b>Needs first:</b> <a href="flatten-consecutive.html">Batched matmul and FlattenConsecutive</a></p>
+<p class="prime-links"><b>Builds on:</b> <a href="../z2h-5-batchnorm/batchnorm-forward.html">BatchNorm: standardise the preactivations</a> · <a href="../z2h-5-batchnorm/batchnorm-inference.html">BatchNorm at test time: running statistics</a> · <a href="../z2h-1-toolkit/broadcasting-rules.html">Broadcasting: the two rules</a> · <a href="flatten-consecutive.html">Batched matmul and FlattenConsecutive</a></p>
+<p><b>You'll meet:</b> <span class="chip">reducing over several dimensions (<code>dim=(0,1)</code>)</span> <span class="chip">per-channel vs per-position statistics</span> <span class="chip">broadcasting that hides a shape bug</span> <span class="chip">NLC vs NCL layouts</span></p>
+<p><b>By the end:</b> Predict the shape of every BatchNorm buffer in the tree net, explain why the per-position version is wrong for this model, and add the <code>(0,1)</code> branch that fixes it.</p>
+<p class="prime-q"><b>Read with these questions</b> (answer them in your head as you go; don't take notes line by line):</p>
+<ol><li>Why does <code>running_mean</code>, created as <code>zeros(68)</code>, end up with shape <code>(1, 4, 68)</code> without a single error?</li><li>What fact about the <code>Linear</code> weights justifies pooling the 4 positions into one statistic per channel?</li><li>How many numbers feed each mean before and after the fix, and why does that change the noise?</li><li>Why is the last BatchNorm layer (<code>layers[11]</code>) untouched by the bug?</li><li>Why does PyTorch's own <code>nn.BatchNorm1d</code> fail loudly on the same tensor, while the hand-written one fails silently?</li></ol>
+</aside>
+<!-- /study:prime -->
+
+<p><b>In one breath:</b> in the tree-shaped net, <code>BatchNorm1d</code> suddenly receives a 3-D tensor (batch, position, channel), but its code still averages over dimension 0 only. Nothing crashes, because broadcasting makes every shape fit. It just keeps a separate mean and variance for each position, each estimated from only 32 numbers. The fix averages over dimensions 0 <i>and</i> 1, so each of the 68 channels gets one statistic from 32 × 4 = 128 numbers.</p>
+
+<details class="predict">
+<summary><b>Predict first:</b> <code>running_mean</code> is created as <code>torch.zeros(68)</code>. After one training step on an input of shape <code>(32, 4, 68)</code> with <code>xmean = x.mean(0, keepdim=True)</code>, what shape is it, and does anything raise an error?</summary>
+<p><b>Shape <code>(1, 4, 68)</code>, and no error.</b> The update <code>0.9 * running_mean + 0.1 * xmean</code> adds a <code>(68,)</code> tensor to a <code>(1, 4, 68)</code> one. Broadcasting stretches the first to match, so the buffer silently grows a position axis. At eval time <code>(x - running_mean)</code> broadcasts too, so the bug never announces itself.</p>
+</details>
+
+<h2>What BatchNorm sees inside the tree</h2>
+<p>A quick recap of the words. <b>BatchNorm</b> makes each <b>channel</b> (one neuron's output; the <code>C</code> axis) have mean 0 and variance 1 across the batch, then rescales it with learned <code>gamma</code> and <code>beta</code>. During training it also keeps <code>running_mean</code> and <code>running_var</code>, slow averages used at eval time. Karpathy's version expects channels in the last axis, a layout called <b>NLC</b> (batch N, length L, channels C).</p>
+<p>In the flat net, BatchNorm saw <code>(32, 200)</code>: 32 examples by 200 channels. In the tree net (n_hidden 68), <code>FlattenConsecutive(2)</code> and <code>Linear</code> leave a position axis in place: the first BatchNorm gets <code>(32, 4, 68)</code>, meaning 32 examples, 4 character pairs, 68 channels. The same <code>Linear</code> weights made all 4 positions, so channel 17 at position 0 and channel 17 at position 3 are the same feature, measured on different pairs. They should share one mean.</p>
+
+<div class="mathbox">
+<div class="row">
+<math display="block">
+  <munder class="t1"><mrow><msub><mi>&#956;</mi><mrow><mi>t</mi><mo>,</mo><mi>c</mi></mrow></msub><mo>=</mo><mfrac><mn>1</mn><mi>N</mi></mfrac><munderover><mo>&#8721;</mo><mrow><mi>n</mi><mo>=</mo><mn>1</mn></mrow><mi>N</mi></munderover><msub><mi>x</mi><mrow><mi>n</mi><mo>,</mo><mi>t</mi><mo>,</mo><mi>c</mi></mrow></msub></mrow><mtext class="lab">buggy: x.mean(0) · 4 × 68 means</mtext></munder>
+</math>
+<math display="block">
+  <munder class="t2"><mrow><msub><mi>&#956;</mi><mi>c</mi></msub><mo>=</mo><mfrac><mn>1</mn><mrow><mi>N</mi><mi>T</mi></mrow></mfrac><munderover><mo>&#8721;</mo><mrow><mi>n</mi><mo>=</mo><mn>1</mn></mrow><mi>N</mi></munderover><munderover><mo>&#8721;</mo><mrow><mi>t</mi><mo>=</mo><mn>1</mn></mrow><mi>T</mi></munderover><msub><mi>x</mi><mrow><mi>n</mi><mo>,</mo><mi>t</mi><mo>,</mo><mi>c</mi></mrow></msub></mrow><mtext class="lab">fixed: x.mean((0,1)) · 68 means</mtext></munder>
+</math>
+</div>
+<div class="legend">
+  <span class="sym">x</span><span>the BatchNorm input, indexed [example n, position t, channel c]</span><span class="v">shape (32, 4, 68)</span>
+  <span class="sym">N</span><span>examples in the minibatch (dimension 0)</span><span class="v">32</span>
+  <span class="sym">T</span><span>positions, the pairs left after FlattenConsecutive (dimension 1)</span><span class="v">4, then 2</span>
+  <span class="sym">&#956;</span><span>the batch mean BatchNorm subtracts; the variance is taken over the same dimensions</span><span class="v">per (t, c) vs per c</span>
+</div>
+</div>
+
+<div class="slabs">
+  <div class="slab"><h3><span class="lo">&#10007;</span> Reduce over 0: one channel, 4 separate groups</h3><div class="rows bug"><div class="r"><em>t=0</em><div class="cells"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div></div><div class="r"><em>t=1</em><div class="cells"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div></div><div class="r"><em>t=2</em><div class="cells"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div></div><div class="r"><em>t=3</em><div class="cells"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div></div></div><p>Each row is one position's 32 examples. <b class="lo">4 means, 32 numbers each.</b></p></div>
+  <div class="slab"><h3><span class="hi">&#10003;</span> Reduce over (0, 1): one channel, one group</h3><div class="rows one"><div class="r"><em>t=0</em><div class="cells"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div></div><div class="r"><em>t=1</em><div class="cells"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div></div><div class="r"><em>t=2</em><div class="cells"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div></div><div class="r"><em>t=3</em><div class="cells"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div></div></div><p>All 32 × 4 values of the channel together. <b class="hi">1 mean, 128 numbers.</b></p></div>
+</div>
+<p class="cap">One channel's slice of the <code>(32, 4, 68)</code> input; the other 67 channels work the same way. Each little cell is one number.</p>
+
+<h2>The shapes, before and after the fix</h2>
+<table>
+  <tr><th>Layer</th><th>Input to BatchNorm</th><th>Buggy <code>running_mean</code></th><th>Fixed <code>running_mean</code></th><th class="num">Numbers per statistic</th></tr>
+  <tr><td><code>layers[3]</code></td><td><code>(32, 4, 68)</code></td><td class="lo"><code>(1, 4, 68)</code> = 272 stats</td><td class="hi"><code>(1, 1, 68)</code> = 68</td><td class="num"><span class="lo">32</span> → <span class="hi">128</span></td></tr>
+  <tr><td><code>layers[7]</code></td><td><code>(32, 2, 68)</code></td><td class="lo"><code>(1, 2, 68)</code> = 136 stats</td><td class="hi"><code>(1, 1, 68)</code> = 68</td><td class="num"><span class="lo">32</span> → <span class="hi">64</span></td></tr>
+  <tr><td><code>layers[11]</code></td><td><code>(32, 68)</code></td><td><code>(1, 68)</code></td><td><code>(1, 68)</code></td><td class="num">32 → 32</td></tr>
+</table>
+<p class="cap">Shapes printed by the lab. The last level is already 2-D after the final <code>squeeze</code>, so the bug can't touch it. Stat counts: 4 × 68 = 272, 2 × 68 = 136.</p>
+<div class="formula">why no error:  zeros(68)  →  0.9·(68,) + 0.1·(1, 4, 68)  →  (1, 4, 68)   broadcast, silently
+noise in a mean of unit-variance numbers ≈ 1/√n:   1/√32 = 0.177   1/√128 = 0.088   (half)</div>
+<p class="cap">Both lines computed. The second is a rule of thumb for independent samples; the 4 positions of one name are related, so the real gain is smaller.</p>
+
+<h2>Does it help? Measured on your M3</h2>
+<table>
+  <tr><th>22,397-parameter tree net, 200k steps</th><th class="num">train</th><th class="num">val</th><th class="num">notebook val</th></tr>
+  <tr><td><span class="lo">Buggy:</span> reduce over 0 only</td><td class="num">1.9411</td><td class="num lo">2.0265</td><td class="num">2.029</td></tr>
+  <tr><td><span class="hi">Fixed:</span> reduce over (0, 1)</td><td class="num">1.9110</td><td class="num hi">2.0202</td><td class="num">2.022</td></tr>
+</table>
+<p class="cap">Same seed, same data, only the BatchNorm reduction changes. Torch 2.14 lands about 0.002 below the notebook on val, but the gain from the fix is the same: 2.0265 − 2.0202 = 0.0063 (notebook 2.029 − 2.022 = 0.007). The 20k-step <code>--quick</code> runs agree: val 2.107 → 2.097.</p>
+
+<div class="build">
+  <div class="hd"><b>▶ Build it</b><span class="where">your M3, slow · about 5 min</span></div>
+  <p><b>When:</b> pause the video at <a href="https://www.youtube.com/watch?v=t3YJ5hKiMQ0&amp;t=2330s">0:38:50</a>, right after the first training pass comes out no better than the flat net. Inspect the buffers, then add the branch.</p>
+<pre class="code"><span class="c"># 1. one training-mode forward pass, then look at the buffers</span>
+model(Xtr[:32])
+<span class="k">for</span> i <span class="k">in</span> (3, 7, 11):
+    print(i, tuple(model.layers[i].running_mean.shape))
+
+<span class="c"># 2. the fix, inside BatchNorm1d.__call__</span>
+<span class="k">if</span> self.training:
+    <span class="k">if</span> x.ndim == 2:
+        dim = 0
+    <span class="k">elif</span> x.ndim == 3:
+        dim = (0,1)
+    xmean = x.mean(dim, keepdim=True) <span class="c"># batch mean</span>
+    xvar = x.var(dim, keepdim=True)   <span class="c"># batch variance</span></pre>
+  <p><b>You should see</b> (measured on your M3, <code>python labs/batchnorm-3d-bug.py</code>, 301 s for both 200k-step runs):</p>
+<pre class="code out">input (32, 4, 68): x.mean(0) -&gt; (1, 4, 68) | x.mean((0,1)) -&gt; (1, 1, 68)
+--- buggy: reduce over 0 only ---
+parameters: 22397
+  model.layers[3].running_mean.shape = (1, 4, 68)
+  model.layers[7].running_mean.shape = (1, 2, 68)
+  model.layers[11].running_mean.shape = (1, 68)
+--- fixed: reduce over (0,1) ---
+  model.layers[3].running_mean.shape = (1, 1, 68)
+  model.layers[7].running_mean.shape = (1, 1, 68)
+  model.layers[11].running_mean.shape = (1, 68)
+buggy: reduce over 0 only: train 1.941 val 2.027
+fixed: reduce over (0,1): train 1.911 val 2.020</pre>
+  <p>In a hurry? <code>--quick</code> trains 20k steps each (39 s under load) and prints val 2.107 (buggy) and 2.097 (fixed).</p>
+  <p class="done"><b>Done when:</b> <code>layers[3]</code> and <code>layers[7]</code> report <code>(1, 1, 68)</code>, and the fixed val loss is below the buggy one. · <b>Karpathy's version:</b> <a href="https://github.com/karpathy/nn-zero-to-hero/blob/master/lectures/makemore/makemore_part5_cnn1.ipynb">makemore_part5_cnn1.ipynb</a>, the <code>BatchNorm1d</code> class in the layers cell · <b>Lab:</b> <a href="https://github.com/seyonv/explainers/blob/main/z2h-7-wavenet/labs/batchnorm-3d-bug.py">labs/batchnorm-3d-bug.py</a></p>
+</div>
+
+<h2>How it differs from related ideas</h2>
+<div class="grid2">
+  <div class="cell"><h3><span class="x">&#10007;</span> Reduce over 0 only</h3><p>The bug. Runs without complaint, but keeps 272 statistics in the first BatchNorm, each from 32 numbers, and treats one feature as 4 different features.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> <code>nn.BatchNorm1d(68)</code> as is</h3><p>PyTorch expects channels in the middle, <code>(N, C, L)</code>, and reduces over (0, 2). Fed <code>(32, 4, 68)</code> it at least fails loudly: <code>running_mean should contain 4 elements not 68</code>. Transpose to <code>(32, 68, 4)</code> first.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Normalizing each example instead</h3><p>Averaging over the channels of one example is a different layer (LayerNorm, coming in the GPT lecture). It needs no batch and no running stats, but it answers a different question.</p></div>
+  <div class="cell win"><h3><span class="ok">&#10003;</span> Reduce over (0, 1)</h3><p>One mean and variance per channel from all 128 numbers, because the same weights made every position. Same parameters (22,397), steadier statistics, val 2.0265 → 2.0202.</p></div>
+</div>
+
+<h2>Is a 0.006 gain even real?</h2>
+<div class="note">
+  <p>Karpathy notes he can't tell whether 2.029 → 2.022 is statistically significant, and neither run here was repeated with other seeds. The reason to make the fix isn't the number. The buggy layer computes something other than BatchNorm, and the correct version is the one whose shapes you can predict.</p>
+  <p>Per-position statistics would be the right call only if the positions held genuinely different features, for example if each position had its own weights. Here they share one <code>Linear</code>, so sharing statistics matches the model. The wider lesson: as Karpathy puts it, everything broadcasts and yet BatchNorm isn't doing what we need. Broadcasting turns shape mistakes into silent wrong answers, so it pays to print the shapes of your buffers, not just your outputs.</p>
+</div>
+
+<!-- study:panel -->
+<section class="study" aria-label="Study this card">
+<div class="study-head"><h2>Study this card</h2><span>Open each step in order · <a href="../learning-principles/learning-principles.html">why this works</a></span></div>
+<input type="checkbox" id="study-all" class="study-all"><label for="study-all" class="study-all-l">show all steps (for revisiting)</label>
+<details class="st"><summary><b>1 · Core model</b> <span>what to internalise, what to just look up</span></summary><div class="st-body"><p class="st-rule">Keep it if it changes what you can <i>explain, predict, compare, choose, build or debug</i>. Otherwise it's reference.</p>
+<div class="core"><div><h4>Understand and remember</h4><ul><li>FlattenConsecutive keeps a position axis → BatchNorm gets <code>(32, 4, 68)</code> → <code>x.mean(0)</code> averages only over examples → a separate mean and variance for each of the 4 positions, each from 32 numbers</li><li>The same <code>Linear</code> weights produce every position → channel c means the same feature at each position → it should have one mean and variance → reduce over <code>(0,1)</code>: 68 statistics from 128 numbers each</li><li><code>running_mean</code> starts as <code>(68,)</code> → the update broadcasts it against <code>(1, 4, 68)</code> → the buffer silently grows a position axis, and eval-time <code>x - running_mean</code> broadcasts too → no error anywhere, only a slightly worse loss (val 2.0265 vs 2.0202)</li><li><span class="up">detail that matters</span> Karpathy's layer expects channels last (NLC); <code>nn.BatchNorm1d</code> expects them in the middle (NCL) and reduces over (0, 2) → feeding it <code>(32, 4, 68)</code> raises <code>running_mean should contain 4 elements not 68</code> → you transpose to <code>(32, 68, 4)</code> first, and the statistics then match the fixed version exactly</li></ul></div>
+<div><h4>Reference only</h4><ul class="muted"><li>the exact branch: <code>if x.ndim == 2: dim = 0</code> / <code>elif x.ndim == 3: dim = (0,1)</code></li><li>the BatchNorm layers sit at <code>model.layers[3]</code>, <code>[7]</code>, <code>[11]</code> in the 3-level model</li><li>n_hidden 68 gives 22,397 parameters, the same with or without the fix</li><li>the lab's measured losses: buggy 1.9411 / 2.0265, fixed 1.9110 / 2.0202 (notebook 1.941 / 2.029 and 1.912 / 2.022)</li></ul></div></div><p class="st-why"><a href="../learning-principles/learning-principles.html#layers">Why this step?</a></p></div></details>
+<details class="st"><summary><b>2 · Compress</b> <span>write it yourself first</span></summary><div class="st-body"><p>From memory, draw one channel's <code>(32, 4)</code> slice of the BatchNorm input and circle the numbers that get averaged together in the buggy and the fixed version. Then write 3–4 sentences on why the fixed grouping is right and why the bug never raised an error.</p><p class="st-how">On paper or in your notes, in your own words, without scrolling up. Aim for the smallest thing that still explains it.</p>
+<details class="ref"><summary>Then compare with this checklist</summary><ul><li>buggy: 4 groups of 32 (one per position); fixed: 1 group of 128</li><li>the positions share one <code>Linear</code>, so a channel is the same feature everywhere</li><li>the fix reduces over <code>(0,1)</code> and keeps 68 statistics instead of 272</li><li>broadcasting let <code>running_mean</code> grow from <code>(68,)</code> to <code>(1, 4, 68)</code> silently</li><li>effect: val 2.0265 → 2.0202 on torch 2.14, small and from one seed</li></ul><p class="st-how">Missing a point? Reread only the section about it, not the whole card.</p></details><p class="st-why"><a href="../learning-principles/learning-principles.html#compress">Why this step?</a></p></div></details>
+<details class="st"><summary><b>3 · Retrieve</b> <span>from memory, card closed</span></summary><div class="st-body"><ol class="qs"><li><span class="kind">concept</span> Explain what "per-channel statistics" means for a <code>(32, 4, 68)</code> input and why this model wants them rather than per-position ones.<details class="ref"><summary>Check</summary><ul><li>one mean and one variance for each of the 68 channels</li><li>computed over all 32 examples and all 4 positions</li><li>because one set of <code>Linear</code> weights produced every position, so channel c is the same feature at every position</li></ul></details></li><li><span class="kind">mechanism</span> Walk through the first training step of the buggy layer on <code>(32, 4, 68)</code>: what shape is <code>xmean</code>, what happens to <code>running_mean</code>, and what happens at eval time?<details class="ref"><summary>Check</summary><ul><li><code>x.mean(0, keepdim=True)</code> is <code>(1, 4, 68)</code></li><li><code>0.9 * zeros(68) + 0.1 * xmean</code> broadcasts to <code>(1, 4, 68)</code>, so the buffer changes shape</li><li>at eval, <code>(x - running_mean)</code> still broadcasts against <code>(B, 4, 68)</code>, so each position gets its own stored stats with no error</li></ul></details></li><li><span class="kind">mechanism</span> Why does the second BatchNorm (<code>layers[7]</code>) gain less from the fix than the first, and the third not at all?<details class="ref"><summary>Check</summary><ul><li>layers[7] sees <code>(32, 2, 68)</code>: 32 → 64 numbers per statistic, versus 32 → 128 for layers[3]</li><li>layers[11] sees 2-D <code>(32, 68)</code> after the final squeeze, so <code>dim=0</code> was already right</li></ul></details></li><li><span class="kind">tradeoff</span> You could either fix your hand-written layer or switch to <code>nn.BatchNorm1d</code>. What does each cost, and which failure would you rather hit?<details class="ref"><summary>Check</summary><ul><li>own layer: one extra branch, keeps NLC, but future shape mistakes stay silent</li><li><code>nn.BatchNorm1d</code>: needs a transpose to NCL (and back) around it, but a wrong layout raises an error</li><li>a loud error is cheaper to find than a 0.006 loss difference</li></ul></details></li></ol><p class="st-why"><a href="../learning-principles/learning-principles.html#retrieve">Why this step?</a></p></div></details>
+<details class="st"><summary><b>4 · Compare</b> <span>against what you already know</span></summary><div class="st-body"><p><b>vs <a href="torch-nn-containers.html">Embedding, Flatten, Sequential: rebuilding torch.nn</a>:</b> That card's bug (sampling with BatchNorm left in training mode) and this one both live in BatchNorm. What is fundamentally different about how each fails, and which design choice causes each?</p><details class="ref"><summary>Check</summary><ul><li>train-mode bug: a batch of 1 has no variance, so nan appears and sampling crashes (loud)</li><li>3-D bug: wrong reduction dimensions, every shape still broadcasts, only the loss is a little worse (silent)</li><li>cause of the first: BatchNorm's state and mode flag; cause of the second: code written for 2-D input and broadcasting that hides the mismatch</li></ul></details><p><b>vs <a href="../z2h-5-batchnorm/batchnorm-forward.html">BatchNorm: standardise the preactivations</a>:</b> In the BatchNorm lecture, the layer normalized <code>(32, 200)</code> over dimension 0. What stays the same when the input gets a position axis, and what has to change?</p><details class="ref"><summary>Check</summary><ul><li>same: one mean and variance per channel, <code>gamma</code>/<code>beta</code> of size C, running stats for eval</li><li>change: "the batch" now means every (example, position) pair, so the reduction becomes <code>(0,1)</code></li><li>a convolutional net's BatchNorm does the same: it pools over batch and spatial positions because the filter is shared</li></ul></details><p class="st-why"><a href="../learning-principles/learning-principles.html#interleave">Why this step?</a></p></div></details>
+<details class="st"><summary><b>5 · Predict</b> <span>commit to an answer before revealing</span></summary><div class="st-body"><p>Suppose you grow the net to block_size 16 with four levels of <code>FlattenConsecutive(2)</code> and keep the <b>buggy</b> layer. What shape does each BatchNorm's <code>running_mean</code> get, and from how many numbers is the first layer's fixed statistic computed?</p><details class="ref"><summary>Reveal</summary><p>The inputs are <code>(32, 8, 68)</code>, <code>(32, 4, 68)</code>, <code>(32, 2, 68)</code> and then 2-D <code>(32, 68)</code>, so the buggy buffers are <code>(1, 8, 68)</code>, <code>(1, 4, 68)</code>, <code>(1, 2, 68)</code> and <code>(1, 68)</code>. The fixed first layer averages 32 × 8 = 256 numbers per channel. A deeper tree makes the bug worse at the bottom, where positions are most numerous.</p></details><p class="st-why"><a href="../learning-principles/learning-principles.html#predict">Why this step?</a></p></div></details>
+<details class="st"><summary><b>6 · Apply</b> <span>use the model, don't restate it</span></summary><div class="st-body"><p>Check that PyTorch's layer, used the right way round, computes the same statistics as your fix. Make <code>x = torch.randn(32, 4, 68)</code>. First call <code>nn.BatchNorm1d(68)(x)</code> and read the error. Then compare <code>x.mean((0,1))</code> with <code>x.transpose(1, 2).mean((0, 2))</code>, and run <code>nn.BatchNorm1d(68)</code> on the transposed tensor.</p><p><b>Done when:</b> The first call raises <code>RuntimeError: running_mean should contain 4 elements not 68</code>; <code>torch.allclose</code> of the two means prints <code>True</code>; and after the transposed call the layer's <code>running_mean</code> has shape <code>(68,)</code>.</p><details class="ref"><summary>Hint</summary><p><code>transpose(1, 2)</code> turns NLC <code>(32, 4, 68)</code> into NCL <code>(32, 68, 4)</code>, which is the layout PyTorch expects.</p></details><p class="st-why"><a href="../learning-principles/learning-principles.html#apply">Why this step?</a></p></div></details>
+<details class="st"><summary><b>7 · Reflect</b> <span>and decide whether to move on</span></summary><div class="st-body"><ul><li>Which prediction did you get wrong: the <code>(1, 4, 68)</code> shape, or the claim that nothing raises an error?</li><li>What couldn't you explain cleanly about why sharing weights across positions justifies sharing statistics?</li><li>Which relationship is still fuzzy: 3-D input → wrong reduction, or wrong reduction → silent broadcasting?</li><li>Would you trust a 0.006 val improvement from one seed? What would you run to find out?</li><li>Where else in your code could a buffer quietly change shape through broadcasting?</li></ul><p class="st-how">Repair what came up: reopen only that section, then retry the question you missed. Tutor mode: <code>/study z2h-7-wavenet/batchnorm-3d-bug</code> in Claude Code grades your answers and walks you through each stage.</p><p class="st-why"><a href="../learning-principles/learning-principles.html#reflect">Why this step?</a></p></div></details>
+</section>
+<!-- /study:panel -->
+<div class="foot">
+  <p><b>Watch:</b> <a href="https://www.youtube.com/watch?v=t3YJ5hKiMQ0&amp;t=2261s">0:37:41 training the WaveNet: first pass</a> · <a href="https://www.youtube.com/watch?v=t3YJ5hKiMQ0&amp;t=2330s">0:38:50 fixing batchnorm1d bug</a> · <a href="https://www.youtube.com/watch?v=t3YJ5hKiMQ0&amp;t=2721s">0:45:21 re-training with the fix</a></p>
+  <p><b>Code:</b> <a href="https://github.com/karpathy/nn-zero-to-hero/blob/master/lectures/makemore/makemore_part5_cnn1.ipynb">makemore_part5_cnn1.ipynb</a></p>
+  <p><b>Lab:</b> <a href="https://github.com/seyonv/explainers/blob/main/z2h-7-wavenet/labs/batchnorm-3d-bug.py">labs/batchnorm-3d-bug.py</a></p>
+  <p><b>Related:</b> <a href="flatten-consecutive.html">Batched matmul and FlattenConsecutive</a> · <a href="scale-up.html">Scaling up: 76,579 params</a> · <a href="../z2h-5-batchnorm/batchnorm-forward.html">BatchNorm forward</a> · <a href="../z2h-5-batchnorm/batchnorm-inference.html">BatchNorm at inference</a></p>
+</div>
+</article>
+<!-- series-nav:bottom -->
+<div class="snx"><a class="nx" href="index.html#scale-up" target="_top">
+<span class="mini" aria-hidden="true"><span class="m1">Scaling up: 76,579 params, val 1.993</span><span class="m2">Also called: widening the network, the final WaveNet of the lecture, the number to beat. Lecture 6 · scaling up our WaveNet · 0:46:07 · improve on my loss! · 0:55:26</span></span>
+<span class="tx"><span class="lab">Next up · 09 / 11</span><span class="tt">Scaling up: 76,579 params, val 1.993</span><span class="ds">Keep the tree-shaped network from the last cards exactly as it is, and only make it wider: 24…</span><span class="nd">Stands alone.</span><span class="go">Continue →</span></span></a><div class="aux"><span><a href="index.html#flatten-consecutive" target="_top">← Batched matmul and FlattenConsecutive</a></span><a href="index.html" target="_top">All cards in 7 · makemore 5: WaveNet</a></div></div>
+<!-- /series-nav:bottom -->
+</body>
+</html>

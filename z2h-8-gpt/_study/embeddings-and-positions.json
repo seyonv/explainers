@@ -1,0 +1,63 @@
+{
+  "prime": {
+    "problem": "The bigram reads its logits straight out of a 65×65 table, so there is no per-token vector for later layers to work on. And the attention coming next mixes tokens without knowing their order: <code>\"tab\"</code> and <code>\"atb\"</code> would look the same to it.",
+    "fits": "This is the cleanup just before the crux. It rebuilds the <a href=\"bigram-baseline.html\">bigram baseline</a> out of the embedding lookups you met in makemore, and adds a second table for positions so that the self-attention card has something to tell order by.",
+    "expect": ["token embedding table (<i>what</i>)", "position embedding table (<i>where</i>)", "<code>x = tok_emb + pos_emb</code> with broadcasting", "<code>lm_head</code>: 32 numbers back to 65 logits"],
+    "goal": "Trace every shape from <code>idx</code> to <code>logits</code>, count the parameters, and explain why the position rows don't help this model yet but are essential once attention arrives."
+  },
+  "attend": [
+    "Why does the same character get a different <code>x</code> in slot 2 and slot 5, and which table causes the difference?",
+    "How can a (8, 32) tensor be added to a (32, 8, 32) tensor, and what does that imply about the 32 sequences in a batch?",
+    "If every prediction still comes from one character, what could a position row possibly add to the loss?",
+    "What exactly goes wrong if the model is handed 9 characters when block_size is 8?",
+    "Why does a content-based mixer need position rows when a fixed-order lookup like the bigram doesn't?"
+  ],
+  "core": {
+    "must": [
+      "Token table row + position row are added into one C-wide <code>x</code> → the same character in two slots gets two different vectors → anything downstream that compares vectors can now tell slots apart",
+      "Attention scores tokens by content and sums them → swapping two earlier tokens just moves the same weights with them → the output is unchanged (\"tab\" = \"atb\") → the only order signal it gets is the position row added into <code>x</code>",
+      "The bigram model predicts from one token at a time → a position row can only say \"I'm in slot t\", not what came before → val loss doesn't improve (2.5163 vs 2.4903) → positions pay off only after tokens can talk",
+      "The position table has exactly <code>block_size</code> rows → there is no row for slot 8 → a 9-character input raises IndexError → <code>generate()</code> must crop the context to the last <code>block_size</code> characters"
+    ],
+    "elevated": [
+      "<code>lm_head</code> is a Linear layer with PyTorch's default init → the initial logits spread less (std 0.79 vs 1.01 for the 65×65 table) → the step-0 loss starts nearer the uniform 4.17 (4.48 vs bigram.py's 4.73)"
+    ],
+    "reference": [
+      "<code>nn.Embedding(vocab_size, n_embd)</code>, <code>nn.Embedding(block_size, n_embd)</code>, <code>nn.Linear(n_embd, vocab_size)</code>",
+      "<code>torch.arange(T)</code> (gpt.py passes <code>device=device</code>)",
+      "parameter counts: 2,080 + 256 + 2,145 = 4,481; at gpt.py's size 24,960 + 98,304 + 25,025",
+      "nanoGPT's names for the same tables: <code>wte</code> and <code>wpe</code>",
+      "the 2017 paper's fixed sinusoids, which it reports as nearly identical to learned rows"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw the flow from <code>idx</code> to <code>logits</code> with every tensor's shape for B=32, T=8, C=32, then write 2–3 sentences on why the position table exists even though it doesn't lower this model's loss.",
+    "checklist": [
+      "<code>idx</code> (32, 8) → token table → <code>tok_emb</code> (32, 8, 32)",
+      "<code>arange(8)</code> → position table → <code>pos_emb</code> (8, 32), broadcast over the batch",
+      "<code>x = tok_emb + pos_emb</code> (32, 8, 32) → <code>lm_head</code> → logits (32, 8, 65)",
+      "one token per prediction, so positions add almost nothing yet",
+      "attention mixes tokens as a set, so the position row in <code>x</code> is its only source of order"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain the difference between what the token table stores and what the position table stores, and why their rows can be added rather than kept separate.", "kind": "concept", "answer": ["token table: one learned row per character (65 rows), the same wherever it appears", "position table: one learned row per slot (block_size rows), the same whatever character is there", "both are trained together, so training decides how to share the 32 dimensions; adding keeps the width at C"]},
+    {"q": "Walk one batch through <code>forward</code>: name each tensor and its shape, and say where broadcasting happens.", "kind": "mechanism", "answer": ["idx (32, 8) of ints → tok_emb (32, 8, 32)", "torch.arange(8) → pos_emb (8, 32)", "tok_emb + pos_emb broadcasts pos_emb over the 32 sequences → x (32, 8, 32)", "lm_head(x) → logits (32, 8, 65), then reshape to (256, 65) for cross-entropy"]},
+    {"q": "gpt.py raises block_size from 8 to 256. What does that cost in the position table, and what does it buy and limit?", "kind": "tradeoff", "answer": ["256 × 384 = 98,304 numbers, about four times the token table", "every slot up to 256 gets its own learned row, so attention can use order over a longer context", "still a hard limit: no row past slot 255, so longer inputs must be cropped"]}
+  ],
+  "compare": [
+    {"with": "z2h-8-gpt/bigram-baseline", "q": "The 65×65 bigram table vs token table + lm_head: both map one character to 65 logits. What is fundamentally different, and why is the version with a 32-number bottleneck the one to build on?", "answer": ["bigram: the row <i>is</i> the logits; nothing sits between lookup and output", "new: a C-wide vector sits in the middle, and later layers (attention, MLPs) can transform it", "the bottleneck costs a little here (2.51–2.52 vs 2.49) but is what makes a deep model possible"]},
+    {"with": "z2h-4-mlp/embedding-lookup", "q": "In makemore, the embedding <code>C[X]</code> fed a concatenated window into an MLP. Here each token gets its own vector plus a position row. Where did the position information live in makemore, and why can't the Transformer use the same trick?", "answer": ["makemore: concatenation order fixed which slot each character's numbers occupied, so position was implicit", "the Transformer keeps one vector per token and mixes them with order-blind attention", "so position has to be written into each token's vector, by adding a position row"]}
+  ],
+  "predict": {"q": "Before attention, the <a href=\"average-the-past.html\">average-the-past</a> card mixed tokens with a plain average. If you add position rows to <code>x</code> and then take that plain average over <code>\"tab\"</code> and <code>\"atb\"</code>, does the last token's average now differ between the two orders?", "answer": "No. With the lab's seeded tables the difference is 1.2e-7, which is float noise. The average of (token + position) rows is the average of the three token rows plus the average of position rows 0–2, and both averages are the same in either order. Position rows only help when the <i>weights</i> depend on what sits in each slot, which is what queries and keys add on the next card."},
+  "apply": {"task": "In <code>labs/embeddings-and-positions.py</code>, change <code>x = tok_emb + pos_emb</code> to <code>x = tok_emb</code>, leaving the position table defined so the seeded init is unchanged. Before running, predict whether val loss at step 2999 goes up, down or stays about the same. Then rerun.", "done": "Your run ends at val loss 2.5123 (vs 2.5163 with the add), and you can say why the position rows don't matter to a model that only sees one character per prediction.", "hint": "Everything above the training run prints the same as before (the lookup still happens, it's just not added), so compare only the step lines. Step 0 also changes: 4.3516 instead of 4.4801."},
+  "reflect": [
+    "Which prediction did you get wrong: whether positions lower the bigram's loss, or whether they make a plain average order-aware?",
+    "What couldn't you explain cleanly: why the rows are added, or why the add broadcasts over the batch?",
+    "Which relationship is still fuzzy: position rows → different <code>x</code> per slot, or different <code>x</code> → attention seeing order?",
+    "Could you rewrite <code>__init__</code> and <code>forward</code> from memory with every shape comment right?",
+    "What will you look for on the self-attention card to confirm the position rows finally matter?"
+  ],
+  "revisit": ["z2h-4-mlp/embedding-lookup", "z2h-1-toolkit/broadcasting-rules", "z2h-8-gpt/average-the-past"],
+  "prereq": ["z2h-8-gpt/bigram-baseline"]
+}

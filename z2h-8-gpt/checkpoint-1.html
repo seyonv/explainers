@@ -1,0 +1,321 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Checkpoint 1: from averaging the past to one attention head</title>
+<style>
+:root{
+  --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
+  --text:#1c1f23; --muted:#6b7068; --faint:#b9b9b3;
+  --accent:#4a9d77; --accent-bg:#dcefdf; --accent-border:#8cc79c;
+  --red:#c0492b; --red-bg:#fbeceb;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#15171a; --surface:#1d2024; --surface2:#24282d; --border:#32373d;
+    --text:#e6e8ea; --muted:#9aa1a9; --faint:#4a5057;
+    --accent:#5fb37f; --accent-bg:#1c2b22; --accent-border:#3f7a55;
+    --red:#e57368; --red-bg:#2e1f1e;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text)}
+a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+.card{max-width:820px;margin:0 auto;padding:28px 32px;font-family:-apple-system,"Inter",system-ui,sans-serif;line-height:1.45}
+h1{font-size:26px;font-weight:600;margin:0 0 6px;letter-spacing:-0.01em}
+.sub{font-size:15px;color:var(--muted);margin:0 0 20px}
+h2{font-size:17px;font-weight:600;margin:26px 0 10px}
+p{font-size:15px;margin:0 0 10px}
+.cap{font-size:13px;color:var(--muted);margin:8px 0 0;text-align:center}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+
+/* Horizontal bar chart with running total and cutoff */
+.bars{display:grid;grid-template-columns:110px 1fr 90px;column-gap:14px;row-gap:12px;align-items:center;font-size:14px}
+.bars .hd{font-size:13px;color:var(--muted)}
+.bars .hd.r,.bars .tot{text-align:right;font-variant-numeric:tabular-nums}
+.bars .tok{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:15px}
+.bars .track{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted)}
+.bars .bar{height:22px;border-radius:3px;background:var(--accent)}
+.bars .tot{font-size:15px}
+.bars .strong{font-weight:600}
+.bars .out,.bars .out .tok{color:var(--muted)}
+.bars .track.out .bar{background:var(--faint)}
+.bars .out .tot{font-size:13px}
+.cutoff{grid-column:1 / -1;border-top:2px dashed var(--red);margin-top:4px;padding-top:6px;text-align:center;font-size:13px;color:var(--red)}
+
+/* Tables and formulas */
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border)}
+th{font-size:12px;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:none}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+.hi{color:var(--accent);font-weight:600} .lo{color:var(--red)}
+.formula{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin:10px 0;white-space:pre;overflow-x:auto;line-height:1.55}
+
+/* 2x2 grid */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.cell{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.cell.win{background:var(--accent-bg);border-color:var(--accent-border)}
+.cell h3{font-size:16px;font-weight:600;margin:0 0 5px;display:flex;gap:8px;align-items:baseline}
+.cell p{font-size:14px;margin:0;color:var(--text)}
+.cell.win h3,.cell.win p{color:var(--accent)}
+.x{color:var(--red)} .ok{color:var(--accent)}
+
+/* Clarification box */
+.note{border:1px solid var(--border);border-radius:10px;padding:14px 18px;font-size:14px}
+.note p{font-size:14px} .note p:last-child{margin-bottom:0}
+
+.foot{margin-top:22px;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+svg{display:block;max-width:100%}
+.sl{font-size:12px;fill:var(--muted)} .st{font-size:13px;fill:var(--text)}
+@media (max-width:560px){.grid2{grid-template-columns:1fr}.bars{grid-template-columns:70px 1fr 64px}}
+
+/* z2h series: Build-it box, predict, code */
+.build{border:1.5px solid var(--accent-border);background:var(--accent-bg);border-radius:10px;padding:12px 16px 10px;margin:18px 0}
+.build .hd{display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px}
+.build .hd b{font-size:15px;color:var(--accent)}
+.build .where{font-size:12px;color:var(--muted);border:1px solid var(--border);background:var(--bg);border-radius:999px;padding:2px 9px;white-space:nowrap}
+.build p{font-size:14px;margin:6px 0}
+.build .code{background:var(--bg)}
+.build .out{color:var(--muted)}
+.build .done{border-top:1px dashed var(--accent-border);padding-top:7px;margin-top:8px}
+.predict{border:1px solid var(--border);border-radius:10px;padding:10px 14px;margin:14px 0;background:var(--surface)}
+.predict summary{cursor:pointer;font-size:15px}
+.predict summary b{color:var(--accent)}
+.predict[open] summary{margin-bottom:6px}
+.predict p{font-size:14px;margin:4px 0 0}
+.code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;line-height:1.5;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin:10px 0;white-space:pre;overflow-x:auto;tab-size:4;color:var(--text)}
+.code .k{color:var(--accent);font-weight:600}.code .c{color:var(--muted)}.code .o{color:var(--muted)}
+/* term table (patterns.md §3) */
+.parts td{vertical-align:top} .parts td:first-child{font-weight:600;white-space:nowrap}
+.parts .ex{font-size:13px} .parts .ex span{display:block;color:var(--muted)}
+@media (max-width:560px){.parts .what{display:none}}
+.foot p{font-size:13px;margin:0 0 4px;color:var(--muted)}
+
+/* Checkpoint */
+.how{border:1px solid var(--border);border-radius:10px;padding:10px 16px;background:var(--surface);margin:0 0 8px}
+.how p{font-size:14px;margin:4px 0}
+ol.qs{padding-left:24px;margin:6px 0}
+ol.qs>li{margin:0 0 16px;font-size:15px}
+.tag{display:inline-block;font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:var(--accent);border:1px solid var(--accent-border);border-radius:4px;padding:0 5px;margin-right:6px;vertical-align:1px}
+.tag.bug{color:var(--red);border-color:var(--red)}
+details.chk{margin:6px 0 0;padding:4px 12px;border-left:3px solid var(--accent-border);background:var(--surface2);border-radius:0 6px 6px 0;font-size:14px}
+details.chk>summary{cursor:pointer;color:var(--accent);font-size:13px;font-weight:600}
+details.chk ul,details.chk ol{margin:6px 0;padding-left:20px}
+details.chk li{margin:3px 0}
+.re{font-size:13px;color:var(--muted);margin:4px 0 6px}
+.tw{overflow-x:auto;margin:8px 0}
+table.cmp{min-width:680px;font-size:13.5px;table-layout:fixed}
+table.cmp th,table.cmp td{vertical-align:top}
+table.cmp td:first-child{font-weight:600;width:19%}
+table.cmp td.blank{height:64px;background:var(--surface);border:1px dashed var(--border)}
+table.fix td{vertical-align:top}
+.proj{border:1px solid var(--accent-border);border-radius:10px;padding:12px 18px;margin:8px 0}
+.proj p,.proj li{font-size:14px}
+.proj ol,.proj ul{padding-left:20px;margin:4px 0}
+.proj li{margin:5px 0}
+.proj .where{font-size:12px;color:var(--muted);border:1px solid var(--border);background:var(--bg);border-radius:999px;padding:2px 9px;white-space:nowrap;float:right}
+.card>ul{font-size:15px;padding-left:22px}
+.card>ul li{margin:3px 0}
+.done{background:var(--accent-bg);border:1px solid var(--accent-border);border-radius:8px;padding:8px 12px;font-size:14px;margin:10px 0}
+/* series-nav */
+.sn{max-width:820px;margin:0 auto;padding:16px 32px 0;font-family:-apple-system,"Inter",system-ui,sans-serif;font-size:13px;line-height:1.5;color:var(--muted)}
+.sn a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
+.sn .crumbs{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 7px}
+.sn .crumbs b{color:var(--text);font-weight:600}
+.sn .sep{color:var(--faint,var(--border))}
+.sn .step{margin-left:auto;white-space:nowrap}
+.sn .dep{margin-top:5px;padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface)}
+.sn .dep .ok{color:var(--accent);font-weight:600}
+.snx{max-width:820px;margin:0 auto;padding:6px 32px 44px;font-family:-apple-system,"Inter",system-ui,sans-serif}
+.snx .nx{display:grid;grid-template-columns:280px 1fr;text-decoration:none;color:var(--text);background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.snx .nx:hover,.snx .nx:focus-visible{border-color:var(--accent-border,var(--accent));outline:none}
+.snx .mini{position:relative;height:210px;overflow:hidden;background:var(--bg);border-right:1px solid var(--border);padding:14px 16px}
+.snx .mini span{display:block}
+.snx .mini .m1{font-size:12.5px;font-weight:600;margin:0 0 4px;line-height:1.3}
+.snx .mini .m2{font-size:9px;color:var(--muted);margin:0 0 8px;line-height:1.4}
+.snx .mini .m3{font-size:8.5px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;margin:0 0 3px}
+.snx .mini .m4{font-size:9.5px;margin:0;line-height:1.45}
+.snx .tx{padding:16px 20px}
+.snx .lab{font-size:12px;font-weight:600;color:var(--accent);letter-spacing:.04em;text-transform:uppercase}
+.snx .tt{display:block;font-size:20px;font-weight:600;margin:5px 0 4px;line-height:1.25}
+.snx .ds{display:block;font-size:14px;color:var(--muted)}
+.snx .nd{display:block;font-size:13px;color:var(--muted);margin-top:10px}
+.snx .go{display:block;margin-top:12px;font-size:14px;font-weight:600;color:var(--accent)}
+.snx .aux{display:flex;justify-content:space-between;gap:12px;margin-top:10px;font-size:13px;color:var(--muted)}
+.snx .aux a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
+@media (max-width:560px){.sn,.snx{padding-left:16px;padding-right:16px}.snx .nx{grid-template-columns:1fr}.snx .mini{display:none}.sn .step{margin-left:0}}
+/* /series-nav */
+</style>
+</head>
+<body>
+<!-- series-nav:top -->
+<nav class="sn" aria-label="Course navigation"><div class="crumbs"><a href="../z2h-0-start/index.html" target="_top">Zero to hero: neural networks, built</a><span class="sep">›</span><a href="index.html" target="_top">8 · Let's build GPT</a><span class="sep">›</span><b>16 / 21</b><span class="step"><a href="index.html#scaled-attention" target="_top">← prev</a> · <a href="index.html#heads-in-the-model" target="_top">next →</a></span></div>
+<div class="dep"><span class="ok">Stands alone.</span> You can jump in here without reading earlier cards.</div></nav>
+<!-- /series-nav:top -->
+<article class="card">
+<h1>Checkpoint 1: from averaging the past to one attention head</h1>
+<p class="sub">Ties together <a href="tril-matmul-trick.html">the triangular matrix multiply</a>, <a href="masked-softmax.html">masked softmax</a>, <a href="embeddings-and-positions.html">token and position embeddings</a>, <a href="self-attention-head.html">queries, keys and values</a>, <a href="attention-notes.html">five facts about attention</a> and <a href="scaled-attention.html">why divide by √head_size</a>, with softmax, variance, broadcasting and embedding lookups from earlier courses. Lecture 7, 0:42:13 to 1:19:11.</p>
+
+<div class="how">
+<p><b>What this ties together, and why now.</b> The self-attention half of Lecture 7 builds one head in small steps. Start with <a href="average-the-past.html">averaging the past</a> in a double loop. Turn that average into one lower-triangular matrix multiply. Rebuild the matrix as masked softmax over a table of scores. Let each token's query and key fill in those scores. Add position rows so the head can tell order. Scale the scores so softmax doesn't saturate at step 0. Next, Karpathy drops this head into the model, then copies it into four heads and stacks it into blocks. Check now that you can write a head from memory and say what each of its lines is for, because every later card assumes you can.</p>
+<p><b>Comes back from earlier courses:</b> the softmax is the <a href="../z2h-1-toolkit/softmax-and-cross-entropy.html">toolkit's softmax</a>, where shifting all scores changes nothing. The √head_size is the toolkit's <a href="../z2h-1-toolkit/mean-variance-gaussian.html">"variances add"</a>, the same arithmetic as <a href="../z2h-5-batchnorm/kaiming-init.html">Kaiming init</a>. The row normalisation is the <a href="../z2h-3-bigram/broadcasting-keepdim-trap.html">keepdim trap</a> from the bigram course. The position table is an <a href="../z2h-4-mlp/embedding-lookup.html">embedding lookup</a>, like the MLP's C.</p>
+<p><b>How to use this page.</b> Close the cards. Write out each answer in full sentences <i>before</i> you open its Check. The questions come in mixed order and don't say which card they're from, so part of the work is picking the right idea. If an answer is wrong or shaky, its Check names the exact section to reopen.</p>
+</div>
+
+<h2>1 · Mixed retrieval</h2>
+<ol class="qs">
+<li>Token 1 of sequence 0 has raw scores q₁·k₀ = −3.3334 and q₁·k₁ = −1.6556. Compute its two attention weights. Then say why row 7 of <code>wei</code> differs between sequence 0 and sequence 1, when in the averaging version it was 0.125 everywhere.
+<details class="chk"><summary>Check</summary><ul>
+<li>exponentiate: e<sup>−3.3334</sup> = 0.0357 and e<sup>−1.6556</sup> = 0.1910, which sum to 0.2267</li>
+<li>divide: 0.0357 / 0.2267 = 0.1574 and 0.1910 / 0.2267 = 0.8426. Tokens 2 to 7 get exactly 0, because they are masked</li>
+<li>the scores are dot products of each sequence's own queries and keys, so the weights depend on the content: sequence 0's token 7 puts the most weight, 0.2423, on token 6, while sequence 1's puts 0.365 on token 0</li>
+<li>the layers are untrained, so these patterns mean nothing yet. What matters is that the weights <i>can</i> depend on the data. The fixed 1/(t+1) average can't</li>
+</ul><p class="re">If you missed it, reopen <a href="self-attention-head.html">queries, keys and values</a>, "Row 1, by hand" and "Row 7: weights that depend on the data", and the toolkit's <a href="../z2h-1-toolkit/softmax-and-cross-entropy.html">softmax and cross-entropy</a>, "Softmax, step by step".</p></details></li>
+
+<li><span class="tag bug">debug</span>You train the one-head model (n_embd 32, block_size 8, lr 1e-3). By step 500 it prints <code>train loss 0.5063, val loss 0.5096</code>, and after 5,000 steps val is 0.3867, far below the finished GPT's 1.48. But the sample is <code>WWWWWWWWWWWWWWWWWWWWWWWWWWgggggggg…</code>. What went wrong, and which single number per position would prove it?
+<details class="chk"><summary>Check</summary><ul>
+<li>the causal mask is missing: the <code>masked_fill(tril == 0, float('-inf'))</code> line was deleted, or replaced by something that doesn't block the future</li>
+<li>within one chunk, position t's target is the character at t + 1, which is also in the input. Without the mask, position t can simply read its answer</li>
+<li>proof: the val loss for each position. Positions 0 to 6 score 0.0094 to 0.0212, and position 7, which has no future to read, scores 3.1328. The mean, (0.0888 + 3.1328) / 8 = 0.40, is the suspiciously good number the run printed</li>
+<li>generation always predicts from the last position, the one that never learned. Its 3.13 is worse than the bigram's 2.49, so the samples fall apart. With the mask restored, the same model reaches val 2.4103</li>
+</ul><p class="re">If you missed it, reopen <a href="masked-softmax.html">masked softmax</a>, "What the mask protects", <a href="attention-notes.html">five facts about attention</a>, note 4 in "All five notes, each checked in code", and <a href="batches-of-chunks.html">chunks and batches</a>, "One chunk, eight examples".</p></details></li>
+
+<li>With seed 42, b = [[2, 7], [6, 4], [6, 5]] and a = <code>torch.tril(torch.ones(3, 3))</code>. Compute rows 1 and 2 of <code>(a / torch.sum(a, 1, keepdim=True)) @ b</code>. Then say what goes wrong if you drop <code>keepdim=True</code>.
+<details class="chk"><summary>Check</summary><ul>
+<li>the normalised a has rows [1, 0, 0], [0.5, 0.5, 0] and [1/3, 1/3, 1/3], so c[1] = 0.5·[2, 7] + 0.5·[6, 4] = [4, 5.5] and c[2] = [14, 16] / 3 = [4.6667, 5.3333]</li>
+<li>with keepdim, the row sums have shape (3, 1) and stretch across each row, so each row is divided by its own count</li>
+<li>without it, the sums have shape (3,), which broadcasts as a <i>row</i>, so column j gets divided by row j's sum. a becomes [[1, 0, 0], [1, 0.5, 0], [1, 0.5, 0.3333]], and its rows sum to 1, 1.5 and 1.8333. c comes out [[2, 7], [5, 9], [7, 10.6667]], which are not averages. No error is raised (computed)</li>
+<li>it's the same silent bug as the bigram course's count normalisation. And tril without any division gives sums: row 2 would be [14, 16]</li>
+</ul><p class="re">If you missed it, reopen <a href="tril-matmul-trick.html">the triangular matrix multiply</a>, "Three versions of a, same b", and <a href="../z2h-3-bigram/broadcasting-keepdim-trap.html">broadcasting and the keepdim trap</a>, "What each version computes".</p></details></li>
+
+<li><span class="tag">which idea?</span>A teammate feeds one untrained head the chunks "tab" and "atb" and gets the same output for the last token b (max difference 6e-8, float noise), with weights t 0.0948 · a 0.6881 · b 0.2172 both times. They conclude attention can't read order. Which idea explains the result, what did they leave out, and what breaks if they now feed 9 characters?
+<details class="chk"><summary>Check</summary><ul>
+<li>attention works on a set: every score is a dot product of two tokens' contents, so swapping t and a only moves the same weights to the other slot, and the weighted mix is unchanged</li>
+<li>they left out the position table. With <code>x = tok_emb + pos_emb</code>, the same two chunks give different outputs (max difference 0.8732)</li>
+<li>the causal mask gives only a weak sense of order, which is why GPT still adds position rows</li>
+<li>the position table has block_size = 8 rows, so 9 characters raise <code>IndexError: index out of range in self</code>. That's why generate crops to <code>idx[:, -block_size:]</code></li>
+</ul><p class="re">If you missed it, reopen <a href="embeddings-and-positions.html">token and position embeddings</a>, "Why attention needs the position rows" and "Can a position table handle any length?", and <a href="attention-notes.html">five facts about attention</a>, "Is the mask the only thing that makes it "GPT"?".</p></details></li>
+
+<li>q and k are unit-variance vectors of gpt.py's head size, 64. Predict the variance of one score q·k, with and without scaling. Then say what softmax does to Karpathy's scores [0.1, −0.2, 0.3, −0.2, 0.5] multiplied by 8, and why that hurts learning.
+<details class="chk"><summary>Check</summary><ul>
+<li>q·k is a sum of 64 independent products, each with variance 1, and the variances add, so the variance is about 64 (measured 63.10)</li>
+<li>scaled by 64<sup>−0.5</sup> = 1/8, the variance is divided by 64, back to about 1 (measured 0.986). Dividing by head_size instead would overshoot, to about 1/64 (0.0154 measured)</li>
+<li>×8 gives [0.0326, 0.0030, 0.1615, 0.0030, 0.8000]: one token takes 80%, against 0.2872 unscaled</li>
+<li>near one-hot, nudging a score hardly moves any weight. Softmax's gradient size falls from 1.57 to 0.67 (×8) to 0.00018 (×50), so the queries and keys barely learn</li>
+<li>it's the same √fan_in argument as Kaiming init, applied to a dot product instead of a layer</li>
+</ul><p class="re">If you missed it, reopen <a href="scaled-attention.html">why divide by √head_size</a>, "Where the 16 comes from" and "Why a wide spread hurts: softmax turns peaky", and the toolkit's <a href="../z2h-1-toolkit/mean-variance-gaussian.html">mean, variance and the Gaussian</a>, "Add random numbers, and their variances add".</p></details></li>
+
+<li><span class="tag">which idea?</span>To "simplify", a teammate deletes the query and key layers and keeps <code>wei = torch.zeros(T, T)</code>, masked and softmaxed, then <code>@ v</code>. Everything else is the same (7,553 parameters). It trains to val 2.8392, worse than the plain bigram's 2.4903, while the real head reaches 2.4103. Which idea explains that ranking?
+<details class="chk"><summary>Check</summary><ul>
+<li>with zero scores, masked softmax gives the running average: every past token gets 1/(t + 1), in every sequence. That's the bag-of-words average from the first self-attention card</li>
+<li>the token's own vector is only 1 of t + 1 equal votes (12.5% at t = 7), so the current character, the one thing a bigram relies on, gets blurred into its past. Our reading: nothing else in this model (no residual path yet) passes it through intact</li>
+<li>query·key scores let each row choose. A token can put most of its weight on itself or on a useful neighbour, and that choice differs from sequence to sequence</li>
+<li>the zeros were only ever a placeholder for "no preference yet". Their job was to become learned, data-dependent scores</li>
+</ul><p class="re">If you missed it, reopen <a href="average-the-past.html">average the past</a>, "Is this what GPT does?", <a href="masked-softmax.html">masked softmax</a>, "Three steps, same matrix as before", and <a href="self-attention-head.html">queries, keys and values</a>, "Why it beats the alternatives".</p></details></li>
+
+<li>Give the shapes. x is (4, 8, 32), head_size is 16, and wei = <code>q @ k.transpose(-2, -1)</code>. Then answer two things: (a) why the 4 sequences never mix, and how many (query, key) pairs a batch scores; (b) in cross-attention with keys and values from 6 source vectors, what shapes wei and out have.
+<details class="chk"><summary>Check</summary><ul>
+<li>q and k are (4, 8, 16). <code>transpose(-2, -1)</code> swaps only the last two axes, giving (4, 16, 8), so wei is (4, 8, 16) @ (4, 16, 8) → (4, 8, 8), one 8 × 8 table per sequence. out = wei @ v is (4, 8, 16)</li>
+<li>(a) @ treats the leading axis as a batch, so each sequence multiplies only its own matrices: 4 × 8 × 8 = 256 pairs. One pool of 32 tokens would score 32 × 32 = 1,024 pairs, and the sequences would leak into each other</li>
+<li>(b) wei is (4, 8, 16) @ (4, 16, 6) → (4, 8, 6), 8 queries × 6 keys. out is (4, 8, 6) @ (4, 6, 16) → (4, 8, 16), one output per query</li>
+<li>the averaging version's (8, 8) wei had no batch axis at all. Broadcasting reused it for every sequence</li>
+</ul><p class="re">If you missed it, reopen <a href="attention-notes.html">five facts about attention</a>, "All five notes, each checked in code", <a href="tril-matmul-trick.html">the triangular matrix multiply</a>, "Version 2: the whole toy batch in one multiply", and the toolkit's <a href="../z2h-1-toolkit/matmul-by-shapes.html">matmul by shapes</a>, "More than two dimensions, and counting parameters".</p></details></li>
+
+<li><span class="tag">which idea?</span>Row 1 has visible scores [1, 3] and future scores [0, 0]. Three people implement the mask three ways: (a) <code>masked_fill(-inf)</code> then softmax, (b) multiply the scores by tril then softmax, (c) softmax first, then zero the future. Which gives a valid causal row? And what happens to row 2 if every score in it is raised by 7?
+<details class="chk"><summary>Check</summary><ul>
+<li>(a) is correct: 0.1192, 0.8808, 0, 0. e<sup>−∞</sup> = 0 drops the future from both the top and the bottom of the fraction</li>
+<li>(b) leaks: a score of 0 isn't "nothing", since e<sup>0</sup> = 1. The row comes out 0.1096, 0.8098, 0.0403, 0.0403, the same as no mask at all</li>
+<li>(c) blocks the future but doesn't renormalise: the row sums to 0.1096 + 0.8098 = 0.9194, so each position's output shrinks by a different amount</li>
+<li>adding 7 everywhere changes nothing, because softmax only sees the gaps between scores: e<sup>7</sup> / (3·e<sup>7</sup>) = 1/3</li>
+</ul><p class="re">If you missed it, reopen <a href="masked-softmax.html">masked softmax</a>, "What the mask protects" and "Why it beats the alternatives", and the toolkit's <a href="../z2h-1-toolkit/softmax-and-cross-entropy.html">softmax and cross-entropy</a>, "Scale stretches it, shift does nothing".</p></details></li>
+</ol>
+
+<h2>2 · Compare: five ways for a token to hear its past</h2>
+<p>Fill this in on paper first. The rows are the versions this part of the lecture goes through, in order, plus the encoder variant from the notes. For each, name what it does, which design choice causes its strength and its limit, when you'd pick it, and how it fails.</p>
+<div class="tw"><table class="cmp">
+<tr><th>Approach</th><th>Core mechanism</th><th>Design choice that causes the difference</th><th>When to choose it</th><th>How it fails</th></tr>
+<tr><td>Double-loop average (xbow)</td><td class="blank"></td><td class="blank"></td><td class="blank"></td><td class="blank"></td></tr>
+<tr><td>Normalised tril matmul (xbow2)</td><td class="blank"></td><td class="blank"></td><td class="blank"></td><td class="blank"></td></tr>
+<tr><td>Masked softmax over scores (xbow3, then q·k)</td><td class="blank"></td><td class="blank"></td><td class="blank"></td><td class="blank"></td></tr>
+<tr><td>Scaled q·k head (× head_size<sup>−0.5</sup>)</td><td class="blank"></td><td class="blank"></td><td class="blank"></td><td class="blank"></td></tr>
+<tr><td>Encoder head (no mask)</td><td class="blank"></td><td class="blank"></td><td class="blank"></td><td class="blank"></td></tr>
+</table></div>
+<details class="chk"><summary>Check: the filled-in table</summary>
+<div class="tw"><table class="cmp">
+<tr><th>Approach</th><th>Core mechanism</th><th>Design choice that causes the difference</th><th>When to choose it</th><th>How it fails</th></tr>
+<tr><td>Double-loop average (xbow)</td><td>for every (sequence, position), <code>torch.mean(x[b, :t+1], 0)</code></td><td>Python loops, one small call per position; equal weights 1/(t + 1)</td><td>to see what "average the past" means; never in a model</td><td>slow (64 × 256 = 16,384 calls at gpt.py's size); every past token gets the same say, and a sum forgets order</td></tr>
+<tr><td>Normalised tril matmul (xbow2)</td><td><code>wei @ x</code> with wei lower-triangular and rows summing to 1</td><td>zeros above the diagonal block the future; one batched multiply replaces the loop</td><td>when fixed weights are all you need, in one parallel call (allclose to the loop, max gap 1.19e-7)</td><td>still fixed weights: no slot for a score. Forget keepdim or the division and you get wrong averages or sums, with no error</td></tr>
+<tr><td>Masked softmax over scores (xbow3, then q·k)</td><td>scores → <code>masked_fill(-inf)</code> → softmax; with q·k the scores come from the tokens</td><td>e<sup>−∞</sup> = 0 removes the future whatever its score, so any learned score can fill the visible cells</td><td>always, in a decoder: it's the form every later head uses</td><td>unscaled scores grow with head_size (variance 16 at d = 16, 63.10 at d = 64), so rows start near one-hot; a row with every entry masked becomes NaN</td></tr>
+<tr><td>Scaled q·k head (× head_size<sup>−0.5</sup>)</td><td>divides the scores by √d so their variance stays near 1 (1.000 at d = 16, 0.986 at d = 64)</td><td>scales by the head's own width, not by C (the Colab's bug) and not by d</td><td>every head, from 1:19:11 on; gpt.py's heads have d = 64</td><td>only fixes step 0 and assumes unit-variance q, k; still blind to order without position rows (tab = atb)</td></tr>
+<tr><td>Encoder head (no mask)</td><td>the same head with the masked_fill line deleted: every token hears all 8</td><td>no triangle, so each row has 8 incoming edges instead of 1…8</td><td>when the whole input is known up front: classifying a review, reading the source sentence in translation</td><td>for next-character training it reads the answer: val 0.3867 with 7 positions near 0.01 and the last at 3.13, and the samples collapse</td></tr>
+</table></div>
+<p class="re">Shaky rows? Row 1: <a href="average-the-past.html">average the past</a>, "Why it beats the alternatives". Row 2: <a href="tril-matmul-trick.html">the triangular matrix multiply</a>, "Is this attention yet?". Row 3: <a href="masked-softmax.html">masked softmax</a>, "Is "the past can't talk" right? And do you always mask?". Row 4: <a href="scaled-attention.html">why divide by √head_size</a>, "Does this make every score unit variance?". Row 5: <a href="attention-notes.html">five facts about attention</a>, "Note 1: nodes on a directed graph".</p>
+</details>
+
+<h2>3 · Build: one head, three ways to mix the past</h2>
+<div class="proj">
+<p><span class="where">runs on your M3 · about 16 s</span><b>What it reinforces:</b> the loop and the matmul give the same averages (<a href="tril-matmul-trick.html">tril trick</a>), zeros become scores (<a href="masked-softmax.html">masked softmax</a>), token plus position rows (<a href="embeddings-and-positions.html">embeddings</a>), q·k·v (<a href="self-attention-head.html">one head</a>), what the mask is for (<a href="attention-notes.html">note 4</a>), the 1/√d scale (<a href="scaled-attention.html">scaled attention</a>), and the bigram training loop (<a href="train-and-script.html">bigram.py</a>). One <code>Head</code> class has a <code>mode</code> switch, and the three runs differ in one line each.</p>
+<p>Start from your bigram.py with the position table (n_embd 32, block_size 8, batch 32):</p>
+<ol>
+<li><b>Warm-up check.</b> On the toy x (seed 1337, B,T,C = 4,8,2), build xbow with the double loop, xbow2 with the normalised tril, and xbow3 with masked softmax over zeros. Both <code>torch.allclose</code> calls print True.</li>
+<li><b>One Head, three modes.</b> <code>'average'</code>: <code>wei = torch.zeros(B, T, T)</code>, masked, softmax, <code>@ v</code>. <code>'head'</code>: <code>q @ k.transpose(-2, -1) * k.shape[-1]**-0.5</code>, masked. <code>'nomask'</code>: the same scores with the masked_fill line skipped. head_size = n_embd = 32, and key/query/value have <code>bias=False</code>.</li>
+<li><b>Same start for all three.</b> <code>torch.manual_seed(1337)</code>, then create the head <i>before</i> the embedding tables, as the heads lab does, so every run starts from the same weights.</li>
+<li><b>Predict first.</b> Write down the order of the three final val losses, and where they sit against the bigram's 2.49.</li>
+<li><b>Train each</b> for 5,000 steps at lr 1e-3 with <code>estimate_loss</code> every 500 steps. After the no-mask run, print the val loss for each position (<code>reduction='none'</code>, averaged over a 256-row val batch), and sample 120 characters from every model.</li>
+</ol>
+<div class="done"><b>Done when:</b> all three models have 7,553 parameters. The real head ends at val 2.4103 (the heads card's number). The average-only head ends at 2.8392, <i>above</i> the bigram's 2.4903. The no-mask head reports an impossible 0.3867, with positions 0 to 6 at about 0.01 and position 7 at 3.1328, and its sample is a run of repeated letters.</div>
+<details class="chk"><summary>Check: what a working version printed (measured on your M3 with the course venv, 16 s wall time for all three)</summary>
+<pre class="code out">== average: 7553 params ==
+step 0: train loss 4.2333, val loss 4.2337
+step 500: train loss 2.9653, val loss 2.9618
+step 4999: train loss 2.8295, val loss 2.8392
+== head: 7553 params ==
+step 0: train loss 4.2383, val loss 4.2421
+step 500: train loss 2.6506, val loss 2.6538
+step 4999: train loss 2.3943, val loss 2.4103
+== nomask: 7553 params ==
+step 0: train loss 4.1669, val loss 4.1679
+step 500: train loss 0.5063, val loss 0.5096
+step 4999: train loss 0.3897, val loss 0.3867
+nomask per-position val loss: [0.0094, 0.0104, 0.0115, 0.0098,
+                               0.0132, 0.0133, 0.0212, 3.1328]
+head sample:   Ano'ne beene od wisther, wild ale adery wheerel cre of same,
+nomask sample: WWWWWWWWWWWWWWWWWWWWWWWWWWggggggggggggggggggggggggggggggg</pre>
+<p class="re">The head run matches the heads card's 2.4103 exactly because it starts from the same seed and the same creation order. The no-mask model scores well only because it learned to copy the next character, and a copier has nothing to copy at the last position. That's where generation reads, so the sample breaks down. The average-only model is the surprise: equal weights blur the current character, which the bigram gets for free. Scratch script: 3 runs × 5,000 steps on CPU.</p>
+</details>
+</div>
+
+<h2>4 · Reflect</h2>
+<ul>
+<li>Which link is still fuzzy: <i>zeros in wei → a slot for scores</i>, <i>q·k → scores that depend on the data</i>, or <i>scores → one-hot rows when d grows</i>?</li>
+<li>Could you explain, without numbers, why a head with no position rows can't tell "tab" from "atb", even though the mask exists?</li>
+<li>Which question did you first answer with the wrong card's idea? That's the comparison to redo.</li>
+<li>In the build, which result did you predict wrong: the average-only head losing to the bigram, or how low the no-mask loss went?</li>
+</ul>
+<table class="fix">
+<tr><th>If this is fuzzy</th><th>Reopen</th></tr>
+<tr><td>why row i of a @ b is a mix of b's rows</td><td><a href="tril-matmul-trick.html">the triangular matrix multiply</a>, "Three versions of a, same b"; toolkit <a href="../z2h-1-toolkit/matmul-by-shapes.html">matmul by shapes</a>, "The shape rule"</td></tr>
+<tr><td>why −∞ and not 0 goes in the masked cells</td><td><a href="masked-softmax.html">masked softmax</a>, "Three steps, same matrix as before" and "What the mask protects"</td></tr>
+<tr><td>what query, key and value each do</td><td><a href="self-attention-head.html">queries, keys and values</a>, "The data flow through one head"</td></tr>
+<tr><td>why the mask is needed for training, not just for generating</td><td><a href="masked-softmax.html">masked softmax</a>, "What the mask protects"; <a href="batches-of-chunks.html">chunks and batches</a>, "One chunk, eight examples"</td></tr>
+<tr><td>sets, batches, encoder vs decoder, self vs cross</td><td><a href="attention-notes.html">five facts about attention</a>, "All five notes, each checked in code"</td></tr>
+<tr><td>why attention needs a position table</td><td><a href="embeddings-and-positions.html">token and position embeddings</a>, "Why attention needs the position rows"</td></tr>
+<tr><td>where the √head_size comes from</td><td><a href="scaled-attention.html">why divide by √head_size</a>, "Where the 16 comes from"; <a href="../z2h-5-batchnorm/kaiming-init.html">Kaiming init</a>, "Why the spread grows by √fan_in"</td></tr>
+</table>
+
+<div class="foot">
+  <p><b>Watch:</b> <a href="https://www.youtube.com/watch?v=kCc8FmEb1nY&amp;t=2533s">L7 0:42:13 averaging past context</a> · <a href="https://www.youtube.com/watch?v=kCc8FmEb1nY&amp;t=2831s">0:47:11 matrix multiply as weighted aggregation</a> · <a href="https://www.youtube.com/watch?v=kCc8FmEb1nY&amp;t=3282s">0:54:42 adding softmax</a> · <a href="https://www.youtube.com/watch?v=kCc8FmEb1nY&amp;t=3618s">1:00:18 positional encoding</a> · <a href="https://www.youtube.com/watch?v=kCc8FmEb1nY&amp;t=3720s">1:02:00 the crux: self-attention</a> · <a href="https://www.youtube.com/watch?v=kCc8FmEb1nY&amp;t=4298s">1:11:38 notes 1–5</a> · <a href="https://www.youtube.com/watch?v=kCc8FmEb1nY&amp;t=4616s">1:16:56 scaled attention</a> · next: <a href="https://www.youtube.com/watch?v=kCc8FmEb1nY&amp;t=4751s">1:19:11 inserting a single self-attention block</a></p>
+  <p><b>Code:</b> <a href="https://colab.research.google.com/drive/1JMLa53HDuA-i7ZBmqV7ZnA3c_fvtXnx-">lecture Colab</a> · <a href="https://github.com/karpathy/ng-video-lecture/blob/master/gpt.py">gpt.py</a> (Head) · labs: <a href="https://github.com/seyonv/explainers/blob/main/z2h-8-gpt/labs/heads-in-the-model.py">labs/heads-in-the-model.py</a>, <a href="https://github.com/seyonv/explainers/blob/main/z2h-8-gpt/labs/common.py">labs/common.py</a></p>
+  <p><b>Related:</b> <a href="tril-matmul-trick.html">Tril trick</a> · <a href="masked-softmax.html">Masked softmax</a> · <a href="embeddings-and-positions.html">Embeddings</a> · <a href="self-attention-head.html">One head</a> · <a href="attention-notes.html">Five facts</a> · <a href="scaled-attention.html">Scaled attention</a> · <a href="checkpoint-2.html">Checkpoint 2</a> · <a href="../learning-principles/learning-principles.html#interleave">Learning principles: interleave</a></p>
+  <p><b>Sources:</b> every number comes from the six cards and their lab measurements. The exceptions are the keepdim-bug matrix in question 3 and the build's output, which I computed on your M3 with the course venv (Python 3.10.14, torch 2.14.0).</p>
+</div>
+</article>
+<!-- series-nav:bottom -->
+<div class="snx"><a class="nx" href="index.html#heads-in-the-model" target="_top">
+<span class="mini" aria-hidden="true"><span class="m1">One head, then many heads</span><span class="m2">Also called: the self-attention layer, sa_head, multi-head attention (MHA), multi-headed self-attention. Lecture 7 · inserting a single self-attention block to our network · 1:19:11 · multi-headed…</span></span>
+<span class="tx"><span class="lab">Next up · 17 / 21</span><span class="tt">One head, then many heads</span><span class="ds">The head from the last few cards goes into the model, between the embeddings and lm_head, and…</span><span class="nd">Stands alone.</span><span class="go">Continue →</span></span></a><div class="aux"><span><a href="index.html#scaled-attention" target="_top">← Why divide by √head_size</a></span><a href="index.html" target="_top">All cards in 8 · Let's build GPT</a></div></div>
+<!-- /series-nav:bottom -->
+</body>
+</html>

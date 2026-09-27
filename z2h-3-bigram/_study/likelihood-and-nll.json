@@ -1,0 +1,64 @@
+{
+  "prime": {
+    "problem": "You now have a table <code>P</code> of next-character probabilities and it produces name-ish samples, but \"looks OK\" isn't a measurement. Without one number for quality you can't compare two models, notice a bug, or train anything.",
+    "fits": "The broadcasting card gave you a <code>P</code> whose rows each sum to 1. This card grades that <code>P</code> against the real names. The same score becomes the loss that the neural net minimises in the second half of the lecture.",
+    "expect": ["likelihood (a product of probabilities)", "log likelihood (a sum of logs)", "negative log likelihood, averaged", "the uniform baseline log 27 = 3.2958", "why one zero probability gives <code>inf</code>"],
+    "goal": "Compute the average NLL of any set of words under <code>P</code> by hand and in code, explain every step from product to average, and explain why \"andrejq\" scores infinity."
+  },
+  "attend": [
+    "Why does Karpathy switch from multiplying probabilities to adding their logs, and what goes wrong numerically if you don't?",
+    "Why is the sign flipped, and what do 0 and log 27 = 3.2958 mean on this scale?",
+    "Why divide by n at all, if minimising the sum and minimising the average pick the same <code>P</code>?",
+    "Which single bigram in \"emma\" does the model do <i>worse</i> than uniform guessing on, and what does that tell you about averages?",
+    "What happens to the loss when the data contains a pair the training set never had?"
+  ],
+  "core": {
+    "must": [
+      "The model gives each observed bigram a probability → the likelihood of the data is the product of those probabilities → that product underflows to 0.0 over 228,146 bigrams → take logs, so the product becomes a sum that stays representable",
+      "Every p ≤ 1 → every log p ≤ 0 → negate to get a positive loss where 0 means perfect certainty → divide by n so the number is per bigram and comparable across datasets (2.4540 here vs 3.2958 for uniform guessing)",
+      "log is monotonic (always increasing) → the <code>P</code> that maximises the likelihood also minimises the average NLL → \"make the loss small\" and \"make the data likely\" are the same goal → which is why this loss can later train the neural net",
+      "A bigram the table never counted has p = 0 → log 0 = −∞ → one such bigram makes the whole loss infinite (\"andrejq\") → the model needs every probability to be above 0 (smoothing)"
+    ],
+    "elevated": [
+      "Karpathy's loop adds 228,146 float32 tensors one at a time → rounding error builds up → torch 2.14 prints 2.4541 where float64 gives 2.454014: tiny, but a reminder that long running sums in float32 drift"
+    ],
+    "reference": [
+      "<code>torch.log</code> is the natural log (base <i>e</i>)",
+      "the loop shape: <code>for ch1, ch2 in zip(chs, chs[1:])</code> with <code>log_likelihood += torch.log(P[stoi[ch1], stoi[ch2]])</code>",
+      "f-string formatting of a 0-dim tensor (<code>{ll:.2f}</code>)",
+      "the first three words are emma, olivia, ava (16 bigrams, avg NLL 2.4241)"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, explain in 3–5 sentences how you turn \"the probabilities <code>P</code> gives to the real bigrams\" into the single number 2.4540, and why each step is there. Or draw the chain product → log → sum → negate → average, and write next to each arrow what problem that step solves.",
+    "checklist": [
+      "look up p = <code>P[ch1, ch2]</code> for every bigram in the data",
+      "the likelihood (product) underflows, so sum the logs instead",
+      "negate so lower is better and 0 is perfect",
+      "divide by n so it's per bigram and comparable; uniform guessing scores log 27 = 3.2958",
+      "log is monotonic, so minimising NLL maximises the likelihood",
+      "a zero probability gives an infinite loss"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain what the average NLL of 2.4540 says about the counting model, and why it needs the uniform score of 3.2958 next to it to mean anything.", "kind": "concept", "answer": ["it is the average surprise, −log p, per real bigram", "lower is better and 0 would be perfect certainty", "uniform guessing gives log 27 = 3.2958 on every bigram, so anything below that means the table learned something", "exp(−2.4540) ≈ 0.086: on average (geometrically) the true next letter got about 8.6% vs 3.7% for uniform"]},
+    {"q": "Walk through the NLL of \"emma\" step by step: which bigrams, which probabilities, what the sum is and what the average is.", "kind": "mechanism", "answer": ["pad to <code>.emma.</code> → bigrams .e em mm ma a. (n = 5)", "p = 0.0478, 0.0377, 0.0253, 0.3899, 0.1960", "log likelihood = −12.5690 (product 3.48e−6)", "NLL 12.5690, average 2.5138"]},
+    {"q": "You could report the likelihood, the summed log likelihood, or the average NLL. For comparing a model trained on 3 names with one trained on 32,033, which do you pick and what does each of the others cost you?", "kind": "tradeoff", "answer": ["the likelihood underflows (0.0 for the full set even in float64), so it can't be compared", "the summed log likelihood scales with n (−38.79 for 3 names vs −559,874 for all), so it compares dataset sizes, not models", "the average NLL is per bigram, so it compares cleanly; you lose only the total, which you can get back as n × average"]},
+    {"q": "One name in a held-out set contains a pair your training names never had. What does the average NLL over that set become, and what are your options?", "kind": "tradeoff", "answer": ["that bigram has p = 0, so −log p = ∞ and the whole average is <code>inf</code>", "one bad pair hides every other result", "options: give every pair a small probability (fake counts / smoothing), or a model that can't output exactly 0 (softmax in the neural net)"]}
+  ],
+  "compare": [
+    {"with": "z2h-3-bigram/softmax-as-exp-normalise", "q": "Here the probabilities come from normalised counts; there they come from a softmax over the neural net's logits. The NLL formula is identical. What is fundamentally different about the probabilities being scored, which design choice causes it, and how does each version fail?", "answer": ["counts: the probabilities are fixed by the data and give the lowest possible training NLL, 2.4540", "the softmax output depends on the weights <code>W</code>, so NLL becomes something you can push down with gradients (3.7693 on emma at random init, worse than uniform 3.2958)", "counts fail with <code>inf</code> on an unseen pair; exp is never exactly 0, so the softmax always gives a finite loss", "pick counts when one character of context is enough; pick the net when the context is too big to count"]},
+    {"with": "z2h-1-toolkit/softmax-and-cross-entropy", "q": "The toolkit card calls it cross-entropy; this card calls it average negative log likelihood. Are they the same number here, and what would have to change for them to differ?", "answer": ["here the target is a single known next character, so cross-entropy = −log p of that character = the NLL", "averaged over the bigrams it is the same 2.4540", "they would differ only if the targets were soft distributions rather than one correct character, which never happens in these lectures"]}
+  ],
+  "predict": {"q": "The next card adds 1 to every count before normalising (<code>P = (N+1).float()</code>). Before looking: does the average NLL on all 228,146 training bigrams go up, down or stay the same, and roughly what happens to \"andrejq\"?", "answer": "It goes <b>up</b> slightly, 2.4540 → 2.4546, because the raw counts were already the best possible fit to the training data, and moving probability to unseen pairs takes it away from real ones. \"andrejq\" drops from <code>inf</code> to 3.4834, because <code>jq</code> now gets 0.000342 instead of 0 (measured in <code>labs/smoothing.py</code>)."},
+  "apply": {"task": "Score your own name, or any name, with the counting model: print each bigram's p and −log p, then the average. Then score \"ava\" and \"olivia\" and check that the three first-dataset words together give log likelihood −38.7856 over 16 bigrams (average 2.4241). Finally, find a real-looking name that scores <code>inf</code>, and name the bigram responsible.", "done": "\"ava\" prints an average of 2.1764 and \"olivia\" 2.5016 (computed), the first three words together give 2.4241, and you have one name with <code>inf</code> plus its zero-count bigram (check <code>N[stoi[a], stoi[b]] == 0</code>).", "hint": "102 of the 729 cells of <code>N</code> are zero. Rare letters (q, x, z, j) next to each other are a good place to look."},
+  "reflect": [
+    "Which prediction did you get wrong: \"andrejq\" becoming inf, or the smoothed loss going up?",
+    "What couldn't you explain cleanly: why logs are needed, or why averaging doesn't change which <code>P</code> is best?",
+    "Which relationship is still fuzzy: product → sum of logs, or minimising NLL → maximising the likelihood?",
+    "Were you surprised that the model does worse than uniform on the <code>mm</code> in \"emma\"? What does that say about judging a model by one word?",
+    "Could you now read a training log that says \"loss 2.47\" and say what it means per character?"
+  ],
+  "revisit": ["z2h-3-bigram/broadcasting-keepdim-trap", "z2h-1-toolkit/exp-and-log", "z2h-1-toolkit/softmax-and-cross-entropy"],
+  "prereq": ["z2h-3-bigram/broadcasting-keepdim-trap", "z2h-1-toolkit/exp-and-log"]
+}

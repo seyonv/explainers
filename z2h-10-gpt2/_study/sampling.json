@@ -1,0 +1,66 @@
+{
+  "prime": {
+    "problem": "A trained GPT-2 only returns one probability per vocabulary token for the <i>next</i> position. That is not text. Without a loop that picks a token and feeds it back, you can't see what the model has learned, and without a rule for <i>which</i> token to pick you get either the same sentence every time or nonsense from the long tail.",
+    "fits": "The previous card loaded OpenAI's weights and got logits of shape (B, T, 50257). This card turns those logits into text, the same multinomial draw you used for bigram names, now with a top-k cut and a model that looks at the whole prefix.",
+    "expect": ["last-position logits", "top-k 50 and renormalising", "<code>torch.multinomial</code> + <code>torch.gather</code>", "device autodetect (cuda / mps / cpu)", "why a random model gives word salad"],
+    "goal": "Write the generation loop yourself, predict the shape at every line, and explain why top-k 50 gives varied but sensible text while a random model gives garbage."
+  },
+  "attend": [
+    "The model scores every position, so why does the loop throw away all but <code>logits[:, -1, :]</code>?",
+    "After <code>multinomial</code> you hold a number from 0 to 49. Why is that not yet a token id, and which tensor turns it into one?",
+    "How much probability does top-k 50 discard after the prompt, and what kind of tokens live in that discarded part?",
+    "With the same loop and the same seed, what exactly makes the random-init model's text meaningless?",
+    "What work does each turn of this loop repeat that it didn't need to?"
+  ],
+  "core": {
+    "must": [
+      "GPT-2 predicts only the next token → text needs a loop: forward, pick one token, append, forward again → each new token is conditioned on everything written so far (autoregressive) → one bad pick changes every later step",
+      "A trained model puts most probability on a few tokens (top 50 hold 80.6% after the prompt) → the other 50,207 share the remaining 19.4% → sampling from everything draws a tail token about one step in five here → cutting to the top 50 and redrawing keeps variety but removes the tail",
+      "<code>topk</code> returns sorted values plus their positions → <code>multinomial</code> picks a slot (0–49) in the value tensor → <code>gather</code> maps that slot back through <code>topk_indices</code> to a real token id → skipping gather appends slot numbers, i.e. token ids 0–49, which decode to single characters (punctuation, digits, A–R)",
+      "Random weights → nearly flat probabilities (top 50 hold 0.54%, entropy 10.67 vs the uniform 10.83 nats) → the top-k cut removes almost nothing meaningful → the same loop writes word salad, which proves the text comes from the weights, not the loop"
+    ],
+    "elevated": [
+      "No KV cache: each step re-runs the model over the whole row → 8 + 9 + … + 29 = 407 positions per row instead of 29 → fine for 22 tokens, quadratic-ish waste for long generations",
+      "A seed fixes the random stream on one device only → the video's CUDA samples and your MPS samples differ with the same <code>manual_seed(42)</code>, yet each repeats exactly on its own machine"
+    ],
+    "reference": [
+      "the prompt ids <code>[15496, 11, 314, 1101, 257, 3303, 2746, 11]</code>, 5 rows, <code>max_length = 30</code>",
+      "device order: <code>torch.cuda.is_available()</code> → <code>torch.backends.mps.is_available()</code> → <code>\"cpu\"</code>",
+      "<code>torch.multinomial</code> accepts unnormalised weights, so no explicit division is needed",
+      "top-k 50 is the Hugging Face pipeline's default; later build-nanogpt code uses its own <code>torch.Generator</code> seeded <code>42 + ddp_rank</code>",
+      "wrap the forward in <code>torch.no_grad()</code> so no graph is stored during sampling"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, write the 8-line body of the sampling loop with the shape of every tensor as a comment, then say in two sentences why top-k 50 is there and what the random-init run proves.",
+    "checklist": [
+      "forward the whole x (5, T) → logits (5, T, 50257), keep the last position (5, 50257)",
+      "softmax → probs; <code>topk(probs, 50)</code> → values and indices, both (5, 50)",
+      "<code>multinomial</code> → slot (5, 1); <code>gather</code> through the indices → token id (5, 1)",
+      "<code>cat</code> onto x, repeat until length 30",
+      "top-k removes the long tail (19.4% of the mass after the prompt) but keeps randomness, so 5 rows differ",
+      "random weights give flat probabilities, so the same loop writes garbage: the knowledge is in the weights"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why generating text needs a <i>loop</i> around the model, when a single forward pass already produces logits at every position.", "kind": "concept", "answer": ["each position's logits predict the token after it, given only tokens that already exist", "the token after the last one doesn't exist yet, so you must pick it and feed it back", "each pick changes the input for the next step, so the steps can't run in parallel"]},
+    {"q": "Walk one row through one step: start from x of shape (5, 12) and end with x of shape (5, 13). Name every tensor and its shape.", "kind": "mechanism", "answer": ["logits (5, 12, 50257) → <code>[:, -1, :]</code> → (5, 50257)", "softmax → probs (5, 50257)", "topk → topk_probs and topk_indices (5, 50)", "multinomial → ix (5, 1), a slot 0–49", "gather → xcol (5, 1), a token id", "cat → x (5, 13)"]},
+    {"q": "You need five different continuations of a prompt for a demo, and separately one repeatable answer for a test. Which decoding rule do you pick for each, and what does each cost you?", "kind": "tradeoff", "answer": ["demo: top-k sampling; varied rows, but results change with the seed and device", "test: greedy (k = 1); repeatable, but all rows identical and prone to loops (the measured run repeats \"I'm a language model.\")", "sampling from all tokens gives the most variety but lets tail tokens derail the text"]},
+    {"q": "Someone removes the <code>gather</code> line and appends <code>ix</code> directly. The code still runs. What does the output look like, and why?", "kind": "mechanism", "answer": ["ix holds slots 0–49 in the sorted top-k list, not token ids", "the loop then appends token ids 0–49, which are single characters in GPT-2's vocabulary: punctuation, digits and the letters A–R", "shapes still match, so nothing crashes: only the text reveals the bug"]}
+  ],
+  "compare": [
+    {"with": "z2h-3-bigram/sampling-multinomial", "q": "Bigram name sampling and GPT-2 sampling both call <code>torch.multinomial</code> in a loop. What is fundamentally different about the probabilities they draw from, and which design choice causes it?", "answer": ["bigram: one row of a 27 × 27 table, chosen by the last character only", "GPT-2: a fresh 50,257-way distribution computed from the whole prefix by 12 blocks of attention", "cause: the bigram model's context is one character; GPT-2's is up to 1024 tokens", "with 27 options there's no tail to cut, so the bigram loop needs no top-k; with 50,257 tokens the tail matters"]},
+    {"with": "z2h-8-gpt/bigram-baseline", "q": "The Shakespeare GPT's <code>generate</code> sampled from all 65 characters with no top-k. Why was that acceptable there, and what would go wrong if you used the same rule on GPT-2?", "answer": ["65 characters: each is a plausible option, and the tail is small", "50,257 tokens: 19.4% of the mass sits on 50,207 unlikely tokens after this prompt", "without top-k, GPT-2 draws a tail token about one step in five here and can derail", "same loop shape in both: forward, last position, softmax, draw, append"]}
+  ],
+  "predict": {"q": "Over the lab's 22 steps × 5 rows, the top-50 mass averaged 0.79 but dropped to 0.1613 at one step. At that step, what does top-k do to the other 84% of the probability, and would top-p 0.9 keep more or fewer than 50 tokens there?", "answer": "Top-k sets that 84% to zero and scales the kept 16% up to 100%, so each kept token's chance grows about 6× (1 / 0.1613 = 6.2). The model was very unsure there, so many plausible tokens were dropped. Top-p 0.9 would keep <i>far more</i> than 50 tokens, since 50 tokens cover only 16%: that step is exactly where a fixed k and an adaptive p disagree most."},
+  "apply": {"task": "In your copy of <code>labs/sampling.py</code>, record <code>topk_probs.sum(-1)</code> at every step of the pretrained run (keep <code>torch.manual_seed(42)</code> and MPS). Print row 0's values, then the min, max and mean over all 22 × 5 entries. Then rerun with k = 1 and count how many of the 5 rows are distinct.", "done": "Your five samples are unchanged by the extra line; row 0 starts 0.806, 0.911, 0.525; over all entries min 0.1613, max 1.0000, mean 0.7915; with k = 1 there is 1 distinct row, ending \"I'm a language model. I'm a language model.\"", "hint": "Append <code>topk_probs.sum(-1).cpu()</code> to a list inside the loop and <code>torch.stack</code> it afterwards: shape (22, 5). For k = 1, <code>len(set(texts))</code> counts distinct rows."},
+  "reflect": [
+    "Which prediction did you get wrong: the 80% mass held by the top 50, or the 16% step?",
+    "What couldn't you explain cleanly: why <code>gather</code> is needed, or why only the last position matters?",
+    "Which relationship is still fuzzy: flat probabilities → top-k cuts nothing useful, or top-k → varied but sensible text?",
+    "Could you rewrite the loop from memory with the right shapes, including the device pick?",
+    "What will you revisit before the first-loss card, where the same logits are scored against targets instead of sampled?"
+  ],
+  "revisit": ["z2h-3-bigram/sampling-multinomial", "z2h-1-toolkit/softmax-and-cross-entropy", "z2h-8-gpt/bigram-baseline"],
+  "prereq": ["z2h-10-gpt2/load-and-forward"]
+}

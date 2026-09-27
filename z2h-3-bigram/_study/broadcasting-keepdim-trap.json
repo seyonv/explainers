@@ -1,0 +1,65 @@
+{
+  "prime": {
+    "problem": "Sampling needs every row of the count table as a probability distribution. Dividing row by row in Python is slow and repetitive, and the one-line tensor version has a trap: drop one argument and it quietly divides the wrong axis, with no error.",
+    "fits": "The counting cards built the 27×27 table N, and the sampling card normalised one row at a time. This card normalises all rows at once using the broadcasting rules from the toolkit. The loss and softmax cards reuse the same <code>sum(1, keepdim=True)</code> pattern.",
+    "expect": ["<code>sum(dim)</code>: which axis gets collapsed", "<code>keepdim=True</code>: (27, 1) vs (27,)", "broadcasting: align shapes from the right, stretch size-1 axes", "the silent column-normalising bug"],
+    "goal": "Predict the shape of any reduction, say which direction a divide will stretch, and spot the missing-keepdim bug before it reaches your loss."
+  },
+  "attend": [
+    "Both <code>P.sum(1)</code> and <code>P.sum(1, keepdim=True)</code> hold the same 27 numbers. Which single fact about their shapes decides whether rows or columns get divided?",
+    "Why does right-alignment turn a (27,) vector into a <i>row</i> rather than a column?",
+    "Which property of the square 27×27 table lets the buggy version run without an error, and what would happen to a (5, 27) tensor instead?",
+    "Why do the buggy table's columns sum to exactly 1, and what does that say about how many times each letter is preceded vs followed?",
+    "When is in-place <code>/=</code> safe here, and when would PyTorch refuse it?"
+  ],
+  "core": {
+    "must": [
+      "<code>sum(1)</code> collapses the column axis → one total per row → <code>keepdim=True</code> keeps that axis as size 1, giving (27, 1) → broadcasting stretches it across the 27 columns → each row is divided by its own total → every row sums to 1",
+      "No <code>keepdim</code> → shape (27,) → shapes align from the right, so the missing axis is added on the <i>left</i> → (1, 27) is stretched down the rows → column j is divided by row j's total → row 0 sums to 7.0225",
+      "P is square → a length-27 vector fits either axis → the broadcasting rule passes both ways → no error, just wrong numbers; a non-square tensor like (5, 27) ÷ (5,) raises a size-mismatch error instead",
+      "Every letter in names.txt is followed as often as it is preceded → each row total equals its column total → the bug makes every column sum to exactly 1 → the wrong table looks like a valid probability table"
+    ],
+    "elevated": [
+      "Broadcasting stretches with a zero stride (the expanded sums have stride (1, 0)) → no 27×27 copy of the totals is made → the vectorised divide costs one pass over P",
+      "In-place <code>P /= …</code> writes into P's existing memory → fine for plain data, but a leaf tensor with <code>requires_grad=True</code> refuses in-place ops → the neural-net cards divide out of place"
+    ],
+    "reference": [
+      "<code>keepdims=True</code> (Karpathy's notebook spelling) is an accepted alias of <code>keepdim=True</code>",
+      "<code>P.sum()</code> with no dim gives a 0-d tensor, shape <code>()</code>",
+      "the exact error text: <code>The size of tensor a (27) must match the size of tensor b (5) at non-singleton dimension 1</code>",
+      "row totals: s<sub>0</sub> = 32,033, s<sub>a</sub> = 33,885, s<sub>j</sub> = 2,900"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw P (27×27) divided by its row totals twice: once with shape (27, 1), once with shape (27,). Mark the direction each one is stretched and write which lines end up summing to 1. Then explain in 3 sentences why the second one doesn't raise an error.",
+    "checklist": [
+      "<code>sum(1)</code> gives one total per row; <code>keepdim</code> only changes the shape, not the numbers",
+      "shapes align from the right; a missing axis is added on the left, so (27,) becomes (1, 27)",
+      "(27, 1) is stretched across columns → rows sum to 1; (1, 27) is stretched down rows → columns get divided",
+      "no error because P is square, so both shapes pass the broadcasting rule",
+      "the fix: <code>keepdim=True</code> and a <code>.shape</code> check after every reduction"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain what <code>keepdim</code> changes about <code>P.sum(1)</code> and why that is enough to change the meaning of a division.", "kind": "concept", "answer": ["same 27 totals either way", "keepdim keeps a size-1 axis: (27, 1) vs (27,)", "broadcasting reads the shape, not the intent, so the shape alone picks the stretch direction"]},
+    {"q": "Walk through the broadcasting rule for <code>(27, 27) / (27,)</code> step by step, and say what value ends up dividing <code>P[0, 10]</code>.", "kind": "mechanism", "answer": ["right-align: 27 against 27 on the last axis, match", "the first axis is missing on the right side, so it counts as 1", "(1, 27) is stretched down all 27 rows", "<code>P[0, 10]</code> is divided by the total of row 10 (the letter j), not row 0"]},
+    {"q": "Three ways to get probabilities from N: normalise one row inside the sampling loop, <code>P / P.sum()</code>, and <code>P /= P.sum(1, keepdim=True)</code>. What does each cost or break?", "kind": "tradeoff", "answer": ["per-row inside the loop: correct, but redoes the same divide on every draw", "<code>P.sum()</code>: the whole table sums to 1 (a joint distribution), and row 0 sums to only 0.1404", "keepdim version: one vectorised op done once, and every row sums to 1"]},
+    {"q": "The buggy table's row 0 sums to 7.0225. Which entries contribute the most, and why are they so large?", "kind": "mechanism", "answer": ["common first letters that are rare overall, e.g. <code>.j</code> 2,422 / 2,900 = 0.8352 and <code>.k</code> 0.5879", "each is divided by that letter's own (small) row total instead of 32,033"]}
+  ],
+  "compare": [
+    {"with": "z2h-1-toolkit/broadcasting-rules", "q": "The toolkit card states the rule in general. What does this card add that the rule alone doesn't warn you about, and which property of P lets the bug slip through?", "answer": ["the rule only says whether shapes are <i>compatible</i>, not whether the result means what you intended", "a square matrix is compatible both ways, so the rule can't catch the wrong axis", "non-square tensors fail loudly, square ones fail silently"]},
+    {"with": "z2h-3-bigram/softmax-as-exp-normalise", "q": "The softmax card writes <code>counts / counts.sum(1, keepdims=True)</code> on a (5, 27) tensor. What is the same as here, what differs, and how would a missing keepdim fail there?", "answer": ["same pattern: per-row totals kept as a column, stretched across columns", "there counts come from <code>exp(logits)</code> and need gradients, so the divide is out of place", "(5, 27) / (5,) raises a size-mismatch error instead of silently dividing columns"]},
+    {"with": "z2h-6-backprop-ninja/sum-broadcast-duality", "q": "Here a sum is followed by a broadcast in the forward pass. Why does the backward pass of a broadcast turn into a sum, and which axis would it sum over for the (27, 1) totals?", "answer": ["a stretched value is reused by every copy, so its gradient collects contributions from all of them", "gradients from the 27 columns are summed back along dim 1, with keepdim, to give (27, 1)", "the forward pair (sum, broadcast) swaps roles in the backward pass"]}
+  ],
+  "predict": {"q": "In the neural-net cards, <code>counts</code> has shape (5, 27): 5 examples, 27 characters. Someone writes <code>probs = counts / counts.sum(1)</code>, leaving out keepdim. What happens this time: silently wrong columns, correct rows, or an error?", "answer": "An error. Right-aligning (5, 27) with (5,) puts 27 against 5 on the last axis; they aren't equal and neither is 1, so PyTorch raises <code>The size of tensor a (27) must match the size of tensor b (5) at non-singleton dimension 1</code>. The silent version on this card only happened because P is square."},
+  "apply": {"task": "Extend the lab: compute <code>bad = P / P.sum(1)</code> and print all 27 row sums of <code>bad</code>, the largest and smallest with their letters, and <code>bad.sum(0)</code>. Then check <code>torch.equal(N.sum(0), N.sum(1))</code> and use it to explain why every column of <code>bad</code> sums to 1.", "done": "You get '.' as the largest row sum (7.0225), 'w' as the smallest (0.0669), 8 rows above 1 and 19 below, all 27 column sums equal to 1, and <code>torch.equal(N.sum(0), N.sum(1))</code> prints True.", "hint": "Row j's total counts bigrams that start with j; column j's total counts bigrams that end with j. Each letter inside a name is both, and '.' starts and ends each name once."},
+  "reflect": [
+    "Which prediction did you get wrong: the 7.0225, or the fact that there was no error?",
+    "What couldn't you explain cleanly: why (27,) becomes a row and not a column?",
+    "Which relationship is still fuzzy: shape → stretch direction, or stretch direction → which lines sum to 1?",
+    "Would you have spotted the bug from the probabilities alone, given that every column summed to 1?",
+    "What check will you add to your own code after every <code>sum</code>, <code>mean</code> or <code>max</code>?"
+  ],
+  "revisit": ["z2h-1-toolkit/tensors-dims-and-indexing", "z2h-3-bigram/sampling-multinomial"],
+  "prereq": ["z2h-3-bigram/bigram-counts", "z2h-1-toolkit/broadcasting-rules"]
+}

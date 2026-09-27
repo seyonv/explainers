@@ -1,0 +1,64 @@
+{
+  "prime": {
+    "problem": "An untrained bigram guesses at loss 4.7, and one batch's loss is too noisy to tell you whether training is working or whether the model is only memorising the text it trains on.",
+    "fits": "The bigram-baseline card built the model and its loss. This card trains it with the same five-move loop you wrote by hand in micrograd, then wraps it in the script structure (<code>bigram.py</code>) that every later model in this lecture reuses.",
+    "expect": ["the five moves of a training step", "learning rate and AdamW", "<code>estimate_loss</code> over train and val", "<code>@torch.no_grad()</code> and <code>model.eval()</code>", "<code>device</code>"],
+    "goal": "Write <code>bigram.py</code> from your notebook, read its train/val log, and tell from the numbers whether the model is still learning, overfitting or at its ceiling."
+  },
+  "attend": [
+    "Why does 100 steps at lr 1e-3 barely move the loss, and what would you change first to speed it up?",
+    "What exactly goes wrong if <code>zero_grad</code> is left out of the loop?",
+    "Why does <code>estimate_loss</code> average 200 batches instead of printing the current one, and what does that buy in numbers?",
+    "Val loss stops falling at about 2.49 while staying within 0.03 of train. Is that overfitting, and how would you know?",
+    "What would <code>model.eval()</code> change in this bigram model, and in which later model does it start to matter?"
+  ],
+  "core": {
+    "must": [
+      "AdamW moves each weight by roughly lr per step → at lr 1e-3, 100 steps shift a weight by at most about 0.1 → loss only drops 4.6924 → 4.6563 → a 10× bigger lr (1e-2) reaches val 2.51 by step 900, while 1e-3 is still at 2.81 after 3000",
+      "PyTorch adds each <code>backward</code> into <code>.grad</code> → without <code>zero_grad</code> every step would follow the sum of all past gradients → so each step is get_batch → forward → zero_grad → backward → step",
+      "One batch is only 256 predictions → its loss swings 2.29 to 2.75 on the trained model → averaging 200 batches cuts the noise to about 0.005 → only then can a 0.03 change or a train/val gap be read",
+      "Val tracks train (gap under 0.03) and both flatten near 2.49 → not overfitting but the bigram's ceiling (a counted bigram scores 2.48) → more steps won't help, only more context will"
+    ],
+    "elevated": [
+      "<code>@torch.no_grad()</code> on <code>estimate_loss</code> → no graph is stored for the 4,000 eval forward passes (more forwards than the 3,000 training steps) → evaluation costs memory and time only for the forward itself"
+    ],
+    "reference": [
+      "<code>bigram.py</code> hyperparameters: batch_size 32, block_size 8, max_iters 3000, eval_interval 300, learning_rate 1e-2, eval_iters 200, seed 1337",
+      "<code>device = 'cuda' if torch.cuda.is_available() else 'cpu'</code> (add an <code>mps</code> check for the M3's GPU)",
+      "<code>optimizer.zero_grad(set_to_none=True)</code> sets <code>.grad</code> to None instead of writing zeros",
+      "the notebook loop: AdamW lr 1e-3, batch 32, 10,000 steps, single-batch loss 2.3824 at the end"
+    ]
+  },
+  "compress": {
+    "prompt": "Without scrolling up, draw the training loop as a cycle of five boxes and add the <code>estimate_loss</code> side trip. Then say in 2–3 sentences why the script's printed losses are more trustworthy than the notebook's.",
+    "checklist": [
+      "get_batch → forward (loss) → zero_grad → backward → optimizer.step, repeated max_iters times",
+      "zero_grad is there because gradients accumulate",
+      "every eval_interval steps: mean loss over many batches, on both train and val",
+      "no_grad (no graph) and eval()/train() around the evaluation",
+      "averaging removes batch noise; the val split reveals overfitting"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain what the validation split is for in <code>bigram.py</code>, and what the step-2700 numbers (train 2.4738, val 2.4911) tell you about this model.", "kind": "concept", "answer": ["val is text the model never trains on, so it measures generalisation", "a small gap (0.017) means no overfitting", "both flat near 2.49 means the model has hit its capacity, not that training failed"]},
+    {"q": "Walk through one call to <code>estimate_loss()</code>: what mode changes happen, how many forward passes run, and what gets returned?", "kind": "mechanism", "answer": ["no_grad turns off graph recording; model.eval() switches to test behaviour", "for each of train and val: 200 fresh batches, 200 forwards, losses stored in a tensor", "returns the mean per split; model.train() switches back before returning"]},
+    {"q": "You have a fixed compute budget. Compare evaluating every 30 steps with eval_iters 20 against every 300 steps with eval_iters 200. What do you gain and lose with each?", "kind": "tradeoff", "answer": ["same total eval forwards (both 4,000 over 3000 steps)", "every 30 steps: a finer curve, but each point averages 10× fewer predictions, so it is noisier (about √10 ≈ 3.2× the noise)", "every 300 steps: steadier points, but you notice a problem (divergence, overfitting) later"]},
+    {"q": "Your loss after 1,000 steps is still 4.5. Name two causes you would check first, using what this card measured.", "kind": "mechanism", "answer": ["learning rate too small (1e-3 needs thousands of steps for this model)", "missing zero_grad or optimizer.step, so updates are wrong or absent"]}
+  ],
+  "compare": [
+    {"with": "z2h-2-micrograd/mlp-and-training-loop", "q": "micrograd's hand-written loop vs this one: which of the five moves are the same, which are now done by a library object, and what failure mode do both share?", "answer": ["same: forward, zero the grads, backward, update", "micrograd zeroes each p.grad and does p.data += -lr * p.grad by hand; here AdamW's zero_grad and step do it", "both break the same way if you forget to zero the grads: gradients pile up across steps"]},
+    {"with": "z2h-4-mlp/splits-and-fit", "q": "makemore split names 80/10/10 and scored the whole dev set by hand between training runs. What does <code>bigram.py</code> do differently, and when would you want each approach?", "answer": ["bigram.py splits 90/10 and checks both splits periodically during training", "periodic checks show the curve, so you can stop or tune early", "scoring the full split is exact and fine when it is small (a few thousand names); a random-batch estimate scales to large text and runs inside the loop"]},
+    {"with": "z2h-8-gpt/adam-optimizer", "q": "Why does this card's lr 1e-2 work for the bigram when gpt.py uses 3e-4, given how Adam sizes its steps?", "answer": ["Adam's step is about lr regardless of gradient scale", "the bigram's 4,225 independent table entries can take big steps safely", "a deep 10.8M-parameter network with interacting layers becomes unstable with steps that large, so it uses a smaller lr and more steps"]}
+  ],
+  "predict": {"q": "You leave <code>bigram.py</code> exactly as it is but raise <code>max_iters</code> from 3000 to 30,000. Commit to a number: roughly where does val loss end up?", "answer": "About where it already is, near 2.49. Val barely moved from step 1500 (2.4921) to step 2999 (2.4903), and a bigram built from raw counts of the training text only reaches 2.4819. The model sees one character of context; to go lower you need more context, which is what self-attention adds next."},
+  "apply": {"task": "In the lab (or your own <code>bigram.py</code>), change <code>learning_rate</code> from 1e-2 to 1e-3 and rerun the 3000 steps. Before running, write down your guess for val loss at the end. Then compare the two logs step by step.", "done": "Your 1e-3 run ends near val 2.81 (a scratch run on the M3 gave 2.8059 at step 2999) and is still falling by about 0.08 per 300 steps, while the 1e-2 run had flattened near 2.49 by step 1500.", "hint": "The lab calls <code>train(...)</code> from <code>common.py</code> with <code>learning_rate</code> as an argument; change only that value."},
+  "reflect": [
+    "Which prediction did you get wrong: the loss after 100 steps, or where 30,000 steps would end?",
+    "What couldn't you explain cleanly: why gradients must be zeroed, or why 200 batches are enough?",
+    "Which relationship is still fuzzy: learning rate → size of each step, or step size → number of steps needed?",
+    "Could you look at a train/val log and say, with a reason, whether a model is underfitting or overfitting?",
+    "What will you keep from <code>bigram.py</code>'s structure when the model becomes a Transformer?"
+  ],
+  "revisit": ["z2h-2-micrograd/mlp-and-training-loop", "z2h-4-mlp/minibatches", "z2h-4-mlp/splits-and-fit"],
+  "prereq": ["z2h-8-gpt/bigram-baseline"]
+}

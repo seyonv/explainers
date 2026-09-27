@@ -1,0 +1,65 @@
+{
+  "prime": {
+    "problem": "After TF32 and bf16, GPT-2's step on an A100 is still 300 ms, and faster arithmetic no longer helps: the GPU spends its time moving tensors between main memory and the compute cores, one small operation at a time, and attention writes a huge T × T matrix it immediately reads back.",
+    "fits": "This is the third rung of the speed ladder, after the precision card. It builds on the four-line masked attention from the GPT course and on the idea that the step is memory-bound, which is why TF32 gave 3× instead of 8×.",
+    "expect": ["HBM vs on-chip SRAM", "a kernel and kernel fusion", "<code>torch.compile</code> (compile once, run fused)", "<code>F.scaled_dot_product_attention</code> (flash attention)", "the online softmax (running max <code>m</code> and sum <code>l</code>)"],
+    "goal": "Explain why fewer trips to HBM, not fewer FLOPs, took the step from 300 to 96 ms, and swap your own attention and model for the fused versions while checking the loss is unchanged."
+  },
+  "attend": [
+    "In eager PyTorch, what happens between two consecutive elementwise ops that a fused kernel avoids?",
+    "Why can't torch.compile fuse the four attention lines by itself, when it fuses the GELU chain easily?",
+    "How can flash attention do more arithmetic than the manual version and still be faster?",
+    "When a new tile of keys brings a larger score, what exactly gets rescaled, and by what factor?",
+    "Why does the attention speedup grow from 2.50× at T = 256 to 7.88× at T = 1024 on the M3?",
+    "Why is <code>use_compile</code> switched off at build-nanogpt's final commit even though it's a 2.3× win?"
+  ],
+  "core": {
+    "must": [
+      "Eager PyTorch runs one kernel per op → each op reads its inputs from HBM and writes its output back → for elementwise maths the memory traffic dwarfs the arithmetic → fusing a chain into one kernel (read once, write once) cuts traffic, e.g. 18 → 2 passes for an op-by-op GELU",
+      "<code>torch.compile</code> sees the whole forward as a graph before running → it can drop the Python launch loop and generate fused kernels → 300 → 130 ms on the A100, paid for with a compile on the first call",
+      "Manual attention writes the (B, nh, T, T) score matrix to HBM and re-reads it for scale, mask, softmax and @v → traffic grows with T² → flash attention streams k, v tiles through SRAM and writes only y → about 33× less traffic in the lab's case, 7.88× faster measured, 130 → 96 ms on the A100",
+      "Softmax needs the row's max and sum before it can normalise → a tile-by-tile kernel would seem impossible → the online softmax keeps a running max m, sum l and output y and rescales them by e^(m − m′) when the max grows → the result equals the full-row softmax, so the loss doesn't change"
+    ],
+    "elevated": [
+      "Flash attention's backward recomputes the scores from q and k instead of storing the T × T matrix → more FLOPs but far less memory → it's faster because the step is memory-bound, not compute-bound"
+    ],
+    "reference": [
+      "<code>F.scaled_dot_product_attention(q, k, v, is_causal=True)</code> (train_gpt2.py L36)",
+      "<code>model = torch.compile(model)</code>; <code>use_compile = False</code> at HEAD (L342–L344)",
+      "time GPU work with <code>torch.mps.synchronize()</code> / <code>torch.cuda.synchronize()</code> before reading the clock",
+      "commits <code>fb8bd6e</code> (compile) and <code>7ee630c</code> (flash attention)",
+      "the lab's sizes: B = 4, nh = 12, hs = 64; T × T matrix 12.6 MB at T = 256, 201.3 MB at T = 1024"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, explain in 3–5 sentences why GPT-2's step went from 300 to 130 to 96 ms without changing the loss. Or draw the manual-attention data flow next to the flash one and mark every trip through HBM.",
+    "checklist": [
+      "the step is memory-bound: moving tensors to and from HBM costs more than the maths",
+      "eager mode launches one kernel per op, each with its own HBM round trip, plus Python overhead",
+      "torch.compile fuses chains of small ops into one kernel and removes the Python loop",
+      "flash attention never writes the T × T matrix; it streams tiles through SRAM",
+      "the online softmax (running m, l, rescaled y) makes tiling exact, so the loss is identical"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why TF32's 8× faster matmuls gave only about 3×, and what kind of fix that points to next.", "kind": "concept", "answer": ["the step is memory-bound: much of the time is spent reading and writing HBM", "faster arithmetic can't shrink that time", "so the next fix must cut memory traffic: fuse ops, avoid materialising big intermediates"]},
+    {"q": "Walk through the four lines of manual attention and count how many times the T × T matrix crosses HBM in the forward pass.", "kind": "mechanism", "answer": ["<code>q @ kᵀ</code> writes it (1); scaling reads and writes it (2)", "masked_fill reads and writes it (2); softmax reads and writes it (2)", "<code>@ v</code> reads it (1): 8 passes, 8 × 201.3 MB at B = 4, T = 1024"]},
+    {"q": "Trace the online softmax for scores [2, 1, 3] in two tiles ([2, 1], then [3]). What are m and l after each tile, and how do you get the final weights?", "kind": "mechanism", "answer": ["tile 1: m = 2, l = e^0 + e^−1 = 1.3679", "tile 2: m′ = 3, rescale l by e^(2−3) = 0.3679 and add e^0: l = 1.5032", "weights are e^(s − 3) / 1.5032 = [0.2447, 0.0900, 0.6652], same as the full softmax"]},
+    {"q": "You're writing a short evaluation script that runs the model a handful of times. Would you turn on torch.compile? What do you gain and what do you pay?", "kind": "tradeoff", "answer": ["pay: a compile on the first call (1.7 s in the lab, 12.5 s on its first-ever run)", "gain: fused kernels only after that, and on MPS the gain is unreliable", "Karpathy disables it at HEAD because it interfered with eval and generation", "for a few calls, likely leave it off; for a long training run, turn it on"]}
+  ],
+  "compare": [
+    {"with": "z2h-10-gpt2/precision", "q": "TF32/bf16 and kernel fusion both speed up the same step. What does each one attack, and why did bf16 give only 333 → 300 ms while compile gave 300 → 130 ms?", "answer": ["precision makes each number cheaper to compute and (with bf16) to move", "fusion removes whole trips to HBM and the Python launch overhead", "once maths is fast, the remaining time is mostly memory traffic and launches, which fusion attacks directly", "precision can hurt accuracy if misused; fusion leaves the maths unchanged"]},
+    {"with": "z2h-8-gpt/masked-softmax", "q": "The masked softmax card sets future scores to −∞ and softmaxes a full T × T matrix. Flash attention gets the same numbers without that matrix. What design choice makes that possible, and what do you lose in readability?", "answer": ["the online softmax: running max and sum, rescaled per tile", "causal masking becomes skipping tiles or entries above the diagonal inside the kernel", "the four lines show every step and are easy to inspect; the fused call is a black box you check by comparing outputs (1.07e-06 here)"]}
+  ],
+  "predict": {"q": "Karpathy's A100 step is 96 ms at T = 1024. If you doubled the context to T = 2048 (same B), would the flash attention speedup over manual attention stay the same, grow or shrink? And what might happen to the manual version's memory?", "answer": "It should grow. The T × T matrix grows with T², four times bigger at 2048 (at B = 4 in fp32 it would be 805 MB per layer, computed), while flash's traffic (q, k, v, y) only doubles. The lab already shows the trend: 2.50× at T = 256 and 7.88× at T = 1024. The manual version also has to keep a T × T matrix per layer for the backward pass, so it may run out of memory well before flash does."},
+  "apply": {"task": "In the lab's setting (B = 4, nh = 12, hs = 64, fp32), compute by hand the forward HBM traffic of one attention layer for manual attention and for flash at T = 512, using the 8-pass count. Then run <code>labs/compile-flash.py --T 512 --steps 6</code> and compare your traffic ratio with the measured attention-op speedup.", "done": "Your hand numbers are 8 × 50.3 + 4 × 6.3 = 427.8 MB for manual and 25.2 MB for flash (17×), and you can say why the measured speedup is smaller than 17×.", "hint": "T × T matrix = 4 × 12 × 512 × 512 × 4 bytes = 50.3 MB; each of q, k, v, y = 4 × 12 × 512 × 64 × 4 bytes = 6.3 MB. The matmuls still cost real arithmetic that no fusion removes."},
+  "reflect": [
+    "Which prediction did you get wrong: that more arithmetic could be faster, or that the loss would stay identical?",
+    "What couldn't you explain cleanly: why compile misses the attention fusion, or how the rescale by e^(m − m′) keeps the answer exact?",
+    "Which relationship is still fuzzy: fewer HBM trips → shorter step, or T² matrix size → bigger flash speedup?",
+    "Your M3 showed compile giving only 1.10× (and once a slowdown). What would you check before trusting a speedup number?",
+    "Before the nice-numbers card: could you name one more place in GPT-2 where memory traffic, not maths, sets the speed?"
+  ],
+  "revisit": ["z2h-8-gpt/masked-softmax", "z2h-8-gpt/self-attention-head", "z2h-10-gpt2/precision"],
+  "prereq": ["z2h-10-gpt2/precision"]
+}

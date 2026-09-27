@@ -1,0 +1,62 @@
+{
+  "prime": {
+    "problem": "Raw bytes give a tiny vocabulary of 256 but make every text long (the lecture's paragraph: 533 characters, 616 bytes). A vocabulary of every code point or every word is huge and still misses things. You need short sequences without losing the ability to encode any text at all.",
+    "fits": "The unicode-utf8 card turned text into a list of bytes, ids 0–255. BPE starts from exactly that list and adds new tokens one merge at a time. The next cards turn this pencil procedure into code (<code>get_stats</code>, <code>merge</code>, the training loop).",
+    "expect": ["the most frequent neighbouring pair", "minting a new symbol (id 256, 257, …)", "the merge table", "sequence length vs vocabulary size", "ties between equally common pairs"],
+    "goal": "Run BPE by hand on a short string, predict the length and vocabulary size after every merge, and explain why minbpe's merges differ from Wikipedia's yet give the same ids."
+  },
+  "attend": [
+    "<code>aa</code> is counted 4 times in <code>aaabdaaabac</code>; why does replacing it shorten the string by only 2?",
+    "Every merge adds exactly one vocabulary entry. What decides how much the sequence shrinks in that round?",
+    "At round 2, <code>Za</code> and <code>ab</code> are tied at 2. What decides the winner, and does the choice change the final ids for this string?",
+    "In the byte version, why is the first new token 256, and what bytes does token 258 stand for?",
+    "Why does a tokenizer save the merge list rather than the compressed training text?"
+  ],
+  "core": {
+    "must": [
+      "Count every neighbouring pair → replace the most frequent with one new symbol → the vocabulary grows by exactly 1 while the sequence loses one symbol per replacement → common patterns get short and rare ones stay as single bytes",
+      "Start from all 256 byte values → any UTF-8 text can be encoded before a single merge → merges only add shortcuts → BPE never meets an unknown symbol, unlike a word vocabulary",
+      "Merges may reuse earlier merged symbols (X = ZY, 258 = 257 + b) → the merge list forms trees → one token can stand for a long byte string (<code>aaab</code>), and decoding just expands the tree back to bytes",
+      "Each round is greedy and ties are broken by an arbitrary rule (Wikipedia takes ab; Python's <code>max</code> takes the first pair seen, Za) → two tokenizers can compress the training text equally well → but they cut new text differently, because each only knows its own merges"
+    ],
+    "elevated": [
+      "<code>get_stats</code> counts overlapping pairs, but <code>merge</code> scans left to right and uses up both symbols → in a run like <code>aaa</code> the count overstates the replacements (aa: counted 4, replaced 2) → the length drops by the number of replacements, not by the count"
+    ],
+    "reference": [
+      "ASCII byte values a=97, b=98, c=99, d=100",
+      "minbpe's <code>BasicTokenizer</code> API: <code>train(text, vocab_size)</code>, <code>encode</code>, <code>decode</code>, <code>save</code>",
+      "<code>vocab_size = 256 + num_merges</code>",
+      "the letters Z, Y, X are just Wikipedia's names for the new symbols"
+    ]
+  },
+  "compress": {
+    "prompt": "Without scrolling up, explain BPE in 3–5 sentences as if to a programmer who knows UTF-8. Or draw the merge tree for token 258 in minbpe's toy run and label each node with the bytes it stands for.",
+    "checklist": [
+      "start from the 256 bytes, so everything is encodable",
+      "repeat: count neighbouring pairs, mint a new id for the most frequent, replace its occurrences",
+      "each merge adds one vocabulary entry and shortens the sequence by the number of replacements",
+      "merged tokens can merge again, so tokens stand for longer and longer byte strings",
+      "the merge list is the tokenizer; ties and greedy choices mean it isn't a unique or optimal answer"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why BPE starts from all 256 byte values instead of from an empty vocabulary or a list of words.", "kind": "concept", "answer": ["with every byte already a token, any UTF-8 text can be encoded, even with zero merges", "a word list can't encode a word it has never seen", "merges then only add shortcuts for common patterns"]},
+    {"q": "Walk through round 1 on <code>aaabdaaabac</code>: the pair counts, the winner, the new sequence, and why its length is 9.", "kind": "mechanism", "answer": ["counts: aa 4, ab 2, bd/da/ba/ac 1", "aa wins and becomes Z", "each aaa becomes Za when scanned left to right, giving ZabdZabac", "2 replacements, so 11 − 2 = 9 symbols"]},
+    {"q": "You could keep merging. What does each extra merge buy you and what does it cost, and why would you ever stop?", "kind": "tradeoff", "answer": ["buys: shorter sequences, so more text fits in the model's fixed context", "costs: one more vocabulary entry each time, which the model must learn a row of numbers for", "later merges help less because they cover rarer patterns", "the number of merges is a setting you choose (GPT-2: 50,000)"]}
+  ],
+  "compare": [
+    {"with": "z2h-9-tokenizer/unicode-utf8", "q": "Raw UTF-8 bytes vs BPE tokens built on top of them: what is fundamentally the same, what does BPE add, and how does each one fail on a paragraph of Korean the tokenizer rarely saw in training?", "answer": ["same: both can encode any text, since BPE keeps all 256 bytes", "BPE adds merged tokens, so common byte patterns cost one token instead of several", "raw bytes are always long (1–4 bytes per character)", "BPE falls back to near-byte length for text that was rare in its training data, because it learned few merges for it"]},
+    {"with": "z2h-8-gpt/char-tokenizer-split", "q": "The GPT lecture's 65-character tokenizer vs BPE: which design choice makes the character tokenizer simple, and why doesn't it work for a real model?", "answer": ["the char tokenizer's vocabulary is fixed by the characters in one small text: no training, no merges", "it can't encode a character it never saw, and every character costs one token", "BPE learns its vocabulary from data and covers any byte, so sequences are shorter and nothing is unknown"]}
+  ],
+  "predict": {"q": "Take minbpe's toy tokenizer trained on <code>aaabdaaabac</code> (merges aa, then aa+a, then aaa+b). How many tokens does it produce for <code>abab</code>? And Wikipedia's version (Z=aa, Y=ab, X=ZY)?", "answer": "minbpe gives 4 tokens, <code>[97, 98, 97, 98]</code>: it never learned a merge for <code>ab</code>, because the tie at round 2 went to Za. Wikipedia's version gives 2 tokens, <code>YY</code>. Two tokenizers that compress the training string identically can disagree on new text. How to apply merges to new text is the encode card's problem."},
+  "apply": {"task": "Trace minbpe's rule by hand on <code>abababcab</code> for 2 merges (ties go to the pair seen first). Write the bytes, the pair counts in each round, the merge table and the final ids. Then check with <code>train</code> from <code>labs/common.py</code> (or minbpe's <code>BasicTokenizer</code> with <code>vocab_size = 256 + 2</code>).", "done": "Your merges are <code>{(97, 98): 256, (256, 256): 257}</code> and the final ids are <code>[257, 256, 99, 256]</code>: 9 bytes → 4 tokens.", "hint": "After round 1 the sequence is 256 256 256 99 256. The pair (256, 256) is counted twice but can be replaced only once, because the first two 256s get used up."},
+  "reflect": [
+    "Which prediction did you get wrong: the 11 → 9 length, or the <code>abab</code> encoding?",
+    "What couldn't you explain cleanly: why the count overstates replacements, or why a tie can change the tokenizer?",
+    "Which relationship is still fuzzy: pair count → which merge wins, or merge list → how new text gets cut?",
+    "Could you rebuild the merge tree for token 258 from the merge table alone, without looking?",
+    "What will you check before writing <code>get_stats</code> and <code>merge</code> on the next card?"
+  ],
+  "revisit": ["z2h-9-tokenizer/unicode-utf8", "z2h-8-gpt/char-tokenizer-split"],
+  "prereq": ["z2h-9-tokenizer/unicode-utf8"]
+}

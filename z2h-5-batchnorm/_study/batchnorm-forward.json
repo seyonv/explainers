@@ -1,0 +1,64 @@
+{
+  "prime": {
+    "problem": "Keeping hidden preactivations roughly unit Gaussian has so far meant picking the right weight scale by hand or by formula. That works for one layer at init, but with many layers the scales interact and nothing holds them in place once training moves the weights.",
+    "fits": "It comes right after Kaiming init. Instead of <i>choosing</i> weights so that <code>hpreact</code> comes out unit Gaussian, BatchNorm <i>forces</i> it to, on every forward pass, with the mean and standard deviation you met in the toolkit.",
+    "expect": ["standardising over the batch (dim 0)", "<code>bngain</code> and <code>bnbias</code> (γ and β)", "why <code>b1</code> becomes useless", "backprop through a mean and a std"],
+    "goal": "Add a BatchNorm layer to your MLP, explain what each of its four lines does to the 32 × 200 <code>hpreact</code>, and say why the bias before it can be deleted."
+  },
+  "attend": [
+    "Why are the mean and std taken down the 32 rows of each column, and what would go wrong if they were taken across the 200 units instead?",
+    "If BN makes every column exactly mean 0 and std 1, why does it then undo that with a learned gain and bias?",
+    "How does subtracting the batch mean make <code>b1</code>'s gradient exactly zero?",
+    "What changes about each example's output once its preactivation depends on the other 31 examples in the batch?",
+    "Why did BN not improve the val loss of this one-hidden-layer net, and where would you expect it to pay off?"
+  ],
+  "core": {
+    "must": [
+      "Unit-Gaussian preactivations are what the init fixes were aiming for → mean and std are differentiable → just compute them per column over the batch and standardise → every unit starts centred with std 1 on every forward pass, whatever the weights are",
+      "Standardising alone pins every unit to mean 0, std 1 forever → the net can't make a unit wider, narrower or offset → a learned per-unit gain γ and bias β (starting at 1 and 0) give that freedom back → trained values here range 0.20..3.27",
+      "BN subtracts each column's batch mean → any constant added to the column (a bias <code>b1</code>) is subtracted right back out → <code>b1</code> has no effect and a zero gradient (4.4e-10) → drop it and let β play its role",
+      "Statistics come from the batch → each example's output depends on its 31 batchmates → this acts as a regulariser, but a single example can't be normalised on its own → inference needs fixed statistics (the next card)"
+    ],
+    "elevated": [
+      "Standardisation divides out any scale of <code>W1</code> → multiplying <code>W1</code> by 10 leaves the step-0 loss at 3.3239 → the forward pass becomes insensitive to the init gain, though the size of each update relative to the weights still changes (the update:data ratio card)"
+    ],
+    "reference": [
+      "<code>hpreact.mean(0, keepdim=True)</code> and <code>hpreact.std(0, keepdim=True)</code>, shapes 1 × 200",
+      "<code>torch.std</code> divides by N − 1; the paper and PyTorch's layer also add ε = 1e-5 inside the square root",
+      "parameter count 12,097 = 11,897 − 200 + 400",
+      "the paper: Ioffe &amp; Szegedy 2015"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, explain in 3–5 sentences what a BatchNorm layer does to <code>hpreact</code> on one forward pass, and why it has learned parameters. Or draw the chain from <code>embcat</code> to <code>h</code> with every shape labelled.",
+    "checklist": [
+      "per hidden unit (column), compute the mean and std over the examples in the batch (dim 0)",
+      "subtract the mean, divide by the std: every column is mean 0, std 1",
+      "then multiply by a learned gain and add a learned bias, per unit, starting at 1 and 0",
+      "it's all differentiable, so backprop trains the gain and bias and flows through to <code>W1</code>",
+      "the bias before BN is cancelled by the mean subtraction, so it's removed",
+      "cost: examples in a batch are now coupled"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain the problem BatchNorm solves that Kaiming init doesn't, in terms of <i>when</i> each one controls the preactivation scale.", "kind": "concept", "answer": ["Kaiming sets the weight scale once, so the preactivations are about right at step 0", "nothing keeps them there as training changes the weights, and in deep nets the layer scales compound", "BN re-standardises on every forward pass, whatever the weights have become"]},
+    {"q": "Walk one column of a 32 × 200 <code>hpreact</code> through the BN layer: which numbers are computed, what shapes they have, and what the column looks like at each stage.", "kind": "mechanism", "answer": ["<code>bnmeani</code>, <code>bnstdi</code>: 1 × 200, one value per column, taken over the 32 rows", "subtract the mean: the column now averages 0", "divide by the std: the column now has std 1 (e.g. 5.3541 → 2.0930 for unit 113)", "multiply by <code>bngain</code>, add <code>bnbias</code>: at init this changes nothing"]},
+    {"q": "You're told to drop <code>b1</code> but keep <code>b2</code>. What makes one bias redundant and the other necessary?", "kind": "tradeoff", "answer": ["<code>b1</code> feeds straight into BN, whose mean subtraction removes any per-column constant, so its gradient is 0", "<code>bnbias</code> already provides a learned per-unit shift after the normalisation", "<code>b2</code> comes after tanh and the output layer, with no normalisation to cancel it, so it still matters"]},
+    {"q": "BN gave val 2.1057 against 2.1070 for Kaiming alone. What does it cost you, and when is that cost worth paying?", "kind": "tradeoff", "answer": ["cost: batch coupling, extra train/eval bookkeeping, a single example can't be normalised with batch stats", "on a one-hidden-layer net, careful init already does the job, so BN adds little", "it pays off in deep nets where no hand-set scale survives many layers"]}
+  ],
+  "compare": [
+    {"with": "z2h-5-batchnorm/kaiming-init", "q": "Kaiming init and BatchNorm both aim at unit-Gaussian preactivations. What is fundamentally different about how each gets there, and how does each one fail?", "answer": ["Kaiming chooses the weight scale (gain / √fan_in) once, before training", "BN measures and corrects the actual preactivations on every forward pass", "Kaiming fails when training drifts the weights or when many layers compound small errors", "BN fails with tiny batches or single examples, and in train/eval mix-ups, because its statistics come from the batch"]},
+    {"with": "z2h-8-gpt/layernorm-dropout-scale", "q": "LayerNorm uses the same subtract-mean, divide-by-std, scale-and-shift recipe. Which axis does each one normalise over, and why does that choice make LayerNorm free of BatchNorm's batch coupling?", "answer": ["BatchNorm: per unit, over the examples in the batch (dim 0)", "LayerNorm: per example, over its own units", "so a LayerNorm output depends only on that one example: no batch coupling and no running statistics", "that's why transformers use LayerNorm"]}
+  ],
+  "predict": {"q": "With BN in place, you multiply <code>W1</code> by 10 at init (a terrible scale without BN). What step-0 loss do you get, compared with 3.3239?", "answer": "Exactly 3.3239 again (computed: the standardised values differ by at most 9.5e-7). Scaling a column by 10 scales its mean and its std by 10, and the division cancels it. So BN makes the forward pass insensitive to the weight scale. It does <i>not</i> make training insensitive: the gradient on <code>W1</code> shrinks as <code>W1</code> grows, so the update:data ratio changes and the learning rate may need retuning (the update-to-data-ratio card)."},
+  "apply": {"task": "Using the step-0 batch from the Build-it code, set unit 113's gain and bias by hand: <code>bngain[0, 113] = 2.0</code>, <code>bnbias[0, 113] = 0.5</code>. Before running, predict the BN output for row 2 (its <code>hpreact</code> is 5.3541, and the column's batch mean and std are 1.9695 and 1.6171), and the column's new mean and std. Then print them.", "done": "Row 2 comes out 4.6860 (2 × 2.0930 + 0.5), and column 113 has batch mean 0.5000 and std 2.0000, exactly the bias and gain you set.", "hint": "Standardise first, then scale and shift: gain × (x − mean)/std + bias. The mean and std of the output follow straight from β and γ."},
+  "reflect": [
+    "Which prediction did you get wrong: the zero <code>b1.grad</code>, or the unchanged loss when <code>W1</code> was scaled by 10?",
+    "What couldn't you explain cleanly: why the statistics go over dim 0, or why the gain and bias are needed at all?",
+    "Which relationship is still fuzzy: batch statistics → mean-0/std-1 columns, or batch statistics → coupling between examples?",
+    "Would you add BN to a one-layer net now, knowing it didn't lower the val loss here? What evidence would change your mind?",
+    "What do you expect to break when you try to run this network on one name at a time?"
+  ],
+  "revisit": ["z2h-5-batchnorm/kaiming-init", "z2h-5-batchnorm/saturated-tanh", "z2h-1-toolkit/mean-variance-gaussian", "z2h-1-toolkit/broadcasting-rules"],
+  "prereq": ["z2h-5-batchnorm/kaiming-init", "z2h-1-toolkit/mean-variance-gaussian"]
+}

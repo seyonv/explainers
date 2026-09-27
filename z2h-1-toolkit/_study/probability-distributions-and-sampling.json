@@ -1,0 +1,64 @@
+{
+  "prime": {
+    "problem": "A trained language model only gives you a list of numbers saying how likely each next character is. Without a way to turn that list into one concrete choice, the model can score text but never write any.",
+    "fits": "This is where the toolkit meets L2's makemore. The tensor cards gave you <code>sum</code>, <code>dim</code> and indexing; here those sums become <i>probabilities</i>, and the next cards (Gaussian, softmax) build the other two ways probability shows up in the course.",
+    "expect": ["a discrete distribution (non-negative, sums to 1)", "normalising counts", "the cumulative-sum sampling method", "<code>torch.multinomial</code> with a seeded generator", "the law of large numbers"],
+    "goal": "Turn a row of counts into a distribution, explain how one uniform random number picks an outcome in proportion to its probability, and draw reproducible samples with <code>torch.multinomial</code>."
+  },
+  "attend": [
+    "Why does dividing by the total, and not by the largest count, turn a row of counts into probabilities?",
+    "In the cumsum method, why does the width of a piece of the [0, 1) line equal that outcome's chance of being picked?",
+    "What does fixing the seed buy you, and what can still make your samples differ from the video's?",
+    "Why does <code>replacement=False</code> go unnoticed in Karpathy's one-sample loop but distort a many-sample draw?",
+    "How fast do sample frequencies approach p as the number of draws grows, and why can 10 draws look nothing like p?"
+  ],
+  "core": {
+    "must": [
+      "Divide every count by the total → all entries become non-negative fractions that sum to 1 → the row can be read as the chance of each outcome, and a zero count means that outcome can never be drawn",
+      "Cumsum cuts [0, 1) into pieces as long as each p<sub>i</sub> → a uniform u lands in a piece with probability equal to its length → picking the first outcome whose cumsum exceeds u samples exactly in proportion to p",
+      "Fixed seed → the generator produces the same stream of uniform numbers → the same draws every run, so you can compare with the video and rerun bugs → but a different consumer of that stream (hand cumsum vs <code>multinomial</code>, or another torch version) gives different draws",
+      "Frequencies from n draws are noisy with spread about √(p(1−p)/n) → 10 draws can give 0.3 for a 0.6064 outcome → 10,000 draws land within 0.0024 → judge a sampler on many draws, never a handful"
+    ],
+    "elevated": [
+      "<code>replacement</code> defaults to <b>False</b> → with <code>num_samples=1</code> it changes nothing, so the bug hides → with more samples it either errors (more than the outcomes) or silently refuses repeats (\"both 0\" in 0 of 10,000 pairs vs 0.3638 with replacement)"
+    ],
+    "reference": [
+      "the seed 2147483647 and <code>torch.Generator().manual_seed(...)</code>",
+      "<code>torch.multinomial(p, num_samples, replacement=True, generator=g)</code> signature",
+      "<code>torch.bincount(s, minlength=3)</code> for counting draws",
+      "<code>multinomial</code> accepts unnormalised non-negative weights (docs)",
+      "<code>torch.searchsorted</code> as a vectorised cumsum lookup"
+    ]
+  },
+  "compress": {
+    "prompt": "Card closed: draw the [0, 1) line for p = [0.6064, 0.3033, 0.0903], mark the two cut points, drop u = 0.7081 on it, and write 3–4 sentences on why this picks outcomes in proportion to p and what <code>torch.multinomial</code> adds.",
+    "checklist": [
+      "a distribution is non-negative numbers summing to 1; counts get there by dividing by the total",
+      "the cumsum [0.6064, 0.9097, 1.0] gives the cut points; each piece's length is that outcome's probability",
+      "u = 0.7081 lands in the second piece, so the pick is 1",
+      "<code>multinomial</code> does this many times at once; <code>replacement=True</code> lets outcomes repeat; a seeded generator makes it repeatable",
+      "frequencies only match p after many draws"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain what makes a list of numbers a probability distribution, and why Karpathy's first-letter row has p['.'] = 0.", "kind": "concept", "answer": ["every entry ≥ 0 and the entries sum to 1", "it comes from counts ÷ total, 32,033 names", "no name is empty, so '.' never starts one: count 0, probability 0, never sampled"]},
+    {"q": "Walk through drawing one sample from p = [0.6064, 0.3033, 0.0903] with u = 0.5996, step by step.", "kind": "mechanism", "answer": ["cumsum is [0.6064, 0.9097, 1.0]", "compare u with each cumsum in order: 0.5996 &lt; 0.6064", "so the first cumsum bigger than u is at index 0: the pick is 0, even though u is close to the boundary"]},
+    {"q": "You need 20 samples from a 3-outcome distribution. Compare calling <code>multinomial</code> with the default <code>replacement</code> and with <code>replacement=True</code>. What does each cost or break?", "kind": "tradeoff", "answer": ["default (False): 20 of 3 raises an error; 3 of 3 returns each index exactly once", "fewer than the outcomes silently forbids repeats, so frequencies no longer follow p", "True: repeats allowed, frequencies follow p; the only right choice for generating text"]},
+    {"q": "A classmate draws 10 samples, sees outcome 0 only 3 times, and concludes their sampler is broken. What would you check, and why is 10 draws not enough?", "kind": "mechanism", "answer": ["the typical noise for p = 0.6064 at n = 10 is about 0.15, so 0.3 is unusual but possible (P(≤3) = 0.0502)", "draw 10,000 and compare: the lab gets 0.6088", "if it's still off, check normalisation and <code>replacement</code>"]}
+  ],
+  "compare": [
+    {"with": "z2h-1-toolkit/softmax-and-cross-entropy", "q": "Normalising counts (this card) and softmax both produce a distribution. What is fundamentally different about their inputs, which design choice makes softmax work where dividing by the sum would fail, and when would you use each?", "answer": ["counts are already non-negative, so dividing by the total is enough", "logits can be negative; softmax exponentiates first so every entry is positive, then divides by the sum", "counts: a counting model like the L2 bigram; softmax: any neural net output", "failure modes: a zero count gives p = 0 (infinite loss later); huge logits overflow exp unless you subtract the max"]},
+    {"with": "z2h-3-bigram/sampling-multinomial", "q": "This card samples one character from one row. The bigram sampler loops, choosing which row to use from the previous character. What does the loop add, and where does it fail?", "answer": ["the current character picks the row <code>P[ix]</code>; the sample becomes the next row index", "the loop stops when it draws '.' (index 0)", "each step sees only one previous character, so names are name-ish but poor", "the same seed doesn't reproduce the video's names on torch 2.14"]}
+  ],
+  "predict": {"q": "You forget to normalise and pass the raw first-letter counts <code>N[0].float()</code> (they sum to 32,033) to <code>torch.multinomial</code> with seed 2147483647. What comes out? And what happens if you feed the same unnormalised counts to the hand cumsum method with u in [0, 1)?", "answer": "<code>multinomial</code> treats the counts as weights and gives the same letters as the normalised row: <code>msnaattamm</code> (computed). The hand method breaks: the cumsum starts [0, 4410, …], so every u in [0, 1) is below 4410 and the pick is always index 1, 'a'. Normalising is a requirement of the method, not of the distribution."},
+  "apply": {"task": "Write <code>sample(p, n, g)</code> that draws n samples with the cumsum method in one vectorised call (no Python loop over u). Seed a fresh generator with 2147483647, draw 10,000 samples from p = [0.6064, 0.3033, 0.0903], and compare the frequencies with p.", "done": "Your first five picks are [1, 0, 0, 0, 0], and your 10,000-draw frequencies are [0.603, 0.3061, 0.0909] (computed), each within 0.01 of p.", "hint": "<code>torch.searchsorted(p.cumsum(0), u, right=True)</code> returns, for each u, the index of the first cumsum bigger than it."},
+  "reflect": [
+    "Which prediction did you get wrong: the 3 zeros in 10 draws, or the unnormalised counts?",
+    "What couldn't you explain cleanly: why a piece's length equals its probability, or why the seed doesn't fix everything?",
+    "Which relationship is still fuzzy: cumsum → piece lengths, or piece lengths → how often each outcome is drawn?",
+    "Could you spot a <code>replacement=False</code> bug in someone else's code from its output alone?",
+    "What will you revisit before the bigram sampling loop in L2?"
+  ],
+  "revisit": ["z2h-1-toolkit/tensors-dims-and-indexing"],
+  "prereq": ["z2h-1-toolkit/setup-m3"]
+}

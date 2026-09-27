@@ -1,0 +1,65 @@
+{
+  "prime": {
+    "problem": "GPT-2 needs a table to turn token ids into vectors at the bottom and a layer to turn its final vector into 50,257 scores at the top. Built separately, those are two 50,257 × 768 matrices: almost a third of the model spent twice on the same tokens.",
+    "fits": "You have the full <code>GPT</code> module and a loss that falls. This card revisits the embedding lookup from the MLP course and the output layer you wrote in the module card, and notices they are the same shape.",
+    "expect": ["<code>wte</code> (token embedding) and <code>lm_head</code> (output layer)", "sharing one <code>Parameter</code> between two modules", "<code>data_ptr()</code> as a same-memory test", "gradients summed from two uses"],
+    "goal": "Explain why one matrix can do both jobs, add the one-line tie to your model, and predict how it changes the parameter count and which rows get gradients."
+  },
+  "attend": [
+    "Why do <code>nn.Embedding(50257, 768)</code> and <code>nn.Linear(768, 50257)</code> end up with exactly the same weight shape?",
+    "What does row <i>i</i> do at the bottom of the model, and what does the same row do at the top?",
+    "Why would a row that is close to <code>' queen'</code> help at both ends at once?",
+    "Which rows of an untied <code>wte</code> get no gradient in a batch, and how does tying change that?",
+    "How would you prove the two names share memory rather than just holding equal values?"
+  ],
+  "core": {
+    "must": [
+      "<code>nn.Linear</code> stores its weight as (out, in) = (50257, 768) → the same shape as the embedding table → row <i>i</i> is token <i>i</i> in both → one tensor can serve as input lookup and output scorer",
+      "Similar tokens should have close rows at the input <i>and</i> get similar scores at the output → sharing one matrix makes both true together → each update to a row improves how the token is read and how it is predicted",
+      "Assigning the <code>Parameter</code> (not copying values) → both modules point at one memory block → the gradient is the sum of both uses → every row trains every step through the softmax, not only the rows of tokens in the batch",
+      "The table is 50,257 × 768 = 38.6M numbers → 31% of the 124M model → tying cuts the count from 163.0M to 124.4M → the saving shrinks as the width grows relative to the vocabulary"
+    ],
+    "elevated": [
+      "<code>state_dict()</code> still lists both names (149 entries, 148 parameters) → summing it double-counts to 163,037,184 → count with <code>model.parameters()</code>, which lists a shared tensor once"
+    ],
+    "reference": [
+      "the tie line: <code>self.transformer.wte.weight = self.lm_head.weight</code> (train_gpt2.py L93–L94, commit <code>ec39245</code>)",
+      "<code>tensor.data_ptr()</code> returns the memory address; equal addresses mean the same storage",
+      "HF key names: <code>lm_head.weight</code> and <code>transformer.wte.weight</code>",
+      "<code>_init_weights</code> reaches the shared tensor twice (as Linear and as Embedding), both with std 0.02"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw GPT-2 as a column with the shared matrix W beside it. Mark where W is used as a lookup and where as a dot product, and write the parameter arithmetic next to it.",
+    "checklist": [
+      "bottom: <code>x = W[i]</code>, take token i's row",
+      "top: logits = h · W[j] for every token j, 50,257 scores",
+      "same shape because <code>nn.Linear</code> stores (out, in)",
+      "why: similar tokens → close rows → similar input vectors and similar scores",
+      "one tensor, so gradients from both uses add up",
+      "saves 50,257 × 768 = 38.6M, 31% of 124M"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain in plain words why the input embedding and the output layer can reasonably be the <i>same</i> matrix, rather than two that happen to have the same shape.", "kind": "concept", "answer": ["each row stands for one token in both places", "a good row puts similar tokens close together", "that closeness helps both reading a token in and scoring it as the next token", "sharing forces the two roles to agree"]},
+    {"q": "Walk through one training step with tying on: which forward operations touch W, and what happens to W's gradient before the optimizer step?", "kind": "mechanism", "answer": ["forward: <code>wte</code> gathers the rows of the input tokens", "forward: <code>lm_head</code> takes a dot product with every row", "backward: the lookup sends gradient to the rows used; the output layer sends gradient to all rows", "both contributions are added into the one <code>W.grad</code>; the optimizer updates W once"]},
+    {"q": "You copy the values with <code>wte.weight.data = lm_head.weight.data.clone()</code> instead of assigning the Parameter. What do you gain, what do you lose, and how would you catch the mistake?", "kind": "tradeoff", "answer": ["they are equal only at the start and drift apart after the first step", "no parameter saving: still 163,037,184", "memory is still doubled", "catch it: <code>data_ptr()</code> differs, or the parameter count doesn't drop"]},
+    {"q": "Why does tying save 31% of GPT-2 124M but only about 5% of GPT-2's largest 1,542M model?", "kind": "tradeoff", "answer": ["the table is vocab × width: 50,257 × 768 vs 50,257 × 1,600", "the blocks grow much faster with width and depth than the table does", "so the table's share of the model falls as models grow"]}
+  ],
+  "compare": [
+    {"with": "z2h-4-mlp/embedding-lookup", "q": "The MLP course's <code>C[X]</code> table and GPT-2's tied <code>wte</code> both turn ids into vectors. What is fundamentally different about how their rows are trained, and which design choice causes it?", "answer": ["<code>C</code> is only read at the input, so a row learns only when its character appears in the batch", "the tied <code>wte</code> is also the output layer, so every row gets gradient every step", "cause: sharing the matrix with the softmax output", "with 27 characters the difference barely matters; with 50,257 tokens many are rare, so it matters"]},
+    {"with": "z2h-2-micrograd/accumulate-gradients", "q": "In micrograd, <code>a</code> used twice needs <code>+=</code> in backward. How is a tied W the same situation, and what would go wrong if PyTorch overwrote instead of adding?", "answer": ["W is one leaf used by two operations, just like <code>a</code> in <code>a + a</code>", "its gradient must be the sum of both paths", "overwriting would keep only one use's gradient, so W would learn as only an embedding or only an output layer"]},
+    {"with": "z2h-10-gpt2/nice-numbers", "q": "Padding the vocabulary to 50,304 adds 47 tokens that never appear in the data. How does tying interact with that padding: what does it cost and how are those rows trained?", "answer": ["the tied table grows by 47 × 768 = 36,096 parameters, counted once", "the fake tokens never appear as inputs, so only the output side touches their rows", "the softmax gives them a little probability, so each step pushes their scores down"]}
+  ],
+  "predict": {"q": "After padding to vocab 50,304, the 47 fake tokens never appear in the input or as targets. With tying on, will their rows of W ever get a nonzero gradient? And how many parameters does tying save now?", "answer": "Yes, every step. The output layer scores every row, and the softmax gives each fake token a small probability, so the loss pushes those scores down through their rows. Tying now saves 50,304 × 768 = 38,633,472 parameters (computed: untied 163,109,376 vs tied 124,475,904)."},
+  "apply": {"task": "In your scratch copy of the lab, build <code>GPT(GPTConfig())</code> and <code>GPT(GPTConfig(tie=False))</code> with <code>torch.manual_seed(1337)</code>, run one forward and backward on the first B=4, T=32 batch of tiny shakespeare, and count the rows of <code>wte.weight.grad</code> that are not all zero. Then count the distinct token ids in <code>x</code>.", "done": "Untied: 67 rows have a gradient, the same as the 67 distinct tokens in <code>x</code>. Tied: all 50,257 rows do.", "hint": "<code>(g.abs().sum(1) &gt; 0).sum()</code> counts nonzero rows; <code>x.unique().numel()</code> counts distinct tokens."},
+  "reflect": [
+    "Which prediction did you get wrong: the 31% share, or which rows get gradients?",
+    "What couldn't you explain cleanly: why the shapes match without a transpose, or why similar rows help at both ends?",
+    "Which relationship is still fuzzy: shared tensor → summed gradient, or summed gradient → rare tokens training better?",
+    "Could you spot an accidental copy instead of a tie in someone else's code? What would you check first?",
+    "What will you revisit before the init card, where the shared tensor gets initialized?"
+  ],
+  "revisit": ["z2h-4-mlp/embedding-lookup", "z2h-2-micrograd/accumulate-gradients", "z2h-10-gpt2/the-module"],
+  "prereq": ["z2h-10-gpt2/the-module"]
+}

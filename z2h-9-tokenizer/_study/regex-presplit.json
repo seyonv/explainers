@@ -1,0 +1,64 @@
+{
+  "prime": {
+    "problem": "Plain BPE merges whatever pairs are most common, even across a word and the punctuation or space after it. The vocabulary fills up with pieces like <code>dog.</code>, <code>dog!</code> and <code>'e '</code> that mix a word's meaning with whatever symbol follows it.",
+    "fits": "You've written <code>get_stats</code>, <code>merge</code>, the training loop and <code>encode</code> for a byte-level BPE. This card adds the one step real GPT tokenizers put <i>before</i> all of that: cutting the text into chunks that BPE is never allowed to cross.",
+    "expect": ["chunks and categories (letters, numbers, punctuation, whitespace)", "reading the GPT-2 split pattern (<code>\\p{L}</code>, <code>\\s+(?!\\S)</code>)", "BPE per chunk: merges can't cross an edge", "the GPT-4 pattern's changes (case, 1–3 digits, newlines)", "the compression cost of splitting"],
+    "goal": "Predict how the GPT-2 and GPT-4 patterns chunk a string, explain why a merge can never cross a chunk edge, and say what the split costs in compression and buys in vocabulary."
+  },
+  "attend": [
+    "Where exactly in training and encoding does the chunk boundary get enforced, and why does that make cross-category tokens impossible rather than just rare?",
+    "Why does the pattern put a space on the <i>front</i> of a word, and what would break if the space went on the back?",
+    "What does <code>\\s+(?!\\S)</code> leave behind in a run of spaces, and which token does that protect?",
+    "Why does the split tokenizer compress Taylor Swift's page worse (2.13× vs 2.36×), and where does the regex set a hard floor on the token count?",
+    "Which GPT-4 change removes every 4-digit token from the vocabulary, and how?"
+  ],
+  "core": {
+    "must": [
+      "Regex cuts text into category chunks → <code>get_stats</code> counts pairs inside each chunk only → no pair ever spans two chunks → no merge (and so no token) can join a word to the punctuation, digits or space beside it",
+      "Space attaches to the front of the next word (<code> ?\\p{L}+</code>) → <code>' you'</code> is one chunk and one common token → so <code>\\s+(?!\\S)</code> stops one space early to leave that space for the word → merges like basic BPE's <code>'e '</code> or <code>', '</code> become impossible",
+      "Chunks can only be merged within, never joined → fewer merge options → worse compression (Taylor Swift: 87,339 vs 78,746 tokens, 2.13× vs 2.36×) and a floor of one token per chunk (46,196) → you trade bytes-per-token for a vocabulary spent on real words and numbers",
+      "GPT-4 caps numbers at <code>\\p{N}{1,3}</code> → digit chunks are at most 3 long → no cl100k token has 4+ digits (GPT-2 has 288) → every long number splits into 3-digit groups from the left, e.g. <code>1234567</code> → 123|456|7"
+    ],
+    "elevated": [
+      "tiktoken GPT-2 leaves <code>'   '</code> as three 220 tokens even though the regex hands BPE a three-space chunk → the pattern is not the whole story; GPT-2's unreleased training applied extra rules, so you can't reproduce GPT-2's vocabulary from <code>encoder.py</code> alone"
+    ],
+    "reference": [
+      "the exact GPT-2 and GPT-4 pattern strings (minbpe <code>regex.py</code> L18–L19)",
+      "<code>import regex as re</code> is needed for <code>\\p{L}</code>/<code>\\p{N}</code>",
+      "possessive quantifiers <code>?+</code>, <code>++</code> and tiktoken's newer, equivalent stored pattern",
+      "the tiktoken ids 220 (space), 262 (three spaces in cl100k)"
+    ]
+  },
+  "compress": {
+    "prompt": "Without scrolling up, draw the pipeline text → chunks → BPE → ids for <code>\"Hello've world123 how's are you!!!?\"</code> and mark one place a merge is forbidden. Then write 3–4 sentences on what the split costs and what it buys.",
+    "checklist": [
+      "the regex splits by category: letters, numbers, punctuation, whitespace, plus contractions",
+      "BPE counts, merges and encodes inside each chunk separately, then the ids are concatenated",
+      "a space rides on the front of the following word; <code>\\s+(?!\\S)</code> leaves the last space for it",
+      "cost: fewer possible merges, so worse compression (2.13× vs 2.36×) and at least one token per chunk",
+      "gain: no tokens like <code>dog.</code> or <code>', 201'</code>; vocabulary goes to reusable pieces",
+      "GPT-4 changed case handling, capped numbers at 3 digits and changed newline handling"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why the chunk split <i>guarantees</i> that no token mixes letters and digits, instead of just making it unlikely.", "kind": "concept", "answer": ["pairs are only counted inside a chunk, so a cross-chunk pair never gets a count", "a merge is only ever created from a counted pair", "at encode time each chunk is encoded alone too, so even an existing merge couldn't apply across an edge"]},
+    {"q": "Walk GPT-2's pattern through <code>\"abc 1234567\"</code> position by position: which alternative fires at each step, and what chunk does it return? Then do the same with the GPT-4 pattern.", "kind": "mechanism", "answer": ["GPT-2: <code> ?\\p{L}+</code> takes <code>abc</code>; at the space, <code> ?\\p{N}+</code> takes <code>' 1234567'</code> (space plus all digits)", "GPT-4: <code>abc</code>, then the numbers alternative has no optional space, so <code>' '</code> becomes its own whitespace chunk", "then <code>\\p{N}{1,3}</code> fires three times: <code>123</code>, <code>456</code>, <code>7</code>"]},
+    {"q": "You're designing a tokenizer for a corpus that's mostly source code. Would you use the basic tokenizer or a regex split, and what would you watch for in the pattern?", "kind": "tradeoff", "answer": ["basic compresses better (fewer tokens per byte), which matters for context length", "the split keeps identifiers, numbers and punctuation apart, so tokens are reusable across contexts", "watch whitespace: indentation runs must merge (GPT-4 merges spaces, GPT-2 didn't), and newline handling decides where indents land", "the contraction rule is English-specific and matters little for code"]},
+    {"q": "GPT-2's regex yields a three-space chunk for <code>\"    hello world!!!\"</code>, yet tiktoken's GPT-2 gives three 220 tokens. What does that tell you about rebuilding GPT-2's tokenizer from the pattern plus BPE?", "kind": "mechanism", "answer": ["the pattern allowed the merge; the vocabulary never learned it (no 2- or 3-space token among 50,257)", "so extra, unpublished rules were applied during OpenAI's training", "<code>encoder.py</code> is inference-only, so the pattern plus BPE alone won't reproduce GPT-2's merges"]}
+  ],
+  "compare": [
+    {"with": "z2h-9-tokenizer/train-loop", "q": "The basic training loop runs <code>get_stats</code> on one long id list; the regex version runs it on a list of chunks. What exactly changes in the loop, what does it change in the learned merges, and when would you choose each?", "answer": ["the loop is the same; stats are summed over chunks and <code>merge</code> is applied per chunk", "basic learns cross-category merges like <code>'e '</code>, <code>', '</code>, <code>'. Retrieved '</code>; regex learns <code>er</code>, <code>20</code>, <code>in</code>", "basic when raw compression is all that matters; regex for a general-purpose LLM vocabulary", "basic fails by wasting slots on word+punctuation combos; regex fails on text its pattern handles badly (non-English apostrophes, odd whitespace)"]},
+    {"with": "z2h-9-tokenizer/sentencepiece-llama", "q": "GPT uses a regex pre-split over bytes; Llama 2's sentencepiece uses no regex. What does sentencepiece rely on instead, and how does each approach fail on text it wasn't designed for?", "answer": ["sentencepiece runs BPE on code points with options like <code>split_digits</code>, byte fallback and a dummy prefix, not a hand-written regex", "a regex is explicit and easy to read but English-leaning (contractions, ASCII apostrophe)", "sentencepiece's behaviour is spread over many config flags, and a wrong one (e.g. no byte fallback) silently produces <code>&lt;unk&gt;</code>"]}
+  ],
+  "predict": {"q": "Using GPT-4's pattern, how many chunks does <code>\"We'RE 12345 dogs... ok?\"</code> split into, and does GPT-2's pattern give more chunks, fewer, or the same?", "answer": "GPT-4: 9 chunks, <code>We | 'RE | ␣ | 123 | 45 | ␣dogs | ... | ␣ok | ?</code>. GPT-2: 8 chunks, <code>We | ' | RE | ␣12345 | ␣dogs | ... | ␣ok | ?</code>. GPT-2 misses the uppercase contraction (so <code>'RE</code> becomes two chunks) but keeps the space and all five digits in one number chunk; GPT-4 does the opposite on both. In cl100k tokens it's 9 either way, one per chunk."},
+  "apply": {"task": "Copy <code>labs/regex-presplit.py</code> and add a third pattern: GPT-4's, but with <code>\\p{N}{1,3}</code> changed to <code>\\p{N}</code> (one digit per chunk, the way Llama's <code>split_digits</code> treats numbers). Run all three patterns on <code>\"abc 1234567\"</code> and on the year <code>\"2024\"</code>, and count chunks.", "done": "Your one-digit pattern gives <code>['abc', ' ', '1', '2', '3', '4', '5', '6', '7']</code> (9 chunks) where GPT-4 gives 5 and GPT-2 gives 2, and <code>\"2024\"</code> becomes 4 chunks where GPT-4 gives <code>['202', '4']</code>.", "hint": "The only change is dropping <code>{1,3}</code>. Print <code>len(re.findall(...))</code> next to each list."},
+  "reflect": [
+    "Which prediction did you get wrong: where the three spaces went, or how <code>'RE</code> and <code>12345</code> split?",
+    "What couldn't you explain cleanly: why the split guarantees no cross-category token, or why it costs compression?",
+    "Which relationship is still fuzzy: chunk edges → which merges can exist, or chunks → the floor on token count?",
+    "Would you still pick GPT-4's 3-digit cap after seeing <code>2024</code> → <code>202|4</code>? What would you try instead?",
+    "What will you check first when you read OpenAI's <code>encoder.py</code> on the next card?"
+  ],
+  "revisit": ["z2h-9-tokenizer/stats-and-merge", "z2h-9-tokenizer/train-loop", "z2h-9-tokenizer/tiktokenizer-tour"],
+  "prereq": ["z2h-9-tokenizer/encode"]
+}

@@ -1,0 +1,345 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Matmul backward is a matmul</title>
+<style>
+:root{
+  --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
+  --text:#1c1f23; --muted:#6b7068; --faint:#b9b9b3;
+  --accent:#4a9d77; --accent-bg:#dcefdf; --accent-border:#8cc79c;
+  --red:#c0492b; --red-bg:#fbeceb;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#15171a; --surface:#1d2024; --surface2:#24282d; --border:#32373d;
+    --text:#e6e8ea; --muted:#9aa1a9; --faint:#4a5057;
+    --accent:#5fb37f; --accent-bg:#1c2b22; --accent-border:#3f7a55;
+    --red:#e57368; --red-bg:#2e1f1e;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text)}
+a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+.card{max-width:820px;margin:0 auto;padding:28px 32px;font-family:-apple-system,"Inter",system-ui,sans-serif;line-height:1.45}
+h1{font-size:26px;font-weight:600;margin:0 0 6px;letter-spacing:-0.01em}
+.sub{font-size:15px;color:var(--muted);margin:0 0 20px}
+h2{font-size:17px;font-weight:600;margin:26px 0 10px}
+p{font-size:15px;margin:0 0 10px}
+.cap{font-size:13px;color:var(--muted);margin:8px 0 0;text-align:center}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+
+/* Horizontal bar chart with running total and cutoff */
+.bars{display:grid;grid-template-columns:110px 1fr 90px;column-gap:14px;row-gap:12px;align-items:center;font-size:14px}
+.bars .hd{font-size:13px;color:var(--muted)}
+.bars .hd.r,.bars .tot{text-align:right;font-variant-numeric:tabular-nums}
+.bars .tok{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:15px}
+.bars .track{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted)}
+.bars .bar{height:22px;border-radius:3px;background:var(--accent)}
+.bars .tot{font-size:15px}
+.bars .strong{font-weight:600}
+.bars .out,.bars .out .tok{color:var(--muted)}
+.bars .track.out .bar{background:var(--faint)}
+.bars .out .tot{font-size:13px}
+.cutoff{grid-column:1 / -1;border-top:2px dashed var(--red);margin-top:4px;padding-top:6px;text-align:center;font-size:13px;color:var(--red)}
+
+/* Tables and formulas */
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border)}
+th{font-size:12px;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:none}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+.hi{color:var(--accent);font-weight:600} .lo{color:var(--red)}
+.formula{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin:10px 0;white-space:pre;overflow-x:auto;line-height:1.55}
+
+/* 2x2 grid */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.cell{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.cell.win{background:var(--accent-bg);border-color:var(--accent-border)}
+.cell h3{font-size:16px;font-weight:600;margin:0 0 5px;display:flex;gap:8px;align-items:baseline}
+.cell p{font-size:14px;margin:0;color:var(--text)}
+.cell.win h3,.cell.win p{color:var(--accent)}
+.x{color:var(--red)} .ok{color:var(--accent)}
+
+/* Clarification box */
+.note{border:1px solid var(--border);border-radius:10px;padding:14px 18px;font-size:14px}
+.note p{font-size:14px} .note p:last-child{margin-bottom:0}
+
+.foot{margin-top:22px;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+svg{display:block;max-width:100%}
+.sl{font-size:12px;fill:var(--muted)} .st{font-size:13px;fill:var(--text)}
+@media (max-width:560px){.grid2{grid-template-columns:1fr}.bars{grid-template-columns:70px 1fr 64px}}
+
+/* z2h series: Build-it box, predict, code */
+.build{border:1.5px solid var(--accent-border);background:var(--accent-bg);border-radius:10px;padding:12px 16px 10px;margin:18px 0}
+.build .hd{display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px}
+.build .hd b{font-size:15px;color:var(--accent)}
+.build .where{font-size:12px;color:var(--muted);border:1px solid var(--border);background:var(--bg);border-radius:999px;padding:2px 9px;white-space:nowrap}
+.build p{font-size:14px;margin:6px 0}
+.build .code{background:var(--bg)}
+.build .out{color:var(--muted)}
+.build .done{border-top:1px dashed var(--accent-border);padding-top:7px;margin-top:8px}
+.predict{border:1px solid var(--border);border-radius:10px;padding:10px 14px;margin:14px 0;background:var(--surface)}
+.predict summary{cursor:pointer;font-size:15px}
+.predict summary b{color:var(--accent)}
+.predict[open] summary{margin-bottom:6px}
+.predict p{font-size:14px;margin:4px 0 0}
+.code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;line-height:1.5;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin:10px 0;white-space:pre;overflow-x:auto;tab-size:4;color:var(--text)}
+.code .k{color:var(--accent);font-weight:600}.code .c{color:var(--muted)}.code .o{color:var(--muted)}
+/* term table (patterns.md §3) */
+.parts td{vertical-align:top} .parts td:first-child{font-weight:600;white-space:nowrap}
+.parts .ex{font-size:13px} .parts .ex span{display:block;color:var(--muted)}
+@media (max-width:560px){.parts .what{display:none}}
+.foot p{font-size:13px;margin:0 0 4px;color:var(--muted)}
+
+.cmp td.b{color:var(--red)} .cmp td.g{color:var(--accent);font-weight:600}
+.mathbox{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px 16px 12px;margin:10px 0;overflow-x:auto}
+.mathbox math{font-size:21px;color:var(--text);font-family:"STIX Two Math","Latin Modern Math","Cambria Math",math}
+.mathbox .t1{color:var(--text)} .mathbox .t2{color:var(--accent)} .mathbox .t3{color:var(--muted)}
+.mathbox .lab{font-size:12px;font-family:-apple-system,"Inter",system-ui,sans-serif;padding-top:3px;border-top:1.5px solid currentColor;margin-top:2px}
+.legend{display:grid;grid-template-columns:auto 1fr auto;column-gap:14px;row-gap:5px;font-size:13px;margin-top:12px;align-items:baseline}
+.legend .sym{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;text-align:right}
+.legend .v{color:var(--muted);text-align:right;font-variant-numeric:tabular-nums}
+@media (max-width:560px){.legend{grid-template-columns:auto 1fr}.legend .v{display:none}}
+.gap{margin-top:14px}
+.mx{fill:var(--surface2);stroke:var(--faint);stroke-width:1.5}
+.mx.res{fill:var(--accent-bg);stroke:var(--accent-border)}
+.shp .nm{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:15px;fill:var(--text)}
+.shp .dm{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:14px;fill:var(--muted)}
+.shp .in{fill:var(--accent);font-weight:600}
+.shp .op{font-size:22px;fill:var(--muted)}
+.shp .nt{font-size:14px;fill:var(--muted)}
+.shp .ok{font-size:14px;fill:var(--accent);font-weight:600}
+.shapes td:nth-child(2),.shapes td:nth-child(3){font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+.shapes .bad td{color:var(--red)}
+/* study:css */
+.prime{border:1px solid var(--accent-border,var(--border));background:var(--accent-bg);border-radius:10px;padding:10px 16px 6px;margin:12px 0 18px;font-size:14px}
+.prime p{margin:4px 0}
+.prime-k{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--accent);font-weight:600;margin-bottom:4px}
+.prime .chip{display:inline-block;border:1px solid var(--border);background:var(--surface);border-radius:999px;padding:0 8px;margin:1px 2px;font-size:12.5px}
+.prime ol{margin:2px 0 6px;padding-left:22px}
+.prime li{margin:2px 0}
+.study{border:1px solid var(--border);border-radius:12px;padding:12px 16px;margin:26px 0 18px;background:var(--surface)}
+.study-head{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:4px 12px}
+.study-head h2{margin:0;font-size:18px}
+.study-head span,.study-all-l{font-size:12.5px;color:var(--muted)}
+.study-all{margin:8px 4px 8px 0;vertical-align:middle}
+.study details.st{border-top:1px solid var(--border);padding:8px 0}
+.study details.st>summary{cursor:pointer;font-size:15px}
+.study details.st>summary span{color:var(--muted);font-size:13px}
+.study-all:not(:checked)~details.st:not([open])~details.st{display:none}
+.st-body{font-size:14px;padding:4px 0 2px 2px}
+.st-body p{margin:6px 0}
+.st-body ul,.st-body ol{margin:4px 0;padding-left:22px}
+.st-body li{margin:3px 0}
+.st-rule,.st-how{color:var(--muted);font-size:13px}
+.st-why{font-size:12px;color:var(--muted);text-align:right;margin:2px 0 0}
+.core{display:grid;grid-template-columns:3fr 2fr;gap:6px 18px}
+.core h4{margin:4px 0;font-size:13px}
+.core .muted{color:var(--muted)}
+.up{font-size:11px;border:1px solid var(--accent-border,var(--border));color:var(--accent);border-radius:4px;padding:0 4px;white-space:nowrap}
+.study .kind{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--accent);margin-right:4px}
+.study details.ref{margin:4px 0 8px;padding:4px 10px;border-left:3px solid var(--accent-border,var(--border));background:var(--surface2);border-radius:0 6px 6px 0}
+.study details.ref>summary{cursor:pointer;font-size:13px;color:var(--accent)}
+@media (max-width:620px){.core{grid-template-columns:1fr}}
+/* /study:css */
+/* series-nav */
+.sn{max-width:820px;margin:0 auto;padding:16px 32px 0;font-family:-apple-system,"Inter",system-ui,sans-serif;font-size:13px;line-height:1.5;color:var(--muted)}
+.sn a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
+.sn .crumbs{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 7px}
+.sn .crumbs b{color:var(--text);font-weight:600}
+.sn .sep{color:var(--faint,var(--border))}
+.sn .step{margin-left:auto;white-space:nowrap}
+.sn .dep{margin-top:5px;padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface)}
+.sn .dep .ok{color:var(--accent);font-weight:600}
+.snx{max-width:820px;margin:0 auto;padding:6px 32px 44px;font-family:-apple-system,"Inter",system-ui,sans-serif}
+.snx .nx{display:grid;grid-template-columns:280px 1fr;text-decoration:none;color:var(--text);background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.snx .nx:hover,.snx .nx:focus-visible{border-color:var(--accent-border,var(--accent));outline:none}
+.snx .mini{position:relative;height:210px;overflow:hidden;background:var(--bg);border-right:1px solid var(--border);padding:14px 16px}
+.snx .mini span{display:block}
+.snx .mini .m1{font-size:12.5px;font-weight:600;margin:0 0 4px;line-height:1.3}
+.snx .mini .m2{font-size:9px;color:var(--muted);margin:0 0 8px;line-height:1.4}
+.snx .mini .m3{font-size:8.5px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;margin:0 0 3px}
+.snx .mini .m4{font-size:9.5px;margin:0;line-height:1.45}
+.snx .tx{padding:16px 20px}
+.snx .lab{font-size:12px;font-weight:600;color:var(--accent);letter-spacing:.04em;text-transform:uppercase}
+.snx .tt{display:block;font-size:20px;font-weight:600;margin:5px 0 4px;line-height:1.25}
+.snx .ds{display:block;font-size:14px;color:var(--muted)}
+.snx .nd{display:block;font-size:13px;color:var(--muted);margin-top:10px}
+.snx .go{display:block;margin-top:12px;font-size:14px;font-weight:600;color:var(--accent)}
+.snx .aux{display:flex;justify-content:space-between;gap:12px;margin-top:10px;font-size:13px;color:var(--muted)}
+.snx .aux a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
+@media (max-width:560px){.sn,.snx{padding-left:16px;padding-right:16px}.snx .nx{grid-template-columns:1fr}.snx .mini{display:none}.sn .step{margin-left:0}}
+/* /series-nav */
+</style>
+</head>
+<body>
+<!-- series-nav:top -->
+<nav class="sn" aria-label="Course navigation"><div class="crumbs"><a href="../z2h-0-start/index.html" target="_top">Zero to hero: neural networks, built</a><span class="sep">›</span><a href="index.html" target="_top">6 · makemore 4: backprop ninja</a><span class="sep">›</span><b>07 / 14</b><span class="step"><a href="index.html#sum-broadcast-duality" target="_top">← prev</a> · <a href="index.html#checkpoint-1" target="_top">next →</a></span></div>
+<div class="dep"><span class="ok">Stands alone.</span> You can jump in here without reading earlier cards.</div></nav>
+<!-- /series-nav:top -->
+<article class="card">
+<h1>Matmul backward is a matmul</h1>
+<p class="sub">Also called: the linear layer's backward pass; backprop through <code>@</code>; deriving gradients from shapes. Lecture 5 · exercise 1: backproping the atomic compute graph · <a href="https://www.youtube.com/watch?v=q8SA3rM6ckI&amp;t=2499s">0:41:39</a></p>
+<!-- study:prime -->
+<aside class="prime" aria-label="Prime: read this first">
+<div class="prime-k"><a href="../learning-principles/learning-principles.html#prime">Prime</a> · 2 minutes before you read</div>
+<p><b>The problem:</b> The output layer <code>logits = h @ W2 + b2</code> mixes whole matrices, so the scalar chain rule from micrograd doesn't say directly which matrix to multiply by which, or where the transpose goes. Get the order wrong and the code either crashes or, worse, runs and gives wrong gradients.</p>
+<p><b>Where it fits:</b> You've just backpropagated through the softmax chain down to <code>dlogits</code>, and seen that a broadcast forward becomes a sum backward. This card crosses the first linear layer and hands <code>dh</code> on to tanh and BatchNorm. Linear layer 1 on the embedding card reuses exactly the same three lines.</p>
+<p class="prime-links"><b>Needs first:</b> <a href="chunked-forward-and-cmp.html">The forward pass in small steps, and a gradient checker</a> · <a href="../z2h-1-toolkit/matmul-by-shapes.html">Matrix multiply by shapes</a></p>
+<p class="prime-links"><b>Builds on:</b> <a href="../z2h-1-toolkit/matmul-by-shapes.html">Matrix multiply by shapes</a> · <a href="sum-broadcast-duality.html">Sum and broadcast are each other's backward</a> · <a href="../z2h-2-micrograd/chain-rule-by-hand.html">Backprop by hand with the chain rule</a></p>
+<p><b>You'll meet:</b> <span class="chip">the upstream gradient (<code>dD</code>, <code>dlogits</code>)</span> <span class="chip">the transpose and the inner dimension of a matmul</span> <span class="chip"><code>dA = dD @ B.T</code>, <code>dB = A.T @ dD</code></span> <span class="chip">the bias gradient as a sum over the batch</span> <span class="chip">shape matching as a derivation shortcut</span></p>
+<p><b>By the end:</b> Derive the matmul backward on a 2×2 example, then write <code>dh</code>, <code>dW2</code> and <code>db2</code> from the shapes alone and know when shapes are not enough.</p>
+<p class="prime-q"><b>Read with these questions</b> (answer them in your head as you go; don't take notes line by line):</p>
+<ol><li>In the 2×2 example, why does <code>dL/da11</code> use a <i>row</i> of B rather than a column, and how does that turn into <code>B.T</code>?</li><li>Which dimension gets summed away in <code>h.T @ dlogits</code>, and what does that sum mean in terms of the 32 examples?</li><li>Why is <code>db2</code> a sum over dim 0 and not a copy of one row of <code>dlogits</code>?</li><li>Why does shape matching give exactly one answer for this layer, and what property of 32, 64 and 27 makes that true?</li><li>How many multiply-adds does each backward matmul cost compared with the forward matmul?</li></ol>
+</aside>
+<!-- /study:prime -->
+
+<p><b>In one breath:</b> the output layer computes <code>logits = h @ W2 + b2</code>. Given the gradient arriving at <code>logits</code>, the gradients for <code>h</code> and <code>W2</code> are each one more matrix multiply, with a transpose, and the gradient for <code>b2</code> is a sum over the batch. Derive this once on a 2×2 example. After that, the shapes tell you which arrangement is right.</p>
+
+<p>Some notation first. <code>@</code> is matrix multiply: an (m, k) matrix times a (k, n) matrix gives (m, n), and the shared <b>inner dimension</b> k is summed away. <code>.T</code> is the transpose, which swaps rows and columns. <code>dX</code> means the gradient of the loss with respect to <code>X</code>. It always has the same shape as <code>X</code>. The gradient arriving from above is called the <b>upstream gradient</b>. Here that's <code>dlogits</code>, the gradient that the cross-entropy cards compute.</p>
+
+<details class="predict">
+<summary><b>Predict first:</b> in <code>D = A @ B + c</code> with 2×2 matrices, the entry <code>a11</code> (row 1, column 1 of A) affects some entries of D. Which entries of <b>B</b> end up in <code>dL/da11</code>?</summary>
+<p><b>b11 and b12, the first <i>row</i> of B.</b> <code>a11</code> appears in D11 = a11·b11 + a12·b21 + c1 and in D12 = a11·b12 + a12·b22 + c2. Its gradient is dD11·b11 + dD12·b12. That's row 1 of dD dotted with row 1 of B. "Dot with a row of B" is what multiplying by <b>Bᵀ</b> does, which is where the transpose comes from.</p>
+</details>
+
+<h2>The 2×2 derivation, with numbers</h2>
+<p>This is Karpathy's paper derivation (from <a href="https://www.youtube.com/watch?v=q8SA3rM6ckI&amp;t=2499s">0:41:39</a>), with numbers of my own (the lab's) so every step can be checked. A = [[1, 2], [3, 4]], B = [[5, 6], [7, 8]], c = [0.5, −0.5]. So D = A @ B + c = [[19.5, 21.5], [43.5, 49.5]]. Let the upstream gradient be dD = [[1, 0], [2, −1]]. The lab hands this in by backpropagating L = (D * dD).sum(), whose gradient at D is exactly dD.</p>
+<table class="cmp">
+  <tr><th>Entry</th><th>Where it appears in D</th><th>Chain rule: sum over those uses</th><th class="num">Value</th></tr>
+  <tr><td><code>dA[1,1]</code></td><td>D11 (×b11), D12 (×b12)</td><td>dD11·b11 + dD12·b12 = 1·5 + 0·6</td><td class="num g">5</td></tr>
+  <tr><td><code>dA[2,1]</code></td><td>D21 (×b11), D22 (×b12)</td><td>dD21·b11 + dD22·b12 = 2·5 + (−1)·6</td><td class="num g">4</td></tr>
+  <tr><td><code>dB[1,1]</code></td><td>D11 (×a11), D21 (×a21)</td><td>a11·dD11 + a21·dD21 = 1·1 + 3·2</td><td class="num g">7</td></tr>
+  <tr><td><code>dc[1]</code></td><td>D11, D21 (×1, broadcast down both rows)</td><td>dD11 + dD21 = 1 + 2</td><td class="num g">3</td></tr>
+</table>
+<p class="cap">Fill in all 4 + 4 + 2 entries this way and the pattern is three familiar operations.</p>
+
+<div class="mathbox">
+<math display="block">
+  <munder class="t2"><mrow><mi>dA</mi><mo>=</mo><mi>dD</mi><mo>&#8201;</mo><msup><mi>B</mi><mo>&#8868;</mo></msup></mrow><mtext class="lab">[[5, 7], [4, 6]]</mtext></munder>
+  <mspace width="1.4em"></mspace>
+  <munder class="t2"><mrow><mi>dB</mi><mo>=</mo><msup><mi>A</mi><mo>&#8868;</mo></msup><mo>&#8201;</mo><mi>dD</mi></mrow><mtext class="lab">[[7, −3], [10, −4]]</mtext></munder>
+  <mspace width="1.4em"></mspace>
+  <munder class="t1"><mrow><mi>dc</mi><mo>=</mo><munder><mo>&#8721;</mo><mtext>rows</mtext></munder><mi>dD</mi></mrow><mtext class="lab">[3, −1]</mtext></munder>
+</math>
+<div class="legend">
+  <span class="sym">dD</span><span>upstream gradient, same shape as D</span><span class="v">[[1, 0], [2, −1]]</span>
+  <span class="sym">Bᵀ</span><span>B transposed (<code>B.T</code>): rows become columns</span><span class="v">[[5, 7], [6, 8]]</span>
+  <span class="sym">&#8721; rows</span><span><code>dD.sum(0)</code>: c was copied to every row, so its gradient adds the rows up</span><span class="v">1+2, 0−1</span>
+</div>
+</div>
+<p class="cap">The lab checks all three against autograd: <code>dA = [[5.0, 7.0], [4.0, 6.0]]</code>, <code>dB = [[7.0, -3.0], [10.0, -4.0]]</code>, <code>dc = [3.0, -1.0]</code>. They match exactly.</p>
+
+<h2>In the net: let the shapes choose</h2>
+<p>Karpathy doesn't memorise these formulas (<a href="https://www.youtube.com/watch?v=q8SA3rM6ckI&amp;t=2989s">0:49:49</a>). He rebuilds them from shapes. <code>dh</code> must be (32, 64) like <code>h</code>. The only things available are <code>dlogits</code> (32, 27) and <code>W2</code> (64, 27). The one way to multiply them into (32, 64) is to line up the 27s, which means transposing W2. The same reasoning gives dW2. Here n = 32 examples in the batch, 64 hidden units and 27 characters.</p>
+<svg class="shp" viewBox="0 0 760 390" role="img" xmlns="http://www.w3.org/2000/svg"><title>Shape matching for dh and dW2: the shared inner dimension is summed away</title>
+  <text class="nm" x="20" y="34">dlogits</text>
+  <rect class="mx" x="20" y="44" width="64.8" height="76.8" rx="3"/>
+  <text class="dm" x="20" y="140">(32, <tspan class="in">27</tspan>)</text>
+  <text class="op" x="98" y="90">@</text>
+  <text class="nm" x="128" y="34">W2.T</text>
+  <rect class="mx" x="128" y="44" width="153.6" height="64.8" rx="3"/>
+  <text class="dm" x="128" y="128">(<tspan class="in">27</tspan>, 64)</text>
+  <text class="op" x="296" y="90">=</text>
+  <text class="nm" x="326" y="34">dh</text>
+  <rect class="mx res" x="326" y="44" width="153.6" height="76.8" rx="3"/>
+  <text class="dm" x="326" y="140">(32, 64)</text>
+  <text class="ok" x="400" y="140">= h.shape ✓</text>
+  <text class="nt" x="510" y="72">the 27 characters meet</text>
+  <text class="nt" x="510" y="92">and are summed away:</text>
+  <text class="nt" x="510" y="112">each hidden unit collects</text>
+  <text class="nt" x="510" y="132">the push from every logit</text>
+
+  <text class="nm" x="20" y="194">h.T</text>
+  <rect class="mx" x="20" y="204" width="76.8" height="153.6" rx="3"/>
+  <text class="dm" x="20" y="378">(64, <tspan class="in">32</tspan>)</text>
+  <text class="op" x="110" y="288">@</text>
+  <text class="nm" x="140" y="194">dlogits</text>
+  <rect class="mx" x="140" y="204" width="64.8" height="76.8" rx="3"/>
+  <text class="dm" x="140" y="300">(<tspan class="in">32</tspan>, 27)</text>
+  <text class="op" x="226" y="288">=</text>
+  <text class="nm" x="256" y="194">dW2</text>
+  <rect class="mx res" x="256" y="204" width="64.8" height="153.6" rx="3"/>
+  <text class="dm" x="256" y="378">(64, 27)</text>
+  <text class="ok" x="336" y="378">= W2.shape ✓</text>
+  <text class="nt" x="510" y="232">the 32 examples meet</text>
+  <text class="nt" x="510" y="252">and are summed away:</text>
+  <text class="nt" x="510" y="272">W2 was used by every row</text>
+  <text class="nt" x="510" y="292">of the batch, so its</text>
+  <text class="nt" x="510" y="312">gradient adds all 32 up</text>
+</svg>
+<p class="cap">Boxes drawn to scale (2.4 px per unit). The green number is the inner dimension that the multiply sums over.</p>
+
+<table class="shapes">
+  <tr><th>Gradient</th><th>Must have shape</th><th>Built from</th><th>So it is</th></tr>
+  <tr><td><code>dh</code></td><td>(32, 64)</td><td>(32, 27) · (64, 27)</td><td><code>dlogits @ W2.T</code></td></tr>
+  <tr><td><code>dW2</code></td><td>(64, 27)</td><td>(32, 64) · (32, 27)</td><td><code>h.T @ dlogits</code></td></tr>
+  <tr><td><code>db2</code></td><td>(27,)</td><td>(32, 27)</td><td><code>dlogits.sum(0)</code>: b2 was broadcast to 32 rows</td></tr>
+  <tr class="bad"><td>✗ guess</td><td>(64, 27)?</td><td>(64, 32) · (64, 27)</td><td><code>h.T @ W2</code>: PyTorch refuses to multiply</td></tr>
+</table>
+
+<div class="build">
+  <div class="hd"><b>▶ Build it</b><span class="where">runs on your M3 · about 3 s</span></div>
+  <p><b>When:</b> pause the video at <a href="https://www.youtube.com/watch?v=q8SA3rM6ckI&amp;t=2499s">0:41:39</a>, just as Karpathy reaches <code>dh</code>. Write the three lines from shapes alone, before he derives them. They go straight after your <code>dlogits</code> line in the Exercise 1 cell.</p>
+<pre class="code">dh = dlogits @ W2.T     <span class="c"># (32,27) @ (27,64) -&gt; (32,64)</span>
+dW2 = h.T @ dlogits     <span class="c"># (64,32) @ (32,27) -&gt; (64,27)</span>
+db2 = dlogits.sum(0)    <span class="c"># (32,27) -&gt; (27,)</span>
+cmp(<span class="o">'h'</span>, dh, h)
+cmp(<span class="o">'W2'</span>, dW2, W2)
+cmp(<span class="o">'b2'</span>, db2, b2)</pre>
+  <p><b>You should see</b> (measured on your M3):</p>
+<pre class="code out">shapes: dlogits (32, 27) h (32, 64) W2 (64, 27) b2 (27,)
+h               | exact: True  | approximate: True  | maxdiff: 0.0
+W2              | exact: True  | approximate: True  | maxdiff: 0.0
+b2              | exact: True  | approximate: True  | maxdiff: 0.0
+wrong order h.T @ W2 -&gt; mat1 and mat2 shapes cannot be multiplied (64x32 and 64x27)</pre>
+  <p>The lab feeds in autograd's <code>dlogits</code>, so it tests only this layer. In your notebook, the <code>dlogits</code> is the one you built on the previous cards.</p>
+  <p class="done"><b>Done when:</b> all three lines print <code>exact: True</code>, and you can say for each one which dimension was summed away. · <b>Karpathy's version:</b> <a href="https://github.com/karpathy/nn-zero-to-hero/blob/master/lectures/makemore/makemore_part4_backprop.ipynb">makemore_part4_backprop.ipynb</a>, Exercise 1 cell (<code>dh</code>, <code>dW2</code>, <code>db2</code>) · <b>Lab:</b> <a href="https://github.com/seyonv/explainers/blob/main/z2h-6-backprop-ninja/labs/matmul-backward-by-shapes.py">labs/matmul-backward-by-shapes.py</a></p>
+</div>
+
+<h2>Why it beats the alternatives</h2>
+<div class="grid2">
+  <div class="cell"><h3><span class="x">&#10007;</span> Memorise the formulas</h3><p>It's easy to flip the order or put the transpose on the wrong matrix. <code>W2.T @ dlogits</code> and <code>dlogits @ W2</code> look just as plausible as the right answer.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Loop over every entry</h3><p>Correct, but dW2 alone is 64 × 27 entries, each a sum over 32 examples: 55,296 multiply-adds in Python loops instead of one fast matmul.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Build the full Jacobian</h3><p>The derivative of every logit with respect to every entry of h is a (32·27) × (32·64) table, 1,769,472 numbers, almost all zero. You only ever need it multiplied by dlogits.</p></div>
+  <div class="cell win"><h3><span class="ok">&#10003;</span> Derive once on 2×2, then match shapes</h3><p>The small example shows <i>why</i> a transpose appears. After that the shapes pick the one arrangement that fits, and each gradient costs one matmul, the same 55,296 multiply-adds as the forward pass.</p></div>
+</div>
+
+<h2>When the shapes can't tell you</h2>
+<div class="note">
+  <p>Shape matching works here because 32, 64 and 27 are all different, so only one arrangement fits. If two dimensions are equal, a wrong answer can have the right shape. For example, with a square 64×64 weight, <code>dD @ W</code> and <code>dD @ W.T</code> are both (32, 64), and the wrong one runs silently. In that case, go back to the 2×2 derivation or trust <code>cmp</code>. The 2×2 example itself is the extreme case: every candidate is 2×2, so there you have to derive.</p>
+  <p>The trick also only covers matmuls and sums. Elementwise ops like tanh or BatchNorm's normalising step need their own local derivative (next card). It doesn't count as "the gradient is correct" until <code>cmp</code> says so.</p>
+</div>
+
+<!-- study:panel -->
+<section class="study" aria-label="Study this card">
+<div class="study-head"><h2>Study this card</h2><span>Open each step in order · <a href="../learning-principles/learning-principles.html">why this works</a></span></div>
+<input type="checkbox" id="study-all" class="study-all"><label for="study-all" class="study-all-l">show all steps (for revisiting)</label>
+<details class="st"><summary><b>1 · Core model</b> <span>what to internalise, what to just look up</span></summary><div class="st-body"><p class="st-rule">Keep it if it changes what you can <i>explain, predict, compare, choose, build or debug</i>. Otherwise it's reference.</p>
+<div class="core"><div><h4>Understand and remember</h4><ul><li>a<sub>ij</sub> multiplies row j of B in every entry of row i of D → the chain rule sums dD<sub>ik</sub>·B<sub>jk</sub> over k → that is row i of dD dotted with row j of B → <code>dA = dD @ B.T</code> (and by symmetry <code>dB = A.T @ dD</code>)</li><li>Every <code>dX</code> has the shape of <code>X</code> → only one way to combine <code>dlogits</code> (32,27) with <code>W2</code> (64,27) into (32,64) → the 27s must meet, so W2 is transposed → <code>dh = dlogits @ W2.T</code> falls out without calculus</li><li><code>W2</code> and <code>b2</code> are reused by all 32 rows of the batch → a forward reuse becomes a backward sum → <code>dW2</code> contracts over the 32 examples (<code>h.T @ dlogits</code>) and <code>db2 = dlogits.sum(0)</code></li><li>Shape matching only picks the arrangement when the dimensions differ → equal dimensions (a square weight, or the 2×2 example) let a wrong formula have the right shape → it runs silently, so derive or <code>cmp</code></li><li><span class="up">detail that matters</span> Each backward matmul does the same work as the forward one (32·64·27 = 55,296 multiply-adds) → a linear layer's backward pass costs about twice its forward pass, and no Jacobian (1,769,472 numbers for dlogits/dh) is ever built</li></ul></div>
+<div><h4>Reference only</h4><ul class="muted"><li>the notebook's variable names <code>dh</code>, <code>dW2</code>, <code>db2</code></li><li>the exact PyTorch error text for mismatched shapes (<code>mat1 and mat2 shapes cannot be multiplied</code>)</li><li>the lab's trick <code>L = (D * dD).sum()</code> to inject an arbitrary upstream gradient</li><li>the toy matrices A, B, c, dD used in the 2×2 example</li></ul></div></div><p class="st-why"><a href="../learning-principles/learning-principles.html#layers">Why this step?</a></p></div></details>
+<details class="st"><summary><b>2 · Compress</b> <span>write it yourself first</span></summary><div class="st-body"><p>From memory, draw <code>logits = h @ W2 + b2</code> with every shape, then write the three backward lines and, next to each, which dimension is summed away and why. Or explain in 3–5 sentences where the transpose in <code>dh = dlogits @ W2.T</code> comes from.</p><p class="st-how">On paper or in your notes, in your own words, without scrolling up. Aim for the smallest thing that still explains it.</p>
+<details class="ref"><summary>Then compare with this checklist</summary><ul><li>each gradient has the shape of its tensor: dh (32,64), dW2 (64,27), db2 (27,)</li><li><code>dh = dlogits @ W2.T</code>: sums over the 27 logits</li><li><code>dW2 = h.T @ dlogits</code>: sums over the 32 examples, because W2 is shared by every row</li><li><code>db2 = dlogits.sum(0)</code>: b2 was broadcast down the batch</li><li>the transpose appears because each input entry is dotted with a <i>row</i> of the other matrix (the 2×2 derivation)</li><li>shape matching works only when the dimensions are all different</li></ul><p class="st-how">Missing a point? Reread only the section about it, not the whole card.</p></details><p class="st-why"><a href="../learning-principles/learning-principles.html#compress">Why this step?</a></p></div></details>
+<details class="st"><summary><b>3 · Retrieve</b> <span>from memory, card closed</span></summary><div class="st-body"><ol class="qs"><li><span class="kind">concept</span> Explain, without quoting the formula, why the gradient of the <i>left</i> matrix in a matmul ends up multiplied by the transpose of the <i>right</i> one.<details class="ref"><summary>Check</summary><ul><li>a<sub>ij</sub> contributes to every entry D<sub>ik</sub> in row i, each time multiplied by B<sub>jk</sub></li><li>the chain rule adds those uses: Σ<sub>k</sub> dD<sub>ik</sub>·B<sub>jk</sub></li><li>that pairs row i of dD with row j of B, which is what <code>dD @ B.T</code> computes</li></ul></details></li><li><span class="kind">mechanism</span> Walk through deriving <code>dW2</code> from shapes alone: what must its shape be, which two tensors can you use, and how do you arrange them?<details class="ref"><summary>Check</summary><ul><li>dW2 must be (64,27), the shape of W2</li><li>available: h (32,64) and dlogits (32,27)</li><li>the shared 32 must be the inner dimension, so transpose h: (64,32) @ (32,27) = <code>h.T @ dlogits</code></li><li>summing over the 32 is adding up every example's contribution to the shared weight</li></ul></details></li><li><span class="kind">mechanism</span> With the 2×2 example A=[[1,2],[3,4]], B=[[5,6],[7,8]], dD=[[1,0],[2,−1]], compute <code>dA[2,1]</code> and <code>dc</code> by hand.<details class="ref"><summary>Check</summary><ul><li>dA[2,1] = dD21·b11 + dD22·b12 = 2·5 + (−1)·6 = 4</li><li>dc = dD.sum(0) = [1+2, 0−1] = [3, −1]</li></ul></details></li><li><span class="kind">tradeoff</span> You're backpropagating through a layer whose weight is 64×64 with a batch of 64. Can you still rely on shape matching? What would you do instead, and what does it cost?<details class="ref"><summary>Check</summary><ul><li>no: <code>dD @ W</code> and <code>dD @ W.T</code> both have the right shape, and so do several other arrangements</li><li>derive it (the 2×2 argument generalises) or check each candidate with <code>cmp</code> against autograd</li><li>the cost is a derivation or one extra autograd run, which is cheap next to a silently wrong gradient</li></ul></details></li></ol><p class="st-why"><a href="../learning-principles/learning-principles.html#retrieve">Why this step?</a></p></div></details>
+<details class="st"><summary><b>4 · Compare</b> <span>against what you already know</span></summary><div class="st-body"><p><b>vs <a href="sum-broadcast-duality.html">Sum and broadcast are each other's backward</a>:</b> <code>db2 = dlogits.sum(0)</code> and <code>dW2 = h.T @ dlogits</code> both add up over the batch. How is the bias case an instance of the sum/broadcast duality, and how does the matmul hide the same sum inside its inner dimension?</p><details class="ref"><summary>Check</summary><ul><li>b2 is broadcast (copied) to 32 rows forward, so its gradient sums the 32 rows backward</li><li>W2 is also reused by all 32 rows; the matmul <code>h.T @ dlogits</code> performs that sum as its inner-dimension contraction</li><li>both come from the same rule: a value used many times collects the sum of its gradients</li><li>failure mode for both: forget the sum (or the transpose) and you get a shape error or a per-example gradient</li></ul></details><p><b>vs <a href="../z2h-1-toolkit/matmul-by-shapes.html">Matrix multiply by shapes</a>:</b> The toolkit card used shapes to check a <i>forward</i> matmul; this card uses them to <i>choose</i> a backward formula. What extra rule makes the backward use possible, and where does it stop working?</p><details class="ref"><summary>Check</summary><ul><li>the extra rule: every gradient has the same shape as the tensor it belongs to</li><li>forward: shapes confirm an expression is valid; backward: they also pin down the only valid arrangement</li><li>stops working when dimensions coincide, because then several arrangements fit</li></ul></details><p><b>vs <a href="tanh-bn-atomic.html">tanh and BatchNorm, atom by atom</a>:</b> Crossing the linear layer takes three lines found from shapes; crossing tanh needs <code>(1 - h**2) * dh</code>. Why can't shapes derive the tanh line, and what kind of knowledge does it need instead?</p><details class="ref"><summary>Check</summary><ul><li>tanh is elementwise: input, output and gradient all have the same shape, so shapes don't constrain anything</li><li>you need the local derivative of tanh (1 − tanh²), which is calculus, not bookkeeping</li><li>matmul backward is determined by structure; elementwise backward is determined by the function</li></ul></details><p class="st-why"><a href="../learning-principles/learning-principles.html#interleave">Why this step?</a></p></div></details>
+<details class="st"><summary><b>5 · Predict</b> <span>commit to an answer before revealing</span></summary><div class="st-body"><p>Suppose <code>n_hidden</code> were 27 instead of 64, so <code>W2</code> is a square 27×27 matrix. You mistakenly write <code>dh = dlogits @ W2</code> (no transpose). What happens when it runs, and what catches the mistake?</p><details class="ref"><summary>Reveal</summary><p>It runs without any error: (32,27) @ (27,27) gives (32,27), which is exactly <code>h.shape</code>. The values are wrong unless W2 happens to be symmetric. Shape matching can't see it, so only the derivation or <code>cmp</code> (exact: False, approximate: False) catches it. That's why Karpathy keeps the dimensions distinct and checks every line.</p></details><p class="st-why"><a href="../learning-principles/learning-principles.html#predict">Why this step?</a></p></div></details>
+<details class="st"><summary><b>6 · Apply</b> <span>use the model, don't restate it</span></summary><div class="st-body"><p>Cross linear layer 1 the same way: <code>hprebn = embcat @ W1 + b1</code>, with <code>embcat</code> (32,30), <code>W1</code> (30,64), <code>b1</code> (64,), and <code>dhprebn</code> (32,64) as the upstream gradient. Write <code>dembcat</code>, <code>dW1</code> and <code>db1</code> from shapes alone, writing each shape next to its line, then <code>cmp</code> them in the notebook (or run <code>labs/embedding-backward.py</code>).</p><p><b>Done when:</b> <code>embcat</code>, <code>W1</code> and <code>b1</code> each print <code>exact: True | maxdiff: 0.0</code>, as measured on the M3.</p><details class="ref"><summary>Hint</summary><p>dembcat must be (32,30), so the 64s must meet. dW1 must be (30,64), so the 32 examples must meet. b1 was broadcast down the 32 rows.</p></details><p class="st-why"><a href="../learning-principles/learning-principles.html#apply">Why this step?</a></p></div></details>
+<details class="st"><summary><b>7 · Reflect</b> <span>and decide whether to move on</span></summary><div class="st-body"><ul><li>Which prediction did you get wrong: the row of B in the 2×2 example, or the silent square-matrix bug?</li><li>What couldn't you explain cleanly: why the transpose appears, or why the batch dimension gets summed?</li><li>Which relationship is still fuzzy: reuse across the batch → sum in the backward pass, or sum → the inner dimension of <code>h.T @ dlogits</code>?</li><li>Would you now trust a formula you found only by shapes, and what would make you run <code>cmp</code> anyway?</li><li>Before the tanh card, can you rewrite all three lines for this layer from scratch in under a minute?</li></ul><p class="st-how">Repair what came up: reopen only that section, then retry the question you missed. Tutor mode: <code>/study z2h-6-backprop-ninja/matmul-backward-by-shapes</code> in Claude Code grades your answers and walks you through each stage.</p><p class="st-why"><a href="../learning-principles/learning-principles.html#reflect">Why this step?</a></p></div></details>
+</section>
+<!-- /study:panel -->
+<div class="foot">
+  <p><b>Watch:</b> <a href="https://www.youtube.com/watch?v=q8SA3rM6ckI&amp;t=2499s">0:41:39 the linear layer, derived on paper</a> · <a href="https://www.youtube.com/watch?v=q8SA3rM6ckI&amp;t=2989s">0:49:49 just match the shapes</a> · next: <a href="https://www.youtube.com/watch?v=q8SA3rM6ckI&amp;t=3197s">0:53:17 tanh</a></p>
+  <p><b>Code:</b> <a href="https://github.com/karpathy/nn-zero-to-hero/blob/master/lectures/makemore/makemore_part4_backprop.ipynb">makemore_part4_backprop.ipynb</a> · <a href="https://colab.research.google.com/drive/1WV2oi2fh9XXyldh02wupFQX0wh5ZC-z-?usp=sharing">the exercise Colab</a></p>
+  <p><b>Lab:</b> <a href="https://github.com/seyonv/explainers/blob/main/z2h-6-backprop-ninja/labs/matmul-backward-by-shapes.py">labs/matmul-backward-by-shapes.py</a></p>
+  <p><b>Related:</b> <a href="sum-broadcast-duality.html">Sum and broadcast are each other's backward</a> · <a href="tanh-bn-atomic.html">tanh and BatchNorm, atom by atom</a> · <a href="embedding-backward.html">The embedding gradient</a> · <a href="../z2h-1-toolkit/matmul-by-shapes.html">Matmul by shapes</a></p>
+</div>
+</article>
+<!-- series-nav:bottom -->
+<div class="snx"><a class="nx" href="index.html#checkpoint-1" target="_top">
+<span class="mini" aria-hidden="true"><span class="m1">Checkpoint 1: four local rules and a checker you can trust</span><span class="m2">Ties together why write backprop by hand, the chunked forward pass and cmp, log, normalise and exp, the sum ↔ broadcast duality and matmul backward by shapes, with micrograd's += bug and derivative as…</span></span>
+<span class="tx"><span class="lab">Next up · 08 / 14</span><span class="tt">Checkpoint 1: four local rules and a checker you can trust</span><span class="ds">The loss end of the net by hand: local slopes, += for reused tensors, sum ↔ broadcast, matmul by shapes, and what cmp's verdicts mean</span><span class="nd">Stands alone.</span><span class="go">Continue →</span></span></a><div class="aux"><span><a href="index.html#sum-broadcast-duality" target="_top">← Sum and broadcast are each other's backward</a></span><a href="index.html" target="_top">All cards in 6 · makemore 4: backprop ninja</a></div></div>
+<!-- /series-nav:bottom -->
+</body>
+</html>

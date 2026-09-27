@@ -1,0 +1,66 @@
+{
+  "prime": {
+    "problem": "The atom-by-atom BatchNorm backward takes a dozen lines and six throwaway gradient tensors, and without a short form you still need <code>loss.backward()</code> to train. You can't claim to understand the whole backward pass until you can write it all yourself and train on it.",
+    "fits": "The last step of the backprop-ninja lecture. It folds the twelve lines from the tanh-and-BatchNorm atoms card into one, the way the cross-entropy card folded the softmax chain into three, and then uses both short forms to train the BatchNorm MLP from makemore Part 3 with autograd switched off.",
+    "expect": ["the three roads from an input to the loss: direct, via the mean, via the variance", "why dσ²/dμ = 0 when μ is the batch mean", "the one-line <code>dhprebn</code> and its n/(n−1) factor", "training inside <code>torch.no_grad()</code> with hand-written gradients"],
+    "goal": "Derive and write the one-line BatchNorm backward, explain what each of its three terms is, and train the 12,297-parameter net to a validation loss near 2.11 without calling <code>loss.backward()</code>."
+  },
+  "attend": [
+    "Each x<sub>i</sub> reaches the loss by three roads. Which term of the one-liner belongs to which road?",
+    "σ² is computed from μ, yet no gradient flows along that edge. What property of the batch mean makes the slope zero?",
+    "Which two sums in the one-liner are the same sums as <code>dbnbias</code> and <code>dbngain</code>, and why is that not a coincidence?",
+    "Why must each neuron's column of <code>dhprebn</code> sum to (nearly) zero?",
+    "Which part of the one-liner would change if the forward pass divided by n instead of n − 1, or used fixed running statistics?"
+  ],
+  "core": {
+    "must": [
+      "μ and σ² are computed from all 32 inputs → each x<sub>i</sub> reaches the loss directly, via μ and via σ² → its gradient is the sum of three terms → the one-liner's n·dy<sub>i</sub>, −Σdy<sub>j</sub> and −n/(n−1)·x̂<sub>i</sub>·Σdy<sub>j</sub>x̂<sub>j</sub>",
+      "μ is the mean of the same values → Σ(x<sub>j</sub> − μ) = 0 → dσ²/dμ = 0 → the edge σ² → μ carries no gradient → the derivation collapses to one short broadcasted line",
+      "BatchNorm's output doesn't change if you shift, or (up to ε) scale, a neuron's whole batch → the gradient can't point along those directions → the one-liner removes the mean of dy and its component along x̂ → each column of <code>dhprebn</code> sums to ≈ 0 (5.6e-9 in the lab)",
+      "Every layer's gradient now has a short analytic form → the full backward pass is 14 lines → <code>loss.backward()</code> can be deleted and the loop wrapped in <code>torch.no_grad()</code> → the same training (val 2.1086 in the lab) with no autograd graph recorded"
+    ],
+    "elevated": [
+      "Roads ② and ③ reuse <code>dhpreact.sum(0)</code> and <code>(dhpreact*bnraw).sum(0)</code>, the very sums that give <code>dbnbias</code> and <code>dbngain</code> → the short form costs little more than the parameter gradients you need anyway",
+      "The n/(n−1) factor comes from differentiating the ÷(n−1) variance → with a ÷n forward it must be 1 (keeping 32/31 fails <code>cmp</code> with maxdiff 3.9e-5 on the lab's batch)"
+    ],
+    "reference": [
+      "<code>dhprebn = bngain*bnvar_inv/n * (n*dhpreact - dhpreact.sum(0) - n/(n-1)*bnraw*(dhpreact*bnraw).sum(0))</code>",
+      "Exercise 4 uses <code>n_hidden = 200</code>: 12,297 parameters; lr 0.1 then 0.01 after step 100,000 of 200,000",
+      "<code>grads = [dC, dW1, db1, dW2, db2, dbngain, dbnbias]</code>, applied with <code>p.data += -lr * grad</code>",
+      "BatchNorm is calibrated on the whole training set after training; the loop keeps no running statistics",
+      "measured: forward max diff 4.77e-7, one-liner maxdiff 9.31e-10, gradient checks 3.7e-9 to 1.5e-8, 200k steps in 126 s, train 2.0712 / val 2.1086 (notebook 2.0705 / 2.1099)"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw the BatchNorm graph for one neuron (x → μ, σ² → x̂ → y) and label the three roads from x<sub>i</sub> to the loss. Then write the one-liner and point to which term comes from which road, and say in one sentence why the σ² → μ edge contributes nothing.",
+    "checklist": [
+      "three roads: direct, via μ, via σ²; the gradient is their sum",
+      "dσ²/dμ ∝ Σ(x<sub>j</sub> − μ) = 0 for the batch's own mean",
+      "prefactor γ·s/n, with s = (σ² + ε)<sup>−½</sup>",
+      "terms: n·dy<sub>i</sub>, minus Σdy<sub>j</sub>, minus n/(n−1)·x̂<sub>i</sub>·Σdy<sub>j</sub>x̂<sub>j</sub>",
+      "the n/(n−1) comes from the ÷(n−1) variance",
+      "with every layer in short form, <code>loss.backward()</code> goes and training runs under <code>no_grad</code>"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain in plain words why the gradient of one BatchNorm input depends on the gradients of all 31 other rows in the batch.", "kind": "concept", "answer": ["μ and σ² are computed from every row", "so changing x<sub>i</sub> moves every x̂<sub>j</sub> through μ and σ²", "those effects are weighed by each row's dy<sub>j</sub>, hence the sums over j"]},
+    {"q": "Walk through the derivation in order: dx̂, then dσ², then dμ, then dx. What does each step multiply by, and where does a sum over j appear?", "kind": "mechanism", "answer": ["dx̂<sub>i</sub> = γ·dy<sub>i</sub>", "dσ² sums dx̂<sub>j</sub>·(x<sub>j</sub> − μ)·(−½)(σ² + ε)<sup>−3/2</sup> over j", "dμ sums −s·dx̂<sub>j</sub> over j; the dσ²·dσ²/dμ part is 0", "dx<sub>i</sub> adds s·dx̂<sub>i</sub>, dσ²·2(x<sub>i</sub> − μ)/(n − 1) and dμ/n"]},
+    {"q": "Walk row 0 of neuron 0 through the one-liner: which three numbers go in the bracket, and what prefactor multiplies them?", "kind": "mechanism", "answer": ["n·dy<sub>0</sub> = −0.0307067", "Σdy<sub>j</sub> = −0.00790285 (as <code>dbnbias</code>)", "32/31 · x̂<sub>0</sub> · Σdy<sub>j</sub>x̂<sub>j</sub> = −0.00417372", "bracket −0.0186301 × γs/n 0.0216354 = −0.000403071, matching autograd"]},
+    {"q": "You need BatchNorm's backward for a production model. Would you write the one-liner, keep the atomic version, or rely on autograd? What does each cost you?", "kind": "tradeoff", "answer": ["autograd: no derivation, always consistent with the forward pass; you give up visibility, not correctness", "one-liner: short and cheap, but tied to one exact forward (divisor, training vs inference) and only float-close to autograd", "atomic: easy to check line by line, but many temporaries; best as the reference you test the one-liner against"]}
+  ],
+  "compare": [
+    {"with": "z2h-6-backprop-ninja/cross-entropy-analytic", "q": "Both cards replace a chain of atomic lines with a short analytic form. What is structurally similar about softmax − one-hot and the BatchNorm bracket, and how can each go wrong?", "answer": ["both rows/columns of the gradient sum to ≈ 0, because the output ignores a uniform shift of the inputs (logits in a row; a neuron's batch)", "both need a paper derivation with careful indices, then <code>cmp</code> against autograd", "both reach only <code>approximate: True</code> because the float operations are reordered", "cross-entropy's form doesn't depend on a hyperparameter; BatchNorm's depends on the variance divisor"]},
+    {"with": "z2h-6-backprop-ninja/tanh-bn-atomic", "q": "The atomic card needs <code>+=</code> for <code>bndiff</code> and <code>hprebn</code>; the one-liner has none. Where did those two-branch accumulations go?", "answer": ["the <code>+=</code> branches are the roads via μ and via σ²", "in the one-liner they are the −Σdy and −n/(n−1)·x̂·Σdy·x̂ terms", "the atomic version adds them tensor by tensor; the one-liner adds them inside one bracket"]}
+  ],
+  "predict": {"q": "Switch the net to evaluation: BatchNorm now uses fixed running statistics (<code>bnmean</code>, <code>bnvar</code>) instead of the batch's own. Which of the one-liner's three terms survive in the gradient with respect to <code>hprebn</code>, and would its columns still sum to zero?", "answer": "Only road ① survives: μ and σ² are constants, so dx<sub>i</sub> = γ·s·dy<sub>i</sub>, one row at a time with no sums over the batch. The columns no longer sum to zero in general, because shifting the whole batch now does change every output: the fixed mean doesn't move with it."},
+  "apply": {"task": "In your scratch copy of the lab, change the Exercise 3 forward pass to the ÷n variance (<code>unbiased=False</code>), recompute <code>bnvar_inv</code> and <code>bnraw</code> from it, backprop <code>dhpreact</code> through it with autograd, and <code>cmp</code> two versions of the one-liner: with the n/(n−1) factor and with 1. Before running, predict which one passes.", "done": "The factor-1 version prints <code>approximate: True | maxdiff: 9.313225746154785e-10</code> and the n/(n−1) version prints <code>approximate: False | maxdiff: 3.902293974533677e-05</code> (my check run on the lab's seeded batch).", "hint": "Clone <code>hprebn</code> with <code>.detach().clone().requires_grad_(True)</code>, build the new <code>hpreact</code> from it, and call <code>hpreact.backward(dhpreact)</code> to get the reference gradient."},
+  "reflect": [
+    "Which prediction did you get wrong: the zero gradient along σ² → μ, or which terms survive at test time?",
+    "What couldn't you explain cleanly: where the n/(n−1) comes from, or why the columns sum to zero?",
+    "Which relationship is still fuzzy: three roads → three terms, or dσ²/dμ = 0 → the short line?",
+    "Could you now write all 14 lines of the backward pass without looking, starting from <code>dlogits</code>?",
+    "When you go back to <code>loss.backward()</code> next lecture, what would you check first if training stalled?"
+  ],
+  "revisit": ["z2h-6-backprop-ninja/tanh-bn-atomic", "z2h-6-backprop-ninja/cross-entropy-analytic", "z2h-6-backprop-ninja/bessel-correction", "z2h-5-batchnorm/batchnorm-forward"],
+  "prereq": ["z2h-6-backprop-ninja/tanh-bn-atomic", "z2h-6-backprop-ninja/cross-entropy-analytic"]
+}

@@ -1,0 +1,66 @@
+{
+  "prime": {
+    "problem": "BatchNorm is the layer where hand-written gradients most often go wrong: its forward pass reuses tensors, broadcasts per-neuron statistics over the batch and sums over rows, and a gradient that forgets any of that is silently off.",
+    "fits": "You have <code>dh</code> from the matmul card. This card carries it back through tanh and BatchNorm's seven atoms to <code>dhprebn</code>, using the sum ↔ broadcast duality and the <code>+=</code> rule for reused nodes from micrograd.",
+    "expect": ["tanh′ written with the output: <code>1 − h²</code>", "broadcast forward → sum backward (<code>dbngain</code>, <code>dbnvar_inv</code>)", "the power rule on <code>(bnvar + ε)**-0.5</code>", "sum forward → broadcast backward (<code>1/(n−1)</code>, <code>1/n</code>)", "two branches into <code>bndiff</code> and <code>hprebn</code>"],
+    "goal": "Write all twelve lines from <code>dhpreact</code> to <code>dhprebn</code> yourself, predict which <code>cmp</code> lines print False before a second branch is added, and say which rule each line uses."
+  },
+  "attend": [
+    "Why does Karpathy write tanh's local gradient with <code>h</code> instead of <code>hpreact</code>, and what does that save?",
+    "<code>bngain</code> has shape (1, 64) but <code>dhpreact</code> is (32, 64): which forward-pass operation forces a sum over rows in the backward pass?",
+    "Where does the <code>1/(n−1)</code> in <code>dbndiff2</code> come from, and what would change if BatchNorm used the biased 1/n variance?",
+    "Which two tensors feed more than one later operation, and how would you spot that by reading the forward code?",
+    "What is the difference between a tensor that is <i>broadcast</i> (needs a sum) and one that is <i>used twice</i> (needs <code>+=</code>)?"
+  ],
+  "core": {
+    "must": [
+      "<code>bndiff</code> feeds both <code>bnraw</code> and <code>bndiff2</code> → the loss depends on it through two paths → its gradient is the sum of both → one branch alone gives <code>exact: False</code> (maxdiff 0.00119) until <code>dbndiff +=</code> adds the variance path; the same holds for <code>hprebn</code> via <code>bndiff</code> and <code>bnmeani</code>",
+      "A (1, 64) tensor (<code>bngain</code>, <code>bnbias</code>, <code>bnvar_inv</code>, <code>bnmeani</code>) is broadcast over 32 rows in the forward pass → it is reused 32 times → its gradient is the <b>sum</b> over rows, <code>.sum(0)</code>",
+      "A forward sum over rows (<code>bnvar</code> from <code>bndiff2</code>, <code>bnmeani</code> from <code>hprebn</code>) gives each row a slope of 1/(n−1) or 1/n → backward, every row gets the same broadcast share → <code>dbndiff2</code> is <code>dbnvar</code>/31 in every row",
+      "tanh′(x) = 1 − tanh(x)² and <code>h</code> = tanh(<code>hpreact</code>) is already stored → <code>dhpreact = (1 − h²) · dh</code> needs no recomputation → saturated units (|h| near 1) pass back almost nothing"
+    ],
+    "elevated": [
+      "The mean branch adds the same <code>dbnmeani/n</code> to every row → it makes each column of <code>dhprebn</code> sum to about 0 (max 2.3e-9 here) → shifting all 32 inputs of a neuron by a constant can't change the loss, because BatchNorm subtracts the mean"
+    ],
+    "reference": [
+      "the exact lines: <code>dbnvar = (-0.5*(bnvar + 1e-5)**-1.5) * dbnvar_inv</code>, <code>dbndiff2 = (1.0/(n-1))*torch.ones_like(bndiff2) * dbnvar</code>",
+      "&#949; = 1e-5 inside the square root",
+      "<code>dbnmeani = (-dbndiff).sum(0)</code> comes out (64,), not (1, 64); broadcasting still works",
+      "<code>dhprebn = dbndiff.clone()</code> before the <code>+=</code>, so the second branch doesn't modify <code>dbndiff</code> in place",
+      "the tensor names and shapes: <code>hprebn</code>, <code>bnraw</code>, <code>hpreact</code>, <code>h</code> are (32, 64); the statistics and <code>bngain</code>/<code>bnbias</code> are (1, 64)"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw the BatchNorm + tanh graph from <code>hprebn</code> to <code>h</code>, circle the two tensors that fan out, and next to every edge write the rule its backward line uses (slope, sum over rows, broadcast ÷ n, or +=).",
+    "checklist": [
+      "tanh: multiply by 1 − h², using the stored output",
+      "γ, β, bnvar_inv and bnmeani were broadcast over rows, so their gradients are sums over rows",
+      "the variance and mean were sums over rows, so their gradients broadcast back, scaled by 1/(n−1) and 1/n",
+      "the power rule gives −½(bnvar + ε)<sup>−3/2</sup> for bnvar_inv",
+      "bndiff and hprebn each have two branches, so their gradients need +=",
+      "cmp after each line tells you exactly which line is wrong"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why <code>dbngain</code> needs <code>.sum(0, keepdim=True)</code> but <code>dbnraw</code> doesn't, using the shapes of <code>bngain</code>, <code>bnraw</code> and <code>dhpreact</code>.", "kind": "concept", "answer": ["<code>bngain</code> is (1, 64) and was broadcast to all 32 rows, so it is used 32 times and its gradient adds those 32 contributions", "<code>bnraw</code> is (32, 64), the same shape as <code>dhpreact</code>, so each entry is used once: <code>dbnraw = bngain * dhpreact</code> elementwise", "keepdim keeps (1, 64) so the gradient has the parameter's shape"]},
+    {"q": "Walk the gradient from <code>dbnvar_inv</code> to the second share of <code>dbndiff</code>: name each local gradient and say which of them sums or broadcasts.", "kind": "mechanism", "answer": ["power rule: <code>dbnvar = −½(bnvar + ε)<sup>−3/2</sup> · dbnvar_inv</code>", "bnvar was a sum of bndiff2 over rows ÷ (n−1), so <code>dbndiff2</code> broadcasts <code>dbnvar/(n−1)</code> to every row", "square: <code>dbndiff += 2·bndiff · dbndiff2</code>, added to the branch from bnraw"]},
+    {"q": "You swap <code>dbndiff +=</code> for <code>dbndiff =</code>. Which <code>cmp</code> lines fail, and why do the earlier ones still pass?", "kind": "mechanism", "answer": ["everything up to <code>bndiff2</code> is computed before that line, so it still passes", "<code>bndiff</code> now holds only the variance branch, so it fails", "<code>bnmeani</code> and <code>hprebn</code> are computed from <code>dbndiff</code>, so they inherit the error (measured maxdiffs 0.0083, 0.031, 0.0085)"]},
+    {"q": "Twelve atomic lines vs Exercise 3's single-line BatchNorm backward: what do you gain and lose with each, and when would you pick the atomic version?", "kind": "tradeoff", "answer": ["atomic: every line is a known rule and cmp localises a bug to one line, but it's long and makes many temporary tensors", "one line: compact, but a derivation slip is hard to find and it only matches to about 1e-9 (approximate, not exact)", "pick atomic when checking or debugging, and use it as ground truth for the one-liner"]}
+  ],
+  "compare": [
+    {"with": "z2h-6-backprop-ninja/softmax-chain-backward", "q": "<code>counts</code> in the softmax chain and <code>bndiff</code> here both need <code>+=</code>. What is structurally the same about the two forward passes, and what is different about the axis they normalise over?", "answer": ["same: a tensor is used directly and also through a statistic computed from itself (counts_sum; bnvar/bnmeani), so it has two branches", "softmax normalises across the 27 columns of each row (sum over dim 1); BatchNorm normalises each column down the 32 rows (sum over dim 0)", "so the broadcasts and sums run along different axes: <code>keepdim</code> on dim 1 there, dim 0 here", "both fail the same way: one branch gives exact False"]},
+    {"with": "z2h-6-backprop-ninja/batchnorm-analytic-and-train", "q": "The one-line <code>dhprebn</code> and this card's twelve lines compute the same gradient. What does the one-liner exploit that the atomic version doesn't, and how does each fail?", "answer": ["the one-liner substitutes all the branches into one formula and simplifies (the mean's effect on the variance cancels)", "it runs as a few broadcasted ops and matches to about 9.3e-10, not exactly", "atomic version fails loudly and locally (one cmp line); the one-liner fails as a whole, with no hint which term is wrong"]},
+    {"with": "z2h-2-micrograd/accumulate-gradients", "q": "micrograd's <code>+=</code> bug and a missing <code>dbndiff +=</code> are the same idea at different scales. Where does micrograd put the <code>+=</code> for you, and why must you write it yourself here?", "answer": ["micrograd's <code>_backward</code> closures always do <code>self.grad +=</code>, so any reused node accumulates automatically", "here each gradient is a hand-written tensor line, so nothing accumulates unless you write <code>+=</code> (and <code>.clone()</code> first)", "same failure: the gradient reflects only the last branch written"]}
+  ],
+  "predict": {"q": "After the full backward pass, add up <code>dhprebn</code> down the batch for one neuron (a sum over the 32 rows). Before running it, what do you expect, and what would the sum be if you had skipped the <code>bnmeani</code> branch?", "answer": "About 0: the largest column sum is 2.3e-9. Adding the same constant to all 32 inputs of a neuron shifts <code>bnmeani</code> by that constant too, so <code>bndiff</code> and the loss don't change; the gradient has no component along that direction. Without the mean branch, column 0 sums to −0.00547, exactly −<code>dbnmeani[0]</code>: the missing branch is precisely what cancels it."},
+  "apply": {"task": "Break the lab two ways and predict each result before running. (a) Replace <code>dbndiff += (2*bndiff) * dbndiff2</code> with <code>=</code>. (b) Restore it, then use <code>1.0/n</code> instead of <code>1.0/(n-1)</code> in <code>dbndiff2</code>. For each, name the first <code>cmp</code> line that fails, and say whether <code>bnmeani</code> survives.", "done": "Your predictions match the run: (a) first failure <code>bndiff</code> (maxdiff 0.0083), and <code>bnmeani</code> fails (0.031); (b) first failure <code>bndiff2</code> (7.7e-6), but <code>bnmeani</code> stays <code>approximate: True</code> (3.7e-9), and you can explain why.", "hint": "In (b) the error only enters through the variance branch, <code>2·bndiff·dbndiff2</code>, where <code>dbndiff2</code> is the same in every row. What is the sum of <code>bndiff</code> down a column?"},
+  "reflect": [
+    "Which prediction did you get wrong: the False before the second branch, or the column sums of <code>dhprebn</code>?",
+    "What couldn't you explain cleanly: why a broadcast needs a sum, or why a sum needs a broadcast?",
+    "Which relationship is still fuzzy: <code>bndiff</code> used twice → <code>+=</code>, or <code>bnvar_inv</code> broadcast → <code>.sum(0)</code>?",
+    "Could you write the twelve lines again tomorrow from the forward code alone, without the notebook?",
+    "What will you revisit before the one-line BatchNorm card?"
+  ],
+  "revisit": ["z2h-6-backprop-ninja/sum-broadcast-duality", "z2h-2-micrograd/accumulate-gradients", "z2h-5-batchnorm/batchnorm-forward", "z2h-5-batchnorm/saturated-tanh"],
+  "prereq": ["z2h-6-backprop-ninja/sum-broadcast-duality", "z2h-5-batchnorm/batchnorm-forward"]
+}

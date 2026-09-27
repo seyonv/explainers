@@ -1,0 +1,147 @@
+{
+  "prime": {
+    "problem": "A network's last layer outputs raw scores, logits, that can be negative and don't sum to anything in particular. You can't sample from them, and you can't say how wrong they were. Without a way to turn scores into probabilities and grade them with one number, there's nothing for gradient descent to minimise.",
+    "fits": "It's the last card of the toolkit and joins two earlier ones: <code>exp</code> and <code>log</code> from the exp-and-log card, and probability distributions from the sampling card. Every model in the course, from the L2 bigram to GPT-2, ends in exactly this softmax and this loss.",
+    "expect": [
+      "logits as unnormalised log-counts",
+      "softmax = exp, then divide by the total",
+      "scale sharpens, shift does nothing (temperature)",
+      "cross-entropy = −log p(correct)",
+      "likelihood vs log likelihood vs average NLL"
+    ],
+    "goal": "Compute a softmax and its cross-entropy by hand for three logits, predict how scaling or shifting the logits changes the result, and explain why <code>F.cross_entropy</code> wants raw logits."
+  },
+  "attend": [
+    "Why does softmax use <code>exp</code> rather than just dividing each logit by the sum, and what would break with negative logits?",
+    "Why does adding 100 to every logit leave the probabilities unchanged, while multiplying by 8 pushes the top class to 0.9997?",
+    "Why does the cross-entropy of the three possible targets differ by exactly the gaps between their logits?",
+    "What sets the two ends of the loss's range, 0 and 3.2958, and what happens as the correct class's probability goes to 0?",
+    "Which of likelihood, log likelihood and average NLL do you maximise and which do you minimise, and why do they all pick the same model?"
+  ],
+  "core": {
+    "must": [
+      "exp makes every logit positive and keeps their order → dividing by the total makes them sum to 1 → any real-valued scores become a valid probability distribution you can sample from and differentiate",
+      "p<sub>i</sub> / p<sub>j</sub> = e<sup>z<sub>i</sub> − z<sub>j</sub></sup> → only the gaps between logits matter → adding a constant changes nothing (so subtracting the max is free and stops overflow) → multiplying stretches the gaps and sharpens toward one-hot (×8 takes 0.659 to 0.9997)",
+      "loss = −log p<sub>y</sub> → 0 when the model is certain and right, 3.2958 when it's uniform over 27, unbounded as p<sub>y</sub> → 0 → rewrites as log&#8721;e<sup>z</sup> − z<sub>y</sub> → the loss needs only the correct logit and the log of the total, which is why <code>F.cross_entropy</code> takes raw logits",
+      "log only goes up when its input goes up → maximising the likelihood, maximising the log likelihood and minimising the average NLL pick the same model → the average NLL is the loss the course minimises (1.5351 for p = 0.4, 0.1, 0.25)"
+    ],
+    "elevated": [
+      "<code>F.cross_entropy</code> applies softmax itself → feeding it probabilities softmaxes twice → the loss for target 0 silently becomes 0.8021 instead of 0.4170 and training follows the wrong number"
+    ],
+    "reference": [
+      "logits [2.0, 1.0, 0.1] → exp [7.3891, 2.7183, 1.1052], total 11.2125 → softmax [0.659, 0.2424, 0.0986]",
+      "cross-entropy for targets 0, 1, 2: 0.4170, 1.4170, 2.3170; log 11.2125 = 2.4170",
+      "<code>F.softmax(x, dim)</code>, <code>F.cross_entropy(logits, targets)</code> with logits shaped (N, C) and integer targets shaped (N,)",
+      "temperature T: softmax(z / T); T = 2 matches the ×0.5 row, T = 1/8 the ×8 row",
+      "L2 code: <code>counts = logits.exp()</code>, <code>probs = counts / counts.sum(1, keepdims=True)</code>, <code>loss = -probs[torch.arange(5), ys].log().mean()</code>"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, in 3–5 sentences, explain how three logits become probabilities and then one loss number, and why scaling the logits matters but shifting them doesn't. Or draw the pipeline logits → exp → ÷ total → pick p[y] → −log → loss, with the numbers for [2.0, 1.0, 0.1] and target 0.",
+    "checklist": [
+      "exp makes each logit positive; dividing by the total makes them sum to 1",
+      "only gaps between logits matter: shift changes nothing, scale sharpens or flattens",
+      "cross-entropy is −log of the correct class's probability (0.4170 for target 0)",
+      "range: 0 when certain and right, 3.2958 uniform over 27, no upper limit",
+      "it equals log of the total minus the correct logit, so it's computed from raw logits",
+      "the average NLL is the loss; likelihood and log likelihood rank models the same way"
+    ]
+  },
+  "retrieve": [
+    {
+      "q": "Explain why the loss is built from −log p of the correct class rather than from 1 − p or from p itself.",
+      "kind": "concept",
+      "answer": [
+        "over a dataset the probabilities multiply; logs turn that product into a sum that doesn't underflow",
+        "−log p is 0 for a certain, correct answer and grows without limit as p → 0, so confident mistakes cost a lot",
+        "the average of −log p is the average NLL, which ranks models like the likelihood does",
+        "with softmax it simplifies to log&#8721;e<sup>z</sup> − z<sub>y</sub>, which is finite and has a gradient on every logit"
+      ]
+    },
+    {
+      "q": "Walk through softmax and cross-entropy for logits [2.0, 1.0, 0.1] with target 1, giving the intermediate numbers.",
+      "kind": "mechanism",
+      "answer": [
+        "exp gives [7.3891, 2.7183, 1.1052], total 11.2125",
+        "divide: [0.659, 0.2424, 0.0986], which sums to 1",
+        "pick p<sub>1</sub> = 0.2424; −log 0.2424 = 1.4170",
+        "check: log 11.2125 − z<sub>1</sub> = 2.4170 − 1.0 = 1.4170"
+      ]
+    },
+    {
+      "q": "Walk through what softmax does to logits [1000, 999, 998], first computed naively in float32, then with the max subtracted.",
+      "kind": "mechanism",
+      "answer": [
+        "exp(1000) overflows to inf, so inf / inf = nan for every class",
+        "subtract 1000: [0, −1, −2], every exponent ≤ 0",
+        "exp and divide: [0.6652, 0.2447, 0.09]",
+        "unchanged answer, because only gaps matter"
+      ]
+    },
+    {
+      "q": "You can make a trained model's top probability bigger just by multiplying its logits by a constant. What does that buy you, and what does it cost?",
+      "kind": "tradeoff",
+      "answer": [
+        "same ranking and same argmax, so accuracy doesn't change",
+        "the distribution gets peakier (×8: 0.659 → 0.9997), so the numbers look more confident without being more right",
+        "when the top class is wrong the loss explodes: target 2 at ×8 costs 15.2003 vs 2.3170",
+        "for sampling it lowers diversity (temperature below 1); for attention at init it's why scores are divided by √head_size"
+      ]
+    }
+  ],
+  "compare": [
+    {
+      "with": "z2h-1-toolkit/exp-and-log",
+      "q": "That card treats exp and log as separate tools; this card chains them. Where does each one appear in softmax + cross-entropy, and which numeric failure does each bring with it?",
+      "answer": [
+        "exp appears in softmax, turning logits into positive counts",
+        "log appears in the loss, as −log p<sub>y</sub>",
+        "exp can overflow (exp(89) is inf in float32) → subtract the max",
+        "log can hit log 0 = −inf → compute the loss from logits as log&#8721;e<sup>z</sup> − z<sub>y</sub>, as <code>F.cross_entropy</code> does"
+      ]
+    },
+    {
+      "with": "z2h-1-toolkit/probability-distributions-and-sampling",
+      "q": "The sampling card starts from counts and normalises them; this card starts from logits. What is fundamentally different about where the numbers come from, and why does the course switch from one to the other?",
+      "answer": [
+        "counts are already ≥ 0, so normalising is just dividing; logits can be any sign, so they need exp first",
+        "Karpathy reads logits as log-counts: exp(logits) plays the role of the count table N",
+        "counts come from a table that explodes with more context; logits come from a network that scales",
+        "both end in the same kind of distribution you sample with <code>torch.multinomial</code>"
+      ]
+    },
+    {
+      "with": "z2h-8-gpt/scaled-attention",
+      "q": "Attention runs softmax over scores between tokens. Using this card's ×8 row, what goes wrong if those scores grow with head_size, and which design choice fixes it?",
+      "answer": [
+        "large-magnitude scores make softmax peaky, close to one-hot (×8 here: 0.9997)",
+        "each token would then take information from a single other token at initialisation",
+        "dividing the scores by √head_size keeps their variance near 1, so softmax stays diffuse",
+        "same mechanism as temperature: only the gaps, scaled, decide the peakiness"
+      ]
+    }
+  ],
+  "predict": {
+    "q": "At ×8 the logits [16, 8, 0.8] give class 0 a probability of 0.9997. Now suppose the correct answer was actually class 2. Commit to a rough cross-entropy for that example, compared with 2.3170 at the original scale.",
+    "answer": "About 15.2003 (computed). The loss is log&#8721;e<sup>z</sup> − z<sub>y</sub>; at ×8 the log of the total is almost exactly the largest logit, 16.0003, and z<sub>2</sub> = 0.8, so the loss is about the gap 16 − 0.8 = 15.2. Scaling the logits multiplies the cost of a confident mistake by roughly the same factor: sharper predictions pay far more when they're wrong."
+  },
+  "apply": {
+    "task": "Add a temperature sweep to the lab: for T in [0.125, 0.5, 1, 2, 10], print <code>F.softmax(logits / T, 0)</code> and <code>F.cross_entropy</code> of <code>logits / T</code> for target 0 and for target 2. Then describe in one sentence what T does to the loss of a right answer and of a wrong one.",
+    "done": "Your table matches: T = 0.125 → [0.9997, 0.0003, 0.0], losses 0.0003 / 15.2003; T = 0.5 → [0.8638, 0.1169, 0.0193], 0.1464 / 3.9464; T = 1 → 0.4170 / 2.3170; T = 2 → [0.5017, 0.3043, 0.194], 0.6898 / 1.6398; T = 10 → [0.3661, 0.3312, 0.3027], 1.0050 / 1.1950.",
+    "hint": "Wrap the logits as <code>(logits / T)[None]</code> and pass <code>torch.tensor([0])</code> or <code>torch.tensor([2])</code> as the target. Low T rewards the right answer and punishes the wrong one hard; high T pulls both losses toward log 3 = 1.0986."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: the ×8 and +100 probabilities, or the loss of a wrong answer at ×8?",
+    "What couldn't you explain cleanly: why only the gaps between logits matter, or why the loss can be written without computing p at all?",
+    "Which relationship is still fuzzy: logits → probabilities (softmax), or probabilities → loss (−log p<sub>y</sub>)?",
+    "When the bigram network in z2h-3 starts at a loss near 3.77, what will you compare it with, and what does that tell you?",
+    "What will you check first if a loss prints nan, or if it disagrees with your hand calculation because you softmaxed twice?"
+  ],
+  "revisit": [
+    "z2h-1-toolkit/exp-and-log",
+    "z2h-1-toolkit/probability-distributions-and-sampling"
+  ],
+  "prereq": [
+    "z2h-1-toolkit/exp-and-log"
+  ]
+}

@@ -1,0 +1,63 @@
+{
+  "prime": {
+    "problem": "Real code constantly combines tensors of different shapes: a table divided by its row sums, a bias added to a whole batch. Without a rule for mismatched shapes you'd write a loop for each, and with the rule misunderstood you get wrong numbers and no error.",
+    "fits": "The tensors card taught shapes, <code>dim</code> and <code>keepdim</code>. This card says what happens when two <i>different</i> shapes meet in <code>+ - * /</code>. Every lecture from makemore onwards leans on it, starting with normalising the bigram table.",
+    "expect": ["lining shapes up on the right", "size-1 dimensions stretched (no copy)", "missing dimensions padded on the left", "the keepdim bug: a row where you meant a column"],
+    "goal": "Predict the result shape (or the error) of any elementwise op from the two shapes alone, and spot when a shape fits for the wrong reason."
+  },
+  "attend": [
+    "Why does a (3,) tensor become a <i>row</i> (1, 3) rather than a column (3, 1) when it meets a (3, 3)?",
+    "Which single choice, keeping the summed dimension or dropping it, decides whether rows or columns get normalised?",
+    "Why does the keepdim mistake raise no error on a square table but would on a (3, 4) one?",
+    "How can stretching a (27, 1) across 27 columns cost no extra memory?",
+    "In <code>(5, 1, 4) + (3, 1)</code>, which tensor stretches along which dimension?"
+  ],
+  "core": {
+    "must": [
+      "Shapes are compared from the right → a shorter shape is padded with 1s on the <i>left</i> → a (3,) of row sums becomes a row (1, 3) → it is copied down the rows, so column j is divided by row-sum j",
+      "<code>keepdim=True</code> keeps the summed dimension as size 1 → (3, 1) is a column → it stretches across each row → each row is divided by its own sum and sums to 1",
+      "Broadcasting only checks that sizes are equal or 1 → a square table fits both the right and the wrong reading → no error, just wrong numbers (row 0 sums to 7.02 on the bigram counts) → check <code>.shape</code> and one row sum yourself",
+      "A stretched dimension is a view with stride 0 → the same numbers are reused, nothing is copied → one line replaces a loop at no memory cost → but in backprop the gradient of a stretched value must be summed back along that dimension"
+    ],
+    "elevated": [
+      "In-place ops (<code>/=</code>, <code>+=</code>) keep the left tensor's shape → only the right side may stretch → <code>b += M</code> with b (3,) and M (3, 3) errors, while <code>N /= N.sum(1)</code> silently runs"
+    ],
+    "reference": [
+      "the error text \"The size of tensor a (4) must match the size of tensor b (3) at non-singleton dimension 1\"",
+      "<code>keepdim</code> and <code>keepdims</code> are both accepted by <code>torch.sum</code> (the notebook uses <code>keepdims</code>)",
+      "each tensor needs at least one dimension to broadcast (the docs' fine print)",
+      "<code>.expand</code> (view, no copy) vs <code>.repeat</code> (real copy) when you want the stretch explicitly"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, state the two broadcasting rules in your own words, then use them to explain in 2–3 sentences why <code>N / N.sum(1)</code> normalises the wrong thing. Or draw the (3, 3) table and both divisors with arrows showing which way each one is copied.",
+    "checklist": [
+      "rule 1: line shapes up from the right; missing dimensions count as 1, padded on the left",
+      "rule 2: each pair must be equal or contain a 1; the 1 is stretched to the other size",
+      "<code>sum(1)</code> drops the dimension → (3,) → read as (1, 3) → copied down → columns divided",
+      "<code>keepdim=True</code> → (3, 1) → copied across → rows divided",
+      "stretching is a view, not a copy"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why <code>(27, 27) + (27,)</code> and <code>(27, 27) + (27, 1)</code> both succeed with the same result shape, yet mean different things.", "kind": "concept", "answer": ["(27,) is padded to (1, 27): one value per column, copied down the rows", "(27, 1) is one value per row, copied across the columns", "both give (27, 27), so the shape alone can't tell you which one you meant"]},
+    {"q": "Walk through <code>(5, 1, 4) + (3, 1)</code> position by position and give the result shape.", "kind": "mechanism", "answer": ["line up on the right: (5, 1, 4) against (_, 3, 1)", "dim −1: 4 and 1 → 4 (B stretches); dim −2: 1 and 3 → 3 (A stretches); dim −3: 5 and missing → 5", "result (5, 3, 4)"]},
+    {"q": "Walk through why <code>(3, 4) + (3,)</code> fails, and give two different fixes depending on what the (3,) was meant to line up with.", "kind": "mechanism", "answer": ["the last sizes are 4 and 3: neither is 1, so rule 2 fails", "meant one value per row: reshape to (3, 1), e.g. <code>v.view(3, 1)</code> or <code>v[:, None]</code>", "meant one value per column: the vector needs 4 entries, not 3"]},
+    {"q": "Broadcasting lets you skip reshapes, but a stricter library would force identical shapes. What does each choice cost you, and what habit gets you the safety of the strict one?", "kind": "tradeoff", "answer": ["broadcasting: short code, no loop, no copies; but accidental fits pass silently", "strict shapes: every mismatch is loud, but every bias add and normalisation needs a manual reshape", "habit: <code>keepdim=True</code> on sums you divide by, print <code>.shape</code>, spot-check one row sum"]}
+  ],
+  "compare": [
+    {"with": "z2h-1-toolkit/matmul-by-shapes", "q": "Both cards predict a result from two shapes. What is fundamentally different about the shape rule for <code>A @ B</code> vs <code>A * B</code>, and how does each fail when you mix them up?", "answer": ["matmul matches the <i>inner</i> pair (k with k) and sums it away; elementwise lines up from the right and keeps every dimension", "matmul needs the inner sizes equal; broadcasting allows equal or 1", "<code>A * B</code> on (2, 3) and (3, 2) is a broadcasting error; a matmul where you wanted elementwise can run and give a wrong shape"]},
+    {"with": "z2h-1-toolkit/tensors-dims-and-indexing", "q": "That card's <code>keepdim</code> looked cosmetic: (2, 1) vs (2,). Which design choice makes it matter here, and when is dropping the dimension actually what you want?", "answer": ["dropping the dim leaves a shape that rule 1 pads on the <i>left</i>, turning a column of sums into a row", "it matters whenever the sum feeds back into a broadcast op with the original tensor", "drop it when you just want the numbers (printing, a loss, indexing), not to combine them with the original"]}
+  ],
+  "predict": {"q": "The bigram table is square, which is why the keepdim bug is silent. Suppose instead the counts were (27, 30): 27 previous characters, 30 possible next ones. What does <code>P / P.sum(1)</code> do now: wrong numbers again, or an error?", "answer": "An error. <code>P.sum(1)</code> has shape (27,), which lines up against the last dimension 30. Neither is 1, so rule 2 fails (\"size of tensor a (30) must match the size of tensor b (27)\"). The bug is only silent when the two dimensions happen to be the same size."},
+  "apply": {"task": "Break it on purpose. In the lab, change N to <code>N.t()</code> (its transpose) and run <code>N / N.sum(1)</code> without keepdim. Before running, predict the three wrong row sums by hand from the rule \"column j is divided by the sum of row j\". Then fix it both ways: with <code>keepdim=True</code>, and with <code>N.sum(1)[:, None]</code>.", "done": "Your hand prediction matches the printed wrong row sums [2.3, 0.5, 0.9333], and both fixes print row sums of [1.0, 1.0, 1.0].", "hint": "The transpose has rows [1, 3, 6], [1, 0, 2], [2, 1, 2], so its row sums are 10, 3 and 5. Row 0 comes out as 1/10 + 3/3 + 6/5."},
+  "reflect": [
+    "Which prediction did you get wrong: the silent square case, the (3, 4) error, or the double stretch in (5, 1, 4) + (3, 1)?",
+    "What couldn't you explain cleanly: why the padding goes on the left, or why the stretch costs no memory?",
+    "Which relationship is still fuzzy: dropping the dimension → a row vector, or a row vector → columns being divided?",
+    "When you next see <code>/ x.sum(...)</code> in a lecture, will you check the shape first?",
+    "What would you want to re-read before the backprop-ninja card that sums gradients over a broadcast?"
+  ],
+  "revisit": ["z2h-1-toolkit/tensors-dims-and-indexing"],
+  "prereq": ["z2h-1-toolkit/tensors-dims-and-indexing"]
+}

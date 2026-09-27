@@ -1,0 +1,65 @@
+{
+  "prime": {
+    "problem": "You've written <code>get_stats</code>, <code>merge</code>, a training loop, <code>encode</code> and <code>decode</code>, but only as separate pieces, and your ids mean nothing to GPT-4. A model trained on GPT-4's ids can only read ids produced by exactly GPT-4's tokenizer, and tiktoken gives you that tokenizer without showing how it's built.",
+    "fits": "This is the capstone of the byte pair encoding and real-tokenizer cards. It combines the training loop and <code>encode</code> with the regex pre-split and special tokens, and checks the result against tiktoken id for id. The sentencepiece card comes next.",
+    "expect": ["<code>BasicTokenizer</code> vs <code>RegexTokenizer</code>", "recovering merges from <code>_mergeable_ranks</code>", "<code>byte_shuffle</code>", "special tokens split off before BPE"],
+    "goal": "Build a tokenizer whose ids match tiktoken's cl100k_base, and explain what each of its four layers (regex, merges, byte order, special tokens) contributes and what breaks without it."
+  },
+  "attend": [
+    "Why does the regex tokenizer compress <i>less</i> than the basic one on the same text, and why is that still the better tokenizer?",
+    "tiktoken stores only <code>bytes → rank</code>. What property of BPE lets you rebuild the pair behind every rank?",
+    "Why does the replay for a token have to stop <i>before</i> reaching the token's own rank?",
+    "What goes wrong if you load GPT-4's merges but feed them raw byte values, and why do most merges then never fire?",
+    "Why must special tokens be cut out before the regex runs, and why does tiktoken refuse them by default?"
+  ],
+  "core": {
+    "must": [
+      "Regex pre-split → merges can't cross letters/digits/punctuation/space → the tokenizer spends its merges on words instead of <code>e␣</code> or citation boilerplate → worse raw compression (2.13× vs 2.36× on taylorswift.txt) but more meaningful tokens",
+      "A token's rank is also its place in the merge order → replaying BPE on its bytes with only lower-ranked merges ends exactly at its two parents → the whole 100,000-merge table can be rebuilt from <code>bytes → rank</code> alone",
+      "Merges are keyed by token ids, and GPT-4's byte tokens are permuted (<code>h</code> is 71, not 104) → encoding raw bytes looks up the wrong pairs → most merges never fire (41 ids instead of 14) → you must shuffle bytes on encode and un-shuffle on decode",
+      "Same algorithm + same merges + same regex + same byte order + same special-token handling → identical ids → any one layer wrong silently gives different ids that GPT-4's embedding table would misread"
+    ],
+    "elevated": [
+      "Special tokens are split off with <code>re.split</code> and a capturing group <i>before</i> the regex → their ids never pass through BPE → and because typed text could contain <code>&lt;|endoftext|&gt;</code>, tiktoken raises unless you pass <code>allowed_special</code>"
+    ],
+    "reference": [
+      "the exact <code>GPT4_SPLIT_PATTERN</code> string (copy it from regex.py)",
+      "<code>enc._mergeable_ranks</code> (a private tiktoken attribute) and its 100,256 entries",
+      "the special-token ids: <code>&lt;|endoftext|&gt;</code> 100257, FIM 100258–100260, <code>&lt;|endofprompt|&gt;</code> 100276",
+      "the byte_shuffle values (<code>a → 64</code>, space → 220, byte 0 → 188) and that they follow GPT-2's <code>bytes_to_unicode</code> order",
+      "minbpe's class and method names (<code>encode_ordinary</code>, <code>_encode_chunk</code>, <code>register_special_tokens</code>)"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw the encode path of the finished GPT-4 tokenizer for <code>\"&lt;|endoftext|&gt;hello world\"</code>, labelling which of the four exercise steps each box comes from. Then write 3–4 sentences on the two hurdles in step 3.",
+    "checklist": [
+      "special tokens are cut out first and go straight to their ids",
+      "the ordinary text is split by the GPT-4 regex, and each chunk is encoded separately",
+      "each chunk's bytes go through <code>byte_shuffle</code> before merging",
+      "merges are applied lowest rank first until none applies (the encode card's loop)",
+      "hurdle 1: tiktoken stores ranks, not pairs; replay BPE below each rank to recover the pair",
+      "hurdle 2: single bytes are permuted, so shuffle on encode and un-shuffle on decode"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why a tokenizer that compresses taylorswift.txt better (2.36×) is still the one Karpathy moves away from in step 2.", "kind": "concept", "answer": ["the basic tokenizer's merges cross categories: 110 of 256 glue words to spaces or punctuation", "that wastes vocabulary on things like <code>e␣</code> and a 32-byte citation phrase", "the regex version's tokens are whole words and pieces of words, which generalise better across texts"]},
+    {"q": "Walk through recovering the parent pair of <code>b'hello'</code> (rank 15339) from <code>_mergeable_ranks</code>.", "kind": "mechanism", "answer": ["start from single bytes h e l l o", "repeatedly merge the adjacent pair with the lowest rank, but only ranks below 15339", "h e l l o → h el l o → h el lo → h ello, then stop", "the two remaining parts are the parents: (71, 4896) → 15339"]},
+    {"q": "Walk through what <code>encode</code> does to the chunk <code>hello</code>, from string to id, including the byte shuffle.", "kind": "mechanism", "answer": ["UTF-8 bytes 104 101 108 108 111", "shuffle to 71 68 75 75 78", "repeatedly merge the lowest-rank pair present in <code>merges</code>", "ends as the single id 15339"]},
+    {"q": "You need GPT-4-compatible ids in a production service. Choose between your minbpe-style <code>GPT4Tokenizer</code> and tiktoken, and say what the exercise version is still good for.", "kind": "tradeoff", "answer": ["tiktoken: the same ids, a Rust core, and it's the reference", "your version: pure Python, far slower, and only checked on a few strings", "your version (and minbpe) can <i>train</i> a vocabulary, which tiktoken can't", "use the exercise to understand the layers, not to serve traffic"]}
+  ],
+  "compare": [
+    {"with": "z2h-9-tokenizer/sentencepiece-llama", "q": "Your GPT-4 tokenizer vs Llama 2's sentencepiece tokenizer: what unit does BPE run on in each, which design choice causes that, and how does each one fail on a character it rarely saw?", "answer": ["GPT-4: BPE on UTF-8 bytes after a regex split, so every string is encodable from 256 byte tokens", "sentencepiece: BPE on Unicode code points; rare code points fall back to byte tokens only if <code>byte_fallback</code> is on", "GPT-4 fails soft: rare text just costs many tokens", "sentencepiece without fallback fails hard: rare text becomes <code>&lt;unk&gt;</code>"]},
+    {"with": "z2h-9-tokenizer/train-loop", "q": "The train-loop card produces merges by counting; this card gets them from tiktoken. What's the same about the resulting <code>merges</code> dict, and what can't you learn from GPT-4's?", "answer": ["both map (id, id) → new id, ordered by when the merge was made", "both are used by the same encode loop, lowest rank first", "GPT-4's comes without the pair counts or the training text, so you can only guess (e.g. from the leading space-run merges) what it was trained on"]}
+  ],
+  "predict": {"q": "Keep GPT-4's recovered merges and byte shuffle, but split with the <b>GPT-2</b> regex instead. On <code>\"x = 1234567\"</code>, will your ids still match tiktoken's? If not, where will they differ?", "answer": "They differ, even though both give 6 tokens. GPT-2's regex keeps <code>␣1234567</code> as one chunk, while GPT-4's regex splits it into <code>␣</code>, <code>123</code>, <code>456</code>, <code>7</code>. GPT-4's merges never learned a space+digit token or anything longer than three digits, so BPE on the GPT-2 chunk ends as <code>␣ 123 45 67</code> ([220, 4513, 10961, 22] from tiktoken vs [220, 4513, 1774, 3080] from yours). On the lab's test string the two regexes happen to give identical chunks, so it would still match. That's why one test string isn't proof."},
+  "apply": {"task": "By hand, recover the parent pair of <code>b' world'</code>, whose rank is 1917. Start from the six single bytes and, at each step, merge the adjacent pair with the lowest rank below 1917 (look ranks up with <code>enc._mergeable_ranks[...]</code>). Then check your answer against the <code>merges</code> dict from the Build-it code.", "done": "You reach <code>[b' w', b'orld']</code> after four merges (<code>or</code>, <code>␣w</code>, <code>ld</code>, <code>orld</code>), and <code>merges[(289, 1410)] == 1917</code>.", "hint": "At each step, compute the rank of every adjacent pair (<code>ranks.get(a + b)</code>) and take the smallest one below 1917. When the only pair left is <code>␣w</code> + <code>orld</code>, its rank is 1917 itself, so you stop."},
+  "reflect": [
+    "Which prediction did you get wrong: that the regex tokenizer compresses less, or that the GPT-2 regex changes the ids?",
+    "What couldn't you explain cleanly: why the replay stops at the token's own rank, or why a byte permutation breaks nearly every merge?",
+    "Which relationship is still fuzzy: rank → merge order, or merge order → recoverable parents?",
+    "Which of the four layers would you check first if your ids differed from tiktoken on one string?",
+    "What will you look at again before the sentencepiece card?"
+  ],
+  "revisit": ["z2h-9-tokenizer/train-loop", "z2h-9-tokenizer/encode", "z2h-9-tokenizer/regex-presplit", "z2h-9-tokenizer/encoder-py-special-tokens"],
+  "prereq": ["z2h-9-tokenizer/encode", "z2h-9-tokenizer/regex-presplit"]
+}

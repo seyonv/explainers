@@ -1,0 +1,69 @@
+{
+  "prime": {
+    "problem": "Plain gradient descent moves each weight by <code>lr × gradient</code>. When some parameters get gradients of 1000 and others 0.001, no single learning rate suits them all, and one noisy batch can shove every weight the wrong way.",
+    "fits": "In makemore you updated weights by hand with <code>p.data += -lr * p.grad</code>. At this point in the GPT lecture Karpathy replaces that line with <code>torch.optim.AdamW</code> without opening it up. This card opens it before the Transformer arrives.",
+    "expect": ["momentum (a running mean of gradients, β1)", "RMS scaling (a running mean of squared gradients, β2)", "bias correction", "decoupled weight decay (the W in AdamW)"],
+    "goal": "Compute an Adam step by hand, explain why its step size is about lr whatever the gradient scale, and say what AdamW's weight decay does differently from L2."
+  },
+  "attend": [
+    "Which of Adam's two running averages decides the <i>direction</i> of a step, and which decides its <i>size</i>?",
+    "On step 3 the gradient turns negative. Which stored number keeps p moving down anyway?",
+    "Why is the very first Adam step exactly lr, and what would it be without bias correction?",
+    "If you multiply every gradient by 1000, what happens to SGD's step and to Adam's step?",
+    "Why does adding <code>λ·p</code> to the gradient not act like real weight decay once Adam divides by √v̂?"
+  ],
+  "core": {
+    "must": [
+      "m is a running mean of gradients → noise from single batches averages out and consistent directions accumulate → Adam can keep going the same way through one contrary gradient (step 3: g = −0.2, p still drops 0.0597)",
+      "the step is m̂ / √v̂ → a gradient's scale appears on top and bottom and cancels → each parameter moves about lr per step whatever its gradient size → lr becomes \"how far a weight moves\", so pick it against the weights' size (1e-2 for a std-1 bigram table, 3e-4 for gpt.py's std-0.02 weights)",
+      "m and v start at 0 → early averages are biased toward 0, v much more than m (β2 = 0.999) → dividing by 1 − βᵗ undoes it → without it step 1 would be 0.316 instead of 0.1",
+      "L2 decay adds λ·p to the gradient → Adam then divides it by √v̂ → the decay's strength depends on each parameter's gradient history (0.9 per step instead of 0.999 when g = 0) → AdamW applies p ← p − lr·λ·p outside the division, so λ means what it says"
+    ],
+    "elevated": [
+      "Adam stores m and v for every parameter → optimizer memory is 2× the weights (gpt.py: 21,577,858 extra floats, 86 MB in fp32) → the optimizer state takes twice the memory of the weights themselves"
+    ],
+    "reference": [
+      "<code>torch.optim.AdamW(params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8, weight_decay=0.01)</code> are PyTorch's defaults",
+      "the lecture's learning rates: <code>bigram.py</code> 1e-2, the notebook 1e-3, <code>gpt.py</code> 3e-4",
+      "GPT-3 recipe: betas (0.9, 0.95), weight decay 0.1 on 2-D weights only",
+      "<code>zero_grad(set_to_none=True)</code> and the <code>opt.step()</code> call order",
+      "Kingma &amp; Ba 2014 (Adam), Loshchilov &amp; Hutter 2017 (AdamW)"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw Adam's data flow for one parameter: from <code>g</code> to the two running averages, through bias correction, to the update. Then add the one arrow AdamW adds, and write one sentence on why it sits where it does.",
+    "checklist": [
+      "m = β1·m + (1−β1)·g averages gradients: the direction, with momentum",
+      "v = β2·v + (1−β2)·g² averages squared gradients: the typical size",
+      "both divided by 1 − βᵗ because they start at 0",
+      "step = lr · m̂ / (√v̂ + ε), so steps are about lr whatever the gradient scale",
+      "AdamW shrinks p by lr·λ·p separately, not through the gradient"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain in plain words what each of Adam's two running averages measures, and why the step divides one by the square root of the other.", "kind": "concept", "answer": ["m: the recent average gradient, i.e. which way and how consistently", "v: the recent average squared gradient, i.e. how large this parameter's gradients usually are", "dividing makes the step unit-free, so it's about lr for every parameter"]},
+    {"q": "Walk through step 2 of the worked example (g = 0.5, after g = 1.0 at step 1): compute m, v, m̂, v̂ and the new p.", "kind": "mechanism", "answer": ["m = 0.9×0.1 + 0.1×0.5 = 0.14; m̂ = 0.14 / 0.19 = 0.736842", "v = 0.999×0.001 + 0.001×0.25 = 0.001249; v̂ = 0.001249 / 0.001999 = 0.624812", "step = 0.1 × 0.736842 / 0.790451 = 0.093218; p = 0.9 − 0.093218 = 0.806782"]},
+    {"q": "Your gradients are all 1000× larger than you expected (say the loss was summed instead of averaged). What happens with SGD at your old lr, and with Adam? What does Adam give up to get that robustness?", "kind": "tradeoff", "answer": ["SGD: steps are 1000× larger and training likely blows up", "Adam: m̂ and √v̂ both scale by 1000, so the step is unchanged (measured: 0.1 for g = 0.001, 1 or 1000)", "cost: two extra stored numbers per parameter, and the gradient's magnitude no longer tells you how far you moved"]},
+    {"q": "Why does <code>torch.optim.Adam(weight_decay=0.01)</code> not behave like AdamW with the same λ?", "kind": "mechanism", "answer": ["Adam adds λ·p to the gradient, which is then divided by √v̂", "with no other gradient the tiny λ·p gets normalized to a full lr-sized step: p goes 1.0 → 0.9", "AdamW multiplies p by (1 − lr·λ) separately: p goes 1.0 → 0.999"]}
+  ],
+  "compare": [
+    {"with": "z2h-2-micrograd/one-step-along-gradient", "q": "micrograd's update <code>p.data += -lr * p.grad</code> vs an Adam step: what does each use to decide direction and size, and when would the plain update be fine?", "answer": ["plain: direction and size both come from this one gradient", "Adam: direction from a running mean of gradients, size normalized by the running RMS, so about lr", "plain SGD is fine for tiny, well-scaled problems and uses no extra memory", "plain fails when gradient scales vary across parameters or batches are noisy"]},
+    {"with": "z2h-5-batchnorm/batchnorm-inference", "q": "BatchNorm's running mean and Adam's m are both exponential moving averages. What does each one average, and why does Adam need bias correction when BatchNorm's running stats get by without it?", "answer": ["BatchNorm: batch means and stds of activations, used at inference", "Adam: gradients and squared gradients, used on every training step", "Adam uses its averages from step 1, while they still carry the start-at-zero bias", "BatchNorm starts its running stats at 0 and 1 and reads them only after thousands of steps, when the start-up bias has faded"]},
+    {"with": "z2h-10-gpt2/optimizer-recipe", "q": "This lecture uses AdamW's PyTorch defaults; the GPT-2 reproduction changes β2 to 0.95 and applies decay 0.1 to 2-D weights only. What does a smaller β2 change, and why exempt biases and LayerNorm?", "answer": ["β2 0.95 averages over roughly the last 20 squared gradients instead of 1000, so v reacts faster when gradient sizes change", "biases and LayerNorm gains are few and set offsets and scales; pulling them to 0 hurts more than it regularizes", "weight matrices are where the capacity is, so that's where the decay helps"]}
+  ],
+  "predict": {"q": "Remove the bias correction (use m and v directly). On the worked example, what is step 1, and after many steps does the missing correction still matter?", "answer": "Step 1 becomes 0.1 × 0.1 / √0.001 = <b>0.316</b>, about 3× too big, because v starts much further below its true size than m does (1 − 0.999 vs 1 − 0.9). The corrections 1 − βᵗ approach 1 as t grows (β2ᵗ is still 0.37 at t = 1000), so the error fades over the first few thousand steps. It matters most at the start, which is exactly when the weights are fragile. That's one reason the GPT-2 recipe also warms up the learning rate."},
+  "apply": {
+    "task": "Modify <code>labs/adam-optimizer.py</code> (a copy in your own folder) to feed a gradient of 0 for three steps with <code>torch.optim.Adam(weight_decay=0.01)</code> and then with <code>torch.optim.AdamW(weight_decay=0.01)</code>, both at lr 0.1 from p = 1.0. Predict both sequences before you run it.",
+    "done": "Adam with L2 prints 0.900000, 0.800412, 0.701587 and AdamW prints 0.999000, 0.998001, 0.997003, and you can explain the 100× difference in step 1 from the formulas.",
+    "hint": "With g = 0, Adam's gradient is just λ·p = 0.01. What does m̂ / √v̂ equal when there is only one gradient value?"
+  },
+  "reflect": [
+    "Which prediction did you get wrong: the step-3 direction, or the size of step 1 without bias correction?",
+    "What couldn't you explain cleanly: why √v̂ and not v̂ goes in the denominator?",
+    "Which relationship is still fuzzy: m̂ / √v̂ → step ≈ lr, or step ≈ lr → how to choose lr for a new model?",
+    "Could you now explain to someone why AdamW and Adam with weight_decay give different results?",
+    "What will you look for in the GPT-2 optimizer recipe now that you know what each knob does?"
+  ],
+  "revisit": ["z2h-2-micrograd/one-step-along-gradient", "z2h-5-batchnorm/batchnorm-inference", "z2h-5-batchnorm/update-to-data-ratio"],
+  "prereq": ["z2h-8-gpt/train-and-script"]
+}

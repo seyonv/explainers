@@ -1,0 +1,63 @@
+{
+  "prime": {
+    "problem": "Training a tokenizer only asks you for one number, <code>vocab_size</code>, and nothing in BPE says when to stop merging. Pick too few and sequences stay long; pick too many and the model grows, slows down and gets rows it never learns. And once a model is trained, you still need a way to add tokens without breaking it.",
+    "fits": "The train-loop card made <code>vocab_size</code> the number of merges plus 256. This card goes back to the GPT lecture's <code>gpt.py</code> and finds where that same number shows up inside the model: the token embedding table and <code>lm_head</code>.",
+    "expect": ["the two layers that depend on <code>vocab_size</code>", "parameters per token id (V × 769 in gpt.py)", "undertrained embedding rows", "model surgery: adding a row and freezing the rest", "gist tokens and multimodal tokens"],
+    "goal": "Predict what a change in vocabulary size does to gpt.py's size, speed and training signal, and add a new token to a trained model without changing any old output."
+  },
+  "attend": [
+    "Why can the 6 Blocks in the middle of gpt.py run unchanged whether there are 65 token ids or 100,277?",
+    "Which layer's cost grows with every extra id at <i>every</i> position, and why can't it skip the ids that are unlikely?",
+    "An embedding row gets a gradient only on some steps. Which steps, and what happens to a row whose token is absent from the training text?",
+    "What does a bigger vocabulary buy in a 256-position context, and why can squeezing more text into each position backfire?",
+    "When you append one row to both vocab layers, why are all the old logits exactly unchanged?"
+  ],
+  "core": {
+    "must": [
+      "The body only ever sees vectors of width C = 384 → V appears only in the embedding table (V × C) and <code>lm_head</code> (C × V + V) → each extra id costs 2C + 1 = 769 parameters → at gpt.py's size, GPT-2's 50,257 ids make those two layers 78.3% of the model",
+      "<code>lm_head</code> scores every id at every position and softmax normalises over all of them → its compute grows in step with V (24,960 → 19,298,688 multiply-adds per position going from 65 to 50,257)",
+      "An embedding row only gets a gradient when its token is in the batch → more ids means each is seen less often → rare rows stay undertrained (39,023 of GPT-2's ids never appear in Tiny Shakespeare's train split) → untrained rows behave unpredictably when they do show up",
+      "More text per token → fewer positions (3.30 characters per GPT-2 token, so a 256 context holds about 845 characters) → but the same fixed compute runs once per position → too much text per token leaves the model too little computation per character"
+    ],
+    "elevated": [
+      "New ids are appended at the end and old rows are copied → every old logit is computed from the same weights → the model's behaviour on old text is unchanged, and masking the gradient trains only the new row (the lab: <code>rows with nonzero grad: [50257]</code>)",
+      "Weight tying shares one V × C matrix between the embedding and <code>lm_head</code> → the vocab cost is paid once, not twice → real GPT-2 is smaller than gpt.py's shape with 50,257 ids"
+    ],
+    "reference": [
+      "gpt.py lines: <code>vocab_size = len(chars)</code> at L27, the two layers at L143 and L147",
+      "the exact totals: 10,738,944 body, 10.79M / 49.39M / 87.85M at V = 65 / 50,257 / 100,277",
+      "<code>register_hook</code> with a mask, or <code>requires_grad = False</code>, as ways to freeze rows",
+      "the gist tokens paper (arXiv 2304.08467) and the names of vector-quantized image tokenizers"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw gpt.py as a pipeline from <code>idx</code> to <code>logits</code>, mark which layers have a V in their shape, and next to each write what grows when V grows. Then add, in 2–3 sentences, how you'd add one special token to a trained model.",
+    "checklist": [
+      "V appears only in the token embedding table and <code>lm_head</code>; the body sees width-384 vectors only",
+      "parameters grow as V × (2C + 1), and <code>lm_head</code> compute grows with V at every position",
+      "more ids means each row is trained on fewer examples; rows for unseen tokens never learn",
+      "bigger V packs more text per position, which helps context but can overload each position",
+      "adding a token: grow both layers by one row, copy the old rows, train the new row (optionally freeze the rest)"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why changing the tokenizer from 65 characters to GPT-2's 50,257 tokens leaves the attention and feed-forward layers of gpt.py exactly the same size.", "kind": "concept", "answer": ["the embedding table turns every id into a width-C vector, so the body only sees width C", "only the embedding (input side) and <code>lm_head</code> (output side) have V in their shape", "the body stays at 10,738,944 parameters for any V"]},
+    {"q": "Walk through what happens to the embedding table and <code>lm_head</code> when you add a new token 50257, from creating the new layers to the first backward pass with the mask hook.", "kind": "mechanism", "answer": ["make layers with V + 1 rows / outputs", "copy the 50,257 old rows (and <code>lm_head</code> biases) under <code>torch.no_grad()</code>", "old logits are identical because they use the same weights", "the new row starts random; the hook zeros the gradient of every old row", "so only row 50257 moves when you train"]},
+    {"q": "You're training gpt.py on Tiny Shakespeare and must choose between the 65-character vocabulary and GPT-2's tokenizer. What do you gain and lose with each?", "kind": "tradeoff", "answer": ["GPT-2: 3.30× fewer positions, about 845 characters per 256-position context", "but 78.3% of parameters in the vocab layers, 19.3M multiply-adds per position in <code>lm_head</code>", "and 39,023 ids never seen in the train split, so their rows stay untrained", "characters: every row well trained and cheap output, but only 256 characters of context"]}
+  ],
+  "compare": [
+    {"with": "z2h-9-tokenizer/train-loop", "q": "The train-loop card turns <code>vocab_size</code> up to get more compression; this card counts what the same knob costs inside the model. Which stage pays for each side, and how does each side fail when the knob is too high?", "answer": ["tokenizer stage: more merges, shorter sequences, diminishing returns per merge", "model stage: two layers grow by 769 parameters per id and <code>lm_head</code> compute grows with V", "too high on the tokenizer side: merges for strings the LLM rarely sees", "too high on the model side: undertrained rows and too much text per position"]},
+    {"with": "z2h-8-gpt/embeddings-and-positions", "q": "gpt.py has two lookup tables: the token embedding (V × C) and the position embedding (<code>block_size</code> × C). Which setting sizes each one, why is only one of them affected by the tokenizer, and what would you resize to add a new token versus a longer context?", "answer": ["token table rows = number of ids; position table rows = number of positions", "the tokenizer only changes the id count, so only the token table (and <code>lm_head</code>) changes", "new token: grow the token table and <code>lm_head</code> by one row", "longer context: grow the position table; the vocab layers stay the same"]}
+  ],
+  "predict": {"q": "You add a new chat token as row 50257 and fine-tune, but by mistake the token never appears in your fine-tuning data. Afterwards a user's message contains it. What does the model receive for it, and what happens to its <code>lm_head</code> row during fine-tuning?", "answer": "The model receives the new row's random embedding, because that row never got a gradient: embedding rows only update when their token is in the batch. Its <code>lm_head</code> row does get a gradient every step, but only one that pushes its score down, since it is never the right answer. So the model never predicts it, and reading it feeds in an untrained vector with unpredictable effects. That's the same mechanism as SolidGoldMagikarp on the quirks card."},
+  "apply": {"task": "Llama 2 uses 32,000 tokens. By hand, work out gpt.py's parameter count with V = 32,000 (body 10,738,944, 769 parameters per id), the vocab layers' share, and <code>lm_head</code>'s multiply-adds per position. Then add <code>(32000, 'Llama 2')</code> to the list in <code>labs/vocab-size-new-tokens.py</code> and check.", "done": "You get 32,000 × 769 = 24,608,000 vocab parameters, total 35.35M, share 69.6%, and 384 × 32,000 = 12,288,000 multiply-adds, and the lab prints the same.", "hint": "The total is 10,738,944 + 24,608,000 = 35,346,944. Share = 24,608,000 / 35,346,944."},
+  "reflect": [
+    "Which prediction did you get wrong: the 49.39M total, or the 78.3% share?",
+    "What couldn't you explain cleanly: why the body ignores V, or why the old logits don't change after surgery?",
+    "Which relationship is still fuzzy: vocab size → rarer tokens, or rarer tokens → undertrained rows?",
+    "If you trained a model on your own data, which of the three costs would bite first, and how would you check?",
+    "What will you look for on the quirks card now that you know how a row stays untrained?"
+  ],
+  "revisit": ["z2h-8-gpt/embeddings-and-positions", "z2h-9-tokenizer/train-loop", "z2h-6-backprop-ninja/embedding-backward"],
+  "prereq": ["z2h-8-gpt/embeddings-and-positions", "z2h-9-tokenizer/train-loop"]
+}

@@ -1,0 +1,141 @@
+{
+  "prime": {
+    "problem": "The tril-divided-by-row-sum matrix averages the past correctly, but its weights are built from ones and zeros. There is nowhere to put a learned score, and a naive way of adding scores lets tokens peek at the characters they are supposed to predict.",
+    "fits": "It rewrites version 2 from the tril-matmul card as <i>scores → mask → softmax</i>. Same matrix today; the next cards fill the scores with query·key dot products.",
+    "expect": [
+      "<code>masked_fill(tril == 0, float('-inf'))</code>",
+      "softmax along each row (<code>dim=-1</code>)",
+      "scores or \"affinities\" as the thing that will be learned",
+      "causal (decoder) masking"
+    ],
+    "goal": "Explain why −∞ followed by softmax gives exact zeros and rows that sum to 1, compute a masked row by hand, and say why the mask is what keeps training honest."
+  },
+  "attend": [
+    "Why does the mask have to be applied <i>before</i> the softmax rather than after it?",
+    "What makes −∞ different from a score of 0 once it goes through <code>exp</code>?",
+    "If every visible score in a row goes up by the same amount, what happens to that row's weights, and why does that make the zeros a neutral starting point?",
+    "During training all 8 positions of a chunk are predicted in one pass. Which cell of <code>wei</code> would let position <i>t</i> read its own target if it were not masked?",
+    "Which blocks drop the <code>masked_fill</code> line entirely, and what do they give up by doing so?"
+  ],
+  "core": {
+    "must": [
+      "Future scores set to −∞ → <code>exp(−∞) = 0</code> → they vanish from both the numerator and the row-sum denominator → the visible weights are renormalised to sum to 1 and the future gets exactly 0, whatever its score",
+      "Softmax only depends on differences within a row → all-equal scores (zeros, or sevens) give a uniform 1/(t+1) average → the zero table is a neutral placeholder that learned affinities can later replace without changing any code",
+      "One chunk trains every position at once and the target for position <i>t</i> is the input at <i>t</i> + 1 → without the mask, row <i>t</i> could put weight on its own answer → training loss is flattering and generation, where the future does not exist yet, breaks",
+      "Masking by other means (zeroing scores, or zeroing weights after softmax) → either <code>e<sup>0</sup> = 1</code> still leaks weight to the future, or rows stop summing to 1 → only −∞ before softmax gives both properties"
+    ],
+    "elevated": [
+      "A row where <i>every</i> entry is masked → softmax computes 0/0 → NaN that spreads through the whole network; the causal mask can't cause this because the diagonal is always visible, but padding masks can"
+    ],
+    "reference": [
+      "<code>torch.tril(torch.ones(T, T))</code> and the <code>tril == 0</code> test",
+      "<code>F.softmax(wei, dim=-1)</code>",
+      "<code>register_buffer('tril', …)</code> in gpt.py's <code>Head</code>",
+      "<code>F.scaled_dot_product_attention(…, is_causal=True)</code> as the fused equivalent",
+      "−1e9 as a substitute for −∞ (float16 max is 65,504)"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, explain in 3–5 sentences how <code>zeros → masked_fill(−∞) → softmax</code> reproduces the running-average matrix, and why this form is better than version 2. Or draw a 3×3 scores table, mask it, and write the softmax weights for each row.",
+    "checklist": [
+      "scores start as zeros; everything above the diagonal (the future) becomes −∞",
+      "softmax exponentiates and divides by the row sum; e<sup>0</sup> = 1 and e<sup>−∞</sup> = 0, so row <i>t</i> becomes 1/(t+1) on the visible tokens",
+      "the result equals version 2, so <code>xbow3</code> is allclose to <code>xbow2</code>",
+      "the payoff: the zeros can become any learned, data-dependent scores and the mask and normalisation still hold",
+      "the mask stops a position from reading the character it is trying to predict"
+    ]
+  },
+  "retrieve": [
+    {
+      "q": "Explain why a causal language model needs its attention weights to be exactly zero above the diagonal, and what the model would learn to exploit if they weren't.",
+      "kind": "concept",
+      "answer": [
+        "position <i>t</i> predicts the character at <i>t</i> + 1, which is in the same input chunk",
+        "any weight on <i>j</i> &gt; <i>t</i> lets it copy the answer",
+        "the loss drops by cheating, and generation fails because the future isn't there"
+      ]
+    },
+    {
+      "q": "Walk row 2 of the illustrative scores <code>[2, 0, 1, 0]</code> through <code>masked_fill</code> and softmax, number by number.",
+      "kind": "mechanism",
+      "answer": [
+        "mask: the last entry becomes −∞",
+        "exp: 7.3891, 1.0000, 2.7183, 0; sum 11.1073",
+        "divide: 0.6652, 0.0900, 0.2447, 0; sums to 1"
+      ]
+    },
+    {
+      "q": "Three ways to hide the future: multiply the scores by <code>tril</code>, zero the weights after softmax, or fill with −∞ before softmax. What does each cost on row 1 with scores <code>[1, 3, 0, 0]</code>?",
+      "kind": "tradeoff",
+      "answer": [
+        "multiply by tril: future scores become 0, e<sup>0</sup> = 1, so 0.0403 still goes to each future token (same as no mask)",
+        "zero after softmax: the future is cut but the row sums to 0.9194, so outputs shrink",
+        "−∞ before softmax: 0.1192, 0.8808, 0, 0, which is exact zeros and a sum of 1"
+      ]
+    },
+    {
+      "q": "Why does changing <code>torch.zeros((T,T))</code> to <code>torch.full((T,T), 7.0)</code> leave <code>xbow3</code> unchanged?",
+      "kind": "mechanism",
+      "answer": [
+        "softmax is unchanged when a constant is added to a whole row",
+        "every visible entry is still equal, so the weights are still 1/(t+1)",
+        "only differences between scores matter, which is what learned affinities will supply"
+      ]
+    }
+  ],
+  "compare": [
+    {
+      "with": "z2h-8-gpt/tril-matmul-trick",
+      "q": "Version 2 (tril ÷ row sum) and version 3 (−∞ mask + softmax) print the same matrix. What is fundamentally different about how each builds it, and which one can accept learned scores?",
+      "answer": [
+        "version 2 normalises a fixed 0/1 pattern; the only possible weights are 1/(t+1)",
+        "version 3 normalises exponentiated scores; any real scores go in and it still gives valid, causal weights",
+        "pick version 2 only to explain averaging; the model uses version 3",
+        "version 2 can't fail on scores because it has none; version 3 fails with NaN if a whole row is masked"
+      ]
+    },
+    {
+      "with": "z2h-8-gpt/attention-notes",
+      "q": "A decoder block keeps the mask and an encoder block deletes it. What does each allow, when would you choose each, and how does each go wrong if you pick the wrong one?",
+      "answer": [
+        "decoder: token <i>t</i> sees 0…<i>t</i>; this is needed to generate text left to right",
+        "encoder: every token sees every token; good for classifying or understanding a whole input",
+        "an encoder used for next-character training cheats by reading the targets",
+        "a decoder used for classification throws away right-hand context it could legitimately use"
+      ]
+    },
+    {
+      "with": "z2h-3-bigram/softmax-as-exp-normalise",
+      "q": "The bigram model used softmax to turn logits into a distribution over 65 next characters. Here it turns scores into weights over earlier positions. What stays the same, and what does the mask add?",
+      "answer": [
+        "same operation: exponentiate, then divide by the sum; only differences between inputs matter",
+        "there it runs over the vocabulary; here it runs over time positions in a row",
+        "the mask adds a hard constraint: some entries must be exactly 0, which exp alone can never produce from a finite score"
+      ]
+    }
+  ],
+  "predict": {
+    "q": "You add a second mask that hides padding tokens, and it leaves one row with <i>every</i> entry at −∞, the diagonal included. What does softmax output for that row, and what happens to the loss?",
+    "answer": "A padding row now has every entry at −∞, so softmax computes 0/0 and returns NaN for the whole row. The NaN flows through <code>wei @ x</code> into later layers and makes the loss NaN. The causal mask alone never does this because the diagonal is always visible. Real code avoids it by keeping at least one visible entry per row or by ignoring padded positions in the loss."
+  },
+  "apply": {
+    "task": "Change the lab's mask so each token sees only itself and the two tokens before it (a sliding window of 3). Build it as <code>torch.tril(ones) - torch.tril(ones, diagonal=-3)</code>, apply it to the lab's 4×4 illustrative scores, and print the weights and row sums.",
+    "done": "Rows 0–2 are unchanged (1.0000; 0.1192, 0.8808; 0.6652, 0.0900, 0.2447), row 3 becomes 0, 0.0105, 0.0469, 0.9426, and every row still sums to 1.",
+    "hint": "Only row 3 has a token more than two steps back (position 0), so it's the only row that changes."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: that sevens instead of zeros change nothing, or what a fully masked row outputs?",
+    "What couldn't you explain cleanly: why −∞ and not 0, or why the mask must come before the softmax?",
+    "Which relationship is still fuzzy: mask → exact zeros, or exact zeros → honest training loss?",
+    "Could you sketch how the next card's query·key scores slot into the zero table without changing the mask line?",
+    "Where else have you seen softmax, and did masking ever come up there?"
+  ],
+  "revisit": [
+    "z2h-8-gpt/tril-matmul-trick",
+    "z2h-8-gpt/batches-of-chunks",
+    "z2h-3-bigram/softmax-as-exp-normalise"
+  ],
+  "prereq": [
+    "z2h-8-gpt/tril-matmul-trick"
+  ]
+}

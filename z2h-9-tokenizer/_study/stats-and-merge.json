@@ -1,0 +1,58 @@
+{
+  "prime": {
+    "problem": "Raw UTF-8 bytes make text long: the lecture's 533-character paragraph is 616 byte ids. BPE shortens it, but only if you can find the byte pairs worth fusing and then actually fuse them in the list.",
+    "fits": "The by-hand card ran BPE on letters with a pencil. This card turns one step of it into code on real UTF-8 bytes, the 0–255 integers from the unicode card; the next card wraps these two functions in a loop.",
+    "expect": ["adjacent pairs via <code>zip(ids, ids[1:])</code>", "<code>get_stats</code>: a dict of pair counts", "<code>max(stats, key=stats.get)</code> and how it breaks ties", "<code>merge</code>: minting a new id (256) in place of a pair"],
+    "goal": "Write <code>get_stats</code> and <code>merge</code> from memory, and predict how much one merge shortens a list, including when the count overstates it."
+  },
+  "attend": [
+    "Why does a list of 616 byte ids hold exactly 615 pairs, and how does <code>zip(ids, ids[1:])</code> produce them?",
+    "Why is the runner-up pair <code>(240, 159)</code> a piece of an emoji, and what does that say about what BPE can see?",
+    "In <code>merge</code>, why does the index jump by 2 after a match, and what would break without the <code>i &lt; len(ids) - 1</code> test?",
+    "Why does merging <code>\"e \"</code> save exactly its count (20), while a pair like <code>(97, 97)</code> can save less than its count?",
+    "Why must the counts be redone after each merge instead of taking the top 20 pairs from one count?"
+  ],
+  "core": {
+    "must": [
+      "<code>zip(ids, ids[1:])</code> pairs each id with its right neighbour → a list of n ids yields n − 1 overlapping pairs → a dict tallies them (615 pairs, 269 distinct on the paragraph) → <code>max(..., key=stats.get)</code> picks the most frequent, <code>(101, 32)</code> = \"e \" ×20",
+      "<code>merge</code> writes the new id and skips 2 on a match → each replacement turns 2 ids into 1 → length drops by the number of replacements → 616 − 20 = 596 for \"e \"",
+      "Counting sees overlapping pairs but <code>merge</code> can't reuse an id it already consumed → for pairs with two equal bytes the saving can be smaller than the count (\"aaaa\": counted 3, replaced 2) → the count ranks pairs, it doesn't promise the saving",
+      "BPE counts bytes, not characters → multi-byte characters share lead bytes (every emoji here starts 240, 159) → frequent byte fragments of characters compete with real words for new tokens"
+    ],
+    "elevated": [
+      "Ties in <code>max</code> go to the pair inserted into the dict first → dicts keep insertion order → ties are won by the pair that appears earliest in the text, which makes training deterministic for a given text"
+    ],
+    "reference": ["<code>counts.get(pair, 0) + 1</code> as the tally idiom", "<code>list(map(int, text.encode(\"utf-8\")))</code> vs <code>list(text.encode(\"utf-8\"))</code> (same result)", "the <code>counts=None</code> argument in minbpe's <code>get_stats</code> for updating an existing dict", "the exact top-5 counts after the winner (15, 12, 12, 10)"]
+  },
+  "compress": {
+    "prompt": "From memory, write <code>get_stats</code> and <code>merge</code> (about 12 lines), then explain in 3–4 sentences what one BPE step does to a list of byte ids and how you'd predict its new length.",
+    "checklist": [
+      "pairs come from <code>zip(ids, ids[1:])</code>: every neighbour pair, overlapping",
+      "the winner is the pair with the highest count; ties go to the first pair seen",
+      "<code>merge</code> scans left to right, emits the new id and jumps 2 on a match, otherwise copies and steps 1",
+      "the bounds check stops a peek past the end",
+      "new length = old length − number of replacements (616 − 20 = 596), which can be less than the count for pairs like (97, 97)"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain what <code>get_stats</code> returns for a list of byte ids and why its biggest entry is a good choice for the next token.", "kind": "concept", "answer": ["a dict from each adjacent pair to how many times it occurs", "the most frequent pair saves the most positions when replaced by one id", "so greedy choice = the biggest immediate shortening of the training text"]},
+    {"q": "Walk <code>merge([5, 6, 6, 7, 9, 1], (6, 7), 99)</code> index by index. What does <code>i</code> do at each step, and what comes out?", "kind": "mechanism", "answer": ["i=0: 5 copied; i=1: (6, 6) no match, 6 copied", "i=2: (6, 7) matches, 99 written, i jumps to 4", "i=4: 9 copied; i=5: last element, bounds check fails, 1 copied", "result <code>[5, 6, 99, 9, 1]</code>: six in, five out"]},
+    {"q": "You could count once and merge the top 20 pairs in one go, saving 19 recounts. What do you lose, and what does recounting cost on a big text?", "kind": "tradeoff", "answer": ["one count only sees raw byte pairs, so merges of merges like <code>(259, 256)</code> = \"the \" can never be chosen", "counts go stale: after a merge, pairs that shared bytes with it lose occurrences", "recounting rescans the whole list per merge: about 11 s for 256 merges on the 185,768-byte Taylor Swift page (lab, under load)"]},
+    {"q": "One merge of <code>\"e \"</code> saves exactly 20 positions but merging <code>(97, 97)</code> in <code>[97, 97, 97, 97]</code> saves 2, not 3. Explain the difference.", "kind": "mechanism", "answer": ["<code>get_stats</code> counts overlapping pairs", "\"e\" and space are different bytes, so \"e \" occurrences can't overlap", "in \"aaaa\" the three counted pairs overlap; after the first match consumes two a's, only one more fits"]}
+  ],
+  "compare": [
+    {"with": "z2h-9-tokenizer/bpe-by-hand", "q": "The by-hand card merged letters on paper; this card merges byte ids in Python. What is identical, what changed by moving to bytes, and how does each version handle a tie?", "answer": ["identical: count adjacent pairs, replace the most frequent with a new symbol, repeat", "bytes mean new symbols are ids 256+ instead of letters Z, Y, X, and any text can be encoded from the start", "by hand you choose among ties; <code>max</code> takes the first pair inserted, which is why the byte version of aaabdaaabac merges aa, aaa, aaab rather than aa, ab, ZY"]},
+    {"with": "z2h-9-tokenizer/encode", "q": "Training picks a pair with <code>max</code> over counts; encoding picks one with <code>min</code> over merge indices. Why can't encoding reuse the training rule?", "answer": ["encoding must reproduce the merges in the order they were learned, not the order that happens to be frequent in the new text", "picking by count on new text could apply a later merge before an earlier one its pieces depend on", "both reuse <code>get_stats</code> and <code>merge</code>; only the choice rule differs"]}
+  ],
+  "predict": {"q": "After merging <code>\"e \"</code> into 256, the paragraph is 596 ids. Before the merge there were 269 distinct pairs. After it, are there more or fewer distinct pairs, and what does the next merge do to the length?", "answer": "More: 284 distinct pairs (computed). Every <code>\"e \"</code> sat between two neighbours, so pairs like (104, 256) and (256, 119) are new, while old pairs such as (104, 101) usually survive elsewhere. The next winner is <code>(240, 159)</code> with 15; its two bytes differ, so merging it into 257 takes the list from 596 to 581."},
+  "apply": {"task": "Break your <code>merge</code> on purpose: delete the <code>i &lt; len(ids) - 1</code> test (keep the pair comparison, with <code>ids[i] == pair[0]</code> checked first as in <code>base.py</code>) and call <code>merge([5, 6, 6, 7, 9, 6], (6, 7), 99)</code>. Explain the failure, restore the test, and run it again.", "done": "Without the test you get <code>IndexError: list index out of range</code>; with it you get <code>[5, 6, 99, 9, 6]</code>, and you can say which index caused the error.", "hint": "The last element is 6, which equals <code>pair[0]</code>, so the code reaches for <code>ids[i+1]</code> one past the end."},
+  "reflect": [
+    "Which prediction did you get wrong: the emoji bytes behind <code>(240, 159)</code>, or the distinct-pair count going up after a merge?",
+    "What couldn't you explain cleanly: why n ids give n − 1 pairs, or why the jump-by-2 can save less than the count?",
+    "Which relationship is still fuzzy: count → which pair wins, or replacements → how much shorter the list gets?",
+    "Would you trust your <code>merge</code> on a list whose last id equals <code>pair[0]</code>? Test it before the train-loop card.",
+    "What will you revisit before wrapping these two functions in the training loop?"
+  ],
+  "revisit": ["z2h-9-tokenizer/unicode-utf8", "z2h-9-tokenizer/bpe-by-hand"],
+  "prereq": ["z2h-9-tokenizer/bpe-by-hand"]
+}

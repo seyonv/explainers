@@ -1,0 +1,133 @@
+{
+  "prime": {
+    "problem": "You now know how to fix one hidden layer by hand. A 50-layer net would need 50 hand-tuned scales and 50 wasted biases, and PyTorch's ready-made layers quietly use defaults that differ from the ones you picked.",
+    "fits": "This card takes the BatchNorm layer from the previous two cards and shows where it sits in a real architecture (ResNet-50), then maps your hand-written MLP pieces onto PyTorch's <code>nn.Linear</code> and <code>nn.BatchNorm1d</code>. The next card rebuilds those modules yourself.",
+    "expect": [
+      "the weight → norm → nonlinearity motif",
+      "<code>bias=False</code> before a norm",
+      "convolution as a patch-wise Linear",
+      "PyTorch defaults (init bound, eps, momentum)",
+      "biased vs unbiased variance"
+    ],
+    "goal": "Read a real model file and spot the repeated motif, explain why its convs have no bias, and know which PyTorch defaults to override for your own nets."
+  },
+  "attend": [
+    "Why does ResNet's conv layer carry no bias while its BatchNorm layer does have a β?",
+    "What is the same between a convolution and <code>nn.Linear</code>, so that the same motif applies to images?",
+    "How far is <code>nn.Linear</code>'s default init from the Kaiming-tanh scale, and why does that gap stop mattering once BN follows it?",
+    "Which <code>nn.BatchNorm1d</code> default would hurt the lecture's batch-32 MLP, and through which buffer does the harm show up?",
+    "Why do the lecture's BN class and PyTorch's disagree in training output but agree in <code>running_var</code>?"
+  ],
+  "core": {
+    "must": [
+      "BN subtracts each column's batch mean → any constant added before it cancels → the bias gets zero gradient → real nets set <code>bias=False</code> and let BN's β be the bias",
+      "Weight layer → BN → nonlinearity → every nonlinearity sees preactivations of a controlled scale regardless of the weight init → one unit can be stacked 50 deep without per-layer gain tuning (ResNet-50 = 16 Bottlenecks × 3 motifs + 2)",
+      "PyTorch BN momentum defaults to 0.1 → each batch-32 mean gets 10% weight in the running estimate → the buffer tracks batch noise (0.0570 vs 0.0076 with 0.001) → set a smaller momentum for small batches",
+      "Lecture BN normalises with <code>x.var()</code> (divide by n − 1), PyTorch with divide by n → training outputs differ by up to √(32/31) = 1.016 → both store the n − 1 version in <code>running_var</code>, so eval mode agrees"
+    ],
+    "elevated": [
+      "<code>nn.Linear</code>'s default init is uniform in ±1/√fan_in → std 1/√(3·fan_in) = 0.1054 for fan_in 30, about 2.9× smaller than Kaiming-tanh → it matters in a net with no norm layer, much less when BN follows"
+    ],
+    "reference": [
+      "the full <code>nn.BatchNorm1d</code> signature: <code>eps=1e-05, momentum=0.1, affine=True, track_running_stats=True</code>, plus torch 2.14's keyword-only <code>bias</code>",
+      "BN buffer names: <code>running_mean</code>, <code>running_var</code>, <code>num_batches_tracked</code>; γ and β are <code>.weight</code> and <code>.bias</code>",
+      "torchvision helpers <code>conv1x1</code>/<code>conv3x3</code>, <code>Bottleneck.expansion = 4</code>, ResNet-50 stage sizes [3, 4, 6, 3]",
+      "ResNet's own conv init: <code>kaiming_normal_(mode=\"fan_out\", nonlinearity=\"relu\")</code>"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw one ResNet Bottleneck block as boxes and arrows and annotate where the bias is missing and why. Then in 2–3 sentences say which two PyTorch defaults differ from what you did by hand in this lecture.",
+    "checklist": [
+      "three rows of weight (conv) → BatchNorm → ReLU, with the last ReLU after the skip addition",
+      "<code>bias=False</code> on every conv because BN's mean subtraction cancels a bias; β takes over",
+      "a conv is the same <code>W·x</code> as Linear, applied to image patches",
+      "<code>nn.Linear</code> init is uniform ±1/√fan_in, not Kaiming-tanh",
+      "BN momentum 0.1 by default vs the lecture's 0.001 for batch 32"
+    ]
+  },
+  "retrieve": [
+    {
+      "q": "Explain why adding a Linear bias right before BatchNorm is pure waste, in terms of what BN computes on each column.",
+      "kind": "concept",
+      "answer": [
+        "BN subtracts the column's batch mean",
+        "a bias shifts every example in that column by the same amount, so it shifts the mean by exactly that amount and cancels",
+        "so its gradient is 0 (4.4e-10 in the batchnorm-forward lab) and β provides the shift instead"
+      ]
+    },
+    {
+      "q": "Walk one input <code>x</code> through a torchvision <code>Bottleneck.forward</code>: list each operation in order and say where the saved input comes back in.",
+      "kind": "mechanism",
+      "answer": [
+        "conv1 (1×1) → bn1 → relu",
+        "conv2 (3×3) → bn2 → relu",
+        "conv3 (1×1) → bn3",
+        "add the identity (or its downsampled version) → relu"
+      ]
+    },
+    {
+      "q": "You swap the lecture's hand-written layers for <code>nn.Linear</code> and <code>nn.BatchNorm1d</code> with all defaults, batch 32. Which defaults would you override, and what would you see if you didn't?",
+      "kind": "tradeoff",
+      "answer": [
+        "<code>bias=False</code> on the Linear before BN, or 200 dead parameters per layer",
+        "momentum lower than 0.1, or the running stats jitter with each batch and eval-mode loss suffers",
+        "init is fine to leave under BN, but not in a net with no norm layer (std 0.1054 vs 0.3043)"
+      ]
+    },
+    {
+      "q": "Count the weight layers in ResNet-50 from its block structure, and say what the count tells you about why hand-tuned gains would not scale.",
+      "kind": "mechanism",
+      "answer": [
+        "[3, 4, 6, 3] = 16 Bottlenecks × 3 convs = 48",
+        "+ stem conv + final Linear = 50",
+        "50 scales to balance by hand; errors compound with depth, which BN removes"
+      ]
+    }
+  ],
+  "compare": [
+    {
+      "with": "z2h-5-batchnorm/pytorchify-layers",
+      "q": "This card <i>uses</i> PyTorch's modules; that card <i>rebuilds</i> them. What does rebuilding reveal that reading the signature hides, and where does your rebuilt BN differ from <code>nn.BatchNorm1d</code>?",
+      "answer": [
+        "rebuilding shows <code>__call__</code>, <code>.parameters()</code>, the <code>.training</code> flag and buffers as plain code",
+        "the signature only shows defaults, not the variance formula",
+        "the lecture's class normalises with the n − 1 variance, PyTorch with n (max diff 0.0588 on a batch of 32)",
+        "both default to momentum 0.1 in that chapter"
+      ]
+    },
+    {
+      "with": "z2h-8-gpt/layernorm-dropout-scale",
+      "q": "GPT keeps a weight → norm → nonlinearity rhythm but uses LayerNorm instead of BatchNorm. Which design choice differs, and when does BN's choice fail where LayerNorm's doesn't?",
+      "answer": [
+        "BN normalises each feature across the batch; LayerNorm normalises each example across its features",
+        "BN couples examples, needs running stats for eval, and has no variance for a batch of 1",
+        "LayerNorm behaves the same in training and inference and doesn't care about batch size",
+        "pick BN for big-batch vision nets; LayerNorm for sequence models and small or variable batches"
+      ]
+    }
+  ],
+  "predict": {
+    "q": "After training, you want to delete a BatchNorm layer at inference by folding it into the Linear before it (the lecture's exercise E02). With <code>bias=False</code> on that Linear, what new parameter must the folded Linear gain, and why?",
+    "answer": "A bias. At eval time BN is a fixed affine map per column: <code>γ·(z − running_mean)/√(running_var + eps) + β</code>. Folding multiplies each weight column by <code>γ/√(running_var + eps)</code> and needs a new bias <code>β − γ·running_mean/√(running_var + eps)</code>. The bias you removed for training comes back once the batch statistics are frozen."
+  },
+  "apply": {
+    "task": "Write the Build-it block again with <code>nn.Linear(30, 200)</code> (bias on) and <code>torch.manual_seed(2147483647)</code>. Run one forward and backward pass on <code>x = torch.randn(32, 30)</code> with <code>loss = (block(x)**2).mean()</code>, then print the largest absolute value of the Linear's <code>bias.grad</code> and of its <code>weight.grad</code>.",
+    "done": "The parameter count reads 6600; the bias gradient is at float-rounding size (4.1e-10 on the M3) while the weight gradient is not (2.9e-3).",
+    "hint": "The batchnorm-forward lab measured the same effect on the lecture MLP: <code>b1.grad</code> max |.| was 4.4e-10."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: the 6,400 parameter count, or the returning bias when folding BN?",
+    "What couldn't you explain cleanly about why a conv is \"the same\" as a Linear layer?",
+    "Which relationship is still fuzzy: bias → cancelled by the mean, or momentum → noisy running stats → worse eval loss?",
+    "Before reading the next model file, which defaults will you check first?",
+    "What would you revisit from the batchnorm-inference card to explain the momentum row?"
+  ],
+  "revisit": [
+    "z2h-5-batchnorm/batchnorm-forward",
+    "z2h-5-batchnorm/batchnorm-inference",
+    "z2h-5-batchnorm/kaiming-init"
+  ],
+  "prereq": [
+    "z2h-5-batchnorm/batchnorm-forward"
+  ]
+}

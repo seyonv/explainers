@@ -1,0 +1,127 @@
+{
+  "prime": {
+    "problem": "The bigram model predicts each next character from the current character alone. Everything earlier in the chunk is sitting right there in the tensor, but no token can see it, so training stalls around val loss 2.49.",
+    "fits": "This opens the lecture's self-attention section. It builds on the batches-of-chunks card, where position <i>t</i> of a chunk is a training example whose target is the character at <i>t</i> + 1, and on the bigram baseline it tries to beat.",
+    "expect": ["the (B, T, C) axes: batch, time, channels", "causal mixing: position <i>t</i> uses positions 0…<i>t</i> only", "<code>xbow</code>, a running mean (\"bag of words\")", "why equal weights and lost order make it weak"],
+    "goal": "Write the <code>xbow</code> double loop, compute any row by hand, say why it must stop at position <i>t</i>, and name the two things it throws away."
+  },
+  "attend": [
+    "Why must token <i>t</i>'s mix stop at position <i>t</i>, when the later characters of the chunk are right there in the same tensor?",
+    "What happens to the current token's own share of <code>xbow[b,t]</code> as <i>t</i> grows, and what does that do to the last position?",
+    "Which facts about the past survive averaging, and which (order, which token said what) are destroyed?",
+    "Why does the loop run over <code>b</code> as well as <code>t</code>, and could editing sequence 0 ever change sequence 1's <code>xbow</code>?",
+    "In the formula, which single factor would have to become learned and unequal to turn this into attention?"
+  ],
+  "core": {
+    "must": [
+      "In next-character training, position <i>t</i>'s target is the character at <i>t</i> + 1 of the same chunk → any mix that includes positions after <i>t</i> leaks the answer → the slice <code>x[b,:t+1]</code> stops at <i>t</i> → the same model still works at generation time, when no future exists",
+      "Every token in the past gets the same weight 1/(<i>t</i> + 1) → the current token's own share falls to 1/8 at <i>t</i> = 7 → <code>xbow[0,7]</code> = [−0.0341, 0.1332] barely resembles <code>x[0,7]</code> = [−0.9211, 1.5433] → the one earlier token that matters is blurred with all the rest",
+      "A mean is a sum divided by a count, and a sum ignores order → reordering tokens 0…<i>t</i> gives the same <code>xbow[b,t]</code> (a \"bag of words\") → order has to come back from position embeddings, and relevance from learned weights"
+    ],
+    "elevated": [
+      "The double loop makes one small torch call per (b, t) pair → 32 calls in the toy, 64 × 256 = 16,384 at gpt.py's batch and block size → the next card replaces the whole loop with one triangular matrix multiply that gives the same numbers"
+    ],
+    "reference": [
+      "toy sizes <code>B,T,C = 4,8,2</code>, seed 1337, <code>x = torch.randn(B,T,C)</code>",
+      "<code>torch.mean(xprev, 0)</code>: mean over dim 0 of the <code>(t+1, C)</code> slice, i.e. over time",
+      "<code>xbow</code> = \"x bag of words\"; Karpathy's comment says <code>(t,C)</code> but the slice has <i>t</i> + 1 rows",
+      "equivalent one-liner: <code>x.cumsum(1) / torch.arange(1, T+1).view(1, T, 1)</code>"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, write the <code>xbow</code> rule as a formula, then explain in 3–4 sentences why it stops at position <i>t</i> and what two kinds of information it loses.",
+    "checklist": [
+      "<code>xbow[b,t]</code> = (1/(t+1)) · sum of <code>x[b,i]</code> for i = 0…t",
+      "stopping at <i>t</i> keeps it causal: the target for <i>t</i> sits at <i>t</i> + 1",
+      "each sequence in the batch is averaged separately",
+      "equal weights: every past token gets the same say, so the useful one is diluted",
+      "order is lost: any shuffle of the past gives the same mean"
+    ]
+  },
+  "retrieve": [
+    {
+      "q": "Nothing in <code>xbow</code> is learned. Explain in what sense it still counts as tokens \"talking\" to each other, and why that is progress over the bigram model.",
+      "kind": "concept",
+      "answer": [
+        "after averaging, token <i>t</i>'s vector contains information from tokens 0…<i>t</i>",
+        "a layer that reads <code>xbow[b,t]</code> can therefore use context, not only the current character",
+        "the bigram model reads a single row and cannot use anything earlier, however long it trains"
+      ]
+    },
+    {
+      "q": "Walk through computing <code>xbow[0,2]</code> from the first three rows of <code>x[0]</code>: [0.1808, −0.0700], [−0.3596, −0.9152], [0.6258, 0.0255].",
+      "kind": "mechanism",
+      "answer": [
+        "slice <code>x[0,:3]</code>, a (3, 2) tensor",
+        "sum down the time axis: [0.4469, −0.9597] (at full precision)",
+        "divide by 3: [0.1490, −0.3199]",
+        "rows 3–7 never enter the calculation"
+      ]
+    },
+    {
+      "q": "Instead of averaging, a colleague wants to concatenate every past vector so nothing is lost. What does that buy, and why doesn't the lecture do it?",
+      "kind": "tradeoff",
+      "answer": [
+        "buys: exact values and their order are kept",
+        "cost: the size grows with <i>t</i> (2 numbers at t = 0, 16 at t = 7 in the toy; 256 × 384 = 98,304 at gpt.py's size)",
+        "the next layer needs a fixed input size, so a fixed-size summary is needed",
+        "a weighted sum keeps the fixed size; attention later makes the weights smart"
+      ]
+    },
+    {
+      "q": "Suppose the inner slice were <code>x[b,:]</code> instead of <code>x[b,:t+1]</code>. What goes wrong in training, and what goes wrong in generation?",
+      "kind": "mechanism",
+      "answer": [
+        "every row becomes the whole-chunk mean ([−0.0341, 0.1332] for sequence 0)",
+        "training: position <i>t</i>'s input contains the character it must predict, so the loss rewards reading the answer",
+        "generation: the future doesn't exist yet, so the model meets inputs unlike anything it trained on"
+      ]
+    }
+  ],
+  "compare": [
+    {
+      "with": "z2h-8-gpt/bigram-baseline",
+      "q": "Both give each position one fixed-size vector to predict from. What is fundamentally different about what that vector can contain, and how does each one fail?",
+      "answer": [
+        "bigram: the vector is looked up from the current character only",
+        "average: the vector mixes the current character with all earlier ones",
+        "bigram fails by ignoring context entirely (stuck near val 2.49)",
+        "average fails by weighting every past token equally and forgetting order"
+      ]
+    },
+    {
+      "with": "z2h-8-gpt/self-attention-head",
+      "q": "Both output a weighted mix of earlier tokens. Which design choice separates them, and when would the plain average be good enough?",
+      "answer": [
+        "average: weights fixed at 1/(t + 1), the same for every sequence",
+        "attention: weights from query·key scores, so they depend on the tokens' contents",
+        "the average is fine when every past item is about equally useful and order doesn't matter (e.g. a simple bag-of-words summary)",
+        "for next-character prediction the nearby, specific characters matter, so equal weights are too blunt"
+      ]
+    }
+  ],
+  "predict": {
+    "q": "In sequence 0, shuffle the first three tokens so the order becomes x[0,2], x[0,0], x[0,1], and leave the rest alone. Which rows of <code>xbow[0]</code> change: all of them, rows 0–2, or only rows 0–1?",
+    "answer": "<b>Only rows 0 and 1.</b> Row 0 becomes the old <code>x[0,2]</code> = [0.6258, 0.0255] and row 1 becomes [0.4033, −0.0222]. Rows 2–7 are identical (<code>torch.allclose</code> is True), because from row 2 on each mean includes all three shuffled tokens, and a sum doesn't care about order. The model can't tell \"ab\" from \"ba\" once both are in the past, which is why position embeddings come in a few cards later."
+  },
+  "apply": {
+    "task": "Replace the double loop in <code>labs/average-the-past.py</code> with a loop-free version: a running sum along the time axis, divided by 1, 2, …, 8. Use <code>x.cumsum(1)</code> and <code>torch.arange(1, T+1)</code>, reshaped so it broadcasts over (B, T, C). Compare with the loop's <code>xbow</code>.",
+    "done": "<code>torch.allclose(xbow, xbow_fast)</code> prints True, with a max absolute difference of about 1.19e-07 (float rounding), and you can say which axis the cumsum runs over and why.",
+    "hint": "The divisor must have shape (1, T, 1): one count per position, shared across the batch and the channels."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: how little of <code>x[0,7]</code> survives in <code>xbow[0,7]</code>, or which rows change when the past is shuffled?",
+    "What couldn't you explain cleanly: why including position <i>t</i> + 1 is cheating, or why the loop never mixes sequences?",
+    "Which relationship is still fuzzy: equal weights → the useful token is diluted, or sum → order is lost?",
+    "Could you write the formula and the loop from memory, with the slice ending in the right place?",
+    "What will you look for on the next card, when a matrix multiply is claimed to give exactly these numbers?"
+  ],
+  "revisit": [
+    "z2h-8-gpt/batches-of-chunks",
+    "z2h-8-gpt/bigram-baseline",
+    "z2h-1-toolkit/tensors-dims-and-indexing"
+  ],
+  "prereq": [
+    "z2h-8-gpt/batches-of-chunks"
+  ]
+}

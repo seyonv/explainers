@@ -1,0 +1,67 @@
+{
+  "prime": {
+    "problem": "Tiny shakespeare is 338,025 tokens; a real run needs 10 billion, far too many to tokenize on the fly every step. And once training runs for hours, the training loss alone can't tell you whether the model is learning language or just fitting its data, or whether it's any good at anything.",
+    "fits": "The overfit-then-load card streamed tiny shakespeare through <code>DataLoaderLite</code> and watched the training loss. This card swaps in FineWeb-Edu, pre-tokenized into shards, and adds the two measurements the final run is judged by: val loss (the train/dev split idea from the MLP course) and HellaSwag.",
+    "expect": ["FineWeb-Edu and <code>uint16</code> shards (shard 0 = val)", "19,073 steps = 1 epoch", "val loss on a held-out shard", "HellaSwag, completion style: the mask and <code>acc_norm</code>"],
+    "goal": "Build the shard writer and the HellaSwag scorer, reproduce GPT-2's 29.55%, and explain what each scorecard can and can't tell you."
+  },
+  "attend": [
+    "Why is <code>uint16</code> enough for a GPT-2 token id, and what would break if the vocab grew past 65,536?",
+    "Why does the val loader restart at the beginning of shard 0 at every check instead of carrying on?",
+    "How does a model that can't answer \"A, B, C or D\" still take a 4-way multiple-choice test?",
+    "Why is the HellaSwag mask shifted by one position, and which token makes the first scored prediction?",
+    "Why does averaging an ending's loss (acc_norm) instead of summing it (acc) change which ending wins?",
+    "How many HellaSwag examples do you need before 29.55% is distinguishable from 25%?"
+  ],
+  "core": {
+    "must": [
+      "Tokenize once and save <code>uint16</code> shards → training only loads numbers from disk → the GPU never waits on the tokenizer, and 10B tokens cost 20 GB (2 bytes each) instead of 40 GB as int32",
+      "Shard 0 is never passed to the training loader → its loss measures prediction on unseen text → a gap between train and val loss exposes memorising, and the fixed 20-batch slice makes every check comparable",
+      "A small model can't do quiz lettering → score each ending by the model's own objective (average per-token loss over the ending, via a shifted mask) → the lowest-loss ending is the answer → the test works from step 0 at 25% and rises with language skill",
+      "Few examples → a huge noise band (±19 points at 20, ±0.9 at 10,042) → only the full 10,042 set separates GPT-2's 29.55% from chance"
+    ],
+    "elevated": [
+      "Every document starts with <code>&lt;|endoftext|&gt;</code> (50256) → documents are packed back-to-back in a shard → the model learns that anything after that token is a fresh start, instead of reading one page as a continuation of the last",
+      "acc_norm divides by the ending's token count → long endings aren't penalised for length → on the full set it's 29.55% vs 28.58% by sum"
+    ],
+    "reference": [
+      "<code>load_dataset(\"HuggingFaceFW/fineweb-edu\", name=\"sample-10BT\")</code>; 14 parquet files, 28.5 GB",
+      "file names <code>edufineweb_{val,train}_{index:06d}.npy</code>; 100 shards × 1e8 tokens",
+      "<code>max_steps = 19073</code>; val every 250 steps with <code>val_loss_steps = 20</code>",
+      "the HF mirror <code>Rowan/hellaswag</code> (validation split, <code>label</code> as a string) because the GitHub source is DMCA-blocked",
+      "reference scores: hellaswag.py 0.2859 / 0.2955; Eleuther harness 28.92% / 31.14%; play.ipynb baselines 0.294463 (GPT-2) and 0.337 (GPT-3 124M)",
+      "uint16 → int32 → long when loading (README errata)"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw the path from a FineWeb-Edu page to a training step and to the two scorecards, then explain in 3–5 sentences how one HellaSwag example is scored.",
+    "checklist": [
+      "pages are tokenized once, each prefixed with <code>&lt;|endoftext|&gt;</code>, and saved as <code>uint16</code> shards of 100M tokens",
+      "shard 0 is val and never trained on; the rest is train, and 10B / 2<sup>19</sup> ≈ 19,073 steps is one epoch",
+      "val loss = the same cross-entropy on a fixed slice of shard 0, no gradients, every 250 steps",
+      "HellaSwag: context + each of 4 endings as a (4, N) batch; per-token loss masked to the ending; lowest average wins (acc_norm)",
+      "why the full 10,042: small samples are too noisy to separate 29.55% from 25%"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why the val loss and the training loss can tell different stories later in a run, and which one you'd trust to decide whether the model generalises.", "kind": "concept", "answer": ["training loss is measured on the batch being learned, and after an epoch that text repeats", "val loss is on shard 0, which is never trained on", "a widening gap = memorising; trust val loss for generalisation"]},
+    {"q": "Walk one HellaSwag example through the scorer: what shape goes into the model, what does the mask select, and what number decides the answer?", "kind": "mechanism", "answer": ["4 rows of context + ending, padded to the same length: (4, N)", "per-position cross-entropy with <code>reduction='none'</code>, shifted by one", "the shifted mask keeps only ending positions; sum per row, divide by the count", "argmin of the average = <code>pred_norm</code>"]},
+    {"q": "You have 5 minutes per eval on your M3 at about 100 ms per example. How many examples can you afford, and what does that cost you in precision compared with the full set?", "kind": "tradeoff", "answer": ["about 3,000 examples (300 s / 0.1 s)", "noise band ≈ 1.96 × √(0.3 × 0.7 / 3000) ≈ ±1.6 points vs ±0.9 on all 10,042", "enough to track a trend in one run; not enough to compare two close models"]},
+    {"q": "Why store tokens as <code>uint16</code> instead of the default int64, and what extra step does that force when loading?", "kind": "mechanism", "answer": ["50257 &lt; 65536, so 2 bytes per token: 20 GB instead of 80 GB for 10B tokens", "PyTorch indexing wants long, so convert uint16 → int32 → long on load (the errata)"]}
+  ],
+  "compare": [
+    {"with": "z2h-4-mlp/splits-and-fit", "q": "The MLP course split its names 80/10/10 into train/dev/test; here a whole shard is val. What is the same idea, what's different about scale, and how does each fail?", "answer": ["same: hold out data the model never trains on, and compare its loss to the training loss", "different: a random 80/10/10 split of 32,033 names vs a whole 100M-token shard taken from the front of the stream", "there, training looped over the same 25,626 names many times, so a train/dev gap was the thing to watch; here one epoch of 10B tokens never repeats text, so val loss mostly tracks progress", "failure: shard 0 is the same distribution as training, so it can't show how the model handles other kinds of text"]},
+    {"with": "z2h-10-gpt2/overfit-then-load", "q": "<code>DataLoaderLite</code> on tiny shakespeare vs the sharded FineWeb loader: what did you have to add, and why?", "answer": ["the whole text fit in one tensor there; here 100 files must be loaded one at a time", "a <code>split</code> argument picks val vs train shards", "at the end of a shard it moves to the next one (wrapping around), not to position 0 of the same text", "<code>reset()</code> lets val restart at the same place every check"]}
+  ],
+  "predict": {"q": "Score a <i>randomly initialised</i> GPT-2 with this exact HellaSwag scorer. What accuracy do you expect over all 10,042 examples, and would the result on only the first 20 examples tell you anything?", "answer": "About 25%, chance: a random model gives every token a loss near ln 50257 = 10.82, so the four averages differ only by noise and the argmin is effectively a coin flip. On 20 examples the noise band is ±19 points, so almost any result is possible; the results card's quick run measured 3/20 = 0.15 at step 0 on your M3. You can't read ability off 20 examples."},
+  "apply": {"task": "Copy the scorer and add a third way to pick an ending: use only the loss of the ending's <i>first</i> token. Run acc (sum), acc_norm (average) and first-token-only on the first 500 validation examples with pretrained GPT-2 on MPS (about 20 s).", "done": "You get acc 175/500 = 0.3500, acc_norm 168/500 = 0.3360 and first-token-only 121/500 = 0.2420 (measured on your M3). First-token-only lands near chance, since the first ending token is often a generic word like \" is\" (as in the roof example). Note that on these 500, sum beats average, while on all 10,042 average wins (0.2955 vs 0.2858).", "hint": "The first ending position in each row is <code>shift_mask.float().argmax(dim=1)</code>; gather that column of <code>shift_losses</code>."},
+  "reflect": [
+    "Which prediction did you get wrong: GPT-2's 29.55%, or the random model's score?",
+    "What couldn't you explain cleanly: why the mask shifts by one, or why the val loader resets?",
+    "Which relationship is still fuzzy: held-out shard → comparable val loss, or ending loss → multiple-choice answer?",
+    "Where would each scorecard mislead you: a new tokenizer for val loss, leaked test text for HellaSwag?",
+    "Before the results card, can you say what number each curve must beat (3.2924 and about 29.5%)?"
+  ],
+  "revisit": ["z2h-4-mlp/splits-and-fit", "z2h-10-gpt2/overfit-then-load", "z2h-10-gpt2/first-loss", "z2h-9-tokenizer/encoder-py-special-tokens"],
+  "prereq": ["z2h-10-gpt2/overfit-then-load"]
+}

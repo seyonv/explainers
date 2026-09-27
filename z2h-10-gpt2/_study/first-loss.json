@@ -1,0 +1,136 @@
+{
+  "prime": {
+    "problem": "A model that only produces logits can't be trained: there is no single number that says how wrong it is, and no labelled answers to compare against. Without a quick check at step 0 you also can't tell a broken initialization from a slow start.",
+    "fits": "You can already load GPT-2 and get logits of shape (B, T, 50257). This card turns raw text into inputs and targets, adds the loss to <code>forward</code>, and reuses the expected-initial-loss idea from the batchnorm course at GPT-2's vocabulary size.",
+    "expect": ["inputs <code>x</code> and targets <code>y</code> shifted by one token", "<code>.view(B, T)</code> and flattening to (B·T, V)", "<code>F.cross_entropy</code> as softmax plus −ln", "the expected loss at init, ln V"],
+    "goal": "Build a (B, T) batch with its targets, add the loss to your model, and predict the number your untrained model must print before you run it."
+  },
+  "attend": [
+    "Why does the buffer need B·T + 1 tokens, and where does row 0's last target come from?",
+    "How does one row of T tokens turn into T separate next-token questions rather than one?",
+    "Why must the logits be flattened to (B·T, 50257) before <code>F.cross_entropy</code>, and what does the −1 in <code>view(-1, ...)</code> work out?",
+    "Why should an untrained GPT-2 score about ln 50,257, and why does it land a little above it (10.96)?",
+    "Which bugs would the 10.82 check catch, and which would sail straight past it?"
+  ],
+  "core": {
+    "must": [
+      "Targets are the inputs moved one token to the left → position t's target is the token right after it → with a causal mask every column is a fair next-token question → one row of T tokens gives T training examples (128 per 4 × 32 batch)",
+      "<code>F.cross_entropy</code> wants an (N, C) score table and N class ids → logits (B, T, V) and targets (B, T) are flattened to (B·T, V) and (B·T,) → softmax and −ln are applied row by row → the mean is one loss to minimise",
+      "An untrained model should spread its probability evenly → p(right token) ≈ 1/V → loss ≈ −ln(1/V) = ln V = 10.82 for V = 50,257 → a first loss far above that (24.01 with logits ×10) means the init is too confident",
+      "Small random logits (std 0.555 at init) → the right token is slightly less likely than 1/V on average → the loss sits a bit above ln V (≈ ln V + std²/2 = 10.98) → 10.96 is healthy, not a bug"
+    ],
+    "elevated": [
+      "<code>.view</code> only relabels memory → x and y share the buffer's storage with no copy → the batch costs nothing extra to build, but the tensor must be contiguous for <code>view</code> to work",
+      "The check only tests the starting scale → a no-shift bug (<code>y = x</code>) still starts near 10 (9.94) → you need the overfit-one-batch test to check the data and targets"
+    ],
+    "reference": [
+      "the forward's loss line: <code>F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))</code> (train_gpt2.py L127)",
+      "the shift: <code>x = buf[:-1].view(B, T)</code>, <code>y = buf[1:].view(B, T)</code> (train_gpt2.py L243–L244)",
+      "token ids: 5962 = 'First', 22307 = ' Citizen', 198 = newline",
+      "ln 50,257 = 10.8249 · ln 50,304 = 10.8258 · ln 27 = 3.2958",
+      "commits <code>92b5bf9</code> (batch) and <code>41078d1</code> (loss)"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw the path from a token buffer to the loss for B = 4, T = 32, writing each tensor's shape on the arrows. Then write in two sentences what loss you expect at step 0 and why.",
+    "checklist": [
+      "buf has B·T + 1 = 129 ids; x = buf[:-1], y = buf[1:], both viewed as (4, 32)",
+      "GPT maps x to logits (4, 32, 50257)",
+      "flatten to (128, 50257) and (128,) for <code>F.cross_entropy</code>",
+      "loss = mean of −ln p(right token) over 128 predictions",
+      "at init p ≈ 1/50,257 so loss ≈ ln 50,257 = 10.82; measured 10.96"
+    ]
+  },
+  "retrieve": [
+    {
+      "kind": "concept",
+      "q": "Explain in plain words why the untrained model's loss should be about ln V, and what it tells you if the first loss is 24 instead.",
+      "answer": [
+        "an untrained model has no reason to prefer any token, so each gets about 1/V",
+        "the loss is −ln of the probability of the right token, so −ln(1/V) = ln V",
+        "for V = 50,257 that is 10.82",
+        "24 means the model is confidently wrong: the logits are too large at init, so the init needs fixing"
+      ]
+    },
+    {
+      "kind": "mechanism",
+      "q": "Walk through what happens to the 4 × 6 teaching batch from the 25-token buffer to the targets of row 0, naming what <code>view</code> does and doesn't do.",
+      "answer": [
+        "x = the first 24 tokens, y = tokens 1 to 24 (one position later)",
+        "<code>view(4, 6)</code> relabels the 24 numbers as a grid without copying",
+        "row 0 of x is 'First', ' Citizen', ':', newline, 'Before', ' we'",
+        "row 0 of y is the same shifted by one, ending with ' proceed', which is row 1's first input"
+      ]
+    },
+    {
+      "kind": "tradeoff",
+      "q": "A colleague grades only the last position of each row (<code>logits[:, -1]</code> vs <code>y[:, -1]</code>) because \"that's the real next token\". What do they give up, and is anything gained?",
+      "answer": [
+        "4 predictions per batch instead of 128",
+        "the forward pass already computed scores for all 32 positions, so the compute is the same",
+        "with a causal mask every position is an honest prediction, so nothing is gained",
+        "training gets about 32 times fewer signals per step"
+      ]
+    },
+    {
+      "kind": "tradeoff",
+      "q": "Your loss at init is 10.9, right on target, but training never gets below about 9. Why doesn't the 10.82 check rule out a data bug, and what would you run next?",
+      "answer": [
+        "the check only says the initial scores are evenly spread",
+        "wrong targets (for example no shift) or a leaky mask also start near 10",
+        "next: overfit one batch; a correct pipeline drives the loss towards 0",
+        "then print a few x/y rows decoded to text and check the shift by eye"
+      ]
+    }
+  ],
+  "compare": [
+    {
+      "with": "z2h-5-batchnorm/expected-initial-loss",
+      "q": "The makemore MLP expected ln 27 = 3.30 at init; GPT-2 expects ln 50,257 = 10.82. What is the same idea underneath, what differs, and how does a bad init show up in each?",
+      "answer": [
+        "same idea: uniform guesses give −ln(1/V) = ln V",
+        "only V differs: 27 characters vs 50,257 tokens",
+        "in both, too-large logits make the first loss far above ln V (27 in the MLP lecture, 24.01 here with logits ×10)",
+        "GPT-2 avoids it with std 0.02 init, so its first loss is already near 10.82"
+      ]
+    },
+    {
+      "with": "z2h-8-gpt/batches-of-chunks",
+      "q": "The character GPT also built x and y by shifting a chunk by one. What is fundamentally the same, and what changed when moving to GPT-2's tokens?",
+      "answer": [
+        "same shift-by-one: every position predicts the next unit",
+        "same (B, T) grid and the same flatten before cross-entropy",
+        "the unit is now a BPE token (up to 50,257 choices) instead of one of 65 characters",
+        "so each row covers more text, and the expected initial loss is ln 50,257 instead of ln 65"
+      ]
+    },
+    {
+      "with": "z2h-4-mlp/cross-entropy",
+      "q": "In the MLP course you replaced a hand-written softmax plus −log with <code>F.cross_entropy</code>. Why does GPT-2 need the extra <code>view</code> calls that the MLP didn't?",
+      "answer": [
+        "the MLP made one prediction per example, so its logits were already (N, 27)",
+        "GPT-2 makes a prediction at every position, so its logits are (B, T, V)",
+        "<code>F.cross_entropy</code> reads a 3-D tensor's second dimension as the classes, so passing (B, T, V) directly would be wrong",
+        "flattening to (B·T, V) makes each position one row, like the MLP's examples"
+      ]
+    }
+  ],
+  "predict": {
+    "q": "On tiny shakespeare, a model that learns only how often each token appears (and ignores the context) is the obvious first thing training can find. Guess its loss on the whole text: closer to 10.8, 6.3, or 2?",
+    "answer": "About 6.3. Tiny shakespeare is 338,025 GPT-2 tokens using 11,706 distinct ids, and the entropy of their frequencies is 6.32 nats (computed for this card). That is why the next card's data loader reaches about 6.8 after 50 steps: most of the early drop from 10.82 comes from learning token frequencies, not grammar."
+  },
+  "apply": {
+    "task": "Break it on purpose. In a scratch copy of <code>labs/first-loss.py</code>, set <code>device = 'cpu'</code>, keep seed 1337 and B = 4, T = 32, and before running write down your guess for each: (a) set <code>y = x</code> (no shift), (b) keep the right targets but compute <code>F.cross_entropy(logits.view(-1, V) * 10, y.view(-1))</code>. Then run both.",
+    "done": "You see about 9.94 for (a) and 24.01 for (b), and can say in one sentence each why (b) trips the 10.82 check and (a) doesn't.",
+    "hint": "Get the flattened logits with <code>logits.view(-1, logits.size(-1))</code>; wrap the extra forward in <code>torch.no_grad()</code> so it's quick."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: the loss at init, or the frequency-only loss of 6.3?",
+    "What couldn't you explain cleanly: why the buffer needs one extra token, or why the logits are flattened?",
+    "Which relationship is still fuzzy: uniform probabilities → ln V, or larger logits → a higher starting loss?",
+    "If a teammate's first loss were 10.9 but training stalled, which two checks would you run first?",
+    "Before the next card: could you build the x/y batch for any B and T from memory?"
+  ],
+  "revisit": ["z2h-8-gpt/batches-of-chunks", "z2h-5-batchnorm/expected-initial-loss", "z2h-1-toolkit/softmax-and-cross-entropy"],
+  "prereq": ["z2h-10-gpt2/load-and-forward"]
+}

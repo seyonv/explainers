@@ -1,0 +1,63 @@
+{
+  "prime": {
+    "problem": "Backpropagating the loss atom by atom takes ten lines, two <code>+=</code> branches and a division by <code>probs</code> that blows up when a probability is tiny. It also hides what the gradient actually says about the model's mistakes.",
+    "fits": "Exercise 2 of Lecture 5. You already walked the softmax and the loss one atom at a time; this card does the calculus once, on paper, for the whole softmax-plus-cross-entropy block, and the result opens every manual backward pass from here on (including Exercise 4's training loop).",
+    "expect": ["the loss rewritten as −l<sub>y</sub> + log Σ e<sup>l<sub>k</sub></sup>", "dlogits = (softmax − one-hot)/n", "rows of dlogits sum to 0", "gradients as pulls and a push (the pulley)"],
+    "goal": "Derive dlogits for softmax + cross-entropy in four lines, write it as three lines of PyTorch, and read any row of dlogits as \"which characters get pushed down, which one gets pushed up, and by how much\"."
+  },
+  "attend": [
+    "Which rewrite of −log p<sub>y</sub> turns a messy quotient into two terms you can differentiate separately?",
+    "Why is the target entry p − 1 but every other entry just p, and where does the ÷ n come from?",
+    "Why must every row of <code>dlogits</code> add up to zero, and what does that say about shifting all logits in a row?",
+    "If the model is confidently wrong (p<sub>y</sub> near 0), how large does the target entry get, and why can it never exceed 1/n?",
+    "Why does <code>cmp</code> say <code>exact: False</code> even though the formula is the exact derivative?"
+  ],
+  "core": {
+    "must": [
+      "−log p<sub>y</sub> = −l<sub>y</sub> + log Σ<sub>k</sub> e<sup>l<sub>k</sub></sup> → the first term only touches the target logit (−1 there) and the log-sum-exp term differentiates to e<sup>l<sub>j</sub></sup>/Σ = p<sub>j</sub> → dL/dl<sub>j</sub> = p<sub>j</sub> − 1[j=y] → the batch mean divides by n",
+      "probabilities in a row sum to 1 and the one-hot sums to 1 → each row of dlogits sums to 0 → the pull on the 26 wrong characters exactly equals the push on the right one (row 0: 0.9822 each way) → adding a constant to every logit in a row changes nothing, which is also why dlogit_maxes was ≈ 0",
+      "gradient descent moves each logit by −lr × dlogits → a wrong character is pushed down in proportion to its probability and the target up in proportion to 1 − p<sub>y</sub> → the size of the correction tracks how wrong the model is → a perfect prediction (p<sub>y</sub> = 1) gives an all-zero row and that example stops training",
+      "the fused formula takes a different floating-point route than autograd's eight small ops → results differ by rounding (maxdiff 9.78e-9 on torch 2.14) → <code>cmp</code> shows exact False, approximate True → judge fused gradients with <code>allclose</code>, and treat a maxdiff near 1e-3 as a real bug"
+    ],
+    "elevated": [
+      "p − 1[j=y] always lies between −1 and 1 → every entry of dlogits is within ±1/n (±0.03125 here; measured min −0.0308) → no division by a small probability, unlike the atomic <code>dprobs = 1/probs × …</code> step"
+    ],
+    "reference": [
+      "<code>dlogits = F.softmax(logits, 1); dlogits[range(n), Yb] -= 1; dlogits /= n</code>",
+      "<code>F.cross_entropy(logits, Yb)</code> gives the same loss as the chunked forward pass (diff 0.0 on torch 2.14; 2.38e-7 in the notebook)",
+      "<code>plt.imshow(dlogits.detach(), cmap='gray')</code>: the targets are the dark cells",
+      "row 0 numbers: <code>Yb[0] = 8</code> (<code>h</code>), p = 0.0178, target entry × n = −0.9822"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, derive dL/dl<sub>j</sub> for one example in four lines starting from −log p<sub>y</sub>, then write the three PyTorch lines. In one more sentence, say what a row of <code>dlogits</code> tells gradient descent to do.",
+    "checklist": [
+      "rewrite −log p<sub>y</sub> as −l<sub>y</sub> + log Σ<sub>k</sub> e<sup>l<sub>k</sub></sup>",
+      "the log-sum-exp term differentiates to p<sub>j</sub>; the −l<sub>y</sub> term gives −1 only at j = y",
+      "divide by n because the batch loss is a mean",
+      "code: softmax, subtract 1 at <code>[range(n), Yb]</code>, divide by n",
+      "each row sums to 0: wrong characters pushed down by p, the right one pushed up by 1 − p<sub>y</sub>"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain, without the formula, why a model that gives the right character probability 0.9 gets a much smaller correction on that row than one that gives it 0.0178.", "kind": "concept", "answer": ["the target entry is (p<sub>y</sub> − 1)/n, so its size is 1 − p<sub>y</sub>: 0.1 vs 0.9822", "the wrong characters share a total pull of the same size", "the gradient is proportional to the error, so confident correct rows barely move"]},
+    {"q": "Walk through the three lines on row 0: what does each line do to the entries for <code>a</code> (p = 0.0903) and for the target <code>h</code> (p = 0.0178)?", "kind": "mechanism", "answer": ["softmax: <code>a</code> → 0.0903, <code>h</code> → 0.0178", "subtract 1 at <code>Yb[0] = 8</code>: <code>a</code> stays 0.0903, <code>h</code> becomes −0.9822", "divide by 32: 0.00282 and −0.03069", "the row now sums to 0"]},
+    {"q": "You could keep the ten atomic lines, call <code>loss.backward()</code>, or use the three-line formula. Which do you pick for a training loop without autograd, and what do you give up?", "kind": "tradeoff", "answer": ["three lines: shortest, no division by <code>probs</code>, entries bounded by ±1/n", "you give up bit-exactness against autograd (maxdiff ~1e-8) and must re-derive if the loss changes", "atomic lines are for learning and bisecting bugs; <code>loss.backward()</code> is what you'd use when autograd is allowed"]},
+    {"q": "<code>cmp</code> prints <code>exact: False | approximate: True | maxdiff: 9.78e-09</code>. Is the derivation wrong? What maxdiff would make you suspect a real bug?", "kind": "mechanism", "answer": ["no: the fused formula and autograd's eight ops round differently in float32", "1e-9 to 1e-8 is rounding", "a missing ÷ n gives maxdiff 0.956; subtracting 1 in the wrong place gives about 0.03: anything that size is a bug"]}
+  ],
+  "compare": [
+    {"with": "z2h-6-backprop-ninja/softmax-chain-backward", "q": "The ten atomic lines and the three-line formula compute the same <code>dlogits</code>. What is fundamentally different about how they get there, and when does each one fail you?", "answer": ["atomic: local derivative per op, needs sums for broadcasts and <code>+=</code> for reused tensors; the algebra happens implicitly in the tensors", "analytic: the algebra is done once on paper, so the terms cancel before any code runs", "atomic fails numerically when p is tiny (1/probs) and structurally when you forget a branch", "analytic fails only if you change the loss or the softmax without re-deriving"]},
+    {"with": "z2h-6-backprop-ninja/batchnorm-analytic-and-train", "q": "Both Exercises 2 and 3 replace a chain of atoms with one derived expression. Why does cross-entropy collapse to something as clean as p − y, while BatchNorm's one-liner still has three terms?", "answer": ["in cross-entropy each row's logits only interact through one normalising sum, and the log cancels the exp", "in BatchNorm every input in a column affects the mean and the variance, so each x has three paths (via x̂, μ, σ²)", "both are checked against autograd with <code>allclose</code>, not bit-exactness"]}
+  ],
+  "predict": {"q": "Train with <code>F.cross_entropy(logits, Yb, label_smoothing=0.1)</code>, which spreads 0.1 of the target's weight evenly over all 27 characters (the correct one gets 0.9 + 0.1/27). For row 0, predict the target entry of <code>dlogits * n</code>, the entry for <code>a</code> (p = 0.0903), and the row sum.", "answer": "The derivation now gives p − target instead of p − one-hot. Target entry: 0.0178 − (0.9 + 0.1/27) = 0.0178 − 0.9037 = −0.8859. For <code>a</code>: 0.0903 − 0.1/27 = 0.0903 − 0.0037 = 0.0866. The row still sums to 0 (autograd gives −1.86e-9), because the smoothed target also sums to 1. Autograd agrees with (softmax − target)/n to a maxdiff of 1.86e-9."},
+  "apply": {"task": "Break the three lines on purpose, two ways, and read the damage from <code>cmp</code>. (1) Drop <code>dlogits /= n</code>. (2) Write <code>dlogits[:, Yb] -= 1</code> instead of <code>dlogits[range(n), Yb] -= 1</code>. Before running each, predict whether maxdiff will be about 1, about 1/n, or about 1e-8, and why.", "done": "You predicted and then saw: (1) maxdiff 0.956 (every entry is 32× too big; the worst is the target −0.0308 × 31), and (2) maxdiff 0.03125 = 1/n, because <code>[:, Yb]</code> subtracts 1 in every row at all 17 distinct target columns, not just at each row's own target.", "hint": "For (2), look at <code>Yb.unique()</code>: fancy indexing with <code>[:, Yb]</code> picks whole columns, so the wrong cells each get an extra −1/n."},
+  "reflect": [
+    "Which prediction did you get wrong: the row-0 target entry, the row sum, or the label-smoothing numbers?",
+    "What couldn't you explain cleanly: why log-sum-exp differentiates to p<sub>j</sub>, or where the ÷ n comes from?",
+    "Which relationship is still fuzzy: row sums to 0 → shifting all logits changes nothing, or gradient ∝ error → confident rows stop training?",
+    "Could you now read a row of <code>dlogits</code> from a real model and say which characters it is correcting?",
+    "What would you check first if your own three lines gave maxdiff 0.03?"
+  ],
+  "revisit": ["z2h-1-toolkit/softmax-and-cross-entropy", "z2h-1-toolkit/exp-and-log", "z2h-6-backprop-ninja/sum-broadcast-duality"],
+  "prereq": ["z2h-6-backprop-ninja/softmax-chain-backward"]
+}

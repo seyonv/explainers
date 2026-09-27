@@ -1,0 +1,63 @@
+{
+  "prime": {
+    "problem": "Every update is <code>p.data += -lr * p.grad</code>, and the whole run depends on that one number. Guess too small and 1000 steps barely move the loss; guess too big and it bounces or explodes. Guessing costs a full run per try, and a fixed lr also leaves the model jittering above the bottom at the end.",
+    "fits": "It builds on the minibatch loop from the previous card: the same noisy 32-row steps, now with the step size chosen on purpose. The noise that made minibatches fast is also what the decay at the end is there to calm down.",
+    "expect": ["the learning rate as step size", "a log-spaced sweep (<code>lre</code>, <code>lrs = 10**lre</code>)", "reading the valley of loss vs exponent", "step decay (0.1 → 0.01)", "minibatch noise as a floor on the loss"],
+    "goal": "Find a working lr for a new model in one short run, explain why you then shrink it, and say what the sweep can and can't tell you."
+  },
+  "attend": [
+    "Why does the sweep space the <i>exponent</i> evenly rather than lr itself, and what fraction of steps would test lr below 0.1 otherwise?",
+    "The sweep is one continuous training run. Which part of its U-shaped curve is caused by lr, and which part by the net simply not having trained yet?",
+    "Why pick 0.1 when the lowest point of the smoothed curve is at 0.157?",
+    "Why does dropping lr 10× buy more in 10,000 steps than keeping 0.1 for the same 10,000 steps?",
+    "If the loss is falling at lr 0.1, why not decay much earlier to settle sooner?"
+  ],
+  "core": {
+    "must": [
+      "each update moves parameters by lr × gradient → too small barely moves the loss (0.001: 10.74 after 1000 steps), too big overshoots the low point (1.0: 4.64) or diverges (10: 70.31) → lr has to be found, not guessed",
+      "lr's effect spans factors of ten → sweep the exponent evenly (<code>10**linspace(-3, 0, 1000)</code>) → each decade gets 333 steps → one 1000-step run traces loss vs lr and the valley (about 10<sup>−1</sup>) shows where learning is fastest and still stable",
+      "minibatch gradient = true direction + noise, and lr scales both → early the direction dominates, so big steps win; late the noise dominates and parameters jitter around the bottom → cut lr 10× → jitter shrinks → loss settles lower (2.4175 → 2.3401, vs 2.4006 without the decay)",
+      "the sweep trains while it measures → early high losses mix \"lr too small\" with \"net still untrained\" → the dip is shifted right and flat → choose a value on the low side of the valley and rerun the sweep when batch size, model or init change"
+    ],
+    "elevated": [
+      "plot loss against <code>lre</code> (the exponent), not <code>lrs</code> → on a linear lr axis the whole useful range 0.001–0.1 is squashed into the left 10% → the valley is unreadable"
+    ],
+    "reference": [
+      "<code>lre = torch.linspace(-3, 0, 1000); lrs = 10**lre</code> and the lab's 10 bins of 100 steps",
+      "the exact bin losses (18.166 … 3.221 … 5.925) and the smoothed minimum at step 731, lr 0.157",
+      "Karpathy's final schedule: <code>lr = 0.1 if i &lt; 100000 else 0.01</code> over 200,000 steps",
+      "the name \"LR range test\" for this kind of sweep"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, explain in 3–5 sentences how you would pick the learning rate for a model you've never trained, and why you'd lower it near the end. Or draw the chain from \"lr scales every step\" to \"decay settles the loss lower\".",
+    "checklist": [
+      "lr sets the step size; too small is slow, too big overshoots or diverges",
+      "sweep lr exponentially (10<sup>−3</sup> to 10<sup>0</sup>) in one short run and plot loss against the exponent",
+      "pick from the valley, on the low side, because the sweep is also training as it goes",
+      "minibatch gradients are noisy, so a fixed lr leaves jitter at the bottom",
+      "decay (0.1 → 0.01) shrinks that jitter: 2.3401 with decay vs 2.4006 without, same step count"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain what the U shape of loss vs lr-exponent is telling you on each side of the valley, in terms of what each update does to the parameters.", "kind": "concept", "answer": ["left side: steps too small, so the loss falls slowly (and the net is also still near its untrained start)", "valley: steps big enough to make fast progress but still stable", "right side: steps overshoot the low point, so the loss rises again and eventually diverges"]},
+    {"q": "Walk through what happens on step <code>i = 731</code> of the sweep: which lr is used, how it is computed, and what the lab does with the loss it records.", "kind": "mechanism", "answer": ["<code>lre[731] = −3 + 3·731/999 ≈ −0.805</code>", "<code>lr = 10**lre[731] ≈ 0.157</code>, used in <code>p.data += -lr * p.grad</code> for that one minibatch step", "the loss is appended to <code>lossi</code>; later it's averaged (50-step moving average or 100-step bins) and plotted against <code>lre</code>", "step 731 is where the smoothed loss is lowest in this run"]},
+    {"q": "You have a budget of 40,000 steps. Compare training at 0.1 throughout with 30,000 at 0.1 then 10,000 at 0.01. What does each buy, and what would go wrong if you decayed at step 10,000 instead?", "kind": "tradeoff", "answer": ["no decay: 2.4006; decay at 30,000: 2.3401", "the decay lets the noisy steps settle; staying at 0.1 keeps paying the jitter", "decaying at 10,000 gives 2.3921: small steps too early make slow progress while the loss is still far from the bottom"]},
+    {"q": "Why can't you just take the lr at the exact minimum of the sweep and call it optimal?", "kind": "tradeoff", "answer": ["the sweep is one run, so early losses are high partly because the net is untrained, not only because lr is small", "the valley is flat (about −1.1 to −0.7 here), so its minimum is noisy", "the best lr shifts with batch size, model size and initialisation"]}
+  ],
+  "compare": [
+    {"with": "z2h-4-mlp/minibatches", "q": "Minibatches made each step noisy on purpose to get more steps per second. How does that choice create the need for a learning-rate decay, and how would a full-batch loop (all 228,146 rows per step) change the picture?", "answer": ["minibatch gradient = true gradient + sampling noise; lr scales the noise into parameter jitter", "decay trades speed for less jitter once the true gradient is small", "full-batch gradients have no sampling noise, so a fixed lr can settle on its own, but each step costs about 1000× more time (126 ms vs 0.119 ms measured)"]},
+    {"with": "z2h-10-gpt2/optimizer-recipe", "q": "This card uses plain SGD with a one-time 10× drop. GPT-2's recipe uses AdamW with warmup and a cosine decay. What problem does each part of that recipe solve that the step decay doesn't, and what idea do both share?", "answer": ["shared idea: big steps early, small steps to settle at the end", "warmup starts lr small for the first steps, when a freshly initialised big model is fragile", "cosine lowers lr smoothly instead of one sudden jump", "AdamW scales each parameter's step by its own gradient history, so one global lr matters less"]}
+  ],
+  "predict": {"q": "The sweep's smoothed minimum was lr 0.157, not 0.1. Suppose you train 30,000 steps at 0.157, then 10,000 at 0.0157, from the same seed. Will the full-set loss beat the 0.1 → 0.01 schedule's 2.3401, match it, or be worse?", "answer": "It beats it: 2.3032 (computed with the lab's helpers, same seed and batches drawn the same way). The valley is flat, so both are safe choices, and with only 40,000 steps the bigger steps get further. This is one seed and one budget, so it tells you the valley is a range to try, not that 0.157 is \"the\" answer."},
+  "apply": {"task": "Modify <code>labs/learning-rate-finder.py</code> (or your own loop) to run 40,000 steps from the same seed with the decay to 0.01 at step 10,000, then at 20,000. Before running, predict the order of the four results: decay at 10k, 20k, 30k (2.3401) and no decay (2.4006).", "done": "You measure decay at 10,000 → 2.3921 and at 20,000 → 2.3609, and can explain why decaying earlier is worse here but decaying at all beats not decaying.", "hint": "Pass <code>lambda i: 0.1 if i &lt; d else 0.01</code> as <code>lr_fn</code> to <code>train(parameters, X, Y, 40000, ...)</code> from <code>labs/common.py</code>, then <code>split_loss(parameters, X, Y)</code>."},
+  "reflect": [
+    "Which prediction did you get wrong: the 99 steps below 0.1 in a linear sweep, or 0.157 beating 0.1?",
+    "What couldn't you explain cleanly about why a smaller lr helps only late in training?",
+    "Which relationship is still fuzzy: lr → minibatch noise becoming jitter, or jitter → a higher final loss?",
+    "When would you rerun the sweep instead of reusing 0.1 on the next model?",
+    "What will you check first when the splits card shows the same loss on train and dev?"
+  ],
+  "revisit": ["z2h-4-mlp/minibatches", "z2h-2-micrograd/one-step-along-gradient"],
+  "prereq": ["z2h-4-mlp/minibatches"]
+}

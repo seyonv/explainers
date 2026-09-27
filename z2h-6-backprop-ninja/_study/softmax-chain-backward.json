@@ -1,0 +1,61 @@
+{
+  "prime": {
+    "problem": "<code>loss.backward()</code> hands you every gradient, but if one is wrong you can't say which step broke it. You can only check and debug a backward pass you can write yourself, line by line.",
+    "fits": "It follows the chunked forward pass and <code>cmp</code>, and it is the micrograd chain rule (gradient from above × local derivative) applied to whole tensors. It covers the first seven gradients of Exercise 1, from the loss back to <code>norm_logits</code>.",
+    "expect": ["gradient from above × local derivative, per tensor", "the derivatives of log, x⁻¹ and exp", "a broadcast forward → a sum backward", "a tensor used twice → <code>+=</code>", "the collapse to (p − 1)/n"],
+    "goal": "Write <code>dlogprobs</code> through <code>dnorm_logits</code> from memory, explain each local rule and each sum or <code>+=</code>, and read a <code>cmp</code> False as a missing path or a missing sum."
+  },
+  "attend": [
+    "Why are 832 of the 864 entries of <code>dlogprobs</code> exactly zero, and why is each of the other 32 equal to −1/n and not −1?",
+    "<code>counts_sum_inv</code> has shape (32, 1) but multiplies a (32, 27) tensor. What does that force its gradient to do?",
+    "<code>counts</code> reaches the loss by two routes. Which route does each backward line cover, and what does <code>cmp</code> print if you cover only one?",
+    "Why does multiplying by <code>1/probs</code> make a low-probability correct character pull hardest, and why is that a numerical worry?",
+    "After substituting all seven lines, why does the target entry come out as (p − 1)/n and every other entry as p/n?"
+  ],
+  "core": {
+    "must": [
+      "loss = −mean of 32 picked log-probs → only those 32 entries affect the loss, each with weight 1/n → <code>dlogprobs</code> is −1/32 there and 0 in the other 832",
+      "<code>counts_sum_inv</code> (32, 1) is broadcast across 27 columns → one value is used 27 times → its gradient is the sum of those 27 contributions, <code>.sum(1, keepdim=True)</code>, and keeps the (32, 1) shape",
+      "<code>counts</code> feeds both <code>probs</code> and <code>counts_sum</code> → two paths to the loss → the gradients add → <code>dcounts</code> needs <code>+=</code>, and with <code>=</code> <code>cmp</code> is off by exactly the missing 1/(n·S) (0.00613)",
+      "every step is gradient × local derivative (1/x for log, −x⁻² for the inverse, eˣ = counts for exp) → substituting the chain cancels c<sub>y</sub> → <code>dnorm_logits</code> = (p − one-hot)/n, the short form of the cross-entropy card"
+    ],
+    "elevated": [
+      "<code>dprobs = dlogprobs / probs</code> → a tiny probability gives a huge intermediate gradient (−2.42 here at p = 0.0129) → that is why real code computes the fused (p − one-hot)/n instead of this chain",
+      "<code>counts_sum**-1</code> vs <code>1.0/counts_sum</code> → autograd takes a different floating-point route → the manual gradient is exact with <code>**-1</code> but only approximate (maxdiff 9.31e-10) with <code>1.0/</code>"
+    ],
+    "reference": ["<code>torch.zeros_like</code> and fancy indexing <code>[range(n), Yb]</code>", "<code>torch.ones_like(counts) * dcounts_sum</code> as the explicit broadcast", "the <code>cmp</code> output format (exact / approximate / maxdiff)", "row 0's numbers: <code>Yb[0] = 8</code>, counts 0.19669, counts_sum 11.0700"]
+  },
+  "compress": {
+    "prompt": "From memory, draw the chain from <code>norm_logits</code> to <code>loss</code> (exp, sum, **-1, ×, log, pick) and write the backward line next to each arrow. Mark every place where you need a sum or a <code>+=</code>, and say why in one sentence each.",
+    "checklist": [
+      "<code>dlogprobs</code> is −1/n at the targets and 0 elsewhere",
+      "each line is gradient from above × local derivative (1/x, −x⁻², eˣ)",
+      "a broadcast (32, 1) → (32, 27) becomes a <code>.sum(1, keepdim=True)</code> backward",
+      "a forward sum becomes a copy back across the row",
+      "<code>counts</code> has two paths, so its gradient is accumulated with <code>+=</code>",
+      "the whole chain collapses to (p − one-hot)/n"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why <code>dlogprobs</code> has only 32 non-zero entries and why each one is −1/32 rather than −1.", "kind": "concept", "answer": ["the loss reads only <code>logprobs[range(n), Yb]</code>, so the other entries have no effect on it", "the mean divides by n = 32 and there is a minus sign, so each picked entry has weight −1/32"]},
+    {"q": "Walk through <code>dcounts</code> for row 0's target entry: which two lines contribute, what does each give, and what is the total?", "kind": "mechanism", "answer": ["path 1 through probs: counts_sum_inv × dprobs = (1/11.0700) × −1.7588 = −0.15888", "path 2 through counts_sum: dcounts_sum copied back = +0.0028229", "total with <code>+=</code>: −0.15606"]},
+    {"q": "Your <code>cmp</code> for <code>counts_sum_inv</code> prints False with maxdiff 0.348. List the likely causes, and how the shape of your gradient tells them apart.", "kind": "mechanism", "answer": ["no sum at all: the gradient has shape (32, 27) (maxdiff 0.507 in my check)", "sum without <code>keepdim=True</code>: shape (32,), which silently broadcasts to (32, 32) (maxdiff 0.348)", "print <code>.shape</code> first: a correct gradient is always the tensor's shape, (32, 1)"]},
+    {"q": "Why teach the seven-line chain if production code uses (softmax − one-hot)/n? What does each version cost and buy?", "kind": "tradeoff", "answer": ["the chain shows each local rule and lets <code>cmp</code> pinpoint the broken line", "the chain divides by probs, which is numerically fragile for tiny probabilities and costs extra memory and kernels", "the fused form is one cheap, stable expression but hides where a mistake would be"]}
+  ],
+  "compare": [
+    {"with": "z2h-6-backprop-ninja/cross-entropy-analytic", "q": "This card gets <code>dnorm_logits</code> in seven atomic lines and that card gets <code>dlogits</code> in three. What is fundamentally the same, which design choice makes the short form possible, and how does each one fail?", "answer": ["same result: (p − one-hot)/n, up to about 1e-9 of float noise", "the short form comes from doing the algebra once on paper, so the c<sub>y</sub> terms cancel before any code runs", "the atomic chain fails loudly and locally (one False line) but can blow up through 1/p", "the short form is stable and fast, but a wrong derivation gives one opaque wrong tensor"]},
+    {"with": "z2h-2-micrograd/accumulate-gradients", "q": "micrograd's <code>+=</code> bug and this card's two paths into <code>counts</code>: is it the same rule, and what changes when the node is a (32, 27) tensor instead of a scalar?", "answer": ["the same rule: a node used twice gets the sum of both path gradients", "with tensors the paths can have different shapes: path 2 arrives as (32, 1) and must be broadcast back to (32, 27) before adding", "micrograd's <code>_backward</code> accumulated automatically; here you must remember to write <code>+=</code>"]},
+    {"with": "z2h-6-backprop-ninja/sum-broadcast-duality", "q": "Steps 3 and 6 of this card are the two halves of the sum ↔ broadcast duality. Which step is which, and why must they be mirror images?", "answer": ["step 3: <code>counts_sum_inv</code> was broadcast forward, so its gradient is a sum backward", "step 6: <code>counts_sum</code> was a sum forward, so its gradient is broadcast (copied) backward", "a broadcast copies one value into many uses, and the chain rule adds up the uses; a sum gives each input a local derivative of 1"]}
+  ],
+  "predict": {"q": "Row 0 of <code>dnorm_logits</code> sums to −1.86e-9 (essentially zero). The previous forward step was <code>norm_logits = logits - logit_maxes</code>, with <code>logit_maxes</code> of shape (32, 1). Before the next card, predict <code>dlogit_maxes</code>: its size and why.", "answer": "About zero. <code>logit_maxes</code> was broadcast across the row with a minus sign, so its gradient is minus the row sum of <code>dnorm_logits</code>, which is (sum of p − 1)/n = 0 up to float noise. That makes sense: shifting all logits in a row by the same amount leaves the softmax, and so the loss, unchanged. The lab measures values like 1.86e-09, and at most 1.02e-08."},
+  "apply": {"task": "Trace row 0 by hand with only these numbers from the lab: n = 32, <code>counts[0,8]</code> = 0.19669, <code>counts_sum[0]</code> = 11.0700, <code>counts[0,0]</code> = 0.75764 (so p = 0.75764 / 11.0700 = 0.068441). Compute each of the seven steps for the target entry (column 8), then the final <code>dnorm_logits</code> for column 0, which only gets path 2. Then break the lab on purpose: change <code>+=</code> to <code>=</code> in the path 2 line and explain the maxdiff it prints.", "done": "Your target value is −0.030695 and your column 0 value is 0.0021388 (= 0.068441/32). The broken lab prints <code>counts | exact: False</code> with maxdiff 0.0061292, which is 1/(32 × 5.0985), where 5.0985 is the smallest <code>counts_sum</code> in the batch.", "hint": "Column 0 gets <code>dprobs = 0</code>, so path 1 contributes nothing. Only <code>dcounts_sum</code> = 1/(n·S) = 0.0028229 reaches it, times counts[0,0]."},
+  "reflect": [
+    "Which prediction did you get wrong: the size of the one-path error, or <code>dlogit_maxes</code>?",
+    "What couldn't you explain cleanly: why a broadcast forward needs a sum backward, or why a sum forward needs a copy backward?",
+    "Which relationship is still fuzzy: two paths into <code>counts</code> → <code>+=</code>, or <code>+=</code> → the chain collapsing to (p − 1)/n?",
+    "Could you now find a wrong line in a 26-gradient backward pass using only <code>cmp</code> and <code>.shape</code>?",
+    "What will you revisit before the cross-entropy-analytic card?"
+  ],
+  "revisit": ["z2h-2-micrograd/accumulate-gradients", "z2h-1-toolkit/exp-and-log", "z2h-1-toolkit/broadcasting-rules", "z2h-3-bigram/softmax-as-exp-normalise"],
+  "prereq": ["z2h-6-backprop-ninja/chunked-forward-and-cmp", "z2h-2-micrograd/chain-rule-by-hand"]
+}

@@ -1,0 +1,65 @@
+{
+  "prime": {
+    "problem": "A neural network eats integers, and text isn't integers. The GPT lecture got away with 65 characters from one Shakespeare file, but real text has emoji, Korean, accents and code, and every choice of 'which integers' has a price in vocabulary size or sequence length.",
+    "fits": "The character tokenizer in the GPT lecture mapped each character to a row of the embedding table. This card looks at the two integer views of text Python already gives you, code points and UTF-8 bytes, and shows why GPT builds on bytes and then needs BPE.",
+    "expect": ["Unicode code points (<code>ord</code>)", "UTF-8: 1–4 bytes per character", "UTF-16 / UTF-32 and their zero bytes", "vocabulary size vs sequence length", "tokenizer-free models (MEGABYTE)"],
+    "goal": "Explain why code points and raw bytes each fail as a token vocabulary, encode a character to UTF-8 by hand, and predict how many bytes a string costs."
+  },
+  "attend": [
+    "Why does 안 cost 3 UTF-8 bytes while h costs 1, and how does a decoder know where 안 ends?",
+    "What exactly makes UTF-8 'ASCII-compatible', and why does that matter for English-heavy training data?",
+    "If code points already give one integer per character, which two properties rule them out as tokens?",
+    "Raw bytes fix the vocabulary at 256. What does that cost in context length, and in attention work?",
+    "What would the Transformer have to change to read raw bytes directly?"
+  ],
+  "core": {
+    "must": [
+      "Code points as tokens → one embedding row per character, about 150,000 and growing with each Unicode release → a vocabulary that is huge and never stable → rejected",
+      "UTF-8 spends 1 byte on ASCII and 2–4 on everything else → English stays compact and byte-identical to ASCII → but non-English text costs more bytes per character (Korean 3, emoji 4)",
+      "Raw bytes as tokens → vocabulary only 256 → every text becomes 1–4 positions per character (Shakespeare 3.30× longer than GPT-2 tokens) → a fixed context sees far less text and attention work grows with the square of length → compress the bytes with BPE instead",
+      "UTF-16/32 use fixed 2- or 4-byte units → ASCII gets padded with zero bytes (56 and 108 bytes vs UTF-8's 39) → more length for no information → UTF-8 is the base layer"
+    ],
+    "elevated": [
+      "UTF-8's lead byte announces the length (0, 110, 1110, 11110) and continuation bytes start with 10 → a byte sequence can be invalid, such as a lone continuation byte or a cut-off emoji → decoding arbitrary token ids can crash, which is why <code>decode</code> needs <code>errors=\"replace\"</code> (the decode card)"
+    ],
+    "reference": [
+      "<code>ord(c)</code> / <code>chr(n)</code>, <code>s.encode(\"utf-8\")</code>, <code>list(b)</code> to see bytes as ints",
+      "the code space ends at U+10FFFF (1,114,112 values); Unicode 15.1 has about 150,000 characters (per the video)",
+      "the byte-order mark Python's <code>utf-16</code>/<code>utf-32</code> codecs prepend (255, 254, …)",
+      "UTF-16 surrogate pairs for code points above 65,535",
+      "<code>unicodedata.unidata_version</code> (13.0.0 in Python 3.10)"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw the three routes from a Python string to model input (code points, raw UTF-8 bytes, UTF-8 + BPE) and write under each one number and one reason it wins or fails. Or explain in 3–5 sentences why GPT tokenizers start from UTF-8 bytes.",
+    "checklist": [
+      "a str is a sequence of code points; <code>ord</code> gives one integer per character",
+      "code points: vocabulary ≈150k and still changing",
+      "UTF-8: 1–4 bytes per code point, ASCII unchanged, so the base vocabulary is exactly 256 and never changes",
+      "UTF-16/32 waste zero bytes on ASCII",
+      "raw bytes make sequences several times longer, and context and attention cost scale with length",
+      "so: keep UTF-8 as the base and compress frequent byte runs with BPE"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why UTF-8 won over UTF-16 and UTF-32 as the base layer for GPT tokenizers, using the 26-character Korean example.", "kind": "concept", "answer": ["UTF-8: 39 bytes, UTF-16: 56, UTF-32: 108 (Python adds a BOM to the last two)", "UTF-16/32 pad ASCII with zero bytes that carry no information", "UTF-8 is ASCII-compatible, so English text costs 1 byte per character"]},
+    {"q": "Walk through encoding 안 (code point 50,504) into UTF-8: how many bytes, what prefix does each get, and how do you get the code point back from 236, 149, 136?", "kind": "mechanism", "answer": ["50,504 needs 16 bits, too many for 2 bytes (11 bits), so 3 bytes", "lead byte 1110xxxx, then two 10xxxxxx continuation bytes, 4 + 6 + 6 payload bits", "(236−224)×4096 + (149−128)×64 + (136−128) = 49,152 + 1,344 + 8 = 50,504"]},
+    {"q": "Your model has a fixed context of 1024 positions. Compare raw UTF-8 bytes with GPT-2 tokens as the input: how much Shakespeare fits, and what do you pay for the shorter sequence?", "kind": "tradeoff", "answer": ["bytes: 1,024 characters; GPT-2 tokens: about 1024 × 3.30 ≈ 3,379 characters", "raw bytes also mean about 3.30² ≈ 10.9× the attention work for the same text", "the price of BPE: a 50,257-row vocabulary (bigger embedding table and output layer) and a separate tokenizer training stage with its own quirks"]},
+    {"q": "Why can't you just use <code>[ord(c) for c in s]</code> as token ids, given that it's lossless and needs no training?", "kind": "tradeoff", "answer": ["the vocabulary would be about 150,000 rows and growing", "Unicode keeps adding characters, so the id set isn't stable (your Python 3.10 knows Unicode 13.0, the video cites 15.1)", "the sequences are no shorter than characters, so there's no compression either"]}
+  ],
+  "compare": [
+    {"with": "z2h-8-gpt/char-tokenizer-split", "q": "The GPT lecture built its vocabulary from <code>sorted(set(text))</code>: 65 characters. How is that fundamentally different from a byte-level vocabulary of 256, and how does each fail on a new text containing 👋?", "answer": ["the char vocab is whatever appeared in one training file; bytes cover every possible string", "a character not in the 65 has no id, so <code>stoi</code> raises a KeyError", "bytes never fail: 👋 becomes 4 byte ids, just longer", "the char approach works only for a closed, small alphabet like Tiny Shakespeare"]},
+    {"with": "z2h-9-tokenizer/bpe-by-hand", "q": "This card rejects raw bytes because sequences are too long. What does BPE change, and what doesn't it change about the base vocabulary?", "answer": ["BPE adds new tokens for frequent pairs, shortening sequences (vocabulary grows, length shrinks)", "the 256 byte tokens stay as the fallback, so any text still encodes", "you pick the trade-off point with the number of merges"]}
+  ],
+  "predict": {"q": "Before any merging, you count adjacent byte pairs in the Unicode blog paragraph (533 characters, 616 bytes). Apart from English pairs like <code>'e '</code>, which byte pairs would you expect near the top, and why?", "answer": "Pairs made of UTF-8 lead bytes: (240, 159) appears 15 times and (226, 128) 12 times. Many emoji share the first two bytes <code>F0 9F</code>, and curly quotes and dashes (’ “ —) all start <code>E2 80</code>. BPE will happily merge half a character, so some tokens aren't valid UTF-8 on their own. The stats-and-merge and decode cards show this."},
+  "apply": {"task": "Write <code>utf8_len(cp)</code> using only the code point ranges (up to 127 → 1 byte, up to 2,047 → 2, up to 65,535 → 3, else 4). Run it over every character of the blog paragraph (<code>first_paragraph()</code> in the course's <code>labs/common.py</code>), tally how many characters need 1, 2, 3 and 4 bytes, and check the total against <code>len(text.encode('utf-8'))</code>.", "done": "Your tally is 499 one-byte, 0 two-byte, 19 three-byte and 15 four-byte characters, and 499 + 57 + 60 = 616 matches the encoded length.", "hint": "The three-byte characters are the full-width Ｕｎｉｃｏｄｅ, curly quotes, dashes and ‽. The four-byte ones are the emoji and the letter-like symbols 🅤🅝… and 🇺🇳…"},
+  "reflect": [
+    "Which prediction did you get wrong: the 39 bytes, or the byte pairs at the top of the count?",
+    "What couldn't you explain cleanly: why UTF-8 is ASCII-compatible, or how a decoder knows where a character ends?",
+    "Which relationship is still fuzzy: byte vocabulary → longer sequences, or longer sequences → less context and more attention work?",
+    "Could you now argue for or against a tokenizer-free byte model in two sentences?",
+    "What will you revisit before the BPE-by-hand card?"
+  ],
+  "revisit": ["z2h-8-gpt/char-tokenizer-split", "z2h-8-gpt/self-attention-head", "z2h-9-tokenizer/tiktokenizer-tour"],
+  "prereq": ["z2h-8-gpt/char-tokenizer-split"]
+}

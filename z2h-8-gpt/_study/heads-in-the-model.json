@@ -1,0 +1,64 @@
+{
+  "prime": {
+    "problem": "A single head gives each token one softmax row, one way of weighting its past. If a character needs two different earlier characters for two different reasons, one head has to blend them into a single compromise.",
+    "fits": "The self-attention-head card built one head as a toy cell. This card plugs that head into the bigram model between the embeddings and <code>lm_head</code>, trains it, then splits it into several smaller heads that run side by side.",
+    "expect": ["the <code>Head</code> module and <code>register_buffer</code>", "cropping the context in <code>generate</code>", "<code>MultiHeadAttention</code>: parallel heads, concatenated", "same parameter count, lower loss"],
+    "goal": "Write <code>Head</code> and <code>MultiHeadAttention</code>, count their parameters by hand, and explain why four 8-dim heads beat one 32-dim head at the same size."
+  },
+  "attend": [
+    "Why is <code>tril</code> stored with <code>register_buffer</code> rather than as a plain attribute or an <code>nn.Parameter</code>?",
+    "What in the model breaks when <code>generate</code> feeds it more than <code>block_size</code> characters, and why is it the position table and not attention?",
+    "One head of 32 dims and four heads of 8 dims have the same 7,553 parameters. What does the four-head model get that the one-head model can't?",
+    "Why was the C<sup>−0.5</sup> scaling bug invisible with one 32-dim head, and when does it start to matter?",
+    "Why concatenate the heads' outputs instead of adding them together?"
+  ],
+  "core": {
+    "must": [
+      "Each head computes its own softmax row per token → four heads give four independent weightings of the same past → a token can pull from ':' in one head and from itself in another → val 2.2884 vs 2.4103 for one head at the same 7,553 params",
+      "Splitting 32 dims into 4 × 8 keeps q, k, v at 3 × 32 × 32 = 3,072 weights in total → the parameter budget doesn't change, only how it's partitioned → the gain comes from more attention patterns, not more capacity",
+      "Heads' outputs are concatenated on the last axis → each head writes its own 8 slots of the 32-dim vector → <code>lm_head</code> can still tell which head said what (a sum would mix them into the same slots)",
+      "The position table has only <code>block_size</code> rows → a context longer than 8 indexes past it → IndexError → <code>generate</code> must crop to <code>idx[:, -block_size:]</code>"
+    ],
+    "elevated": [
+      "<code>tril</code> is a buffer, not a parameter → it's saved in <code>state_dict</code> and moves with <code>.to(device)</code>, but the optimizer never updates it → the mask stays a fixed rule, not something training can erode"
+    ],
+    "reference": [
+      "<code>self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size)))</code>",
+      "<code>nn.ModuleList([Head(head_size) for _ in range(num_heads)])</code> and <code>torch.cat(..., dim=-1)</code>",
+      "hyperparameters here: batch 32, block 8, n_embd 32, lr 1e-3, 5000 iters",
+      "param split: token table 2,080 + position table 256 + attention 3,072 + lm_head 2,145 = 7,553",
+      "scaling uses <code>k.shape[-1]**-0.5</code> (head_size), per the correction at 1:20:05"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, sketch the model at the end of chapter 22 from <code>idx</code> to <code>logits</code>, with the shape after each step. Then explain in 3 sentences why four 8-dim heads do better than one 32-dim head at the same size.",
+    "checklist": [
+      "idx (B, T) → token + position embeddings → x (B, T, 32)",
+      "four heads each map x to (B, T, 8); each has its own q, k, v and its own softmax weights",
+      "torch.cat on the last axis gives (B, T, 32) → lm_head → logits (B, T, 65)",
+      "same 3,072 attention weights, split four ways, so the parameter count stays 7,553",
+      "four independent weight rows per token let it attend to several things at once; one head must blend them"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain what multi-head attention means in this model, using the shapes of one head's output and the concatenated output.", "kind": "concept", "answer": ["several heads run in parallel on the same x", "each head outputs (B, T, head_size) = (B, T, 8)", "their outputs are concatenated on the channel axis to (B, T, 32) = n_embd", "each head has its own q, k, v, so its own attention weights"]},
+    {"q": "Walk through what happens when <code>generate</code> is called without cropping and the context has grown to 9 characters.", "kind": "mechanism", "answer": ["forward builds <code>torch.arange(9)</code> to look up positions", "the position table has only 8 rows (block_size), so index 8 is out of range", "PyTorch raises <code>IndexError: index out of range in self</code>", "the fix: feed only <code>idx[:, -block_size:]</code>, the last 8 characters"]},
+    {"q": "Count the parameters of the four-head model by hand and show where the attention weights go.", "kind": "mechanism", "answer": ["token table 65 × 32 = 2,080; position table 8 × 32 = 256", "each head: 3 × 32 × 8 = 768; four heads = 3,072 (same as one 32-dim head: 3 × 32 × 32)", "lm_head 32 × 65 + 65 = 2,145", "total 7,553; the tril buffers aren't counted"]},
+    {"q": "You have 32 channels for attention. What do you trade by splitting them into more, smaller heads?", "kind": "tradeoff", "answer": ["more heads: more independent attention patterns per token", "smaller heads: each score is a dot product over fewer dimensions, so each head can match on less", "parameter count is unchanged either way", "past some point the heads are too thin to be useful (gpt.py settles on 6 heads of 64)"]}
+  ],
+  "compare": [
+    {"with": "z2h-8-gpt/self-attention-head", "q": "The toy head and the head inside the model run the same maths. What changes once it lives inside a trained model, and what new failure modes appear?", "answer": ["the toy head was untrained, so its weights were random; here training shapes q, k and v", "the model version must store tril as a buffer so it saves and moves with the model", "the position table caps the context, so generate must crop", "self-attention needs a lower learning rate (1e-3, down from bigram.py's 1e-2)"]},
+    {"with": "z2h-8-gpt/decoder-nanogpt-chatgpt", "q": "Here the heads are a Python list, run one after another and concatenated. nanoGPT does the same thing with one batched matmul. What's fundamentally the same, what's different, and when would you pick each?", "answer": ["same maths: the lab there shows identical outputs (allclose True, 590,208 params both ways)", "ModuleList: easy to read and to inspect one head at a time", "batched: one big matmul for q, k, v across all heads, much faster on a GPU", "pick the list to learn and debug; pick the batched version for anything you train seriously"]}
+  ],
+  "predict": {"q": "Keep the 32 channels but go further: 2, 8, 16 or even 32 heads (32 heads of size 1). Commit to a guess before revealing: does val loss keep falling as heads multiply, and where is the best setting?", "answer": "No, it bottoms out. Retrained with the lab's settings and seed 1337: 1 head 2.4103, 2 heads 2.3310, 4 heads 2.2884, <b>8 heads 2.2527</b>, 16 heads 2.2733, 32 heads 2.2857. Every model has 7,553 params. More heads give more attention patterns, but each head's scores come from fewer dimensions; with head_size 1 a score is just the product of two numbers. One seed per setting, so gaps of ~0.02 are within noise."},
+  "apply": {"task": "In <code>labs/heads-in-the-model.py</code>, change the second model to <code>MultiHeadAttention(8, n_embd//8)</code> and rerun. Before running, write down the parameter count you expect and whether val loss will land above or below the four-head 2.2884.", "done": "It prints 7,553 params and ends at <code>step 4999: train loss 2.2214, val loss 2.2527</code>, and you can explain why the count didn't move: 8 × 3 × 32 × 4 = 3,072, the same as before.", "hint": "The seed is reset before each model, so your run should match these digits exactly on torch 2.14 CPU."},
+  "reflect": [
+    "Which prediction did you get wrong: the parameter count of four heads, or whether more heads keep helping?",
+    "What couldn't you explain cleanly: why a buffer and not a parameter, or why the crop is needed?",
+    "Which relationship is still fuzzy: more heads → more attention patterns, or more attention patterns → lower loss?",
+    "Could you write <code>Head</code> and <code>MultiHeadAttention</code> from memory with the shapes right?",
+    "The heads now talk, but nothing computes on what they gathered. What do you expect the next card to add?"
+  ],
+  "revisit": ["z2h-8-gpt/self-attention-head", "z2h-8-gpt/scaled-attention", "z2h-8-gpt/embeddings-and-positions"],
+  "prereq": ["z2h-8-gpt/self-attention-head"]
+}

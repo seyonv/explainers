@@ -1,0 +1,65 @@
+{
+  "prime": {
+    "problem": "A network does arithmetic on numbers, but a character is a symbol. Feeding its index (5 for <code>e</code>) invents a fake ordering, and a one-hot vector wastes almost all of its work multiplying by zero.",
+    "fits": "The previous card turned names into a (32, 3) tensor <code>X</code> of character indices. This card turns each index into a learned vector, the first layer of Bengio's MLP. It builds on the bigram card's one-hot input times a weight matrix.",
+    "expect": ["the table <code>C</code> (27 × 2)", "<code>C[5]</code> vs <code>one_hot(5) @ C</code>", "indexing with a tensor: <code>C[X]</code>", "shape rule: X's shape + (2,)"],
+    "goal": "Explain why reading a row of <code>C</code> is the same computation as a one-hot matmul, predict the shape of <code>C[X]</code> for any index tensor, and build the lookup for the whole dataset in one line."
+  },
+  "attend": [
+    "In <code>one_hot(5) @ C</code>, which of the 27 rows of <code>C</code> actually contribute to the answer, and why does that make indexing a legal shortcut?",
+    "Where does the extra axis in <code>C[X]</code> come from, and what would its size be if each character had 10 numbers instead of 2?",
+    "What changes about the work and memory of the one-hot route as the vocabulary grows from 27 characters to 17,000 words?",
+    "If the forward pass is only a copy, how can <code>C</code> still receive gradients and learn?",
+    "Why must the <i>same</i> row be used for a character in every position of the context?"
+  ],
+  "core": {
+    "must": [
+      "one-hot vector has a single 1 → <code>one_hot(i) @ C</code> scales every row by 0 except row i → the product equals <code>C[i]</code> → an embedding is a bias-free linear layer, and indexing is the same math without the wasted multiplies",
+      "indexing with a tensor replaces each integer by its row → <code>C[X]</code> has shape X.shape + (row width,) → (32, 3) becomes (32, 3, 2) → the next layer must flatten 3 × 2 = 6 numbers per example",
+      "one shared table used at every position and in every context → what the network learns about a character's row carries to all contexts → similar characters can drift together and the model generalises (Bengio's idea)",
+      "lookup is mathematically a matmul → gradients reach <code>C</code> like any weight matrix, but only the rows that were looked up → a row used several times sums its gradients; unused rows get exactly zero"
+    ],
+    "elevated": [
+      "the one-hot route costs vocabulary × width per lookup (27 × 2 = 54 here, 17,000 × 30 = 510,000 for Bengio's words) → a lookup costs only width → this is why real models never build the one-hot tensor"
+    ],
+    "reference": [
+      "<code>F.one_hot(torch.tensor(5), num_classes=27)</code> needs a tensor, not a Python int",
+      "<code>one_hot</code> returns <code>int64</code>; cast with <code>.float()</code> before <code>@</code>",
+      "<code>C[[5, 6, 7]]</code> accepts a list; <code>nn.Embedding(27, 2)</code> wraps the same table as a module",
+      "the seed 2147483647 used by the lab"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, explain in 3–5 sentences why <code>C[X]</code> is an embedding layer and not a trick. Or draw the path from one integer in <code>X</code> to its vector in <code>emb</code>, and next to it the one-hot matmul that gives the same answer.",
+    "checklist": [
+      "C is a learned table: one row per character",
+      "one_hot(i) @ C picks out row i because every other row is multiplied by 0",
+      "so indexing computes a linear layer's output without the zero multiplies",
+      "C[X] keeps X's shape and appends the row width: (32, 3) → (32, 3, 2)",
+      "the same row is shared across positions and contexts, which is what lets learning transfer",
+      "gradients still flow into the used rows, so C trains like a weight matrix"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain to someone who knows matrix multiplication why <code>C[5]</code> and <code>F.one_hot(torch.tensor(5), 27).float() @ C</code> must print the same numbers.", "kind": "concept", "answer": ["the one-hot row is 0 everywhere except a 1 at position 5", "the product is a weighted sum of C's rows with those weights", "every term vanishes except 1 · C[5]"]},
+    {"q": "Walk through <code>emb = C[X]</code> for row 1 of X, the context <code>..e</code>. What indices are read, and what ends up in <code>emb[1]</code>?", "kind": "mechanism", "answer": ["X[1] = [0, 0, 5]", "PyTorch reads C[0], C[0], C[5]", "emb[1] is a (3, 2) block: two copies of the <code>.</code> row, then e's row"]},
+    {"q": "Your vocabulary grows from 27 characters to 17,000 words with 30-number embeddings. Compare the one-hot matmul with a lookup in work per token and memory. Is there anything the matmul can do that the lookup can't?", "kind": "tradeoff", "answer": ["matmul: 17,000 × 30 = 510,000 multiply-adds per token and a 17,000-wide mostly-zero input", "lookup: copy 30 numbers, no extra tensor", "the matmul also accepts a soft blend over tokens; the lookup needs a whole-number id"]},
+    {"q": "You build <code>emb = C[X]</code> and then write <code>W1 = torch.randn((6, 100))</code>. Explain where the 6 comes from and what would break if <code>C</code> had 10 columns.", "kind": "mechanism", "answer": ["each example has 3 characters × 2 numbers = 6 inputs after flattening", "with 10 columns emb is (32, 3, 10), so 30 inputs", "a hard-coded 6 no longer matches and the matmul fails"]}
+  ],
+  "compare": [
+    {"with": "z2h-3-bigram/one-hot-and-linear-layer", "q": "The bigram net multiplied a one-hot by a (27, 27) weight matrix; here we index a (27, 2) table. What is fundamentally the same, what changed in the design, and what does each output mean?", "answer": ["same: both are 'pick a row of a learned matrix' for one character", "bigram: the row is 27 logits for the next character directly", "here: the row is a small feature vector that later layers combine across 3 characters", "the bigram can only use 1 character of context; the embedding lets context grow without a table per context"]},
+    {"with": "z2h-4-mlp/why-counts-explode", "q": "Both a count table and an embedding table are 'one row per something'. Why does the count table explode with context length and the embedding table not?", "answer": ["count table: one row per whole context, 27ⁿ rows (19,683 for n = 3)", "embedding table: one row per character, 27 rows no matter the context length", "context is handled by concatenating rows and a hidden layer, not by more table rows"]},
+    {"with": "z2h-8-gpt/embeddings-and-positions", "q": "GPT uses the same lookup for tokens, plus a second table indexed by position. What problem does the position table solve that <code>C[X]</code> in this MLP never had to?", "answer": ["the MLP keeps position by where each embedding sits when flattened (slot 0, 1, 2)", "attention mixes tokens without a fixed slot order, so position must be added as its own learned vector", "both tables are plain lookups trained by backprop"]}
+  ],
+  "predict": {"q": "The lecture later switches to <code>C = torch.randn((27, 10))</code>. Before running it: what shape is <code>C[X]</code> for the (32, 3) <code>X</code>, and what must the first dimension of <code>W1</code> become?", "answer": "<code>C[X]</code> is (32, 3, 10): the appended axis is the row width. Flattening gives 3 × 10 = 30 numbers per example, so <code>W1</code> must be (30, …); the lecture's final model uses (30, 200). Any code that hard-coded 6 now breaks, which is why Karpathy prefers <code>view(-1, …)</code> or <code>emb.shape[0]</code> on the next card."},
+  "apply": {"task": "Prove the equivalence for the whole batch, not just one index. Using the lab's seeded <code>C</code> and the 5-word <code>X</code>, build <code>F.one_hot(X, num_classes=27).float() @ C</code> and compare it with <code>C[X]</code>. Then, by hand from the table on the card, write out <code>emb[3]</code> (context <code>emm</code>) before printing it.", "done": "<code>F.one_hot(X, 27).shape</code> is (32, 3, 27), <code>torch.equal(C[X], F.one_hot(X, 27).float() @ C)</code> prints True, and your hand-written <code>emb[3]</code> is (−0.4713, 0.7868), (2.4448, −0.6701), (2.4448, −0.6701).", "hint": "<code>@</code> with a 3-D left side treats the first two axes as a batch: (32, 3, 27) @ (27, 2) → (32, 3, 2). X[3] is [5, 13, 13]."},
+  "reflect": [
+    "Which prediction did you get wrong: the shape of <code>C[X]</code>, or the value of <code>emb[13, 2]</code>?",
+    "What couldn't you explain cleanly: why the one-hot matmul picks a single row, or why indexing still lets <code>C</code> learn?",
+    "Which relationship is still fuzzy: one-hot matmul → row lookup, or shared row → generalisation across contexts?",
+    "Could you now read <code>nn.Embedding</code> in makemore.py and say what it computes without looking it up?",
+    "What will you check before the <code>.view</code> card: that you can predict the flattened width for any embedding size?"
+  ],
+  "revisit": ["z2h-3-bigram/one-hot-and-linear-layer", "z2h-1-toolkit/tensors-dims-and-indexing", "z2h-1-toolkit/matmul-by-shapes"],
+  "prereq": ["z2h-4-mlp/rolling-window-dataset"]
+}

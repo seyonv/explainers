@@ -1,0 +1,69 @@
+{
+  "prime": {
+    "problem": "The GPT-3 recipe you borrowed assumes one weight update per 524,288 tokens, but one forward pass only holds 16,384 tokens on an A100 and about 4,096 on your M3 (B=4, T=1024). Shrink the batch and the borrowed learning rate no longer fits; try to fit it all at once and you run out of memory.",
+    "fits": "You have a full training step with AdamW, clipping and the learning-rate schedule (the optimizer-recipe card). This card changes <i>how many tokens one step averages over</i>, and then spreads that work across 8 GPUs. It reuses micrograd's lesson that gradients accumulate with <code>+=</code>.",
+    "expect": ["micro-batch vs total batch (<code>grad_accum_steps</code>)", "the missing 1/N normaliser", "processes, ranks and <code>torchrun</code>", "all-reduce (averaging gradients across GPUs)", "syncing only on the last micro-step"],
+    "goal": "Turn any training step into one that averages over 2<sup>19</sup> tokens with exactly the right gradient, and explain what DDP adds on top and what it costs."
+  },
+  "attend": [
+    "If <code>backward()</code> adds into <code>.grad</code> and the loss is a mean, where exactly does the lost factor of 1/<code>grad_accum_steps</code> have to go back in?",
+    "Which quantity stays fixed at 524,288 whether you use 1 GPU or 8, and which knob absorbs the difference?",
+    "What keeps eight separate processes' copies of the weights identical after thousands of steps?",
+    "Why would syncing gradients after every micro-step give the same numbers but waste time?",
+    "Accumulation is exact but not faster: so what does it actually buy you on an M3?"
+  ],
+  "core": {
+    "must": [
+      "The loss is a mean over the batch → splitting it into N micro-batches turns it into a sum of N terms each weighted 1/N → <code>backward()</code> only adds into <code>.grad</code> → divide each micro-loss by N or the gradient comes out N× too large (4× in the lab: −0.306 vs −0.0765)",
+      "total_batch_size is fixed by the recipe (2<sup>19</sup>) → memory caps the micro-batch B·T → grad_accum_steps = 2<sup>19</sup> / (B·T·GPUs) absorbs the gap → the same mean gradient on any hardware, with only the wall-clock time changing",
+      "DDP runs one process per GPU with identical weights → each rank reads different chunks → all-reduce averages the gradients → every rank takes the same optimizer step → the copies never drift and 8 GPUs do 8× the tokens per step",
+      "Accumulation trades time for memory (32 micro-steps take 32× as long) → only more GPUs (DDP) buy the time back → on the M3 a 2<sup>19</sup> step costs ~450 s, ~99 days for the run, so full training is a rented-GPU job"
+    ],
+    "elevated": [
+      "<code>require_backward_grad_sync</code> is true only on the last micro-step → averaging is linear, so syncing once gives the same gradient as syncing every time → one all-reduce per step instead of <code>grad_accum_steps</code> of them",
+      "<code>loss_accum</code> collects <code>loss.detach()</code> → the printout doesn't keep every micro-step's graph alive in memory, and it must itself be all-reduced or rank 0 prints only its own 1/8 of the loss"
+    ]
+  ,
+    "reference": [
+      "<code>torchrun --standalone --nproc_per_node=8 train_gpt2.py</code>",
+      "the env vars <code>RANK</code>, <code>LOCAL_RANK</code>, <code>WORLD_SIZE</code> and <code>master_process = ddp_rank == 0</code>",
+      "<code>init_process_group(backend='nccl')</code>, <code>DDP(model, device_ids=[ddp_local_rank])</code>, <code>raw_model = model.module</code>",
+      "the assert that <code>total_batch_size</code> divides evenly by B·T·world_size",
+      "the loader's start offset <code>B*T*process_rank</code> and stride <code>B*T*num_processes</code>"
+    ]
+  },
+  "compress": {
+    "prompt": "Without scrolling up, explain in 3–5 sentences how build-nanogpt gets a 524,288-token gradient on hardware that holds 16,384 tokens per pass, and what changes on 8 GPUs. Or draw one optimizer step on 8 GPUs as boxes and arrows.",
+    "checklist": [
+      "micro-steps: many forward/backward passes before one optimizer step",
+      "<code>backward()</code> sums into <code>.grad</code>, so each micro-loss is divided by <code>grad_accum_steps</code> to get the mean",
+      "<code>grad_accum_steps</code> = 2<sup>19</sup> / (B·T·GPUs): 32 on one A100 at B=16, 1 on eight at B=64",
+      "DDP: one process per GPU, different data per rank, all-reduce averages the gradients so every copy takes the same step",
+      "sync once, on the last micro-step",
+      "accumulation fixes memory, not speed; DDP fixes speed"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why the accumulated gradient is wrong without the division, using the batch-of-4 example: what does the batch loss compute, and what does four calls to <code>backward()</code> compute?", "kind": "concept", "answer": ["the batch loss is (1/4)·Σℓ<sub>i</sub>, so its gradient is (1/4)·Σ∇ℓ<sub>i</sub>", "four backward calls add ∇ℓ<sub>1</sub> + … + ∇ℓ<sub>4</sub> into <code>.grad</code>", "so the result is 4× too big; dividing each ℓ<sub>i</sub> by 4 restores the mean"]},
+    {"q": "Walk through one optimizer step on 8 GPUs at B=16, T=1024: how many micro-steps does each rank run, which tokens does rank 1 see, and when do the GPUs talk to each other?", "kind": "mechanism", "answer": ["grad_accum_steps = 524,288 / (16·1024·8) = 4 per rank", "rank 1 reads chunks 1, 9, 17, 25 (start at its rank, stride 8)", "gradients add locally for 3 micro-steps; on the 4th backward DDP all-reduces (averages) them", "every rank then clips and steps with the same gradient"]},
+    {"q": "You have one A100. Would you rather run B=16 with 32 micro-steps or B=64 with 8, and what limits how far you can push B?", "kind": "tradeoff", "answer": ["both give the same mean gradient over 2<sup>19</sup> tokens", "a bigger B uses the GPU better per token, so it's usually faster", "B is capped by memory for activations; past it you get out-of-memory (or swap on the M3)"]},
+    {"q": "A run without the <code>/ grad_accum_steps</code> prints a loss 16× too high but, after dividing by 16, trains exactly like the correct run. Why is the bug hidden here, and when would it stop being harmless?", "kind": "tradeoff", "answer": ["every step's gradient norm is above 1.0, so clipping rescales it to norm 1 either way", "AdamW divides each update by the running size of that parameter's gradient, so a constant factor mostly cancels", "it bites with plain SGD (an N× larger learning rate), once norms fall below the clip threshold, and whenever you read the logged loss or norm"]},
+    {"q": "Your M3 runs the recipe correctly with 128 micro-steps of B=4, T=1024. What have you gained over training with a small batch, and what haven't you gained?", "kind": "tradeoff", "answer": ["gained: the exact 2<sup>19</sup>-token gradient the borrowed hyperparameters expect", "not gained: speed; at ~1,100–1,700 tok/s a step takes minutes and the run takes months", "DDP isn't available on the Mac (it asserts CUDA and uses NCCL)"]}
+  ],
+  "compare": [
+    {"with": "z2h-2-micrograd/accumulate-gradients", "q": "In micrograd, <code>+=</code> in <code>_backward</code> fixed a bug; here the same adding behaviour of <code>.grad</code> is used on purpose. What is fundamentally the same, and why does accumulation across micro-steps need an extra division that micrograd's did not?", "answer": ["same: gradients from several contributions must be summed, never overwritten", "micrograd sums paths through one expression, which is exactly the chain rule", "micro-steps sum gradients of N separate means, but the target is one mean, so each term needs 1/N", "failure modes: <code>=</code> instead of <code>+=</code> drops paths; no /N inflates the gradient N×"]},
+    {"with": "z2h-4-mlp/minibatches", "q": "The makemore MLP trained on minibatches of 32 examples and took many noisy steps. Here the batch is 524,288 tokens. What does each choice trade, and when would you pick each?", "answer": ["small minibatch: cheap, noisy steps, many updates per second; fine for small models and quick experiments", "huge batch: each step is costly but the gradient is much less noisy, matching the recipe's tuned learning rate", "accumulation lets you pick the big batch without the memory for it", "a too-small batch is noisy; a too-big one wastes compute when examples' gradients already agree (why GPT-3 ramped it)"]},
+    {"with": "z2h-10-gpt2/precision", "q": "bf16 autocast and DDP both make training faster. What different bottleneck does each attack, and why can't bf16 replace DDP for the 10B-token run?", "answer": ["bf16: fewer bits per number, so less memory traffic and faster matmuls on one GPU (1000 → 300 ms ladder)", "DDP: more GPUs working on different data at once", "bf16 gives at most a few × on one chip; DDP scales with the number of GPUs", "bf16 fails through rounding; DDP fails through bad data splits or wrong syncing"]}
+  ],
+  "predict": {"q": "You rent 4 A100s instead of 8 and keep B=64, T=1024. What is <code>grad_accum_steps</code> now, and does the loss curve plotted against step number change?", "answer": "524,288 / (64·1024·4) = 2. Each step still averages the gradient over 2<sup>19</sup> tokens, so the loss per step follows essentially the same curve (up to data order and float rounding), and the learning-rate schedule needs no change. Only the wall clock changes: each step takes about twice as long."},
+  "apply": {"task": "Show that accumulation doesn't change the math. Run <code>python labs/big-batch.py --B 16</code> (1 micro-step of 4,096 tokens) and <code>python labs/big-batch.py --B 1</code> (16 micro-steps of 256 tokens), and compare their three step losses with the default 4 × B=4 run. Then delete the <code>loss / grad_accum_steps</code> line in a copy and run <code>--B 1</code> again.", "done": "The three runs print the same losses to 5 decimals (step 0: 10.934891, 10.934892, 10.934891; step 2: 8.879616, 8.879614, 8.879616; measured on the M3). The copy without the division prints step 0 loss 174.958267 and norm 460.7029 (16× the true 10.934891 and 28.7939), yet its step 1 loss divided by 16 is 9.4975, the same as the correct run's 9.497493, and you can say why.", "hint": "The loader walks the text in order, so B=16 rows in one batch are the same 16 rows as four B=4 batches or sixteen B=1 batches. For the broken copy: every step's norm is above 1.0, so clipping rescales the gradient to norm 1 either way, and AdamW divides by the gradient's own running size."},
+  "reflect": [
+    "Which prediction did you get wrong: the 4× gradient, or what changes with 4 GPUs instead of 8?",
+    "What couldn't you explain cleanly: why the division is needed, or why syncing once per step is enough?",
+    "Which relationship is still fuzzy: micro-batch size → grad_accum_steps, or grad_accum_steps → wall-clock time?",
+    "Could you sketch the 8-GPU step from memory, including which chunks rank 1 reads?",
+    "What will you check first if a DDP run's printed loss looks different from a single-GPU run?"
+  ],
+  "revisit": ["z2h-2-micrograd/accumulate-gradients", "z2h-4-mlp/minibatches", "z2h-10-gpt2/optimizer-recipe"],
+  "prereq": ["z2h-10-gpt2/optimizer-recipe"]
+}

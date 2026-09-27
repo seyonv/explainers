@@ -1,0 +1,65 @@
+{
+  "prime": {
+    "problem": "You can't load OpenAI's GPT-2 weights, or train your own copy, until you have a PyTorch model with exactly the right pieces, the right shapes and the right names. One misnamed or misshapen module and the 149 checkpoint tensors have nowhere to go.",
+    "fits": "z2h-8 built a small GPT for Shakespeare. This card rewrites that same architecture at GPT-2's size and in GPT-2's arrangement (pre-norm, final <code>ln_f</code>, tanh-GELU), with names that match the checkpoint you toured on the target card.",
+    "expect": ["the residual stream <code>x</code> of shape (B, T, 768)", "pre-norm Blocks: <code>x + attn(ln_1(x))</code>, <code>x + mlp(ln_2(x))</code>", "attention as a reduce, the MLP as a map", "module names that become <code>state_dict</code> keys", "counting parameters by module"],
+    "goal": "Write <code>GPT</code>, <code>Block</code> and <code>MLP</code> from memory, explain why each Block adds to the stream instead of replacing it, and account for all 124,439,808 parameters by hand."
+  },
+  "attend": [
+    "Where exactly does the LayerNorm sit in a GPT-2 Block, and what stays on the plain <code>x → x</code> path because of that placement?",
+    "Which sublayer lets token 5 use information from token 2, and which one never mixes positions?",
+    "Why does <code>c_attn</code> output 2304 numbers per token rather than 768?",
+    "How does the Python attribute path <code>self.transformer['h'][0].attn</code> turn into the key <code>transformer.h.0.attn.c_attn.weight</code>?",
+    "Which part of the 124M model grows with depth (n_layer) and which grows only with the vocabulary?"
+  ],
+  "core": {
+    "must": [
+      "Each Block computes <code>x + f(ln(x))</code> → the Block adds a correction instead of replacing <code>x</code> → an untouched identity path runs from the embeddings to <code>ln_f</code> → signals and gradients reach the bottom of a 12-Block stack without passing through 24 LayerNorms in series (the post-norm problem)",
+      "Attention mixes information across positions (reduce) while the MLP transforms each token alone (map) → alternating them 12 times lets tokens gather context, then process it → the MLP's 4× widening (768 → 3072 → 768) makes it hold about 2/3 of every Block's parameters",
+      "PyTorch names parameters by attribute path → using OpenAI's names (<code>transformer.wte</code>, <code>h</code>, <code>attn.c_attn</code>, <code>ln_f</code>, <code>lm_head</code>) makes our <code>state_dict</code> keys equal the checkpoint's → loading becomes a loop over matching keys, and a naming slip shows up as a missing key instead of a silently wrong model",
+      "Parameters per Block ≈ 12·C² (c_attn 3C², attn c_proj C², c_fc 4C², mlp c_proj 4C²) → 12 Blocks × 7.09M = 85.1M, 68% of the model → the one 50257 × 768 token table is most of the rest (31%), which is why tying it matters"
+    ],
+    "elevated": [
+      "<code>nn.GELU(approximate='tanh')</code> instead of the exact GELU → the two differ by at most 0.000473 on [−5, 5] → irrelevant for a fresh model, but needed to reproduce OpenAI's weights exactly",
+      "<code>nn.ModuleList</code> (not a plain Python list) for <code>h</code> → PyTorch registers each Block's parameters → they appear in <code>parameters()</code> and <code>state_dict()</code> as <code>h.0</code> … <code>h.11</code>; a plain list would hide them from the optimizer and from loading"
+    ],
+    "reference": [
+      "the exact <code>GPTConfig</code> fields and defaults (block_size 1024, vocab_size 50257, n_layer 12, n_head 12, n_embd 768)",
+      "per-module counts: c_attn 1,771,776 · attn c_proj 590,592 · c_fc 2,362,368 · mlp c_proj 2,360,064 · 2 LayerNorms 3,072",
+      "<code>lm_head</code> is <code>nn.Linear(768, 50257, bias=False)</code>",
+      "the larger GPT-2 configs: 24/16/1024, 36/20/1280, 48/25/1600 (layers/heads/channels)",
+      "<code>nn.ModuleDict(dict(wte=…, wpe=…, h=…, ln_f=…))</code> syntax"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw GPT-2 from token ids to logits, with shapes on every arrow, and write the two lines of <code>Block.forward</code>. Then explain in 3–4 sentences why the Block is written as <code>x = x + …</code>.",
+    "checklist": [
+      "idx (B, T) → wte + wpe → x (B, T, 768) → 12 Blocks → ln_f → lm_head → logits (B, T, 50257)",
+      "<code>x = x + attn(ln_1(x))</code> then <code>x = x + mlp(ln_2(x))</code>: LayerNorm before each branch (pre-norm)",
+      "the residual add keeps a clean path for signal and gradient through all 12 Blocks",
+      "attention = tokens exchange information; MLP = each token processed alone",
+      "names match the HF checkpoint so weights load key by key"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain what the residual stream is in GPT-2 and why every Block adds to it rather than overwriting it.", "kind": "concept", "answer": ["a (B, T, 768) tensor carried from the embeddings to <code>ln_f</code>", "each branch computes a correction from a normalised copy and adds it back", "the plain identity path lets gradients reach early Blocks and the embeddings directly"]},
+    {"q": "Walk one token's 768-vector through a single Block: which modules touch it, in what order, and what shape comes out of each?", "kind": "mechanism", "answer": ["ln_1 → 768; c_attn → 2304 (q, k, v, each 12 heads × 64); attention mixes with earlier tokens → 768; c_proj → 768; added to x", "ln_2 → 768; c_fc → 3072; tanh-GELU → 3072; c_proj → 768; added to x", "output is (B, T, 768), the same shape as the input, so Blocks stack"]},
+    {"q": "You want a bigger model for the same memory. Adding Blocks and widening n_embd both add parameters: how does each scale, and what do you give up if you choose depth?", "kind": "tradeoff", "answer": ["each Block costs about 12·C² (7,087,872 at C = 768), so depth adds linearly", "width grows the Block cost as C² and the token table as 50257·C", "more Blocks means more sequential steps per forward pass, and deeper stacks lean harder on the residual path and on init (the init card)"]},
+    {"q": "Your <code>state_dict</code> has a key <code>transformer.blocks.0.attn.c_attn.weight</code> while the checkpoint has <code>transformer.h.0.attn.c_attn.weight</code>. What went wrong in your class, and what does the loader see?", "kind": "mechanism", "answer": ["the ModuleList was assigned to <code>blocks</code> instead of <code>h</code>", "keys are built from attribute names, so all 12 Blocks' keys differ", "a key-matching loader finds them missing, or a non-strict load leaves those weights random"]}
+  ],
+  "compare": [
+    {"with": "z2h-8-gpt/layernorm-dropout-scale", "q": "z2h-8's nanoGPT and this GPT-2 module compute nearly the same thing. What is fundamentally the same, which differences come from matching OpenAI's checkpoint, and when would you keep z2h-8's choices?", "answer": ["same: embeddings + positions, pre-norm Blocks with attention and MLP, final LayerNorm, a linear head", "GPT-2 specific: HF names, tanh-GELU, 50,257-token BPE vocab, 1024 context, no dropout in build-nanogpt, tied head", "keep z2h-8's naming and dropout for a small model trained from scratch on a small dataset where overfitting is the risk", "failure modes: z2h-8's names can't load OpenAI weights; skipping dropout can overfit a small dataset"]},
+    {"with": "z2h-10-gpt2/load-and-forward", "q": "This card builds the empty shell; the next fills it with OpenAI's numbers. What does loading rely on from this card, and what still differs even when every name matches?", "answer": ["loading relies on identical key names and identical shapes per key", "four weights (c_attn, attn c_proj, c_fc, mlp c_proj) are stored transposed in OpenAI's Conv1D layout and must be flipped", "a wrong name gives a missing key; a wrong orientation gives a shape mismatch or garbage logits"]}
+  ],
+  "predict": {"q": "Build <code>GPT(GPTConfig(n_layer=1))</code>: one Block instead of twelve. Before running it, estimate the parameter count and what share of it is the token table <code>wte</code>.", "answer": "46,473,216 parameters (measured for this card), of which <code>wte</code> is 38,597,376 = 83%. Removing 11 Blocks removes 11 × 7,087,872 = 77,966,592 parameters, but the vocabulary table doesn't shrink with depth. Small models are dominated by their embedding table, which is why weight tying matters most at small sizes."},
+  "apply": {"task": "Write a function <code>count(L, C, V=50257, T=1024)</code> that predicts the parameter count from the per-module shapes on this card (with <code>wte</code> tied to <code>lm_head</code>). Check it against <code>GPT(GPTConfig())</code>, then predict GPT-2 medium (n_layer 24, n_head 16, n_embd 1024) before building it.", "done": "Your formula gives 124,439,808 for the 124M config and 354,823,168 for medium, and <code>sum(p.numel() for p in model.parameters())</code> agrees on both (both measured for this card).", "hint": "One Block is 12·C² + 13·C: four weight matrices totalling 12·C², plus biases 3C + C + 4C + C and two LayerNorms of 2C each. Add V·C + T·C + 2C for wte, wpe and ln_f."},
+  "reflect": [
+    "Which prediction did you get wrong: attention vs MLP size, or how much of a 1-Block model is the token table?",
+    "What couldn't you explain cleanly about why pre-norm keeps a clean residual path?",
+    "Which relationship is still fuzzy: attribute names → state_dict keys, or state_dict keys → loading OpenAI's weights?",
+    "If you had to change one thing in <code>GPTConfig</code> to double the model, which would you pick, and why?",
+    "What from z2h-8 did you have to unlearn (names, dropout, activation) to write this version?"
+  ],
+  "revisit": ["z2h-8-gpt/feedforward-residual", "z2h-8-gpt/layernorm-dropout-scale", "z2h-8-gpt/heads-in-the-model", "z2h-7-wavenet/torch-nn-containers"],
+  "prereq": ["z2h-8-gpt/feedforward-residual", "z2h-10-gpt2/the-target"]
+}

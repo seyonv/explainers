@@ -1,0 +1,63 @@
+{
+  "prime": {
+    "problem": "The linear layer <code>xenc @ W</code> outputs 27 numbers per input that can be negative and don't add up to anything. You can't sample from them or score them with a log likelihood until they become a proper probability distribution.",
+    "fits": "The counting model turned a row of counts <code>N</code> into probabilities by dividing by the row total. The one-hot card built the layer that outputs logits. This card adds the missing link: treat the logits as log-counts, <code>exp</code> them into fake counts, and normalise exactly as before.",
+    "expect": ["logits as log-counts", "<code>exp</code> then normalise (the softmax)", "picking <code>probs[i, ys[i]]</code> for each example", "the average NLL as the loss (3.7693 at random init)"],
+    "goal": "Explain why exp is the step that makes any real numbers into a valid distribution, compute a softmax row and its NLL by hand, and write the vectorised loss in one line."
+  },
+  "attend": [
+    "Why must the step before normalising make every logit positive, and why does <code>exp</code> do that without scrambling which character the net prefers?",
+    "What plays the role of the count table <code>N</code> in the neural version, and where does it come from?",
+    "Why does an untrained net score <i>worse</i> than guessing 1/27 for every character?",
+    "Which single entry of each <code>probs</code> row does the loss read, and what happens to the other 26?",
+    "What would go wrong in the arithmetic if the logits were ten times larger?"
+  ],
+  "core": {
+    "must": [
+      "logits can be any real number → <code>exp</code> maps them to positive, order-preserving fake counts → dividing by the row total gives a distribution that sums to 1 → the net's output can be sampled and scored like a row of <code>N</code>",
+      "exp and log undo each other → a logit behaves exactly like log(count) → training W is fitting log-counts, so the net can in principle land on the counting answer",
+      "only <code>probs[i, ys[i]]</code> enters the loss → raising it forces the other 26 down, because the row must still sum to 1 → minimising the average NLL shifts probability onto the characters that really follow",
+      "random W gives spread-out, confident logits → probability lands on the wrong characters ('o' 0.2378 vs the true 'e' 0.0123) → loss 3.7693 is worse than uniform's log 27 = 3.2958, while W = 0 gives exactly uniform"
+    ],
+    "elevated": [
+      "adding a constant to a whole row of logits cancels in the division → softmax ignores it → library softmax subtracts the row max first, so <code>exp</code> can't overflow float32 (above about 88), and the hand-written version returns <code>nan</code> for logits × 100"
+    ],
+    "reference": [
+      "<code>counts.sum(1, keepdims=True)</code> gives shape (5, 1) for row-wise division",
+      "<code>torch.softmax(logits, dim=1)</code> and <code>F.cross_entropy(logits, ys)</code> as the library versions",
+      "the fancy-index form <code>probs[torch.arange(5), ys]</code>",
+      "seed 2147483647 and the exact per-example values (.e 4.3993 … a. 4.2012)"
+    ]
+  },
+  "compress": {
+    "prompt": "Card closed: draw the chain from one row of logits to one NLL number, with the operation on each arrow, and explain in 3–4 sentences why each step is there.",
+    "checklist": [
+      "logits = <code>xenc @ W</code>, any real numbers, read as log-counts",
+      "<code>exp</code> makes them positive fake counts and keeps their order",
+      "divide by the row total, giving probabilities that sum to 1; exp plus divide is the softmax",
+      "read the probability of the true next character, take −log, and average over the examples",
+      "why exp: raw division allows negatives and nan; clipping gives zeros and infinite loss"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why the output of <code>xenc @ W</code> is called a log-count, and what the counting model's <code>N</code> corresponds to in the neural version.", "kind": "concept", "answer": ["<code>exp(logits)</code> plays the role of a row of <code>N</code>: positive, then normalised by its total", "since log undoes exp, the logit is the log of that fake count", "N is filled by counting; the net's fake counts come from W, which training adjusts"]},
+    {"q": "Walk through example 0 of 'emma' ('.' → 'e') from the one-hot vector to its NLL, naming each tensor and its shape.", "kind": "mechanism", "answer": ["one-hot of 0, shape (27,), selects row 0 of W, giving logits[0] of shape (27,)", "<code>exp</code> gives counts[0], all positive, summing to 79.01", "divide gives probs[0], summing to 1; column 5 ('e') holds 0.0123", "nll = −log 0.0123 = 4.3993; the loss averages 5 of these to 3.7693"]},
+    {"q": "Someone proposes skipping <code>exp</code> and dividing the raw logits by their row sum, because it's cheaper. What breaks, and what does <code>exp</code> cost you in return?", "kind": "tradeoff", "answer": ["negative logits become negative probabilities, and a row summing near 0 blows up ('a' got 2.17 in row 'm'); log of a negative gives nan", "exp keeps everything positive and ordered, with smooth gradients", "cost: exp can overflow for large logits, so real code subtracts the row max or uses <code>F.cross_entropy</code>"]},
+    {"q": "Why does the untrained net score 3.7693 when a uniform guess scores 3.2958, and what W would score exactly 3.2958?", "kind": "concept", "answer": ["random logits put large probabilities on arbitrary characters, so the true ones mostly get less than 1/27", "W = 0 makes all logits 0 and all counts 1, which is uniform, so the loss is log 27"]}
+  ],
+  "compare": [
+    {"with": "z2h-3-bigram/sampling-multinomial", "q": "Both cards end with a row of 27 probabilities. The counting model gets it from <code>N[ix] / N[ix].sum()</code>, the net from a softmax of <code>W[ix]</code>. What is fundamentally different about where the numbers come from, and how does each fail on a pair never seen in the data?", "answer": ["counting: probabilities are observed frequencies; the net: they come from parameters that gradient descent tunes", "the normalising step is identical; the net only adds exp in front, because its outputs can be negative", "counting gives an exact 0 for an unseen pair, so infinite loss unless smoothed; softmax never gives an exact 0, just a small value"]},
+    {"with": "z2h-4-mlp/cross-entropy", "q": "This card builds counts, probs and the NLL by hand. The MLP course switches to <code>F.cross_entropy(logits, ys)</code>. Same number, so why switch, and when would the hand-written version actually give a different answer?", "answer": ["same maths: softmax plus NLL of the true class", "the fused version skips the intermediate tensors and subtracts the row max, so it stays finite for large logits", "the hand-written version breaks when logits get large (logits × 100 gives nan) while <code>F.cross_entropy</code> still returns a number (187.57)"]}
+  ],
+  "predict": {"q": "Keep the same random W but scale every logit before the softmax: × 0, × 0.1, × 2, × 10. Commit to the direction first: which of these beats the unscaled 3.7693, and roughly where does × 10 land?", "answer": "Shrinking helps and growing hurts, because this W is wrong, so being more confident about it costs more. × 0 gives 3.2958 (uniform), × 0.1 gives 3.3019, × 1 gives 3.7693, × 2 gives 4.9539, and × 10 gives 19.1543 (computed, <code>F.cross_entropy(logits * s, ys)</code>). The size of the logits sets how peaked the softmax is, which is why the batchnorm course scales initial logits down."},
+  "apply": {"task": "Write your own <code>softmax(z)</code> that subtracts each row's max before <code>exp</code>. Test it and the lecture's two-line version on <code>logits * 100</code> for 'emma'.", "done": "The lecture's version returns <code>nan</code> in all 5 rows (32 of the 135 counts overflow to inf), yours matches <code>torch.softmax</code> (<code>torch.allclose</code> is True), and <code>F.cross_entropy(logits * 100, ys)</code> prints 187.5704.", "hint": "<code>z - z.max(1, keepdim=True).values</code>, then exp and divide by the row sum. Float32 <code>exp</code> is finite at 88 and inf at 89."},
+  "reflect": [
+    "Which prediction did you get wrong: random init vs uniform, or which logit scaling helps?",
+    "What couldn't you explain cleanly: why exp and not some other positive function, or why only one column per row enters the loss?",
+    "Which relationship is still fuzzy: logit → log-count, or log-count → the counting model's <code>N</code>?",
+    "Could you rebuild row 0's numbers (79.01, 0.0123, 4.3993) with pencil and a calculator?",
+    "What do you want settled before gradient descent starts changing W on the next card?"
+  ],
+  "revisit": ["z2h-1-toolkit/exp-and-log", "z2h-1-toolkit/softmax-and-cross-entropy", "z2h-3-bigram/likelihood-and-nll", "z2h-3-bigram/broadcasting-keepdim-trap"],
+  "prereq": ["z2h-3-bigram/one-hot-and-linear-layer"]
+}

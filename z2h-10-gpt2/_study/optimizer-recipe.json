@@ -1,0 +1,68 @@
+{
+  "prime": {
+    "problem": "Your GPT-2 trains, but only with a fixed lr of 3e-4 and every AdamW default. For a 19,073-step run you have to choose the betas, the lr at every step, how to survive a bad batch, and what to decay. Searching for all of that yourself would cost many full runs.",
+    "fits": "The model is written and fast. This card turns the plain AdamW loop from the overfit-one-batch card into the real training setup, reusing the Adam mechanics (the two running averages and the W in AdamW) from the GPT lecture.",
+    "expect": ["global-norm gradient clipping", "linear warmup + cosine decay (<code>get_lr</code>)", "weight decay only on 2-D tensors", "AdamW betas (0.9, 0.95) and fused AdamW", "turning token budgets into step counts"],
+    "goal": "Write <code>get_lr</code> and <code>configure_optimizers</code> from memory, explain what each GPT-3 setting protects against, and re-derive warmup and max_steps for a different batch or token budget."
+  },
+  "attend": [
+    "Why does clipping rescale <i>every</i> gradient by one shared factor instead of capping each gradient separately?",
+    "The GPT-3 paper gives warmup and decay in tokens. What turns 375M tokens into 715 steps, and what would change it?",
+    "Why does <code>get_lr</code> use <code>it + 1</code> during warmup, and what would step 0 do without it?",
+    "Splitting parameters by <code>p.dim()</code> leaves only 0.1% undecayed. So what is the split actually protecting?",
+    "Which of these settings change the result and which only change the speed?"
+  ],
+  "core": {
+    "must": [
+      "All gradients treated as one vector → its length ‖g‖ is measured once → if ‖g‖ &gt; 1 every gradient is scaled by 1/‖g‖ → the update keeps its direction but can't exceed a fixed size → one unlucky batch (or a fresh model with ‖g‖ ≈ 49) can't shove the weights far",
+      "Fresh model: large noisy gradients and Adam's running averages built from one or two samples → full-size steps are risky → linear warmup over 715 steps lets them settle → then cosine decay lowers the lr smoothly to 10% → small late steps settle into a lower loss without picking a drop point by hand",
+      "Paper budgets are in tokens → divide by the tokens per step (2<sup>19</sup>) → 375M → 715 warmup steps, 10B → 19,073 max_steps → change the batch or the token budget and the schedule must be re-derived, or warmup and decay land in the wrong place",
+      "AdamW shrinks each weight by lr × 0.1 per step, separately from the gradient → a weight only stays large if its gradient keeps pushing → applied to matrices only (dim ≥ 2) → biases and LayerNorm gains, 0.1% of the parameters, aren't pulled toward 0"
+    ],
+    "elevated": [
+      "β2 = 0.95 instead of 0.999 → the squared-gradient average forgets in about 1/(1 − β2) = 20 steps instead of 1,000 → the step size adapts quickly when gradient scale shifts",
+      "<code>fused=True</code> does the whole AdamW update in one CUDA kernel → identical math, 93 → 90 ms per step on the A100 → only a speed setting, and off on MPS"
+    ],
+    "reference": [
+      "the exact values: max_lr 6e-4, min_lr = 0.1 × max_lr, warmup_steps 715, max_steps 19073, weight_decay 0.1, eps 1e-8",
+      "<code>torch.nn.utils.clip_grad_norm_(params, 1.0)</code> returns the norm <i>before</i> clipping",
+      "setting the lr by writing <code>param_group['lr']</code> for every group each step",
+      "the <code>inspect.signature(torch.optim.AdamW)</code> check for <code>fused</code>",
+      "the counts 50 / 98 tensors and 124,354,560 / 121,344 parameters (vocab 50304)",
+      "GPT-3's batch-size ramp (32K tokens to full over 4–12B tokens), skipped here"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw one training step as a chain: backward → ? → ? → step. Label what each middle box does and which GPT-3 setting it carries. Then sketch the lr curve with its three pieces and the numbers at the corners.",
+    "checklist": [
+      "clip between backward and step: one global norm, scale everything by 1/‖g‖ when it is above 1.0",
+      "set the lr for every param group from <code>get_lr(step)</code> before <code>optimizer.step()</code>",
+      "curve: linear ramp to 6e-4 over 715 steps, cosine down to 6e-5 by 19,073, flat after",
+      "two param groups: dim ≥ 2 with weight decay 0.1, the rest with 0",
+      "step counts come from token budgets divided by 2<sup>19</sup> tokens per step",
+      "betas (0.9, 0.95); fused only changes speed"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain what problem global-norm clipping solves and why it scales all gradients by the same factor rather than clipping each one to ±1.", "kind": "concept", "answer": ["it limits how far one step can move the weights when a batch gives an unusually large gradient", "one shared factor keeps the update's direction, so it's still a descent direction, just shorter", "clipping each value separately would change the direction and distort the relative sizes"]},
+    {"q": "Walk through <code>get_lr(5000)</code> with warmup 715 and max_steps 19,073: which branch runs, what is the decay ratio, the coefficient, and the lr?", "kind": "mechanism", "answer": ["5000 ≥ 715 and ≤ 19,073, so the cosine branch runs", "r = (5000 − 715) / 18,358 = 0.2334", "coeff = 0.5 × (1 + cos(0.2334π)) = 0.8715", "lr = 6e-5 + 0.8715 × 5.4e-4 = 5.31e-4"]},
+    {"q": "You double the batch to 2<sup>20</sup> tokens per step but keep the 10B-token budget. Which schedule numbers must change, to what, and what goes wrong if you forget?", "kind": "tradeoff", "answer": ["max_steps halves: 10e9 / 2<sup>20</sup> ≈ 9,537", "warmup halves: 375e6 / 2<sup>20</sup> ≈ 358", "if you keep 19,073, the 10B tokens run out around step 9,536, where the lr is still 3.47e-4 (computed): the low-lr finish never happens. Run all 19,073 steps instead and you see 20B tokens, two passes over the data"]},
+    {"q": "Weight decay is skipped on 98 of 148 tensors, yet 99.9% of parameters are still decayed. What would you lose, and what would you gain, by decaying all 148?", "kind": "tradeoff", "answer": ["gain: nothing meaningful for regularization, the extra 121,344 parameters are 0.1%", "loss: biases and LayerNorm gains get pulled toward 0, and a LayerNorm gain that starts at 1 sets the scale of what its layer passes on", "so the split is about protecting those few parameters, not about saving compute"]}
+  ],
+  "compare": [
+    {"with": "z2h-8-gpt/adam-optimizer", "q": "That card opens up one AdamW step; this card configures AdamW for a whole run. Which of this card's settings change Adam's per-parameter math, which act outside it, and how would each go wrong if mis-set?", "answer": ["inside Adam: the betas (β2 0.95 makes v forget in about 20 steps) and eps; weight decay is AdamW's separate shrink term", "outside Adam: clipping edits p.grad before Adam sees it; the schedule edits lr, which scales Adam's step", "too-high lr or no warmup gives early instability; clipping every step late in training hides a bug"]},
+    {"with": "z2h-4-mlp/learning-rate-finder", "q": "makemore swept for a good lr, trained at 0.1 and dropped to 0.01 at step 100,000. GPT-2 borrows 6e-4 with warmup and cosine decay. What does each approach assume, and when would you pick each?", "answer": ["the finder assumes one cheap run can locate a good lr; fine for a tiny MLP that trains in seconds", "borrowing assumes someone already tuned a same-shape model; the only option when one run costs hours on 8 GPUs", "the step drop needs a hand-picked step; cosine needs only the final step and lowers the lr smoothly"]},
+    {"with": "z2h-10-gpt2/big-batch", "q": "Clipping and the lr schedule both run once per optimizer step. With gradient accumulation, where must the clip go, and what breaks if it goes inside the micro-step loop?", "answer": ["after all micro-steps have added into p.grad, just before <code>optimizer.step()</code>", "inside the loop it would clip partial sums, so the final gradient no longer matches the full-batch gradient", "the schedule counts optimizer steps, not micro-steps, so 715/19,073 stay tied to 2<sup>19</sup> tokens per step"]}
+  ],
+  "predict": {"q": "Your run crashes at step 10,000. You reload the weights and restart the loop, but the step counter starts again from 0. What lr does the model see over the next 715 steps, and why is that a problem for a model that is half trained?", "answer": "The lr should be 3.2510e-04 at step 10,000 and falling. Instead <code>get_lr(0)</code> gives 8.3916e-07, and the lr climbs back to the full 6.0000e-04 by step 714, almost twice what the model should get. Then the cosine starts over, so the run needs another 19,073 steps to finish. A trained model has lost the large, noisy gradients warmup was protecting against, so the fresh peak lr is more likely to bump the loss up than to help. If the optimizer state wasn't saved either, Adam's running averages start empty again. So a checkpoint needs the step and <code>optimizer.state_dict()</code> as well as the weights."},
+  "apply": {"task": "Karpathy suggests 100 warmup steps would probably be enough. Copy <code>get_lr</code>, make <code>warmup_steps</code> a parameter, and print <code>get_lr</code> at steps 50, 99, 5000 and 9894 for warmup 715 and warmup 100. Then sum <code>get_lr</code> over all 19,073 steps for both and compare the totals.", "done": "Warmup 100 gives 3.0600e-04, 6.0000e-04, 5.1590e-04 and 3.1626e-04. Warmup 715 gives 4.2797e-05, 8.3916e-05, 5.3060e-04 and 3.3000e-04. The summed lr differs by only 0.3% (6.2917 vs 6.2732), so the shorter warmup changes the first few hundred steps and barely moves the rest.", "hint": "The cosine phase starts at <code>warmup_steps</code>, so a shorter warmup also stretches the decay: that's why step 5000 comes out lower, not higher."},
+  "reflect": [
+    "Which prediction did you get wrong: the 0.1% undecayed share, or what a restarted step counter does?",
+    "What couldn't you explain cleanly: why clipping keeps the direction, or why warmup helps at all?",
+    "Which relationship is still fuzzy: token budget → step count, or step count → the shape of the lr curve?",
+    "Which of the six settings would you check first if the loss spiked at step 300?",
+    "Before the big-batch card: can you say where clipping sits once gradients are accumulated over many micro-steps?"
+  ],
+  "revisit": ["z2h-8-gpt/adam-optimizer", "z2h-10-gpt2/overfit-then-load", "z2h-4-mlp/learning-rate-finder"],
+  "prereq": ["z2h-8-gpt/adam-optimizer"]
+}

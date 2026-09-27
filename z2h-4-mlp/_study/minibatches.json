@@ -1,0 +1,68 @@
+{
+  "prime": {
+    "problem": "With all 228,146 rows in every step, one forward and backward pass takes about 126 ms, so training moves at under 8 updates a second. The net learns, just far too slowly to experiment with.",
+    "fits": "The previous card trained on 32 rows until it overfit them. This card keeps that exact loop and scales it to the whole dataset by changing what goes <i>into</i> each step, not the step itself.",
+    "expect": ["minibatch and batch size", "<code>torch.randint</code> row ids", "the minibatch gradient as an estimate of the full one", "minibatch loss vs full-set loss", "noise that grows as the loss falls"],
+    "goal": "Explain why many cheap, approximate steps beat a few exact ones, predict when the noise starts to hurt, and add minibatches to your own training loop."
+  },
+  "attend": [
+    "Why is a 32-row step about 1,000× cheaper and not 7,130× cheaper, when it uses 7,130× fewer rows?",
+    "What does a 32-row gradient estimate, and why is it right on average but wrong on any single draw?",
+    "Why do 32-row gradients agree with the full gradient at 0.826 early on but only 0.328 after 1,000 steps?",
+    "Why can the printed minibatch loss go up while the model is getting better?",
+    "What would change if you took the next 32 rows in order instead of 32 random ones?"
+  ],
+  "core": {
+    "must": [
+      "Step cost grows with the rows per step → 32 rows cost about 1/1,000 of 228,146 → about 1,000 steps for the price of one → in the same ~1.2 s, 10,000 minibatch steps reach 2.5214 while 10 full-batch steps reach only 10.7096",
+      "Random rows → the minibatch gradient is an unbiased sample average of the per-row gradients → right on average, off by random noise on each draw → the noise shrinks only like 1/√(batch size)",
+      "Early the loss slope is steep and every row agrees → noise is small relative to the signal (cos 0.826) → near the bottom the true gradient is small and rows disagree (cos 0.328) → steps jitter around the minimum → the loss stalls near 2.52 at lr 0.1 until the learning rate drops or the batch grows",
+      "Each step's loss is measured on only 32 rows → it swings by about ± 0.2 around the true value → progress must be judged by a loss on all rows (later the dev set), never by the last minibatch loss"
+    ],
+    "elevated": [
+      "Small steps are dominated by fixed per-step overhead, not arithmetic → the measured speedup is about 1,063×, not the 7,130× row ratio → a batch of 256 processes rows faster per row than a batch of 32, so bigger batches are cheaper than their row count suggests on this net"
+    ],
+    "reference": [
+      "<code>torch.randint(low, high, size, generator=g)</code> returns integers in [low, high)",
+      "sampling is with replacement: a row can appear twice in one batch or across batches",
+      "the lab's seed is 2147483647 and its lr is 0.1",
+      "PyTorch's <code>DataLoader</code> with a <code>RandomSampler</code> does the same job in makemore.py"
+    ]
+  },
+  "compress": {
+    "prompt": "Without scrolling up, explain in 3–5 sentences why training on 32 random rows per step works better than training on all 228,146. Or draw the loop and mark where the randomness enters and where the noise shows up.",
+    "checklist": [
+      "each step uses a random sample of rows, so its gradient estimates the full-data gradient",
+      "the estimate is noisy, but a step is about 1,000× cheaper, so you get far more steps in the same time",
+      "many roughly-right steps reach a lower loss per second than a few exact ones (2.5214 vs 10.7096 in ~1.2 s)",
+      "the noise matters more as training nears the bottom, which is why the loss stalls and lr decay helps",
+      "the minibatch loss is noisy too: judge the model on all rows"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain in your own words what the 32-row gradient is an estimate <i>of</i>, and why using random rows (not a fixed slice) is what makes it a fair estimate.", "kind": "concept", "answer": ["it estimates the average gradient over all 228,146 rows", "a random sample is, on average, equal to that full average", "a fixed or ordered slice comes from a few names and is biased towards them"]},
+    {"q": "Walk through one training step of the minibatch loop: which tensors get indexed, what shapes flow through, and what changes afterwards?", "kind": "mechanism", "answer": ["<code>ix = torch.randint(0, X.shape[0], (32,))</code> picks 32 row ids", "<code>C[X[ix]]</code> gives (32, 3, 2), viewed to (32, 6), then h is (32, 100) and logits (32, 27)", "<code>F.cross_entropy(logits, Y[ix])</code> averages the loss over those 32 rows", "zero grads, <code>backward()</code>, then every parameter moves by −0.1 × its grad", "the other 228,114 rows are untouched this step"]},
+    {"q": "You can afford about 1.2 s of training. Compare 10 full-batch steps with 10,000 minibatch steps: which ends lower, by how much, and what does each give up?", "kind": "tradeoff", "answer": ["minibatch: 2.5214; full batch: 10.7096", "full batch gives up the number of steps; each step is exact but costs 126 ms", "minibatches give up exactness; each step is noisy, and the loss stalls near the bottom"]},
+    {"q": "You raise the batch size from 32 to 256. What happens to the direction agreement, the loss spread and the cost per step, and why is 8× the rows only 2.8× less noise?", "kind": "tradeoff", "answer": ["agreement after 1,000 steps rises from 0.328 to 0.723", "loss spread falls from ± 0.195 to ± 0.073", "each step costs more, though less than 8× on this small net", "noise shrinks like 1/√B, and √8 ≈ 2.8"]}
+  ],
+  "compare": [
+    {"with": "z2h-4-mlp/overfit-one-batch", "q": "Both cards run the same loop. That one uses the same 32 rows every step, and this one draws a fresh 32 each step. What does each loss measure, why does one reach 0.2561 and the other stall near 2.52, and which one tells you how good the model is?", "answer": ["fixed rows: the net memorises those 32 examples, so the loss falls far (0.2561) but says nothing about other names", "fresh rows: every step is a new sample of the whole dataset, so the net must fit general patterns", "the full-set loss after minibatch training (2.5214) is the honest number", "overfitting one batch is a debugging check that the loop can learn, not a training method"]},
+    {"with": "z2h-4-mlp/learning-rate-finder", "q": "The noise table shows the minibatch gradient getting less reliable near the bottom. How does lowering the learning rate address the same problem that a bigger batch would, and what does each cost?", "answer": ["a smaller lr shrinks each noisy step, so the jitter around the minimum gets smaller", "a bigger batch makes each step's direction cleaner instead", "lr decay costs nothing per step but slows progress; a bigger batch costs more compute per step", "the lecture uses decay: after 30,000 steps at lr 0.1, 10,000 more at lr 0.01 reach 2.3401"]},
+    {"with": "z2h-8-gpt/batches-of-chunks", "q": "Here a minibatch is 32 random rows of a prebuilt X. In the GPT lecture it is a batch of random chunks cut from one long text. What is the same idea underneath, and what is different about what one batch element contains?", "answer": ["same: random samples, so each batch gradient estimates the full-data gradient", "here one element is one (3-char context → next char) example", "there one chunk holds many positions, each one a prediction target", "so a GPT batch carries many more training examples per element"]}
+  ],
+  "predict": {"q": "Keep the total rows seen fixed at 320,000: batch 256 for 1,250 steps instead of batch 32 for 10,000 steps (lr 0.1, same seed). Is the full-set loss lower, higher or the same, and which run finishes sooner?", "answer": "Higher: 2.5562 vs 2.5214, because the big-batch run takes 8× fewer steps and each step is only about 2.7× less noisy (loss spread ± 0.195 → ± 0.073), which doesn't make up for the lost steps. But it finished sooner on my run (0.50 s vs 2.36 s), because per-step overhead dominates tiny batches. Which one is better depends on whether you're limited by steps or by seconds. Keep batch 256 for all 10,000 steps and it reaches 2.4128."},
+  "apply": {
+    "task": "Change the lab's batch size and measure the trade-off yourself. Using <code>train(parameters, X, Y, steps, lambda i: 0.1, g, batch_size=B)</code> from <code>labs/common.py</code> with a fresh <code>init_params()</code> each time, run (B=32, 10,000 steps), (B=256, 1,250 steps) and (B=256, 10,000 steps). Time each run and print the full-set loss.",
+    "done": "Your losses read 2.5214, 2.5562 and 2.4128, and you can say from your own timings whether batch 256 was cheaper per row than batch 32 on your M3.",
+    "hint": "Wrap each call in <code>time.perf_counter()</code>. Timings vary with load; the losses don't, as long as each run starts from <code>init_params()</code>."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: how low 1,000 steps get, or how the fixed-rows run with batch 256 compares?",
+    "What couldn't you explain cleanly: why an estimate that is wrong on every single draw still trains the net well?",
+    "Which relationship is still fuzzy: smaller true gradient near the bottom → worse agreement, or worse agreement → the loss stalling?",
+    "When you read a training log later in the series, which number will you trust, and which will you ignore?",
+    "What would you check first if your full-set loss stopped improving after a few thousand steps?"
+  ],
+  "revisit": ["z2h-4-mlp/overfit-one-batch", "z2h-4-mlp/rolling-window-dataset", "z2h-2-micrograd/one-step-along-gradient"],
+  "prereq": ["z2h-4-mlp/overfit-one-batch"]
+}

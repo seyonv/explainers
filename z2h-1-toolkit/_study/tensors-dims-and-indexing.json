@@ -1,0 +1,75 @@
+{
+  "prime": {
+    "problem": "Every lecture from the bigram model on works on whole tensors at once. If you can't say which dim a <code>sum</code> collapses, what shape <code>C[X]</code> returns or whether a reshape copied memory, you get shape errors you can't read, or worse, code that runs and computes the wrong thing.",
+    "fits": "It follows the matmul card, which gave you the (n, k) @ (k, m) rule for 2-d shapes. This card covers everything else you do to a tensor's shape: collapse a dim, keep it, relabel it with <code>.view</code>, or grow it by indexing with another tensor. The broadcasting card comes next.",
+    "expect": ["shape, ndim and <code>dim=</code>", "<code>keepdim=True</code>", "<code>.view</code> over one storage (strides)", "indexing with a tensor: <code>C[X]</code>", "dtype: <code>torch.tensor</code> vs <code>torch.Tensor</code>"],
+    "goal": "Predict the shape of any <code>sum</code>, <code>view</code> or <code>C[X]</code> before you run it, and explain why <code>.view</code> is free and when it fails."
+  },
+  "attend": [
+    "In <code>M.sum(dim=0)</code>, does the 0 name the dim you keep or the dim that vanishes, and how does the output shape tell you?",
+    "Why does keeping a collapsed dim as size 1 decide whether dividing by the row totals is correct?",
+    "What does <code>.view</code> actually change in memory, and why does that make it free?",
+    "Why can't a transposed matrix be viewed as a flat 6-vector, when the original can?",
+    "Where does the extra trailing 2 in <code>C[X]</code> of shape (32, 3, 2) come from?",
+    "Why does a capital-T <code>torch.Tensor</code> of indices break <code>C[t]</code>?"
+  ],
+  "core": {
+    "must": [
+      "A reduction's <code>dim</code> names the axis it walks along → that axis is summed away → (2, 3).sum(0) keeps the 3 columns → [5, 7, 9] with shape (3,)",
+      "<code>keepdim=True</code> leaves the reduced axis as size 1 → (2, 3) ÷ (2, 1) lines up row by row → each row is divided by its own total; without it the (2,) or (27,) total lines up with the columns → an error, or on a square table a silent wrong answer",
+      "A tensor is flat storage + shape + stride → <code>.view</code> only writes new shape and stride → no numbers move, so it is free and shares memory → edits through a view change the original, and a non-contiguous tensor (a transpose) can't be viewed, so <code>.reshape</code> copies",
+      "Indexing a table with an integer tensor looks up one row per index → result shape = <code>X.shape + C.shape[1:]</code> → (32, 3) + (2,) = (32, 3, 2) → <code>.view(-1, 6)</code> puts each example's 3 embeddings side by side for the hidden layer"
+    ],
+    "elevated": [
+      "Advanced indexing (<code>C[X]</code>, <code>M[[0, 1]]</code>) returns a copy while slicing (<code>M[:, 1]</code>) returns a view → writing into <code>C[X]</code> never changes <code>C</code> → the gradient has to be added back into <code>C</code>'s rows (the embedding-backward card)",
+      "<code>torch.Tensor</code> always makes float32 while <code>torch.tensor</code> infers int64 from integers → float indices raise an IndexError and int64 @ float32 raises a dtype error → build indices with lowercase <code>torch.tensor</code> and cast one-hot vectors with <code>.float()</code>"
+    ],
+    "reference": [
+      "<code>t.shape</code>, <code>t.dim()</code>, <code>t.stride()</code>, <code>t.is_contiguous()</code>, <code>t.data_ptr()</code>",
+      "<code>dim=-1</code> means the last dim",
+      "<code>torch.arange(18).view(3, 3, 2)</code> has strides (6, 2, 1)",
+      "the exact error texts: \"view size is not compatible with input tensor's size and stride\", \"tensors used as indices must be long, int, byte or bool tensors\"",
+      "<code>.contiguous()</code> as the fix before <code>.view</code>; <code>/</code> promotes ints to float, <code>//</code> floors"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, in 3–5 sentences, explain what <code>dim</code> and <code>keepdim</code> do to a shape, why <code>.view</code> costs nothing, and how <code>C[X]</code> gets its shape. Or draw one storage strip with two views pointing at it, and write the shape of <code>C[X]</code> underneath.",
+    "checklist": [
+      "the <code>dim</code> of a reduction disappears from the shape; <code>keepdim</code> leaves it as size 1",
+      "keepdim matters when you divide by the totals, because the size-1 axis lines up with the right dim",
+      "a tensor = flat storage + shape + stride; <code>.view</code> changes only the metadata",
+      "views share memory, and non-contiguous tensors need <code>.reshape</code>, which copies",
+      "<code>C[X]</code> shape = <code>X.shape + C.shape[1:]</code>",
+      "indices must be integers, so use <code>torch.tensor</code>, not <code>torch.Tensor</code>"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain in plain words why <code>M.sum(dim=1)</code> on a (2, 3) matrix returns 2 numbers, not 3.", "kind": "concept", "answer": ["dim 1 is the column axis, of length 3", "the sum walks along it, adding the 3 entries of each row", "that axis vanishes and one total per row is left: [6, 15], shape (2,)"]},
+    {"q": "Walk through what happens in memory when you run <code>a = torch.arange(18)</code>, then <code>v = a.view(3, 6)</code>, then <code>v[0, 0] = 100</code>. What is <code>a[0]</code> now, and why?", "kind": "mechanism", "answer": ["<code>arange</code> allocates one storage of 18 numbers", "<code>view</code> creates new metadata (shape (3, 6), strides (6, 1)) over the same storage", "<code>v[0, 0]</code> is storage offset 0, so the write lands in <code>a</code>'s memory", "<code>a[0]</code> is 100"]},
+    {"q": "Trace the shapes: <code>C</code> is (27, 2), <code>X</code> is (32, 3). Give the shape of <code>C[X]</code>, of <code>C[X].view(-1, 6)</code>, and of <code>C[X[0]]</code>.", "kind": "mechanism", "answer": ["<code>C[X]</code>: (32, 3) + (2,) = (32, 3, 2)", "<code>.view(-1, 6)</code>: 32·3·2 = 192 numbers ÷ 6 = (32, 6)", "<code>X[0]</code> has shape (3,), so <code>C[X[0]]</code> is (3, 2)"]},
+    {"q": "You need to flatten a tensor you just transposed. Compare <code>.view</code>, <code>.reshape</code> and <code>.contiguous().view</code>: what does each cost, and which failure does each protect you from or expose you to?", "kind": "tradeoff", "answer": ["<code>.view</code>: free, but raises an error because the transpose isn't contiguous", "<code>.reshape</code>: works, and silently copies here, so edits no longer reach the original", "<code>.contiguous().view</code>: an explicit copy, then a free view; you can see where the copy happens", "choose <code>.view</code> when you rely on shared memory, so a surprise copy fails loudly"]}
+  ],
+  "compare": [
+    {"with": "z2h-1-toolkit/matmul-by-shapes", "q": "Matmul and <code>sum(dim=…)</code> both make an axis disappear. Which axis does each remove, what decides it, and how does each one fail when you pick the wrong layout?", "answer": ["matmul always sums away the shared inner axis k: the left's last dim against the right's first", "a reduction removes whichever axis you name with <code>dim</code>", "a matmul with mismatched inner sizes raises an error", "a reduction over the wrong dim often runs fine and returns the wrong numbers, so check the output shape"]},
+    {"with": "z2h-1-toolkit/broadcasting-rules", "q": "This card makes a (27, 1) total with keepdim; the broadcasting card explains how PyTorch stretches it. What design choice in broadcasting turns a missing keepdim into a silent bug instead of an error?", "answer": ["broadcasting aligns shapes from the right", "a (27,) total is treated as (1, 27), a row, and stretched down the rows", "a square (27, 27) table always matches, so there's no error", "the result divides each column by a row total: wrong, with no warning"]},
+    {"with": "z2h-4-mlp/embedding-lookup", "q": "Here <code>C[X]</code> is a shape trick; in the MLP course <code>C</code> is a learned layer. What is the same computation behind <code>C[5]</code> and <code>one_hot(5) @ C</code>, and why does the course always use the lookup?", "answer": ["both return row 5 of <code>C</code>", "the one-hot matmul multiplies by 26 zeros and a single 1", "the lookup skips the (…, 27) one-hot tensor and all its multiply-adds", "the one-hot view is how you <i>explain</i> an embedding as a linear layer; the lookup is how you <i>run</i> it"]}
+  ],
+  "predict": {
+    "q": "The WaveNet lecture has <code>e</code> of shape (4, 8, 10): 4 examples, 8 characters, 10 embedding numbers each. What shape is <code>e.view(4, 4, 20)</code>, and which two characters' numbers end up in the first row of <code>e.view(4, 4, 20)[0]</code>? Is it a copy?",
+    "answer": "Shape (4, 4, 20): 4·8·10 = 320 = 4·4·20, so the view is legal. Storage runs through the last dim fastest, so each new row of 20 is two consecutive characters' 10 numbers: row 0 holds characters 0 and 1. That is exactly how FlattenConsecutive groups pairs. No copy: <code>e</code> is contiguous, so only the shape and strides change."
+  },
+  "apply": {
+    "task": "Build <code>C = torch.randn((27, 2), generator=torch.Generator().manual_seed(2147483647))</code> and the (5, 3) <code>X</code> for \"emma\" by hand: [[0, 0, 0], [0, 0, 5], [0, 5, 13], [5, 13, 13], [13, 13, 1]]. Before running anything, write the shapes of <code>C[X]</code> and <code>C[X].view(-1, 6)</code>. Then print row 2 of the view and check it against <code>C[0]</code>, <code>C[5]</code> and <code>C[13]</code>. Finally make <code>X</code> with capital <code>torch.Tensor</code> and read the error.",
+    "done": "Your shapes are (5, 3, 2) and (5, 6); row 2 prints [1.5674, -0.2373, -0.4713, 0.7868, 2.4448, -0.6701], which is C[0], C[5] and C[13] side by side; and the float X raises \"tensors used as indices must be long, int, byte or bool tensors\".",
+    "hint": "'.' = 0, 'e' = 5, 'm' = 13, 'a' = 1. The lab draws <code>C</code> first from the generator, so seed a fresh generator for <code>C</code> alone."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: <code>sum(dim=0)</code> giving 3 numbers, or the shape of <code>C[X]</code>?",
+    "What couldn't you explain cleanly: why a view is free, or why a transpose can't be viewed?",
+    "Which relationship is still fuzzy: stride → contiguous, or contiguous → whether <code>.view</code> works?",
+    "Could you spot a missing <code>keepdim</code> from the shapes alone, before running the code?",
+    "Before the MLP course, what will you re-check about <code>emb.view(-1, 6)</code>?"
+  ],
+  "revisit": ["z2h-1-toolkit/matmul-by-shapes", "z2h-1-toolkit/vectors-dot-product"],
+  "prereq": ["z2h-1-toolkit/matmul-by-shapes"]
+}

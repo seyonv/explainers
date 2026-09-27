@@ -1,0 +1,66 @@
+{
+  "prime": {
+    "problem": "Each training step logs the loss of one random 32-example minibatch, so plotting all 200,000 of them gives a thick smear. You can't tell whether a change (a new lr schedule, a new layer) helped, because the band is wider than the improvement.",
+    "fits": "This is the first cleanup in the WaveNet lecture. It reuses the minibatch training loop and the lr decay from the MLP course, and <code>view</code> from the tensor-shape cards, to make the loss plot readable before the architecture changes start.",
+    "expect": ["minibatch noise", "<code>lossi</code> stored as log10", "<code>view(-1, 1000).mean(1)</code>", "the lr-decay drop"],
+    "goal": "Explain why the raw loss curve is noisy, smooth it with one line, and read off real effects such as the drop when the lr is cut."
+  },
+  "attend": [
+    "If the weights barely change between two late steps, where does a swing from 1.37 to 2.82 in loss come from?",
+    "Which dimension does <code>.mean(1)</code> average over after <code>view(-1, 1000)</code>, and what would <code>.mean(0)</code> give you instead?",
+    "Why does averaging 1000 steps shrink the wiggle by about 31.6× and not 1000×?",
+    "What does a bigger window buy, and what kind of event can it hide?",
+    "Why is the smoothed curve not a fair number to compare two models with?"
+  ],
+  "core": {
+    "must": [
+      "Each step's loss comes from a different random 32 examples → it measures minibatch luck as much as the model → the raw curve is a band about 0.31 wide in log10 late in training, wider than the whole improvement",
+      "Average 1000 consecutive steps → random wiggles mostly cancel, shrinking by about √1000 ≈ 31.6× if roughly independent → a real 0.010 drop, like the lr cut at step 150,000, becomes visible",
+      "<code>view(-1, 1000)</code> lays the 200,000 values out as 200 rows of consecutive steps → <code>mean(1)</code> averages within each row → one point per 1000-step block, in training order",
+      "Bigger window → less noise but fewer points and blurred timing → fine for trends, but it hides anything shorter than the window (a loss spike) → look at the raw list for those"
+    ],
+    "elevated": [
+      "<code>lossi</code> holds <code>loss.log10()</code> → averaging logs gives a geometric mean → 10<sup>x</sup> of a smoothed point sits slightly below the plain average loss (2.162 vs 2.172 on the quick run's last 1000 steps)",
+      "The window must divide the step count → with 200,500 steps <code>view</code> raises <code>RuntimeError: shape '[-1, 1000]' is invalid for input of size 200500</code> → pick a step count that is a multiple of the window, or trim the list"
+    ],
+    "reference": [
+      "<code>plt.plot(torch.tensor(lossi).view(-1, 1000).mean(1))</code>, Karpathy's exact line",
+      "the lab's printout format and the <code>--quick</code> / <code>--plot</code> flags",
+      "the exponential-moving-average \"smoothing\" slider in tools like TensorBoard"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, explain in 3–5 sentences why the raw loss plot is a thick band and how one line turns it into a readable curve. Or draw the shapes: list → (200000,) → (200, 1000) → (200,), and mark where the lr drop shows up.",
+    "checklist": [
+      "each logged loss is from one random minibatch of 32, so it's noisy even when the model barely changes",
+      "<code>view(-1, 1000)</code> groups consecutive steps into rows; <code>mean(1)</code> averages each row",
+      "200,000 steps become 200 points",
+      "averaging shrinks random noise by about √n, so real changes like the lr drop (0.331 → 0.319) stand out",
+      "it's a training-set trend in log10, not a val score"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why a model whose weights barely move can still show minibatch losses from 1.37 to 2.82 within 1000 steps.", "kind": "concept", "answer": ["each step scores a different random set of 32 examples", "some batches are easier than others, so the loss mostly reflects which examples were drawn", "32 examples is a small, noisy sample of the 182,625 training examples"]},
+    {"q": "Walk the shapes through <code>torch.tensor(lossi).view(-1, 1000).mean(1)</code> for a 200,000-step run, and say which steps end up in point 150.", "kind": "mechanism", "answer": ["list of 200,000 floats → tensor (200000,)", "view → (200, 1000); -1 is inferred as 200", "mean over dim 1 → (200,)", "point 150 averages steps 150,000–150,999, the first 1000 steps after the lr drop"]},
+    {"q": "You want to see both the lr-decay drop and a possible short loss spike. Choose between a 100-step window, a 1000-step window and the raw list, and say what each costs.", "kind": "tradeoff", "answer": ["raw: every spike visible, but trends buried in the band", "100 steps: more points and finer timing, but about √10 ≈ 3× more wiggle than 1000", "1000 steps: clean trend and a clear lr drop, but a spike of a few steps is averaged away", "a reasonable answer uses a smoothed plot for the trend and checks the raw list (or its max) for spikes"]}
+  ],
+  "compare": [
+    {"with": "z2h-4-mlp/learning-rate-finder", "q": "The lr finder also plots loss against something while it changes. What is on the x-axis there vs here, why does that plot also look noisy, and when would smoothing mislead you on each?", "answer": ["lr finder: x is the (growing) learning rate, one short step each; here x is the training step at a fixed lr schedule", "both plot single-minibatch losses, so both are noisy", "smoothing the lr-finder plot blurs which lr the loss starts to blow up at; smoothing here hides short spikes", "each answers a different question: which lr to use vs is training still improving"]},
+    {"with": "z2h-4-mlp/splits-and-fit", "q": "The smoothed curve and the final train/val losses both summarise how good the model is. What does each actually measure, and which one decides whether a change helped?", "answer": ["smoothed curve: minibatch losses on the training set, with the weights moving inside each window", "final split losses: one pass over a whole split with fixed weights, in eval mode", "only the val loss says whether the model generalises; the curve says whether training is still making progress", "a curve can keep falling while val stops improving (overfitting)"]}
+  ],
+  "predict": {"q": "You rerun the full lab with the lr kept at 0.1 for all 200,000 steps (no decay). Without running it, what happens to the smoothed curve around point 150, and to the raw spread in the last 1000 steps?", "answer": "Expect no step down at point 150: the curve just keeps its slow slope. Expect the raw spread to stay wide, because most of it is minibatch luck, which the lr doesn't change. The lr cut lowers the <i>level</i> the smoothed curve settles at (0.331 → 0.319 with decay); it doesn't remove the noise. Run it to check: change <code>0.01</code> to <code>0.1</code> in <code>train</code>'s lr line, in a copy."},
+  "apply": {
+    "task": "Run <code>python labs/smooth-loss-plot.py --quick</code> (20,000 steps, lr drop at 15,000) and save <code>lossi</code>. Smooth it three ways: <code>view(-1, 100)</code>, <code>view(-1, 1000)</code>, <code>view(-1, 5000)</code>. For each, count the points, compare the last window before step 15,000 with the first one after, and measure the standard deviation of the window means between steps 10,000 and 15,000.",
+    "done": "You get 200, 20 and 4 points. Before → after the drop: 0.3437 → 0.3382 (100), 0.3491 → 0.3386 (1000), 0.3505 → 0.3374 (5000). The std of window means is about 0.0036 for 100-step windows vs 0.0010 for 1000-step windows, close to the √10 ≈ 3.2× the √n rule predicts.",
+    "hint": "Return <code>lossi</code> from the lab (or <code>json.dump</code> it), then <code>L = torch.tensor(lossi); s = L.view(-1, w).mean(1); d = 15000 // w; s[d-1], s[d]</code>. With 5000-step windows there's only one window before 10,000–15,000, so skip the std there."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: the cause of the late-training swings, or what removing the lr decay would do?",
+    "What couldn't you explain cleanly: why the noise shrinks by √n, or why <code>mean(1)</code> and not <code>mean(0)</code>?",
+    "Which relationship is still fuzzy: minibatch size → noise, or window size → what the plot can still show?",
+    "Would you trust a 0.007 difference between two models read off smoothed curves? What would you check instead?",
+    "Before the next card, can you say what <code>lossi</code> actually stores and why it's in log10?"
+  ],
+  "revisit": ["z2h-4-mlp/minibatches", "z2h-4-mlp/view-storage", "z2h-4-mlp/learning-rate-finder"],
+  "prereq": ["z2h-4-mlp/minibatches"]
+}

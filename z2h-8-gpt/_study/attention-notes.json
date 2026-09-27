@@ -1,0 +1,59 @@
+{
+  "prime": {
+    "problem": "You can now write one attention head, but not yet say what it can and can't see: whether it knows word order, whether sequences in a batch leak into each other, or which single line decides if a token may peek at the future. Without that, you can't tell a GPT block from a BERT-style block or a translator's.",
+    "fits": "This card steps back from the head you built on the self-attention card and names its properties. It reuses the masked softmax (which picks the edges) and explains why the position table from the embeddings card was needed.",
+    "expect": ["attention as a directed graph of nodes", "sets vs sequences (no built-in order)", "batch isolation", "encoder vs decoder blocks (the mask line)", "self- vs cross-attention"],
+    "goal": "Predict, for any attention setup, which tokens can influence which outputs, and turn a decoder block into an encoder block or a cross-attention block by changing one line."
+  },
+  "attend": [
+    "Which part of the head decides the graph's edges, and which part decides the edge weights?",
+    "If attention has no idea of order, where exactly does GPT get order from, and does the mask add any of it?",
+    "Why can't sequence 0 see sequence 1 even though they sit in the same tensor and go through the same matmul?",
+    "What would go wrong in training a next-character model if you deleted the <code>masked_fill</code> line?",
+    "In cross-attention, which of q, k, v comes from which source, and which shape sets the number of outputs?"
+  ],
+  "core": {
+    "must": [
+      "Scores are dot products of contents only → nothing in the formula mentions a position → attention treats its inputs as a set (shuffle in = shuffle out) → order must be injected by adding a position embedding to <code>x</code>",
+      "The mask sets which scores become −∞ → −∞ becomes weight 0 after softmax → the mask <i>is</i> the graph's edge list → keep the triangle and token t hears only 0…t (decoder, can generate); delete it and every token hears all (encoder, sees the answer)",
+      "The batched matmul <code>(B,T,hs) @ (B,hs,T)</code> multiplies each sequence's matrices separately → <code>wei</code> is (B,T,T), never (BT,BT) → sequences in a batch can't exchange information (and it costs B·T² scores, not (BT)²)",
+      "Queries decide who is asking, keys and values decide who is answering → take q from <code>x</code> but k, v from another source → cross-attention: one output per query, weights over the source's length (8 queries × 6 keys → wei (4, 8, 6))"
+    ],
+    "elevated": [
+      "The triangular mask is tied to slot numbers → with the mask on, shuffling the tokens does <i>not</i> just shuffle the output (slot 0 only ever hears itself) → the mask leaks a weak sense of order, but not enough to replace position embeddings"
+    ],
+    "reference": ["<code>masked_fill(tril[:T, :T] == 0, float('-inf'))</code> is gpt.py L84", "<code>tril</code> is a <code>register_buffer</code>, not a parameter", "the lab's weights already include the 1/√head_size scaling from the next card", "the permutation used in the lab: <code>[3, 0, 7, 1, 6, 2, 5, 4]</code>"]
+  },
+  "compress": {
+    "prompt": "From memory, draw 8 nodes and the incoming edges of node 3 for a decoder and for an encoder, then write one sentence each for the five notes: graph, sets, batch, mask, source.",
+    "checklist": [
+      "each node's output is a weighted sum of the values of the nodes with edges into it, with data-dependent weights",
+      "no positions in the math, so position embeddings are needed",
+      "sequences in a batch are separate pools; the matmul is batched",
+      "decoder = triangular mask (can generate), encoder = no mask (sees everything)",
+      "self-attention takes q, k, v from one <code>x</code>; cross-attention takes k, v from another source"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why shuffling the 8 input tokens of an unmasked head without position embeddings gives exactly the old outputs, shuffled.", "kind": "concept", "answer": ["each score is q·k between two tokens' contents", "each output is a weighted sum over the whole set, so it doesn't depend on where the tokens sit", "moving a token moves its output row with it and changes nothing else"]},
+    {"q": "Walk through what happens to output position 2 of sequence 0 when you change token 5 of sequence 0, in a decoder head. Then do the same for an encoder head.", "kind": "mechanism", "answer": ["decoder: row 2's scores against tokens 3–7 are masked to −∞, so token 5 has weight 0 → output 2 doesn't move (the lab: positions 0–4 unchanged)", "encoder: token 5's key changes every row's scores and its value is mixed into every output → output 2 changes", "in both cases outputs 5–7 (decoder) or all outputs (encoder) can move"]},
+    {"q": "You're building a model that reads a whole product review and outputs one sentiment label. Encoder or decoder block? What does each choice cost you?", "kind": "tradeoff", "answer": ["encoder: every token sees every other, so each token's vector uses the whole review", "a decoder would throw away the right-hand context for early tokens for no reason", "the encoder can't generate text one token at a time, but this task doesn't need that"]},
+    {"q": "Why does batching 4 sequences of length 8 cost 256 attention scores rather than 1,024, and what would break if it were 1,024?", "kind": "tradeoff", "answer": ["batched matmul: 4 × (8 × 8) = 256 pairs", "one pool of 32 tokens: 32 × 32 = 1,024 pairs", "then unrelated sequences would read each other and the result would depend on which sequences were batched together"]}
+  ],
+  "compare": [
+    {"with": "z2h-5-batchnorm/batchnorm-forward", "q": "Attention never mixes examples across the batch; BatchNorm does. Which design choice causes each behaviour, and how does each fail?", "answer": ["BatchNorm computes a mean and variance over the batch dimension, so every example's output depends on its batch-mates", "attention's matmul is batched per example, so each sequence only reads itself", "BatchNorm fails at batch size 1 and needs running statistics at inference", "attention can't borrow information from other examples, which is what you want"]},
+    {"with": "z2h-7-wavenet/convolutions-and-workflow", "q": "A convolution and an attention head both mix neighbouring tokens. What is fundamentally different about which neighbours they mix and with what weights?", "answer": ["convolution: a fixed window at fixed offsets, weights learned but the same for every input", "attention: any node with an edge in (set by the mask), weights recomputed from content for every input", "convolution knows position through its offsets; attention has none and needs position embeddings", "attention costs grow with T² per sequence; a convolution's cost grows linearly with T"]},
+    {"with": "z2h-8-gpt/decoder-nanogpt-chatgpt", "q": "Our model is decoder-only; the original Transformer for translation used an encoder plus a decoder with cross-attention. What does each part do there, and why doesn't our Shakespeare model need the encoder?", "answer": ["encoder: unmasked self-attention over the source sentence", "decoder: masked self-attention over the output so far, plus cross-attention with q from the decoder and k, v from the encoder", "we generate text with no separate source to condition on, so there's nothing to cross-attend to"]}
+  ],
+  "predict": {"q": "Keep the triangular mask on, still with no position embeddings, and shuffle the 8 tokens. Is the output now the old output, shuffled?", "answer": "No: on the lab's head, <code>allclose(out_shuffled, out[:, perm])</code> is False. The mask is attached to slots, not to tokens, so a token moved into slot 0 can suddenly hear only itself (its output equals its own value vector exactly). The decoder is no longer a pure set operation, but that weak sense of order is why position embeddings are still added."},
+  "apply": {"task": "In <code>labs/attention-notes.py</code>, add a position table to the encoder shuffle check: after <code>torch.manual_seed(0)</code>, make <code>pos = torch.randn(T, C)</code>, then compare <code>head(x + pos, mask=False)</code> shuffled against <code>head(x[:, perm] + pos, mask=False)</code>. Then change the cross-attention source from 6 vectors to 10 and print the shapes.", "done": "The shuffle check with positions prints False (it printed True without them), and cross-attention with 10 source vectors gives wei (4, 8, 10) and out still (4, 8, 16).", "hint": "Add <code>pos</code> after shuffling <code>x</code>, not before: the positions belong to the slots, and that's the whole point."},
+  "reflect": [
+    "Which prediction did you get wrong: the unmasked shuffle, or the masked one?",
+    "What couldn't you explain cleanly: why the mask is the edge list, or why the batch never mixes?",
+    "Which relationship is still fuzzy: no positions in the math → set behaviour, or set behaviour → position embeddings?",
+    "Could you turn the head into a cross-attention head from memory, and say which length sets <code>wei</code>'s last dimension?",
+    "Before the scaled-attention card: what do you expect happens to <code>wei</code> if the scores grow large?"
+  ],
+  "revisit": ["z2h-8-gpt/self-attention-head", "z2h-8-gpt/masked-softmax", "z2h-8-gpt/embeddings-and-positions", "z2h-5-batchnorm/batchnorm-forward"],
+  "prereq": ["z2h-8-gpt/self-attention-head"]
+}

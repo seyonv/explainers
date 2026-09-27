@@ -1,0 +1,66 @@
+{
+  "prime": {
+    "problem": "In a deep stack a bad init scale compounds layer by layer: the signal fades to nothing or piles up at ±1, and the early layers get far more or far less gradient than the late ones. The loss is one number and can't tell you which layer is sick.",
+    "fits": "It uses the <code>Linear</code>/<code>Tanh</code> classes from the pytorchify card and tests the gain from the Kaiming card on a 5-layer tanh stack instead of one layer. The next card adds the last diagnostic, the update:data ratio.",
+    "expect": ["<code>layer.out</code> and <code>layer.out.grad</code> (with <code>retain_grad()</code>)", "std and % saturated per layer", "the gain sweep: 0.5, 1, 5/3, 3", "the fully linear stack and why it collapses", "BatchNorm making the forward histograms gain-proof"],
+    "goal": "Read per-layer activation and gradient statistics, say whether a stack's init is healthy, and predict how a wrong gain shows up in each of them."
+  },
+  "attend": [
+    "Why does gain 0.5 halve both the activations going forward and the gradients going backward, layer after layer?",
+    "Gain 3 saturates about 42% of the tanh outputs; why does the gradient still grow toward layer 1 instead of vanishing?",
+    "Without the tanh layers, why does gain 5/3 now blow the activations up to std 12.78, while gain 1 holds them at 1?",
+    "If six Linear layers collapse into one (30, 27) matrix, what does the tanh actually buy you?",
+    "BatchNorm makes the activation histograms identical at gain 1 and 5/3; which statistic still differs, and why does that matter for the learning rate?"
+  ],
+  "core": {
+    "must": [
+      "Each Linear multiplies the spread by about the gain (after 1/√fan_in) → each tanh squeezes it back → gain too small (0.5) and the squeeze wins: std 0.41 → 0.02 by layer 5; gain too big (3) and tanh saturates (about 42%); 5/3 roughly balances the squeeze → std settles near 0.66",
+      "The backward pass runs the same layers in reverse → each step back multiplies the gradient by the (gained) weights and by the tanh gate <code>1 − t²</code> → a per-layer factor off 1 compounds → layer-1 vs layer-5 gradient: 0.061 at gain 0.5, 3.2 at gain 3, about 1.35 at 5/3 → layers learn at very different speeds unless the ratio is near 1",
+      "Remove the tanh → nothing squeezes → the right gain is exactly 1 (5/3 grows std ×5/3 per layer to 12.78) → but a product of matrices is one matrix → the stack can only compute a linear function → the nonlinearity is what makes depth worth having",
+      "BatchNorm re-standardises every preactivation → activation std (0.63–0.65) and saturation (about 2%) stop depending on the gain → but the gradient scale still moves with it (2.0–2.6e-03 at gain 1 vs 2.6–3.7e-03 at 5/3) → the update size, and so the lr, still needs checking"
+    ],
+    "elevated": [
+      "<code>layer.out</code> is a non-leaf tensor → PyTorch frees its <code>.grad</code> after backward unless you call <code>retain_grad()</code> → without it the gradient histogram is empty; with it you pay memory, so it's debug-only (the notebook marks it AFTER_DEBUG)"
+    ],
+    "reference": [
+      "the 0.97 saturation threshold (a convention; the saturated-tanh card used 0.99)",
+      "the plotting calls: <code>torch.histogram(t, density=True)</code> and <code>plt.plot(hx[:-1], hy)</code>",
+      "the tanh layers sit at list positions 1, 3, 5, 7, 9 without BN and 2, 5, 8, 11, 14 with BN",
+      "<code>torch.nn.init.calculate_gain('tanh')</code> = 5/3",
+      "the net's shape: n_embd 10, 100 hidden units, 5 hidden layers, output layer shrunk ×0.1"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, sketch the 5-layer tanh stack and write next to it what you would see in the activation histograms and in the layer-1 vs layer-5 gradient at gain 0.5, 5/3 and 3. Then add one line for the linear stack and one for BatchNorm.",
+    "checklist": [
+      "measure per layer after one forward and one backward pass: activation std, % saturated, gradient std",
+      "gain 0.5: activations shrink toward 0 and gradients shrink going back (16× at layer 1)",
+      "gain 3: heavy saturation, gradients lopsided (larger at layer 1)",
+      "gain 5/3: std about 0.65, about 5% saturated, gradients roughly even",
+      "no tanh: gain must be 1, and the whole stack is one linear map",
+      "BN: forward stats become gain-proof, gradient scale does not"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why you look at each layer's statistics separately instead of at the loss or one overall gradient norm.", "kind": "concept", "answer": ["the problem is how scales change from layer to layer, and a single number averages that away", "the loss can look fine while one layer's activations have collapsed (gain 0.5: std 0.02 at layer 5)", "a global norm hides lopsidedness (gain 3: layer 1's gradient 3.2× layer 5's)"]},
+    {"q": "Walk the gradient back from tanh layer 5 to tanh layer 1 at gain 0.5. What multiplies it at each step, and what is it at layer 1 if it is 3.1e-04 at layer 5?", "kind": "mechanism", "answer": ["each step back multiplies by the next Linear's weights (scaled by 0.5) and by the tanh gate 1 − t², which is close to 1 here because the activations are small", "so the gradient roughly halves per step", "four steps: 3.1e-04 · 0.5⁴ ≈ 1.9e-05, which is what the lab measures"]},
+    {"q": "You have to choose between gain 1.5 and 5/3 for this stack. What does each give you, and which statistic would you use to decide?", "kind": "tradeoff", "answer": ["1.5: layer-5 std 0.61, 1.94% saturated, layer-1/layer-5 gradient 1.17", "5/3: layer-5 std 0.66, 6.13% saturated, gradient ratio 1.38", "flatter gradients favour 1.5; stronger, steadier activations favour 5/3", "both are fine; the plots rule out 0.5 and 3, not the fine tuning"]},
+    {"q": "Someone removes all the tanh layers to 'make training easier' and keeps gain 5/3. What will the plots show, and what have they given up even if they fix the gain?", "kind": "tradeoff", "answer": ["activations grow about ×5/3 per layer (to std 12.78) and gradients grow going back (2.6e-03 vs 3.2e-04)", "fixing it needs gain exactly 1", "even then six Linears are one (30, 27) matrix, so the model is linear and loses what depth offers"]}
+  ],
+  "compare": [
+    {"with": "z2h-5-batchnorm/kaiming-init", "q": "The Kaiming card derives a gain on paper; this card measures one in a deep stack. What does each tell you that the other can't, and how does each fail?", "answer": ["Kaiming: a rule from the layer's shape and nonlinearity, before any code runs", "the plots: whether the whole stack is actually healthy, including the compounding across layers", "Kaiming assumes independent zero-mean inputs, true only at init; the plots show what really happens", "the plots are one batch at one moment; they can't tell you where training drifts later"]},
+    {"with": "z2h-5-batchnorm/update-to-data-ratio", "q": "Both are diagnostics for the same net. Which question does each answer, and why can the histograms look perfect while the update ratio says the lr is wrong?", "answer": ["histograms: are activations and gradients well scaled through depth?", "update:data: is each step changing the weights by a sensible fraction (about 1e-3)?", "with BN the forward histograms are gain-proof, but the gradient scale, and so the update size, still depends on the gain and the lr"]},
+    {"with": "z2h-5-batchnorm/saturated-tanh", "q": "The saturated-tanh card fixed one hidden layer by staring at a histogram of <code>h</code>. What changes when the same idea is applied to five stacked layers?", "answer": ["same signal: a histogram piled at ±1 means a tiny gate 1 − t²", "with depth, a per-layer factor compounds, so you compare layers, not just look at one", "you also need the backward view, because gradient scale can drift even when activations look steady"]}
+  ],
+  "predict": {"q": "Now add BatchNorm and use gain 0.5, the setting that faded the no-BN stack to std 0.02. After 1001 training steps, what will the activation std of tanh layers 1–5 be, and will the gradient std match the gain-1 run (2.6e-03 … 2.0e-03)?", "answer": "The activations are rescued: std 0.64 0.64 0.65 0.65 0.66, with 2.84% down to 0.78% saturated. The gradients are not the same: 1.9e-03 … 1.4e-03, about 0.7× the gain-1 run (computed). BatchNorm fixes the forward pass whatever the gain, but a smaller weight scale still changes the gradient size, and with it the size of each update."},
+  "apply": {"task": "Add gains 1.25, 1.5 and 2.0 to the lab's no-BN sweep. For each gain, print the five activation stds, layer 5's saturation, and the ratio of layer 1's gradient std to layer 5's. Find the gain where that ratio is closest to 1, and say in one sentence why the lecture still uses 5/3.", "done": "Your numbers match: 1.25 → std 0.68 0.58 0.54 0.50 0.50, sat 0.06%, ratio 0.88 · 1.5 → 0.73 0.65 0.63 0.61 0.61, 1.94%, 1.17 · 2.0 → 0.79 0.74 0.74 0.73 0.74, 16.56%, 1.82. The flattest gradients lie between 1.25 and 1.5, and you can say what 5/3 trades for its steadier activations.", "hint": "Copy the loop in section 1 of <code>labs/activation-gradient-plots.py</code>, and compute the ratio from <code>stats(layers, Tanh)</code>: the last element of each row is the grad std."},
+  "reflect": [
+    "Which prediction did you get wrong: that gain 3's gradients grow toward layer 1, or that BatchNorm leaves the gradient scale gain-dependent?",
+    "What couldn't you explain cleanly: why a linear stack needs gain exactly 1, or why it is pointless even then?",
+    "Which relationship is still fuzzy: gain → activation spread per layer, or activation spread → gradient spread going back?",
+    "Could you look at a stranger's four histograms and say which gain made them?",
+    "Before your next deep net trains for an hour, which three numbers per layer will you print first?"
+  ],
+  "revisit": ["z2h-5-batchnorm/kaiming-init", "z2h-5-batchnorm/saturated-tanh", "z2h-5-batchnorm/batchnorm-forward", "z2h-2-micrograd/a-neuron"],
+  "prereq": ["z2h-5-batchnorm/pytorchify-layers", "z2h-5-batchnorm/kaiming-init"]
+}

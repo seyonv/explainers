@@ -1,0 +1,60 @@
+{
+  "prime": {
+    "problem": "Counting bigrams gives the best model for one character of context, but the table needs a row for every possible context and can't grow. Without a way to <i>learn</i> the probabilities from the loss, there is no route to models that look further back.",
+    "fits": "This closes lecture 2. The softmax card turned <code>one_hot(xs) @ W</code> into probabilities and a loss of 3.7693 on 'emma'; micrograd gave you the forward / zero-grad / backward / update loop. This card runs that loop on all 228,146 bigrams.",
+    "expect": ["the vectorised NLL loss", "<code>requires_grad</code>, <code>W.grad = None</code>, <code>loss.backward()</code>", "one-hot @ W as a row lookup (W as log-counts)", "L2 regularisation as smoothing", "sampling from the trained net"],
+    "goal": "Train the one-layer bigram net to about 2.47, explain why it converges to the counting model rather than beating it, and say what the regularisation strength corresponds to in the counting world."
+  },
+  "attend": [
+    "Why can the net's training loss approach 2.4540 but never go below it?",
+    "If <code>one_hot(i) @ W</code> is just row <code>i</code> of <code>W</code>, what should each row of <code>W</code> turn into after training?",
+    "Why does the <code>q</code> row lag behind the '.' row after 100 steps, even though both use the same learning rate?",
+    "Why does pushing every weight toward 0 have the same effect as adding fake counts?",
+    "Which line of this loop would change if the model saw three previous characters instead of one, and which lines would stay the same?"
+  ],
+  "core": {
+    "must": [
+      "the net sees only the previous character, like the count table → the normalised counts already maximise the likelihood on this data → gradient descent can only approach 2.4540 from above (2.4729 at 100 steps), never beat it",
+      "one-hot row × <code>W</code> = one row of <code>W</code> → logits are a table lookup → softmax exponentiates and normalises that row → <code>W</code> becomes log-counts (<code>W = log(N+1)</code> gives exactly 2.4546)",
+      "<code>W = 0</code> → all logits 0 → all counts 1 → uniform probabilities → so an L2 penalty that pulls <code>W</code> toward 0 pulls the model toward uniform → its strength is the fake-count knob",
+      "each row's gradient comes only from examples that start with that character → rare rows (<code>q</code>: 272 of 228,146) get tiny gradients → they converge slowly (P[qu] 0.3548 at 100 steps vs 0.6923 from counting)"
+    ],
+    "elevated": [
+      "<code>F.one_hot</code> builds a 228,146×27 float matrix every step just to select rows → indexing <code>W[xs]</code> gives identical losses without the matrix (exercise E04)",
+      "the loss is averaged over all 228,146 examples → every step is one full pass over the data → a high learning rate (50) is affordable because the gradient is exact, not a noisy minibatch estimate"
+    ],
+    "reference": ["seed 2147483647 for <code>torch.Generator().manual_seed</code>", "<code>W.grad = None</code> vs zeroing (None is cheaper)", "<code>W.data += -lr * W.grad</code> update syntax", "<code>probs[torch.arange(num), ys]</code> fancy indexing", "<code>keepdims=True</code> in the row sum", "regularisation coefficient 0.01 and learning rate 50"]
+  },
+  "compress": {
+    "prompt": "From memory, draw one training step as a loop (data → logits → probs → loss → gradient → update) and annotate it with the start and end losses. Then explain in 3–4 sentences why the result matches counting.",
+    "checklist": [
+      "forward pass: one-hot @ W → exp → normalise → pick the true next char → −log → mean",
+      "backward: <code>loss.backward()</code> fills <code>W.grad</code>; update steps against it with lr 50; gradients reset each step",
+      "loss falls from 3.7590 toward 2.4540, the counting answer, and can't go lower",
+      "one-hot @ W is a row lookup, so <code>W</code> learns log-counts",
+      "the L2 term pulls W toward 0, i.e. toward uniform, exactly like fake counts"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why a one-layer net with one-hot inputs and a softmax is the <i>same model</i> as the normalised count table, not merely a similar one.", "kind": "concept", "answer": ["one-hot @ W selects row i of W, so each input character has its own free row of 27 logits", "softmax of that row is an arbitrary distribution over next characters, the same freedom a row of P has", "minimising NLL over those rows lands on the normalised counts, so W ≈ log N per row (up to a constant)"]},
+    {"q": "Walk through one iteration of the loop on all words: what shapes appear, what does <code>loss.backward()</code> produce, and what does the update line do?", "kind": "mechanism", "answer": ["xenc (228146, 27) → logits (228146, 27) → probs rows sum to 1", "fancy-index the true-next-char probability, −log, mean (+ 0.01·mean(W²)) → a scalar loss", "backward fills <code>W.grad</code>, shape 27×27", "<code>W.data += -50 * W.grad</code> moves every weight against its gradient; <code>W.grad = None</code> clears it before the next backward"]},
+    {"q": "You raise the regularisation from 0.01 to a large value. What happens to the training loss, the samples, and the <code>q</code> row, and what's the counting-model equivalent?", "kind": "tradeoff", "answer": ["weights are pulled harder toward 0, so rows flatten toward uniform", "training NLL rises toward log 27 = 3.2958; samples look more random", "equivalent to adding many fake counts (the smoothing card: +100000 gives 3.2837)", "the benefit is robustness on unseen or rare bigrams, bought with fit on the training data"]},
+    {"q": "Counting takes one pass and is exact. Name the conditions under which you'd still choose the gradient-descent route.", "kind": "tradeoff", "answer": ["when the context is longer than one character: tables need 27<sup>k</sup> rows (729 for two, 19,683 for three)", "when the logits come from a function (MLP, transformer) that can't be filled in by counting", "for a pure bigram model, counting wins: exact, instant, no learning rate"]}
+  ],
+  "compare": [
+    {"with": "z2h-3-bigram/smoothing", "q": "Fake counts vs an L2 penalty on W: what is each one adding, which design choice makes them equivalent here, and how does each fail at the extremes?", "answer": ["fake counts add to N before normalising; L2 adds a penalty to the loss", "they match because W = 0 means uniform, so pulling W to 0 is pulling toward the same place fake counts push", "too little: zero-probability bigrams (counting) or large weights on rare rows (net); too much: both collapse to uniform, loss → 3.2958", "only L2 carries over to bigger networks, where there are no counts to add to"]},
+    {"with": "z2h-2-micrograd/mlp-and-training-loop", "q": "The micrograd MLP loop and this loop share the same four steps. What is fundamentally different about what flows through them, and what does that change in speed and in the learning rate you can use?", "answer": ["micrograd: one Python Value per scalar, 41 parameters, MSE on 4 examples", "here: one tensor W of 729 weights, 228,146 examples in one vectorised pass, NLL loss", "tensor ops run in C++, so a full pass over 228k examples is fast", "same logic: zero grads, backward, step against the gradient; forgetting to reset grads breaks both"]},
+    {"with": "z2h-4-mlp/why-counts-explode", "q": "This card says the net 'scales' and counting doesn't. What exactly grows with context length in each approach?", "answer": ["counting: rows grow as 27<sup>k</sup> for k characters of context, and most stay nearly empty", "net: only the logits computation changes; parameter count is chosen by you, not forced by the vocabulary", "the loss, backward and update code stay the same"]}
+  ],
+  "predict": {"q": "You delete <code>F.one_hot</code> and write <code>logits = W[xs]</code> instead, keeping the seed, lr 50 and no regularisation. What loss do you get at step 0 and at step 99, compared with the one-hot version?", "answer": "Exactly the same: 3.7590 at step 0 and 2.4729 at step 99 (computed). Selecting row <code>xs[i]</code> of <code>W</code> is what the one-hot matmul was doing all along, and the gradient flows back to the same rows. That's lecture 2's exercise E04, and it's why the next lecture replaces one-hot with an embedding lookup."},
+  "apply": {"task": "Modify your training loop in two ways: replace <code>F.one_hot(xs, num_classes=27).float() @ W</code> with <code>W[xs]</code>, and replace the softmax + NLL lines with <code>F.cross_entropy(logits, ys)</code>. Drop the regularisation line. Run 100 steps at lr 50 with the same seed.", "done": "Step 0 prints 3.7590 and step 99 prints 2.4729, the same as the one-hot version.", "hint": "<code>F.cross_entropy</code> takes the raw logits (not probs) and the integer targets <code>ys</code>; it does the exp, normalise, log and mean for you."},
+  "reflect": [
+    "Which prediction did you get wrong: the floor at 2.4540, or the <code>W[xs]</code> losses?",
+    "What couldn't you explain cleanly: why <code>W</code> becomes log-counts, or why W = 0 is uniform?",
+    "Which relationship is still fuzzy: row lookup → W is log-counts, or L2 toward 0 → smoothing?",
+    "Why does a rare row learn slowly, and what would you change to speed it up?",
+    "If counting is better for bigrams, what convinced you (or didn't) that the neural route is worth it?"
+  ],
+  "revisit": ["z2h-3-bigram/one-hot-and-linear-layer", "z2h-3-bigram/softmax-as-exp-normalise", "z2h-3-bigram/smoothing", "z2h-2-micrograd/mlp-and-training-loop"],
+  "prereq": ["z2h-3-bigram/softmax-as-exp-normalise", "z2h-2-micrograd/mlp-and-training-loop"]
+}

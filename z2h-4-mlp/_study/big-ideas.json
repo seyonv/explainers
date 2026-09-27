@@ -1,0 +1,69 @@
+{
+  "prime": {
+    "problem": "The MLP lecture mixes one new model with a pile of machine-learning habits: minibatches, learning-rate sweeps, splits, sanity checks. Without a map it is easy to finish able to retype the notebook but unable to say why embeddings beat counts, or which number tells you what to change next.",
+    "fits": "This card spans the whole course. It compresses the twelve MLP cards into six claims. It builds on the bigram lecture's count table and one-hot linear layer, and on micrograd's forward → zero grad → backward → update loop.",
+    "expect": ["27ⁿ count rows vs one learned point per character", "the embedding lookup as a one-hot matmul", "<code>F.cross_entropy</code> and the max-subtraction trick", "overfit one batch, then minibatches and lr decay", "train / dev / test and finding the bottleneck"],
+    "goal": "Draw the whole MLP pipeline from memory, from a name to a loss with every shape, plus the training loop and splits around it, and say which measured number would make you change which part."
+  },
+  "attend": [
+    "Why does adding one character of context multiply a count table's rows by 27, but add only one slice of weights to W1?",
+    "If <code>C[5]</code> equals <code>one_hot(5) @ C</code>, how do gradients reach C when the forward pass only indexes it?",
+    "What single fact about softmax lets <code>F.cross_entropy</code> subtract the row max without changing the loss?",
+    "Why is 0.2515, not 0, the right target for the 32-row overfit test, and what would a loss of 0.20 there tell you?",
+    "Why does a 32-row gradient help most early in training and least near the bottom, and which two knobs trade off against that noise?",
+    "When train ≈ dev, how did Karpathy decide the embedding, not the hidden layer, was the thing to grow?"
+  ],
+  "core": {
+    "must": [
+      "A count table needs a row per context → 27ⁿ rows (19,683 at n = 3, only 28.9% ever seen) → most rows are empty or thin → give each character a learned point in C shared by all contexts → similar characters drift together → what is learned in one context transfers to similar ones",
+      "Indexing <code>C[5]</code> = <code>one_hot(5) @ C</code> → the embedding is a linear layer on one-hot inputs → gradients flow into the used rows of C like any weight → <code>C[X]</code> embeds a whole (32, 3) batch at once, then <code>view(-1, 6)</code> lays each row's three points side by side for free",
+      "Every training change is judged by a number on the right data → 32 fixed rows must overfit to just above 0.2515 (proves the loop) → random 32-row minibatches take ~1,000× cheaper steps (2.5214 vs 10.7096 in ~1.2 s) → near the bottom noise dominates → lr decay 0.1 → 0.01 (2.3401)",
+      "Training loss can't tell fitting from memorising → hold out dev and test names → train ≈ dev means underfitting → grow the part that squeezes the model → 3× hidden units gave dev −0.03, 2 → 10 embedding numbers gave −0.06 → final dev 2.1701 with 11,897 params"
+    ],
+    "elevated": [
+      "<code>F.cross_entropy</code> subtracts each row's max logit before exp and stays in log space → no inf/nan for large logits (the hand-written version turns a logit of 100 into nan) → it also records 2 backward steps instead of 7, with a one-line gradient"
+    ],
+    "reference": [
+      "block_size 3, the 32 examples from the first five names, 228,146 examples in all",
+      "the seed 2147483647 and the split seed 42; split sizes 182,625 / 22,655 / 22,866 (Part 2's notebook prints 182,441 / 22,902 / 22,803)",
+      "parameter counts: 3,481 (2-D, 100 hidden), 10,281 (2-D, 300), 11,897 (10-D, 200)",
+      "<code>torch.randint</code>, <code>lrs = 10**torch.linspace(-3, 0, 1000)</code>, <code>torch.multinomial</code> for sampling"
+    ]
+  },
+  "compress": {
+    "prompt": "Card closed, one sheet of paper: draw the MLP's whole engine from memory. Start from the name <code>emma</code>, turn it into (context → next char) rows, and follow one batch through lookup, reshape, hidden layer, logits and loss, writing the shape on every arrow. Around it draw the training loop and the three splits, and label each part with the big idea it shows.",
+    "checklist": [
+      "padded rolling window: <code>...→e</code> to <code>mma→.</code>; 5 names → X (32, 3)",
+      "<code>C[X]</code> (32, 3, 2) → <code>view(-1, 6)</code> → tanh hidden (32, 100) → logits (32, 27), with C marked as shared by every context",
+      "<code>F.cross_entropy</code> as the one call that replaces exp / normalise / pick / −log / mean, and why it can't overflow",
+      "the loop on 32 random rows, lr 0.1 then 0.01, with the 32-row overfit check as step zero",
+      "train / dev / test, with 'train ≈ dev → grow the bottleneck' and the 2 → 10 embedding as the example"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain, without numbers first, why a table of learned character points generalizes to contexts the model has never seen, while a count table can't. Then give the two numbers that show the count table's problem at 3 characters.", "kind": "concept", "answer": ["every context goes through the same C and weights, and the output changes smoothly as points move", "characters used alike get nearby points, so evidence for one context helps similar ones", "a count table's rows share nothing: .an teaches .on nothing", "19,683 possible contexts, only 5,686 (28.9%) ever seen"]},
+    {"q": "Walk one minibatch through the final model: name the tensor and its shape after each step, from 32 row ids to the loss.", "kind": "mechanism", "answer": ["<code>ix</code> (32,) random ids → <code>Xtr[ix]</code> (32, 3)", "<code>C[Xtr[ix]]</code> (32, 3, 10) → <code>view(-1, 30)</code> (32, 30)", "<code>tanh(@W1 + b1)</code> (32, 200) → <code>@W2 + b2</code> logits (32, 27)", "<code>F.cross_entropy(logits, Ytr[ix])</code> → one number; backward, then <code>p.data += -lr * p.grad</code>"]},
+    {"q": "You have a new training loop and a big dataset. In what order would you run the overfit test, the lr sweep and the split evaluation, and what does each one rule out?", "kind": "tradeoff", "answer": ["overfit 32 rows first: rules out a broken loop (should land just above the hand-computed floor, 0.2515 here)", "then sweep lr on minibatches: rules out a step size that crawls or diverges (valley near 0.1)", "then train and compare train vs dev: rules out memorising, and says whether to grow or shrink the model", "test stays unopened until the end"]},
+    {"q": "Growing the hidden layer 100 → 300 cost 6,800 parameters for a dev gain of 0.03; then switching to 10-number embeddings with 200 hidden units (11,897 parameters, only 16% more than 10,281) gained another 0.06 on the same 50k steps. What design fact explains the difference?", "kind": "tradeoff", "answer": ["every hidden neuron only ever sees 3 × 2 = 6 numbers per example", "more neurons reading the same 6 numbers add little", "10-number embeddings give the hidden layer 30 inputs, more information per character", "the bottleneck was the input width, not the layer width"]}
+  ],
+  "compare": [
+    {"with": "z2h-3-bigram/bigram-counts", "q": "The bigram count table and the MLP both output 27 probabilities for the next character. What is fundamentally different about where those probabilities come from, which design choice causes it, and when would you still pick counts?", "answer": ["counts: one independent row per context, filled by tallying", "MLP: shared embeddings and weights, fitted by gradient descent, so contexts share evidence", "the design choice is sharing: rows share nothing, parameters are reused by every context", "counts win for short contexts with plenty of data (1 character: every row well filled); they fail as rows grow as 27ⁿ"]},
+    {"with": "z2h-3-bigram/train-neural-bigram", "q": "The neural bigram already used one-hot inputs, a weight matrix and a softmax loss. What does the MLP add on top of it, and what does each addition buy?", "answer": ["an embedding lookup instead of one-hot @ W: the same maths, cheaper, with a small learned point per character", "3 characters of context instead of 1, laid side by side with <code>view</code>", "a tanh hidden layer, so characters interact instead of each adding a fixed vote", "minibatches, lr decay and a dev split: dev 2.1701 vs the bigram's 2.45"]},
+    {"with": "z2h-2-micrograd/mlp-and-training-loop", "q": "micrograd's training loop and this lecture's loop run the same four moves. What changed between them, and which change is what makes training on 228,146 examples practical?", "answer": ["same: forward, zero the grads, backward, <code>p.data += -lr * p.grad</code>", "micrograd: scalar Value objects, 4 examples, the full batch every step", "here: tensors, and a random 32-row minibatch per step", "the minibatch is what makes it practical: ~1,000× cheaper steps"]}
+  ],
+  "predict": {"q": "The final 10-D model's first minibatch loss is 27.8817. A model that spread its probability evenly over all 27 characters would score −ln(1/27). Commit first: what is that number, and what does the gap say about the untrained network's logits?", "answer": "<b>3.2958</b>. 27.88 is far worse than knowing nothing, so the random init makes the logits large and <i>confidently wrong</i>: the plain <code>randn</code> weights give big preactivations and big logits. Karpathy's exercise E02 asks exactly this, and the next lecture opens by scaling the init down so the first loss starts near 3.30."},
+  "apply": {
+    "task": "Use the parameter formula and the shape chain on a design you haven't trained. Take block_size 4, 10 numbers per embedding and 200 hidden units. By hand: write the shape after each step for a batch of 32, then count every parameter tensor. Then say which one line of the final training code has to change, and which of the six big ideas tells you how to judge whether the extra character helped.",
+    "done": "Shapes: X (32, 4) → <code>C[X]</code> (32, 4, 10) → <code>view(-1, 40)</code> (32, 40) → h (32, 200) → logits (32, 27). Parameters: C 270 + W1 40 × 200 = 8,000 + b1 200 + W2 5,400 + b2 27 = <b>13,897</b>, vs 11,897 at block_size 3 (one more character adds exactly 10 × 200 = 2,000). The view becomes <code>view(-1, 40)</code>, and the judge is the dev loss against 2.1701, not the training loss.",
+    "hint": "params = 27·d + (block_size·d)·H + H + H·27 + 27. Only W1 depends on block_size."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: the uniform-guess loss, or the parameter count for block_size 4?",
+    "Which panel could you not redraw cleanly from memory, and which number or shape was missing?",
+    "Which relationship is still fuzzy: minibatch noise → loss stalls, or loss stalls → lr decay helps?",
+    "Could you explain to a friend why <code>C[5]</code> gets a gradient even though the forward pass never multiplies by it?",
+    "Which MLP card will you reopen before the BatchNorm lecture, which starts from this model's first loss?"
+  ],
+  "revisit": ["z2h-3-bigram/bigram-counts", "z2h-3-bigram/train-neural-bigram", "z2h-2-micrograd/mlp-and-training-loop"],
+  "prereq": []
+}

@@ -1,0 +1,61 @@
+{
+  "prime": {
+    "problem": "The toolkit is twelve separate cards: derivatives, logs, shapes, broadcasting, variance, softmax. Studied one at a time, they stay a pile of facts, and the lectures then use three of them in two lines of code (<code>logits = h @ W2 + b2</code>, <code>loss = F.cross_entropy(logits, Y)</code>) without stopping to say which is which.",
+    "fits": "This card spans the whole toolkit, the course before micrograd. It compresses the math and tensor cards into six claims, each tied to the lecture moment where Karpathy leans on it, so every later course can point back here.",
+    "expect": ["slopes that multiply along a chain and add across paths", "logs that turn a vanishing product into a sum", "shapes as the first thing to read: one matmul per layer, broadcasting from the right", "std that grows like √n, and dividing by √fan_in", "softmax plus −log p as the loss"],
+    "goal": "Draw one batch going through one layer to a loss from memory, with the shape at every step, the weight scaling, the softmax and loss numbers, and the backward arrow, and say which toolkit card each part comes from."
+  },
+  "attend": [
+    "In the chain-rule panel, which of the two local slopes makes dz/dx small, and what does that say about nudging a saturated tanh?",
+    "Why does summing logs keep the <i>same</i> best model as multiplying probabilities, even though the numbers look nothing alike?",
+    "In the shapes pipeline, which step copies numbers, which only relabels them, and which one does the arithmetic?",
+    "Why does the keepdim mistake give no error on the 3×3 table, when <code>(3, 4) + (3,)</code> does?",
+    "Where does the √10 in y's std come from, if every single x and w has std 1?",
+    "Why does adding 100 to every logit leave the loss unchanged while multiplying by 8 changes it a lot?"
+  ],
+  "core": {
+    "must": [
+      "Each op's slope is known locally → along a chain the slopes multiply (0.0707 × 2 = 0.1413) → where a value reaches the output by several paths the products add → one backward walk with <code>+=</code> gives every gradient (backprop)",
+      "Probabilities ≤ 1 multiply toward 0 → float32 rounds a long product to exactly 0.0 → log turns the product into a sum and keeps the ranking → every loss in the series is an average −log p, 3.2958 for a uniform guess over 27",
+      "A layer is many dot products sharing an input → rows of X are examples, columns of W are neurons → (n, k) @ (k, m) → (n, m) does them all in one call → read shapes first; broadcasting then stretches size-1 dims from the right, so a shape that fits the wrong way (a (3,) of row sums) runs silently",
+      "Variances of independent numbers add → a sum of fan_in products has std √fan_in (3.1613 at fan_in 10) → stacked layers explode or fade → divide w by √fan_in so each layer passes on std ≈ 1 → logits stay small, softmax stays soft and the first loss is near 3.2958"
+    ],
+    "elevated": [
+      "Softmax depends only on logit gaps → subtracting the max changes nothing but keeps every exponent ≤ 0 → no overflow; and the loss rewrites as log∑e<sup>z</sup> − z<sub>y</sub>, which is why <code>F.cross_entropy</code> takes raw logits rather than probabilities"
+    ],
+    "reference": ["the seven derivative rules and their numeric checks", "<code>torch.tensor</code> (int64) vs <code>torch.Tensor</code> (float32)", "<code>.view</code> vs <code>.reshape</code> and strides", "Bessel's n − 1 in <code>torch.var</code>", "<code>torch.multinomial(..., replacement=True, generator=g)</code>", "the M3 setup: cpu for makemore, mps for GPTs"]
+  },
+  "compress": {
+    "prompt": "Card closed, one sheet of paper: draw the toolkit's pipeline from memory. A batch of integer contexts goes through one layer to a loss: label the shape at every step, how W1 is scaled, the softmax with its numbers, the loss, and a backward arrow. Mark each part with the big idea it shows.",
+    "checklist": [
+      "X (32, 3) → C[X] (32, 3, 2) → <code>.view(-1, 6)</code> (32, 6) → @ W1 (6, 100) + b1 → (32, 100), with the inner 6s cancelling",
+      "W1 divided by √fan_in, with why: std 3.1613 → 0.9997 at fan_in 10",
+      "a sum you divide by kept as (n, 1) with <code>keepdim=True</code>",
+      "logits → exp → ÷ sum → p → −log p[y]: [2.0, 1.0, 0.1] with y = 0 gives 0.4170",
+      "the loss is a sum of logs, not a product of probabilities",
+      "backward: local slopes multiply along the chain, and a value used twice gets both contributions added"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain, without code, why a neural net's loss is built from log-probabilities rather than from the probability of the whole dataset.", "kind": "concept", "answer": ["the probability of the data is a product of many numbers ≤ 1, which underflows to 0.0 (1000 × 1/27 in float32)", "log turns it into a sum of modest numbers (−3295.84)", "log only goes up when its input does, so the best model is the same", "negate and average to get a loss that is ≥ 0 and smaller-is-better"]},
+    {"q": "Walk the shapes of <code>C[X].view(-1, 6) @ W1 + b1</code> for X of shape (32, 3), C (27, 2), W1 (6, 100) and b1 (100,), and say what each step does to memory.", "kind": "mechanism", "answer": ["C[X]: one row of C per index → (32, 3) + (2,) = (32, 3, 2), a new copy", "<code>.view(-1, 6)</code>: new shape over the same storage → (32, 6), nothing copied", "@ W1: (32, 6) @ (6, 100) → (32, 100), the 6s summed away", "+ b1: (100,) padded to (1, 100) and stretched down the 32 rows with stride 0"]},
+    {"q": "Your 27-way classifier's first-layer weights are plain <code>randn</code> with fan_in 10. Give two ways to keep the signal at std ≈ 1, and what each one costs.", "kind": "tradeoff", "answer": ["divide w by √fan_in (Kaiming-style): free at run time, but assumes independent mean-0 inputs and needs a gain for tanh", "standardise the outputs (x − mean)/std, as BatchNorm does: works even when the init is wrong", "but it couples each example to its batch, and a batch of one has no variance (std is nan)"]},
+    {"q": "A teammate writes <code>P = N / N.sum(1)</code> on the 27×27 bigram counts, sees no error, and moves on. What went wrong, how would you catch it in one line, and why didn't PyTorch complain?", "kind": "tradeoff", "answer": ["N.sum(1) has shape (27,), which broadcasting pads on the left to (1, 27), a row", "so column j is divided by row j's sum; row 0 sums to 7.02, not 1", "a square table fits both readings, so no error is possible", "catch it with <code>P[0].sum()</code> or by printing the shape; fix with <code>keepdim=True</code>"]}
+  ],
+  "compare": [
+    {"with": "z2h-2-micrograd/big-ideas", "q": "micrograd's big ideas build backprop on scalars; the toolkit's add tensors, logs and softmax. Which toolkit idea is what lets micrograd's engine train a real language model, and where would micrograd itself fail first?", "answer": ["the chain rule is the same in both: local slope × upstream gradient, added across paths", "one matmul per layer replaces a Python object per number, so the same math runs on 11,897 parameters and beyond", "micrograd has no softmax or log-loss yet: it trains with squared error on 4 examples", "it fails first on speed and memory, not on math"]},
+    {"with": "z2h-1-toolkit/chain-rule", "q": "The chain-rule card works on one scalar x. What changes when x is a whole tensor that was broadcast or matrix-multiplied, and which toolkit idea tells you how its gradient must be combined?", "answer": ["a broadcast value is used many times, one per stretched copy", "so, as with any value used twice, its gradient contributions add: summed back along the stretched dim", "the matmul's slope is itself a matrix, so the product of slopes becomes a matmul (z2h-6)"]},
+    {"with": "z2h-1-toolkit/softmax-and-cross-entropy", "q": "Sampling from p and computing −log p[y] both start from the same softmax. What does each one need from the distribution, and how does each fail when the logits are scaled up by 8?", "answer": ["sampling needs the whole p and draws in proportion to it", "the loss needs only p[y] (equivalently the correct logit and log∑e<sup>z</sup>)", "×8 makes p nearly one-hot: sampling loses variety, always picking the top class", "and the loss becomes huge whenever the top class is wrong: confidently wrong"]}
+  ],
+  "predict": {"q": "An untrained 27-way classifier's logits come straight out of an unscaled fan_in-10 layer, so they have std ≈ 3.16 instead of 0. Commit first: is its average loss at step 0 near 3.2958, a bit above it, or about twice as big?", "answer": "<b>About twice as big: 6.96.</b> Over 100,000 random rows of 27 logits with random targets (seed 2147483647), std 0 gives 3.2958, std 1 gives 3.76, std 3.16 gives 6.96 and std 10 gives 20.18 (computed). Large random logits make softmax confidently pick a random class, so −log p[y] is large when that class is wrong, which is most of the time. That is the problem <a href=\"../z2h-5-batchnorm/squash-the-logits.html\">the BatchNorm lecture fixes first</a>."},
+  "apply": {"task": "Use five of the six ideas on one example. Logits [2.0, 1.0, 0.1], correct class y = 0. By hand: softmax, then the loss −log p[0]. Then predict each logit's gradient by the chain rule (∂loss/∂z<sub>i</sub> = p<sub>i</sub> − 1 for the correct class, p<sub>i</sub> otherwise). Check the gradients two ways: nudge each logit by h = 0.001 in float64 and recompute <code>F.cross_entropy</code>, then call <code>loss.backward()</code> in torch.", "done": "p = [0.659, 0.2424, 0.0986] and loss 0.4170; the chain-rule gradients are [−0.3410, 0.2424, 0.0986]; the forward nudge gives about [−0.34089, 0.24252, 0.09861]; and torch's <code>z.grad</code> prints [−0.3410, 0.2424, 0.0986]. The three gradients sum to 0, because shifting every logit by the same amount changes nothing.", "hint": "Write the loss as log∑e<sup>z</sup> − z<sub>0</sub>. The derivative of log∑e<sup>z</sup> with respect to z<sub>i</sub> is e<sup>z<sub>i</sub></sup>/∑e<sup>z</sup> = p<sub>i</sub>; the −z<sub>0</sub> adds −1 to the correct class only."},
+  "reflect": [
+    "Which prediction did you get wrong: how small dz/dx is through tanh, the keepdim row sums, or the step-0 loss for std 3.16 logits?",
+    "Which panel could you not redraw cleanly from memory, and which card will you reopen for it?",
+    "Which relationship is still fuzzy: variances add → std √fan_in, or std √fan_in → large logits → a high first loss?",
+    "Could you explain to a friend, without code, why <code>F.cross_entropy</code> takes logits rather than probabilities?",
+    "Which toolkit idea do you expect to need first in micrograd, and which not until the MLP?"
+  ],
+  "revisit": ["z2h-1-toolkit/chain-rule", "z2h-1-toolkit/exp-and-log", "z2h-1-toolkit/matmul-by-shapes", "z2h-1-toolkit/broadcasting-rules", "z2h-1-toolkit/mean-variance-gaussian", "z2h-1-toolkit/softmax-and-cross-entropy"],
+  "prereq": []
+}

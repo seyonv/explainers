@@ -1,0 +1,62 @@
+{
+  "prime": {
+    "problem": "The for-loop average from the previous card is correct but calls <code>torch.mean</code> once per sequence and position. At gpt.py's size that's thousands of small calls per step, and there's no obvious place to plug in weights other than 1/(t+1).",
+    "fits": "This card rewrites the previous card's <code>xbow</code> loop as a single matrix multiply. It reuses matmul by shapes and broadcasting from the toolkit, and the <code>wei @ x</code> it builds is the exact line every later attention card keeps.",
+    "expect": ["a row of <code>a @ b</code> as a weighted mix of rows of <code>b</code>", "<code>torch.tril</code>: zero the upper triangle", "row normalisation with <code>keepdim=True</code>", "batched matmul by broadcasting (<code>(T,T) @ (B,T,C)</code>)"],
+    "goal": "Explain why a lower-triangular, row-normalised matrix computes running averages, check a row by hand, and replace the double loop with <code>xbow2 = wei @ x</code>."
+  },
+  "attend": [
+    "In <code>a @ b</code>, which part of <code>a</code> decides what ends up in row <i>i</i> of the result?",
+    "Which entries of <code>a</code> would let a token see its future, and how does <code>tril</code> remove them?",
+    "Why does <code>tril</code> alone give sums, and what changes when each row is divided by its own total?",
+    "How can an (8, 8) matrix multiply a (4, 8, 2) tensor, and why can't sequences leak into each other?",
+    "The weights are all 1/(t+1) here. What would you have to change to let a token favour one particular earlier token?"
+  ],
+  "core": {
+    "must": [
+      "Row <i>i</i> of <code>a @ b</code> = Σ<sub>j</sub> a<sub>ij</sub> · row j of <code>b</code> → <code>a</code>'s row <i>i</i> is a recipe for mixing tokens → choosing <code>a</code> chooses who talks to whom",
+      "<code>tril</code> sets a<sub>ij</sub> = 0 for j &gt; i → row <i>i</i> can only mix rows 0…<i>i</i> → no information from the future, which a next-character predictor needs so it can't cheat",
+      "Divide each row by its sum → every row of weights sums to 1 → each output is a weighted <i>average</i> (1/(t+1) each) instead of a growing sum ([4.6667, 5.3333] instead of [14, 16])",
+      "<code>wei</code> (T, T) has no batch axis → PyTorch broadcasts it across B → one batched multiply does all B·T averages, and each sequence is mixed only with itself"
+    ],
+    "elevated": [
+      "The multiply still computes the zeroed upper triangle → 64 multiply-adds per channel where 36 are needed at T = 8, about 2× at T = 256 → attention's cost grows with T², accepted because one parallel matmul beats a Python loop"
+    ],
+    "reference": [
+      "<code>torch.tril(torch.ones(T, T))</code>",
+      "<code>torch.sum(a, 1, keepdim=True)</code> gives shape (T, 1)",
+      "<code>torch.allclose(xbow, xbow2)</code> → True, max gap 1.19e-7 (float rounding)",
+      "seed 42 for the 3×3 demo (<code>b = [[2,7],[6,4],[6,5]]</code>), seed 1337 for <code>x</code>"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw <code>a @ b = c</code> for the 3×3 demo with the normalised triangular <code>a</code>, and say in 3–4 sentences why the result is a running average and why it can't see the future.",
+    "checklist": [
+      "row i of the product mixes rows of b using row i of a as weights",
+      "tril zeros the entries above the diagonal, so row i ignores later rows",
+      "dividing each row by its sum turns sums into averages",
+      "the same (T, T) matrix is broadcast over the batch, one multiply for everything",
+      "the weights are fixed here; any non-negative weights in the triangle would work"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain, without code, why a matrix of weights can stand in for the \"average the past\" double loop.", "kind": "concept", "answer": ["each output row of a matmul is a weighted sum of input rows", "put 1/(t+1) in row t for columns 0…t and 0 elsewhere", "then row t of the product is the mean of tokens 0…t, exactly what the loop computes"]},
+    {"q": "Walk through what happens to shapes and values in <code>xbow2 = wei @ x</code> with <code>wei</code> (8, 8) and <code>x</code> (4, 8, 2), and compute <code>xbow2[0, 2]</code> from <code>x[0]</code>'s first three rows.", "kind": "mechanism", "answer": ["wei is broadcast to each of the 4 sequences: (8, 8) @ (8, 2) four times → (4, 8, 2)", "row 2 of wei is [1/3, 1/3, 1/3, 0, …]", "dim 0: (0.1808 − 0.3596 + 0.6258) / 3 = 0.1490; dim 1: −0.9597 / 3 = −0.3199"]},
+    {"q": "<code>torch.cumsum(x, 1)</code> divided by 1…T gives the same result with less arithmetic. Why does the lecture use the triangular matmul anyway, and what does it cost?", "kind": "tradeoff", "answer": ["cumsum only expresses equal weights; the matrix can hold any weights, which attention needs", "the matmul computes the zero upper triangle too: 64 vs 36 multiply-adds per channel at T = 8, ~2× at T = 256", "work grows with T² instead of T, but it's one fast parallel kernel"]}
+  ],
+  "compare": [
+    {"with": "z2h-8-gpt/average-the-past", "q": "The loop and <code>wei @ x</code> give the same numbers (allclose True). What is fundamentally different about how each expresses \"which tokens to average\", and which one could you extend to unequal weights without rewriting it?", "answer": ["the loop hard-codes the rule in slicing <code>x[b, :t+1]</code> and <code>mean</code>", "the matmul puts the rule in data: the entries of <code>wei</code>", "only the matrix version extends: change the numbers in the triangle, keep the line", "the loop fails on speed (B·T Python calls); the matrix fails if the upper triangle isn't zero"]},
+    {"with": "z2h-8-gpt/masked-softmax", "q": "Both produce the same 8×8 <code>wei</code>. What does building it as zeros → <code>masked_fill(-inf)</code> → softmax buy you that <code>tril</code> + divide doesn't, and how does each go wrong?", "answer": ["softmax normalises any real-valued scores, so the scores can later be learned or data-dependent", "the −∞ entries become exactly 0 after exp, keeping the future blocked", "tril + divide only normalises the non-negative numbers you put in", "failure modes: forgetting keepdim (divides columns) vs masking the wrong triangle (future leaks)"]}
+  ],
+  "predict": {"q": "You write <code>wei = wei / wei.sum(1)</code>, forgetting <code>keepdim=True</code>. What does row 7 of <code>wei</code> become, what does it sum to, and does <code>torch.allclose(xbow, wei @ x)</code> still print True?", "answer": "<code>wei.sum(1)</code> has shape (8,), which broadcasts along the <i>last</i> axis, so column j is divided by j+1 instead of row t by t+1. Row 7 becomes [1, 0.5, 0.3333, 0.25, 0.2, 0.1667, 0.1429, 0.125], summing to 2.7179, and <code>allclose</code> prints False (computed). No error is raised: a silent broadcasting bug."},
+  "apply": {"task": "Make your own 3×3 weights where each token keeps half of itself and splits the other half evenly over the tokens before it: <code>a = [[1, 0, 0], [0.5, 0.5, 0], [0.25, 0.25, 0.5]]</code>. Predict <code>a @ b</code> by hand with the seed-42 <code>b = [[2, 7], [6, 4], [6, 5]]</code>, then check it in torch.", "done": "Your hand result and torch agree: <code>[[2, 7], [4, 5.5], [5.0, 5.25]]</code>, and every row of <code>a</code> sums to 1.", "hint": "Row 2: 0.25·[2, 7] + 0.25·[6, 4] + 0.5·[6, 5]."},
+  "reflect": [
+    "Which prediction did you get wrong: the all-ones row, or the missing <code>keepdim</code>?",
+    "What couldn't you explain cleanly: why a matmul row is a weighted sum, or why broadcasting keeps the sequences separate?",
+    "Which relationship is still fuzzy: zeros in the triangle → no future, or rows summing to 1 → averages?",
+    "Where in your own code have you written a loop that is really a weighted sum in disguise?",
+    "What would you need to know to make the weights depend on the tokens themselves?"
+  ],
+  "revisit": ["z2h-1-toolkit/matmul-by-shapes", "z2h-1-toolkit/broadcasting-rules", "z2h-8-gpt/average-the-past"],
+  "prereq": ["z2h-8-gpt/average-the-past", "z2h-1-toolkit/matmul-by-shapes"]
+}

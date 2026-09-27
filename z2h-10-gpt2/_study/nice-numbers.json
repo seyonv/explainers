@@ -1,0 +1,65 @@
+{
+  "prime": {
+    "problem": "GPU kernels are built to chew through matrices in fixed power-of-two blocks. When one dimension doesn't divide evenly, the leftover block takes a slower special-case path, and you pay for it every step without seeing why.",
+    "fits": "This is the last rung of the A100 speed ladder, after precision, <code>torch.compile</code> and flash attention took a step from ~1000 ms to 96.5 ms. It reuses the output layer <code>lm_head</code> from the module card and the shared matrix from weight tying.",
+    "expect": ["nice vs ugly numbers (factors of 2)", "matmul tiles and the ragged last tile", "padding the vocab with 47 fake tokens", "more FLOPs but less time"],
+    "goal": "Explain why padding 50,257 to 50,304 makes the step faster on an A100 despite adding work, spot ugly sizes in a model config, and measure whether it matters on your own hardware."
+  },
+  "attend": [
+    "Which single size in GPT-2's config is not a multiple of 64, and which matmul does it feed?",
+    "Why can adding 0.094% more multiply-adds make the lm_head faster rather than slower?",
+    "What happens to the 47 fake tokens during training, given they are never a target?",
+    "Why did the same padding give ~30% on an older PyTorch but only ~4% in the video, and nothing reliable on MPS?",
+    "Why pad rather than trim the vocab to 50,176 or retrain the tokenizer?"
+  ],
+  "core": {
+    "must": [
+      "GPU matmul kernels split the output into power-of-two tiles → a size like 50,257 (odd, 29 × 1733) leaves a partial last tile → the kernel runs a slower boundary path for it → padding to 50,304 (2<sup>7</sup> × 3 × 131) fills every tile and removes that path",
+      "Padding adds 47 columns → 0.094% more lm_head FLOPs, but no ragged tile → wall time is set by how well the hardware is used, not by the FLOP count → 96.5 → 93 ms on the A100 (the same lesson as flash attention)",
+      "The 47 extra ids never appear in the data → they are never the correct next token → cross-entropy keeps pushing their logits down → the model learns to give them almost no probability, so the tokenizer and data need no change",
+      "The gain comes from the kernel library, not from maths → it changes with PyTorch version and device (~30% earlier, ~4% in the video, noise on an M3 via MPS) → measure it on your hardware instead of assuming it"
+    ],
+    "elevated": [
+      "V only sizes the tied <code>wte</code>/<code>lm_head</code> matrix and the logits → the padding costs 47 × 768 = 36,096 parameters (124,439,808 → 124,475,904) and nothing else in the blocks changes"
+    ],
+    "reference": [
+      "the one-line change: <code>GPT(GPTConfig(vocab_size=50304))</code> in train_gpt2.py L339, commit <code>7230096</code>",
+      "50,257 = 50,000 BPE merges + 256 byte tokens + 1 <code>&lt;|endoftext|&gt;</code>",
+      "<code>from_pretrained</code> keeps vocab 50,257 so OpenAI's checkpoint loads",
+      "tiktoken's <code>decode</code> raises <code>KeyError</code> for ids ≥ 50,257",
+      "timing on MPS needs <code>torch.mps.synchronize()</code> before reading the clock"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw the lm_head output as a row of 128-wide tiles for V = 50,257 and for V = 50,304, and write in 3–4 sentences why the bigger one is faster on an A100.",
+    "checklist": [
+      "both need 393 tiles; the ugly one ends in an 81-wide partial tile",
+      "the partial tile forces a slower boundary path in the kernel",
+      "padding adds 47 fake tokens: 0.094% more FLOPs, 36,096 more parameters",
+      "the fake tokens are never targets, so the loss drives their probability to ~0",
+      "A100 step 96.5 → 93 ms; on the M3 no reliable change"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain what makes a number \"nice\" for a GPU and why 50,257 is about as ugly as a size can be.", "kind": "concept", "answer": ["nice = many factors of 2, so it splits evenly into power-of-two tiles", "50,257 is odd (29 × 1733): not even divisible by 2", "every other matmul size in GPT-2 124M (768, 2304, 3072, 1024, 64) is a multiple of 64"]},
+    {"q": "Walk through what the kernel computing <code>logits = x @ W.t()</code> does with the last columns when V = 50,257, and what changes at V = 50,304.", "kind": "mechanism", "answer": ["output is (B·T, V), computed tile by tile", "with 128-wide tiles, 392 full tiles cover 50,176 columns and 81 are left over", "the leftover tile needs special boundary handling, which is slower", "at 50,304 the 393rd tile is full (81 real + 47 fake columns) and runs the same fast path as the rest"]},
+    {"q": "Your team wants to pad every model's vocab to a multiple of 128 by default. What does it cost, what could it buy, and what would you check first?", "kind": "tradeoff", "answer": ["cost: a few extra rows (47 × 768 = 36,096 params here), tiny extra FLOPs, and ids the tokenizer can't decode", "buy: a few percent to tens of percent, depending on kernels and framework version", "check: time a real training step before and after on the target hardware, synchronizing the device", "keep the original size when loading pretrained checkpoints"]},
+    {"q": "Why doesn't the model need any special code to stop it predicting the 47 fake tokens?", "kind": "concept", "answer": ["they never occur as a target in the data", "cross-entropy lowers the probability of every wrong token, so their logits are pushed down every step", "the same mechanism that makes rare real tokens unlikely"]}
+  ],
+  "compare": [
+    {"with": "z2h-10-gpt2/compile-flash", "q": "Flash attention and vocab padding both add or keep arithmetic yet make the step faster. What is the shared principle, what different bottleneck does each remove, and how would each fail to help?", "answer": ["shared: time depends on how the hardware is used, not on FLOP count", "flash: avoids writing the T×T attention matrix to slow memory (memory traffic)", "padding: avoids the ragged last tile in the lm_head matmul (kernel efficiency)", "flash helps little at short T; padding helps little when the kernel handles odd sizes well (newer PyTorch, MPS)"]},
+    {"with": "z2h-10-gpt2/precision", "q": "TF32 promised 8× but gave 3×; padding promised nothing on paper and gave 3.6%. What does each say about reading hardware numbers?", "answer": ["TF32: peak FLOPS only helps if the step is compute-bound, and GPT-2 was largely memory-bound", "padding: the FLOP count went up, yet time went down because the kernel got a friendlier shape", "both: measure wall time per step, with a synchronize, rather than predicting from FLOPs"]},
+    {"with": "z2h-10-gpt2/weight-tying", "q": "Padding and tying both change the size of the <code>wte</code>/<code>lm_head</code> matrix. How does each change it, and why?", "answer": ["tying removes one of two 50,257 × 768 matrices: −38,597,376 params, for better learning and memory", "padding grows the shared matrix by 47 rows: +36,096 params, purely for speed", "with both, the shared matrix is 50,304 × 768 = 38,633,472"]}
+  ],
+  "predict": {"q": "The first-loss card expects an initial loss of −ln(1/50257) = 10.82. With the vocab padded to 50,304, does that sanity-check value change, and by how much?", "answer": "Barely. A fresh model spreads probability almost evenly over all 50,304 outputs, including the fake ones, so the expected loss is −ln(1/50304) = 10.8258 instead of 10.8249: up by 0.0009. At init the 47 fake tokens hold 47 / 50,304 = 0.093% of the probability, which the loss then drains away."},
+  "apply": {"task": "Copy the Build-it timing function into a scratch file and time three sizes on MPS: V = 50,257, 50,304 and 50,432 (the next multiple of 256). Run the script twice. Then, on paper, count the 256-wide tiles each V needs and how wide the last one is.", "done": "You have two medians per V and can say whether the gap between V's is bigger than the gap between two runs of the same V. For this card, two runs gave 347.1 / 331.3 / 338.7 ms and 340.8 / 318.2 / 316.2 ms: 50,432 alone moved 22 ms between runs, as much as any V-to-V gap, so no size clearly wins on the M3. On paper: 50,257 and 50,304 need 197 tiles of 256 with a partial last tile (81 and 128 wide); 50,432 needs 197 full ones.", "hint": "50,304 / 256 = 196.5, so 50,304 is a multiple of 128 but not of 256."},
+  "reflect": [
+    "Which prediction did you get wrong: that padding would slow the step, or how much the init loss moves?",
+    "What couldn't you explain cleanly: why a partial tile is slower, or why the fake tokens don't need masking?",
+    "Which relationship is still fuzzy: ugly size → partial tile, or partial tile → slower step?",
+    "Where else in a model you write would you now check for ugly sizes (batch size, hidden width, head count)?",
+    "Would you trust a speedup like this without measuring it on your own hardware? What did your M3 tell you?"
+  ],
+  "revisit": ["z2h-10-gpt2/the-module", "z2h-10-gpt2/weight-tying", "z2h-10-gpt2/compile-flash"],
+  "prereq": ["z2h-10-gpt2/precision"]
+}

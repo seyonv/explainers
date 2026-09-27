@@ -1,0 +1,63 @@
+{
+  "prime": {
+    "problem": "With 3 characters of context the model almost never sees a whole name, so it guesses where a name ends from its last few letters. Before building a new architecture you need to know how far just showing it more characters gets you, or you can't tell whether the fancy version actually helped.",
+    "fits": "It reuses the flat MLP you packaged with <code>Embedding</code>, <code>Flatten</code> and <code>Sequential</code>, and the rolling-window dataset from the MLP lecture. It sets the number (val 2.0342 at 22,097 parameters) that the WaveNet-style tree on the next cards has to beat.",
+    "expect": ["<code>block_size</code> (context length)", "padding with <code>'.'</code>", "where the new parameters go", "train vs val gap", "a baseline at equal parameters"],
+    "goal": "Predict how the dataset, the parameter count and the loss change when you widen the context, and explain why a flat layer is a weak way to use that context."
+  },
+  "attend": [
+    "Which tensor gets wider when <code>block_size</code> goes from 3 to 8, and which one stays exactly the same size?",
+    "Which single weight matrix absorbs all 10,000 new parameters, and why does no other layer notice the change?",
+    "Why does seeing the whole name matter most for the row whose target is the final <code>'.'</code>?",
+    "The val loss improves but the train–val gap more than doubles. What does that say about how the flat layer uses the extra context?",
+    "Why does this baseline have to be kept at about 22K parameters before the tree model can be judged against it?"
+  ],
+  "core": {
+    "must": [
+      "<code>build_dataset</code> emits one row per character to predict → <code>block_size</code> only sets each row's width → 182,625 rows either way, now of shape (182625, 8) → more information per example, not more examples",
+      "Embedding is per character and output is per prediction → only the first Linear sees <code>n_embd·block_size</code> inputs → its weights go 30×200 → 80×200 → all +10,000 params land there (12,097 → 22,097)",
+      "Wider window → 94.7% of training names fit whole (vs 2.0%) → the model sees more of the name before predicting → val 2.1065 → 2.0342",
+      "One Linear mixes all 80 numbers in a single matmul → every character pair must be combined at once → context is squashed early, and the train–val gap grows 0.048 → 0.118 → motivates fusing characters gradually in a tree"
+    ],
+    "elevated": [
+      "Most rows are mostly padding (96.8% of block_size-8 rows contain at least one <code>'.'</code> pad) → the first layer spends weights on positions that are usually <code>'.'</code> → widening further (e.g. 16) buys mostly padding"
+    ],
+    "reference": [
+      "the notebook split sizes: <code>Xdev</code> (22655, 8), <code>Xte</code> (22866, 8)",
+      "the notebook's commented <code>n_hidden = 300</code> (32,997 params) vs the 200 that gives 22,097",
+      "the notebook's logged 1.918 / 2.027 vs torch 2.14's 1.9163 / 2.0342",
+      "the step-0 loss 3.2847 and the lab's <code>--quick</code> result (train 2.0770 / val 2.1074)"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, explain in 3–5 sentences what changes when <code>block_size</code> goes from 3 to 8: in the dataset, in the model, and in the loss. Or draw the flat model on one row and mark the one layer that grows.",
+    "checklist": [
+      "same number of rows (182,625), each now 8 indices wide",
+      "only the first Linear grows: 80×200 instead of 30×200, +10,000 params, 22,097 total",
+      "most names now fit whole in the window, so val drops from about 2.11 to about 2.03",
+      "the train–val gap grows, a sign the flat layer overfits more",
+      "the limit: one layer squashes all 8 characters at once, which the tree model addresses"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why going from 3 to 8 characters of context helps a character-level name model, using the fraction of names that fit in the window.", "kind": "concept", "answer": ["at 3, only 2.0% of training names fit whole; at 8, 94.7% do", "the model sees more of the name, especially when predicting the end <code>'.'</code>", "val 2.1065 → 2.0342"]},
+    {"q": "Walk one batch of 32 rows through the block_size-8 flat model and give the tensor shape after each layer.", "kind": "mechanism", "answer": ["Xb (32, 8) → Embedding (32, 8, 10)", "Flatten (32, 80) → Linear (32, 200)", "BatchNorm1d, Tanh (32, 200) → Linear (32, 27) logits"]},
+    {"q": "Compute the parameter count for block_size 8 with n_embd 10 and n_hidden 200, and say which term would change if you went to block_size 16.", "kind": "mechanism", "answer": ["270 + 16,000 + 400 + 5,427 = 22,097", "only the first Linear's <code>(n_embd·block_size)·n_hidden</code> term changes: 160×200 = 32,000, total 38,097"]},
+    {"q": "Your colleague wants to fix the model by widening the window to 16. What does it cost, what might it buy, and what doesn't it fix?", "kind": "tradeoff", "answer": ["costs 16,000 more first-layer weights", "buys little: the longest name has 15 letters, so rows are mostly padding", "doesn't fix the core limit: one layer still squashes all characters at once", "and it isn't measured here: you'd have to run it"]}
+  ],
+  "compare": [
+    {"with": "z2h-7-wavenet/flatten-consecutive", "q": "The flat block_size-8 MLP vs the 3-level hierarchical net at about the same 22K parameters: what is fundamentally different about how each combines the 8 characters, and why did the first hierarchical run still only tie?", "answer": ["flat: one Linear on all 80 numbers at once; tree: pairs, then pairs of pairs, then the final pair (3 levels of 2-way fusion)", "same budget: 22,097 vs 22,397 params", "the first tree run scored val 2.029 vs 2.027 (notebook): a BatchNorm bug and no tuning", "pick flat for a quick baseline, the tree when you want to spend parameters on gradual fusion"]},
+    {"with": "z2h-4-mlp/rolling-window-dataset", "q": "The MLP lecture built rows with a 3-character window; this card uses the same code with 8. What is identical, what changes, and what would break if you changed <code>block_size</code> but forgot to rebuild the model?", "answer": ["identical: the sliding crop-and-append loop and the number of rows", "changes: each row's width, and the first Linear's fan-in (n_embd·block_size)", "forgetting to rebuild: Flatten gives (B, 80) but the Linear expects 30 inputs, so the matmul raises a shape error"]}
+  ],
+  "predict": {"q": "Suppose names.txt had names up to 30 letters long, but the average stayed about 6. Would widening from 8 to 32 help the flat model much? Commit to a guess and a reason.", "answer": "Probably only a little, and it could hurt. The first Linear would grow to 320×200 = 64,000 weights, but for most rows the extra 24 positions are just <code>'.'</code> padding. The few long names would gain context; everything else pays the parameter cost and the extra room to overfit. This is illustrative reasoning, not a measured result: the fix the lecture takes is to change <i>how</i> the context is combined (a tree), not only how much of it there is."},
+  "apply": {"task": "Run <code>labs/more-context-baseline.py --quick</code> (20,000 steps), then change <code>block_size</code> to 3 in a copy and run it again. Compare the parameter counts and the val losses, and check your prediction of the row count before looking.", "done": "The block_size-8 quick run prints 22,097 parameters and val 2.1074; your block_size-3 copy prints 12,097 parameters and the same 182,625 rows, and you can say which val is lower.", "hint": "Only the <code>block_size = 8</code> line needs to change; <code>flat_model</code> and <code>splits</code> take it as an argument. The full 200k-step runs give val 2.1065 (3) and 2.0342 (8)."},
+  "reflect": [
+    "Which prediction did you get wrong: the row count, or the parameter count?",
+    "What couldn't you explain cleanly about why only one layer grows?",
+    "Which relationship is still fuzzy: wider window → more of the name visible, or wider single layer → bigger train–val gap?",
+    "Could you argue, with numbers, why widening to 16 isn't the next step?",
+    "What will you look for when the tree model is compared against 2.0342 on the next cards?"
+  ],
+  "revisit": ["z2h-4-mlp/rolling-window-dataset", "z2h-7-wavenet/torch-nn-containers"],
+  "prereq": ["z2h-7-wavenet/torch-nn-containers"]
+}

@@ -1,0 +1,65 @@
+{
+  "prime": {
+    "problem": "\"Reproduce GPT-2\" is meaningless until you know exactly what you're aiming at: which model, how big, what its parts are called, and what score counts as matching it. Without a concrete target you can't tell a bug from a bad result.",
+    "fits": "This opens the capstone. The GPT lecture (z2h-8) built a small decoder on Shakespeare; here you look at the real, released version of that same design before rebuilding it at full size.",
+    "expect": ["checkpoint and <code>state_dict</code>", "<code>wte</code> / <code>wpe</code> (token and position tables)", "the 12 blocks: <code>ln_1</code>, <code>attn</code>, <code>ln_2</code>, <code>mlp</code>", "where 124,439,808 parameters come from"],
+    "goal": "Read GPT-2's tensor list and say what each tensor does, derive the parameter count from four config numbers, and explain why the lecture pairs GPT-2's weights with GPT-3's training recipe."
+  },
+  "attend": [
+    "Why is the token table alone almost a third of the model, and which config number makes it so large?",
+    "Which one config number changes only the position table, and which ones change every block?",
+    "The position table started as random noise. What in training turns its columns into smooth-ish waves?",
+    "If OpenAI released the weights, what exactly is missing that forces the lecture to borrow from the GPT-3 paper?",
+    "Why does the <code>c_attn</code> weight have 2304 columns, and why is it stored the \"wrong\" way round?"
+  ],
+  "core": {
+    "must": [
+      "Vocabulary of 50,257 tokens → one 768-number row per token in <code>wte</code> → 38,597,376 numbers → 31% of the model is a lookup table, so vocabulary size is a big lever on model size",
+      "Each block has four weight matrices (3C², C², 4C², 4C²) → about 12C² per block → parameters grow with L·C² → widening the model costs quadratically, deepening it linearly (124M → 1.56B from 12×768 to 48×1600)",
+      "<code>wpe</code> is an ordinary trained parameter, not a formula → it starts as noise and is shaped only by the loss → neighbouring positions end up correlated (0.53–0.88) → wave-like columns, and leftover jaggedness hints at an undertrained model",
+      "OpenAI released weights but not a precise training recipe or its WebText data → the checkpoint is a target, not a method → the lecture borrows GPT-3's hyperparameters and scores itself against the checkpoint (val loss 3.2924, HellaSwag 29.55%)"
+    ],
+    "elevated": [
+      "Hugging Face stores <code>c_attn</code> etc. as (in, out) because OpenAI used a Conv1D layer → an <code>nn.Linear</code> expects (out, in) → loading needs a transpose, or the shapes silently mismatch (the load-and-forward card)",
+      "<code>lm_head</code> is the same tensor as <code>wte</code> → it appears in the state_dict (149 entries) but adds nothing to the parameter count → counting <code>state_dict</code> numels gives 163,037,184, counting <code>parameters()</code> gives 124,439,808"
+    ],
+    "reference": [
+      "<code>GPT2LMHeadModel.from_pretrained(\"gpt2\")</code>; <code>\"gpt2-xl\"</code> for the 1.5B model",
+      "the full tensor-name list and its <code>transformer.</code> prefixes",
+      "the family configs: 24/16/1024, 36/20/1280, 48/25/1600",
+      "<code>pipeline('text-generation')</code> arguments, and <code>max_new_tokens</code> vs <code>max_length</code> in transformers 5",
+      "the checkpoint download size (~550 MB)"
+    ]
+  },
+  "compress": {
+    "prompt": "Card closed: write N = … for GPT-2 124M from V, T, C and L, say what each term is, and fill in the numbers. Then in two sentences explain why this lecture needs both the GPT-2 checkpoint and the GPT-3 paper.",
+    "checklist": [
+      "N = V·C + T·C + L·(12C² + 13C) + 2C, with V=50,257, T=1,024, C=768, L=12 → 124,439,808",
+      "wte ≈ 31%, the 12 blocks ≈ 68%, wpe under 1%",
+      "lm_head is tied to wte, so it isn't counted twice",
+      "the checkpoint gives the architecture and a score to beat; it doesn't give the training recipe",
+      "GPT-3's paper supplies concrete hyperparameters for a near-identical architecture"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain what a <code>state_dict</code> is and what its 149 entries for GPT-2 124M break down into.", "kind": "concept", "answer": ["a dict from tensor name to tensor: the trained parameters (plus nothing else here)", "2 embedding tables (wte, wpe)", "12 blocks × 12 tensors (weight and bias of ln_1, c_attn, attn c_proj, ln_2, c_fc, mlp c_proj)", "ln_f weight and bias, plus lm_head: 2 + 144 + 2 + 1 = 149"]},
+    {"q": "Walk one token through the checkpoint's tensors: from its id to a row of logits. Name each tensor it touches and the shape of the vector at each step.", "kind": "mechanism", "answer": ["id → row of <code>wte</code> (768) plus row of <code>wpe</code> for its position (768)", "12 blocks, each: ln_1 → attn (c_attn to 2304 = q,k,v, then c_proj back to 768) added to the stream, then ln_2 → mlp (c_fc to 3072, c_proj back to 768) added", "ln_f → lm_head: 768 → 50,257 logits"]},
+    {"q": "You have budget to double either the width C or the depth L of GPT-2 124M. Roughly how does each change the block parameters, and what doesn't change at all?", "kind": "tradeoff", "answer": ["blocks scale with L·C²: doubling L doubles them (~85M → ~170M); doubling C quadruples them (~340M)", "doubling C also doubles wte and wpe; doubling L leaves them unchanged", "context length T only touches wpe"]},
+    {"q": "Why can't you reproduce GPT-2 just by reading the GPT-2 paper, and what does the lecture use as its yardstick instead?", "kind": "concept", "answer": ["the paper is vague on training details and the WebText data was never released", "hyperparameters come from the GPT-3 paper", "success = beating the released checkpoint's val loss (3.2924) and HellaSwag (29.55%)"]}
+  ],
+  "compare": [
+    {"with": "z2h-8-gpt/embeddings-and-positions", "q": "nanoGPT's Shakespeare model and GPT-2 both learn a position table. What is fundamentally the same, what differs in scale, and what does GPT-2's plotted <code>wpe</code> show that a tiny model's table might not?", "answer": ["same: <code>nn.Embedding(block_size, n_embd)</code>, trained from random, added to the token embedding", "scale: 1,024 × 768 here vs a small block_size × n_embd there", "after GPT-2's long training the columns become wave-like and neighbouring positions correlate; a small model's table can stay much noisier", "neither uses fixed sinusoids like the original Transformer"]},
+    {"with": "z2h-10-gpt2/the-module", "q": "This card reads the tensor names from a finished checkpoint; the next card writes the module that produces them. What must your module get exactly right for the checkpoint to load, and what is free to differ?", "answer": ["the names (transformer.h.N.attn.c_attn…) and the shapes must match, up to the Conv1D transpose", "the Python code, the order you define things in and the implementation of attention can differ", "a name typo fails loudly; a missing transpose or a wrong split of 2304 into q,k,v gives wrong outputs silently"]}
+  ],
+  "predict": {"q": "You change only the context length from 1,024 to 2,048 tokens. How many parameters does GPT-2 124M gain, and which tensor holds all of them?", "answer": "786,432 (= 1,024 × 768), all in <code>wpe</code>, giving 125,226,240. Attention has no weights that depend on sequence length: the same c_attn and c_proj apply at every position. That's why longer context is almost free in parameters but not in compute or memory, since attention's T×T scores grow with T² (the compile-flash card)."},
+  "apply": {"task": "Using only the formula N = V·C + T·C + L·(12C² + 13C) + 2C, predict the parameter count of gpt2-medium (L=24, heads 16, C=1024) by hand. Then check it without downloading anything: <code>GPT2LMHeadModel(GPT2Config(n_layer=24, n_head=16, n_embd=1024))</code> and sum <code>p.numel()</code> over <code>parameters()</code>.", "done": "Your hand result and the code both print 354,823,168, and you can say why the released name rounds it to \"350M\".", "hint": "12C² at C=1024 is 12,582,912; 13C is 13,312. Don't forget that lm_head is tied, so it isn't counted."},
+  "reflect": [
+    "Which prediction did you get wrong: the share in the blocks, or the parameters added by a longer context?",
+    "What couldn't you explain cleanly: where 12C² comes from, or why <code>lm_head</code> isn't counted?",
+    "Which relationship is still fuzzy: vocabulary size → size of wte, or width C → cost of every block?",
+    "Could you tell someone, without notes, why the lecture needs two papers for one model?",
+    "What will you check first when your own module fails to load these weights?"
+  ],
+  "revisit": ["z2h-8-gpt/embeddings-and-positions", "z2h-8-gpt/decoder-nanogpt-chatgpt", "z2h-9-tokenizer/vocab-size-new-tokens"],
+  "prereq": ["z2h-8-gpt/decoder-nanogpt-chatgpt"]
+}

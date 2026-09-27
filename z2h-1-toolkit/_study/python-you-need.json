@@ -1,0 +1,65 @@
+{
+  "prime": {
+    "problem": "Lecture 1 teaches backprop in Python that quietly relies on dunder methods, closures and recursion. If <code>2*a</code>, <code>out._backward</code> or <code>build_topo</code> look like magic, you spend the lecture decoding syntax instead of following the math.",
+    "fits": "This is the first card of the series and needs nothing before it except basic Python (functions, classes, lists, loops). Every later micrograd card, starting with the Value object, is built from the five features here.",
+    "expect": ["operator overloading (<code>__add__</code>, <code>__mul__</code>)", "reflected methods (<code>__rmul__</code>, <code>__radd__</code>)", "closures", "a <code>set</code> plus recursion (topological order)", "list comprehensions and <code>sum()</code>"],
+    "goal": "Predict exactly which method Python calls for <code>a*b</code>, <code>2*a</code> and <code>sum(...)</code>, write a small class that supports all three, and explain why micrograd stores a function in <code>out._backward</code> and why <code>build_topo</code> needs <code>visited</code>."
+  },
+  "attend": [
+    "Python tries the left operand first. What does <code>int</code> answer when it meets a <code>Money</code>, and what does Python do with that answer?",
+    "Why does <code>sum([m1, m2])</code> need <code>__radd__</code> even though you never write a number on the left yourself?",
+    "When <code>__mul__</code> has already returned, how can the <code>_backward</code> it defined still reach <code>self</code>, <code>other</code> and <code>out</code>?",
+    "What single rule does <code>build_topo</code> follow that guarantees every node lands after all of its inputs?",
+    "Which job does the <code>visited</code> set do that the recursion alone can't?"
+  ],
+  "core": {
+    "must": [
+      "<code>x * y</code> first calls <code>x.__mul__(y)</code> → a plain int doesn't know your class and returns <code>NotImplemented</code> → Python then tries <code>y.__rmul__(x)</code> → without it <code>2*a</code> is a TypeError, and <code>sum()</code> (which starts from 0) fails the same way without <code>__radd__</code>",
+      "Operators are method calls → the method creates the result object itself → it can attach anything to that result (micrograd: the parents, the op and a backward function) → ordinary-looking formulas build the graph",
+      "A function defined inside a method captures that call's variables → it can be stored on the result and called much later → each result carries its own local-derivative code for backprop to run",
+      "<code>build_topo</code> appends a node only after recursing into all its inputs → every node sits after its inputs → reversed, every node's gradient is complete before its <code>_backward</code> runs; the <code>visited</code> set stops a shared node running twice (without it, a.grad comes out 96 or 102 instead of 66 in the Predict step)"
+    ],
+    "elevated": [
+      "Recursion depth is capped (1,000 frames by default in Python 3.10.14) → micrograd's recursive <code>build_topo</code> handles a chain of 995 additions and raises <code>RecursionError</code> at 996 → fine for the lecture's nets, but deep graphs need an explicit stack"
+    ],
+    "reference": [
+      "the exact <code>__repr__</code> format string and f-string syntax",
+      "the <code>isinstance(other, Money) else Money(other)</code> wrapping line (copy it)",
+      "<code>zip</code> and the start argument of <code>sum(iterable, start)</code>",
+      "nested comprehension order: <code>[p for layer in layers for p in layer.parameters()]</code>",
+      "<code>lambda i=i: i</code> as the fix for closures made in a loop"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, in 3–5 sentences, explain what Python does when it runs <code>3 * m1</code>, and how micrograd uses a closure and a set to run backprop in the right order. Or draw the call sequence for <code>3 * m1</code> and the <code>build_topo</code> order for L = d·f, d = e + c, e = a·b.",
+    "checklist": [
+      "operators are dunder-method calls on the left operand first",
+      "<code>NotImplemented</code> from the left operand makes Python try the reflected method on the right (<code>__rmul__</code>, <code>__radd__</code>)",
+      "<code>sum()</code> starts from 0, so it needs <code>__radd__</code> (or a start value)",
+      "a closure is a function that keeps the variables of the call that made it, so <code>_backward</code> can be stored and run later",
+      "<code>build_topo</code> appends a node after its inputs; reversed, that is the backprop order",
+      "<code>visited</code> makes each node appear once"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why the <code>r</code> methods exist at all: what situation would be impossible to handle if Python only ever called the left operand's method?", "kind": "concept", "answer": ["a built-in type on the left (an int) can't know about your class", "so the right operand needs a way to take over", "Python calls it only after the left one returns <code>NotImplemented</code>"]},
+    {"q": "Walk through <code>sum([m1, m2, m1])</code> call by call, naming each dunder method that runs and the Money it produces.", "kind": "mechanism", "answer": ["<code>0 + m1</code>: <code>int.__add__</code> gives <code>NotImplemented</code>, so <code>m1.__radd__(0)</code> runs", "<code>__radd__</code> calls <code>m1 + 0</code>, which wraps 0 as <code>Money(0)</code> → 250", "then <code>__add__</code> with m2 → 350, and with m1 → <code>Money(cents=600)</code>"]},
+    {"q": "Trace <code>build_topo(L)</code> on L = d·f, d = e + c, e = a·b (inputs visited in the order written). What list comes out, and why is L last?", "kind": "mechanism", "answer": ["a, b, e, c, d, f, L", "each node is appended only after all its inputs have been appended", "L depends on everything, so it's last; reversed, it's first to run <code>_backward</code>"]},
+    {"q": "micrograd stores one closure per result instead of one central backward function that switches on <code>_op</code>. What do you gain, and what does it cost?", "kind": "tradeoff", "answer": ["gain: each op's derivative sits next to its forward code; adding an op touches one place", "cost: one function object per node, and the backward logic is scattered across methods", "cost: a bug like <code>out._backward = _backward()</code> (storing the call's <code>None</code>) only shows up later, when backprop calls it"]}
+  ],
+  "compare": [
+    {"with": "z2h-2-micrograd/value-object", "q": "<code>Money</code> and <code>Value</code> both overload <code>+</code> and <code>*</code>. What does <code>Value</code> store on each result that <code>Money</code> doesn't, and why does that one difference turn arithmetic into a computation graph?", "answer": ["both create a new object inside <code>__add__</code>/<code>__mul__</code>", "Value also stores its parents (<code>_prev</code>) and the op (<code>_op</code>), later a <code>_backward</code> closure", "Money forgets where its cents came from, so there's nothing to walk back through"]},
+    {"with": "z2h-2-micrograd/automatic-backward", "q": "This card's <code>build_topo</code> runs on a dict of names; that card runs it on real Values. What changes when the inputs come from a <code>set</code> (<code>_prev</code>) instead of a list, and what stays guaranteed?", "answer": ["siblings (like a and b) can come out in a different order between runs", "still guaranteed: every node after all its inputs", "so backprop gives the same gradients whatever the sibling order"]}
+  ],
+  "predict": {"q": "Delete the <code>visited</code> set from micrograd's <code>build_topo</code>, then run <code>backward()</code> on x = a·b, y = x + 1, z = x·2, L = y·z with a = 2, b = −3. The correct <code>a.grad</code> is 66. What do you get, and why?", "answer": "Wrong answers: 96 or 102 depending on the set order (computed; <code>x.grad</code> is still −22). x feeds both y and z, so without <code>visited</code> it lands in the topo list twice, and its <code>_backward</code> runs twice, adding its gradient into a and b a second time, once before x's gradient is even complete. <code>visited</code> is what makes each node run exactly once."},
+  "apply": {"task": "Give your <code>Money</code> class subtraction without any new arithmetic, the way micrograd's engine.py does: <code>__neg__</code> as <code>self * -1</code>, <code>__sub__</code> as <code>self + (-other)</code>, and <code>__rsub__</code> as <code>other + (-self)</code>. Then print <code>-m1</code>, <code>m1 - m2</code> and <code>1000 - m1</code> with m1 = Money(250), m2 = Money(100).", "done": "You see <code>Money(cents=-250)</code>, <code>Money(cents=150)</code> and <code>Money(cents=750)</code>, and you can say which of your methods ran for <code>1000 - m1</code> (int gives up, so <code>__rsub__</code>).", "hint": "<code>1000 - m1</code> reaches <code>m1.__rsub__(1000)</code>, which computes <code>1000 + (-m1)</code>, and that in turn needs <code>__radd__</code>."},
+  "reflect": [
+    "Which prediction did you get wrong: the <code>3 * m1</code> TypeError, or the doubled gradient without <code>visited</code>?",
+    "What couldn't you explain cleanly: why <code>sum()</code> needs <code>__radd__</code>, or how a closure outlives the call that made it?",
+    "Which relationship is still fuzzy: closure → stored backward function, or topological order → gradient complete before use?",
+    "Could you write <code>build_topo</code> from memory right now?",
+    "What will you look for first when the Value object appears at 0:19:09?"
+  ],
+  "revisit": [],
+  "prereq": []
+}

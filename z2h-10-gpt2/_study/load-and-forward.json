@@ -1,0 +1,66 @@
+{
+  "prime": {
+    "problem": "You have written GPT-2 as an empty <code>nn.Module</code>, but random weights produce nonsense. OpenAI's trained numbers exist, yet they come in someone else's layout, and a copy that is off by a transpose can look fine while computing garbage.",
+    "fits": "The module card gave you the right names and shapes. This card fills them with OpenAI's weights and runs the first forward pass, which is also the check that the module you wrote is really GPT-2. Sampling (next card) and the loss (first-loss card) both start from these logits.",
+    "expect": ["<code>from_pretrained</code>: copy tensors by name", "Conv1D (in, out) vs <code>nn.Linear</code> (out, in) and the <code>.t()</code>", "the shape walk (B, T) → (B, T, C) → (B, T, vocab)", "logits as raw scores at every position"],
+    "goal": "Load GPT-2 124M into your own module, prove it matches Hugging Face's, and explain every shape between the token ids and the logits."
+  },
+  "attend": [
+    "Why do exactly four kinds of weight need <code>.t()</code>, and what makes one of them dangerous to forget?",
+    "What does the shape assert in the copy loop protect against, and what can't it catch?",
+    "Where in the forward pass does broadcasting happen, and which dimension gets repeated?",
+    "Why does the model return 8 rows of 50,257 scores when you only want one next token?",
+    "What final comparison proves the whole port is right, rather than each tensor in isolation?"
+  ],
+  "core": {
+    "must": [
+      "Conv1D stores W as (in, out) and computes x·W → <code>nn.Linear</code> stores (out, in) and computes x·Wᵀ → same function only if W<sub>ours</sub> = W<sub>hf</sub>ᵀ → the four linear weights per Block are copied with <code>.t()</code>",
+      "A shape check compares sizes, not contents → a square (768, 768) <code>attn.c_proj</code> fits either way round → forgetting its transpose loads silently and wrecks the output (top guess 16.4% → 2.6%, loss 4.34 → 7.37) → only an end-to-end comparison with a reference model catches it",
+      "<code>idx</code> (B, T) → <code>wte</code> gives (B, T, C) and <code>wpe</code> gives (T, C) → adding broadcasts positions over B → Blocks keep (B, T, C) → <code>lm_head</code> maps C → vocab → logits (B, T, 50257), a next-token prediction at every position",
+      "Logits are raw scores → softmax exponentiates and normalizes → only differences between logits matter → last-position scores near −95 still give ' not' 16.4%"
+    ],
+    "elevated": [
+      "<code>pos</code> is created with <code>device=idx.device</code> → the model runs wherever the input lives (cpu, mps, cuda) without a hard-coded device → the same module moves to the M3 GPU with one <code>.to(device)</code>",
+      "Copy happens inside <code>torch.no_grad()</code> with in-place <code>copy_</code> → the module keeps its own Parameter objects (and the wte/lm_head tie) → the loaded model trains exactly like one you initialized yourself"
+    ],
+    "reference": [
+      "the transposed list: <code>attn.c_attn.weight</code>, <code>attn.c_proj.weight</code>, <code>mlp.c_fc.weight</code>, <code>mlp.c_proj.weight</code>",
+      "config table in <code>from_pretrained</code>: gpt2 12/12/768, medium 24/16/1024, large 36/20/1280, xl 48/25/1600; vocab 50257, block_size 1024",
+      "older transformers versions list <code>.attn.bias</code>/<code>.attn.masked_bias</code> buffers, which the loader filters out",
+      "prompt tokens <code>[15496, 11, 314, 1101, 257, 3303, 2746, 11]</code>; train_gpt2.py L110–L177; commits <code>28916d9</code>, <code>dd03c64</code>"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw the forward pass from <code>idx</code> to logits with the shape after every step, then write in 2–3 sentences why four weights need a transpose on load and why one of them is dangerous.",
+    "checklist": [
+      "idx (1, 8) → tok_emb (1, 8, 768) + pos_emb (8, 768) → 12 Blocks → ln_f → lm_head → (1, 8, 50257)",
+      "positions are broadcast across the batch",
+      "Conv1D keeps W as (in, out); nn.Linear keeps (out, in); so copy with .t()",
+      "attn.c_proj is square, so the shape assert can't catch a missing transpose",
+      "compare final logits with Hugging Face's (4.58e-05 apart) to prove the port",
+      "logits are scores at every position; softmax of the last row gives the next-token probabilities"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why a Conv1D weight and an nn.Linear weight can describe the same layer yet need a transpose to move between them.", "kind": "concept", "answer": ["both compute a matrix multiply plus a bias for each token", "Conv1D stores W as (in, out) and does x·W", "nn.Linear stores W as (out, in) and does x·Wᵀ", "so the same function needs W<sub>ours</sub> = W<sub>hf</sub>ᵀ; biases are 1-D and copy as-is"]},
+    {"q": "Walk the 8-token prompt through <code>forward</code>, naming each tensor and its shape, and say where broadcasting happens.", "kind": "mechanism", "answer": ["idx (1, 8); pos = arange(8) on idx's device", "wte(idx) → (1, 8, 768); wpe(pos) → (8, 768)", "tok_emb + pos_emb broadcasts the (8, 768) over the batch dimension", "12 Blocks keep (1, 8, 768); ln_f; lm_head → (1, 8, 50257)"]},
+    {"q": "You are porting weights and want the cheapest check that would have caught every mistake on this card. Per-tensor shape asserts, per-tensor value checksums, or one logits comparison with the reference model: what does each catch and cost?", "kind": "tradeoff", "answer": ["shape asserts are free but miss square transposes and swapped same-shape tensors", "value checksums against the source tensor miss a wrong transform applied on your side of the copy", "one logits comparison costs a forward pass of both models and catches anything that changes the output", "use the asserts for early, loud failures and the logits comparison as the final proof"]},
+    {"q": "Why does the forward pass compute 8 × 50,257 scores when sampling will read only the last row?", "kind": "tradeoff", "answer": ["the Blocks compute every position anyway, and lm_head per position is cheap to keep", "training uses all 8 rows: each is a next-token prediction with its own target", "sampling throws away 7 rows and recomputes them next step (no KV cache), which is wasteful but simple"]}
+  ],
+  "compare": [
+    {"with": "z2h-10-gpt2/the-target", "q": "Hugging Face's <code>GPT2LMHeadModel</code> vs your ported <code>GPT</code>: both give the same logits to 4.58e-05. What is fundamentally different about them, and when would you pick each?", "answer": ["same numbers and same architecture; different code and storage layout (Conv1D vs Linear)", "HF: ready-made, pipeline sampling in three lines, but you don't own the module", "yours: every line is editable, which the rest of the lecture needs (flash attention, padded vocab, init, training loop)", "failure modes: HF hides details you need to change; yours can load sideways weights silently unless checked against HF"]},
+    {"with": "z2h-8-gpt/embeddings-and-positions", "q": "nanoGPT in the GPT lecture adds <code>tok_emb + pos_emb</code> exactly as here. What differs about where those tables' values come from, and what does that change about how you debug a bad output?", "answer": ["there, both tables start random and are learned from Shakespeare", "here, both are loaded from OpenAI's checkpoint, so a bad output points at the loading or the code, not at training", "the shape logic and the broadcast over B are identical"]},
+    {"with": "z2h-1-toolkit/matmul-by-shapes", "q": "Using shape rules alone, show why x·W with W as (768, 2304) and x·Wᵀ with W as (2304, 768) give the same (T, 2304) output, and why shape rules can't tell you which way round a (768, 768) matrix should be.", "answer": ["(T, 768)·(768, 2304) → (T, 2304); (T, 768)·(768, 2304) after transposing (2304, 768) → same", "a square matrix multiplies either way, so shapes carry no information about its orientation", "orientation is a convention you must know from the source, then verify with outputs"]}
+  ],
+  "predict": {"q": "You call <code>GPT.from_pretrained('gpt2-medium')</code> (24 layers, width 1024). How many tensors does the loop transpose, how many of those would a shape assert fail to protect, and what shape do the logits for the same 8-token prompt have?", "answer": "96 transposed (4 × 24). The 24 <code>attn.c_proj</code> weights are now (1024, 1024), still square, so all 24 are unprotected by the assert. The logits are still (1, 8, 50257): width and depth change inside the model, but the output is one score per vocabulary token at each position."},
+  "apply": {"task": "In a scratch copy of <code>labs/load-and-forward.py</code>, break the port on purpose: after <code>GPT.from_pretrained('gpt2')</code>, transpose every Block's <code>attn.c_proj.weight</code> in place (the bug of forgetting its <code>.t()</code>). Run it with <code>device = 'cpu'</code> and read the top 5 and the max difference from Hugging Face's logits.", "done": "The top guess changes from <code>' not'</code> (p = 0.1643) to <code>' the'</code> (p = 0.0261), and the max |our logits − HF logits| jumps from 0.0 to 161.7 (both measured on CPU for this card; the lab's MPS run gives 4.58e-05 for the correct port). Then remove the bug and confirm the difference is back to 0.0 on CPU.", "hint": "<code>with torch.no_grad(): b.attn.c_proj.weight.copy_(b.attn.c_proj.weight.t().clone())</code> for each <code>b</code> in <code>model.transformer.h</code>. The <code>.clone()</code> matters: without it, PyTorch refuses because the source and the destination share memory."},
+  "reflect": [
+    "Which prediction did you get wrong: whether the shape assert catches the square transpose, or the logits shape for gpt2-medium?",
+    "What couldn't you explain cleanly: why Conv1D and nn.Linear are the same layer, or why the transpose fixes it?",
+    "Which relationship is still fuzzy: storage order → transpose on load, or silent transpose bug → need for an end-to-end logits check?",
+    "Could you write the shape of every tensor in forward without looking, including the broadcast step?",
+    "What will you revisit before the sampling card, where only the last row of these logits is used?"
+  ],
+  "revisit": ["z2h-10-gpt2/the-module", "z2h-8-gpt/embeddings-and-positions", "z2h-1-toolkit/matmul-by-shapes"],
+  "prereq": ["z2h-10-gpt2/the-module"]
+}

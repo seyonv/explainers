@@ -1,0 +1,63 @@
+{
+  "prime": {
+    "problem": "You now have a network that turns 32 contexts into a loss of 17.77, but its 3,481 numbers are random. Without a loop that changes them, the loss never moves, and without a quick test you can't tell whether a slow, stuck loss is a bug or a hard problem.",
+    "fits": "The micrograd lecture's training loop, now on tensors: the same zero-grad → backward → update moves, applied to the MLP from the hidden-and-output and cross-entropy cards. The next card swaps the fixed 32 rows for random minibatches of all 228,146.",
+    "expect": ["the four moves: forward, <code>p.grad = None</code>, <code>loss.backward()</code>, update", "learning rate (<code>lr</code> = 0.1)", "overfitting one batch as a sanity check", "the loss floor set by the <code>...</code> context", "<code>logits.max(1)</code> to read predictions"],
+    "goal": "Write the training loop from memory, predict where its loss must end on these 32 rows (0.2515 plus a little), and use that target to tell a working loop from a broken one."
+  },
+  "attend": [
+    "Why must the gradients be wiped before <code>loss.backward()</code>, rather than after the update or never?",
+    "What sets the size of each parameter's step, and why does the minus sign in <code>p.data += -0.1 * p.grad</code> make the loss go down?",
+    "Which rows keep the loss above 0 after 1,000 steps, and what is the best probability a model can give them?",
+    "Why does the net predict <code>i</code> for every <code>...</code> row even though it has learned the right distribution?",
+    "What kind of bug can a single-batch overfit still miss?"
+  ],
+  "core": {
+    "must": [
+      "<code>.grad</code> accumulates with <code>+=</code> on every <code>backward()</code> → without <code>p.grad = None</code> each step uses the sum of all past gradients → steps grow and the loss blows up (0.2711 at step 100, 41.4 at step 999 here)",
+      "Each gradient says how the loss changes as one number moves up → step every number by <code>-lr × grad</code> → the loss drops, from 17.77 to 0.2561 in 1,000 steps with lr 0.1",
+      "3,481 parameters for 32 rows → the net can memorise every row that has a single answer (p ≥ 0.982 on the other 27 rows) → this tests the pipeline, not how well the model generalises",
+      "The context <code>...</code> appears 5 times with labels e, o, a, i, s → the best any model can do is 1/5 each → the loss floor is 5 × ln 5 / 32 = 0.2515 → a correct loop lands just above it, and argmax gets only 1 of those 5 rows right (28/32)"
+    ],
+    "elevated": [
+      "<code>p.data += …</code> updates the numbers outside autograd → the update isn't recorded in the graph → the next forward pass starts a fresh graph from the new values"
+    ],
+    "reference": [
+      "<code>p.grad = None</code> vs <code>zero_grad(set_to_none=True)</code> in <code>makemore.py</code> L683",
+      "<code>requires_grad = True</code> must be set once before the loop, or <code>backward()</code> raises an error",
+      "<code>logits.max(1)</code> returns <code>(values, indices)</code>; compare <code>.indices</code> with <code>Y</code>",
+      "the lab's printed steps: 0, 1, 10, 100, 500, 999"
+    ]
+  },
+  "compress": {
+    "prompt": "Without scrolling up, write the four lines inside the training loop and say in 3–4 sentences what each one is for. Then explain why the loss on these 32 rows stops near 0.25 instead of 0.",
+    "checklist": [
+      "forward: <code>C[X]</code> → view → tanh hidden layer → logits → <code>F.cross_entropy</code>",
+      "wipe the old gradients (<code>p.grad = None</code>), because backward adds into <code>.grad</code>",
+      "<code>loss.backward()</code> fills a gradient for every one of the 3,481 numbers",
+      "update: <code>p.data += -lr * p.grad</code>, with lr = 0.1",
+      "the five <code>...</code> rows share one input with five labels, so the floor is 5 × ln 5 / 32 = 0.2515"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why overfitting 32 examples is a useful thing to do before training on the full dataset, when overfitting is normally something to avoid.", "kind": "concept", "answer": ["it is a debugging test: a correct loop must be able to memorise a tiny batch", "it runs in under a second and has a target you can compute by hand (0.2515)", "a loss that stalls far above the floor points to a bug in the loop, not the data"]},
+    {"q": "Walk one step of the loop for the single number <code>b2[5]</code> at step 0: what does each of the four moves do to it?", "kind": "mechanism", "answer": ["forward: b2[5] = 0.4381 is added into the logit for <code>e</code> in every row", "<code>p.grad = None</code> clears any earlier gradient", "backward sets <code>b2.grad[5]</code> = −0.0625 (raising it would lower the loss)", "update: 0.4381 − 0.1 × (−0.0625) = 0.4443"]},
+    {"q": "The final loss is 0.2561. Split it into the part you could never remove and the part more training could still shrink. Is running 10,000 more steps worth it?", "kind": "tradeoff", "answer": ["the five <code>...</code> rows give 0.2522, and the floor for them is 0.2515", "the other 27 rows give 0.0039", "at most about 0.005 is left to gain, and all of it is on training rows, so it tells you nothing new about the model"]},
+    {"q": "Lowering lr from 0.1 to 0.01 still gets 28/32 correct after 1,000 steps. What does the smaller rate cost you, and what would a much larger rate risk?", "kind": "tradeoff", "answer": ["lr 0.01 is slower: loss 13.77 at step 10 and 0.3167 at step 999 instead of 3.9858 and 0.2561", "a large rate takes steps that overshoot, so the loss can bounce or climb instead of settling", "picking lr properly is the learning-rate-finder card"]}
+  ],
+  "compare": [
+    {"with": "z2h-2-micrograd/mlp-and-training-loop", "q": "The micrograd loop and this one do the same four moves. What is fundamentally different about what one step costs and how many numbers it updates, and what caused the micrograd lecture's zero-grad bug that this loop avoids?", "answer": ["micrograd: one Python object per number, 41 parameters; here: whole tensors, 3,481 parameters in five tensors", "same algorithm: forward, reset grads, backward, step against the gradient", "both accumulate into <code>.grad</code>, so both need the reset; micrograd's first version forgot it"]},
+    {"with": "z2h-4-mlp/minibatches", "q": "Here every step sees the same 32 rows; on the next card each step sees 32 random rows from 228,146. What changes about the gradient, about what the final loss means, and when would you use each?", "answer": ["fixed batch: exact gradient for those rows; the loss can reach the memorisation floor", "random minibatch: a noisy estimate of the full-data gradient, but each step is about 1,000× cheaper than a full-batch step", "use the fixed batch to debug the loop, minibatches to actually train"]}
+  ],
+  "predict": {"q": "Add a sixth name that also starts with <code>i</code> (so <code>...</code> now has 6 labels: e, o, a, i, s, i) and overfit again. What is the new floor, and which letter will the net predict for <code>...</code>?", "answer": "The best distribution for <code>...</code> is now i: 2/6 and the others 1/6 each. That costs 2 × ln 3 + 4 × ln 6 = 9.36 over the <code>...</code> rows, spread over more rows than before (the new name adds its own rows too), and the net will now clearly predict <code>i</code>, because <code>i</code> is the most common label rather than a near tie."},
+  "apply": {"task": "Break the loop on purpose and diagnose it from the loss alone. Run the lab three ways: as written, with the <code>p.grad = None</code> lines deleted, and with <code>C</code> left out of the update list. Print the loss at steps 100 and 999 and the number of correct rows for each.", "done": "You measure 0.3354 → 0.2561 (28/32) as written, 0.2711 → 41.4369 (25/32) without zeroing, and 0.3542 → 0.2704 (28/32) without updating <code>C</code>, and you can say which bug the overfit test would catch and which one it misses.", "hint": "To skip <code>C</code>, loop over <code>parameters[1:]</code> in the update only; keep all five in the forward pass."},
+  "reflect": [
+    "Which prediction did you get wrong: the 0.2515 floor, or which letter the net predicts for <code>...</code>?",
+    "What couldn't you explain cleanly: why the gradients must be wiped, or why the step uses a minus sign?",
+    "Which relationship is still fuzzy: shared context <code>...</code> → a floor above 0, or low training loss → says nothing about new names?",
+    "Could you write the four lines of the loop from a blank file and get 0.2561?",
+    "What would you check first if a future loop's loss stalled at 2.5?"
+  ],
+  "revisit": ["z2h-2-micrograd/mlp-and-training-loop", "z2h-2-micrograd/accumulate-gradients", "z2h-4-mlp/rolling-window-dataset", "z2h-4-mlp/cross-entropy"],
+  "prereq": ["z2h-4-mlp/cross-entropy", "z2h-2-micrograd/mlp-and-training-loop"]
+}

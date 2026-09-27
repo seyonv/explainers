@@ -1,0 +1,64 @@
+{
+  "prime": {
+    "problem": "The flat model reads all 8 characters as one row of 80 numbers and squashes them in a single layer. To fuse context slowly, two neighbours at a time, you need a layer that works on <i>pairs</i>, with the same weights for every pair, without writing a loop.",
+    "fits": "The tree-idea card drew the picture; this card turns it into code. It builds on <code>Flatten</code> and <code>Sequential</code> from the containers card and on <code>view</code> from the MLP lecture.",
+    "expect": ["batch dimensions in <code>@</code>", "(B, T, C): batch, positions, channels", "<code>view</code> as regrouping without copying", "<code>FlattenConsecutive(n)</code>", "matching parameter counts"],
+    "goal": "Predict the shape after every layer of the 3-level model, write <code>FlattenConsecutive</code>, and explain why grouping pairs costs nothing."
+  },
+  "attend": [
+    "In <code>x @ W</code> with a 3-D <code>x</code>, which dimension gets summed away, and what happens to the other two?",
+    "Why does reading 80 contiguous numbers as 4 rows of 20 give <i>neighbouring</i> character pairs, and not some other grouping?",
+    "Why does one (20, 200) weight serve all four pairs, and what would a weight per pair cost?",
+    "What makes <code>FlattenConsecutive</code> squeeze the middle dimension, and what would the final layers see without it?",
+    "Why does Karpathy drop n_hidden from 200 to 68 before comparing against the flat model?"
+  ],
+  "core": {
+    "must": [
+      "<code>@</code> sums only over the last dimension of its left input → every leading dimension is carried along as batch → <code>Linear(20, 200)</code> applied to (4, 4, 20) runs the same weight on all 16 pairs → (4, 4, 200) with no loop",
+      "Embeddings for one example sit in memory as c0 c1 … c7 → <code>view(B, T/2, 2C)</code> reads them as [c0 c1] [c2 c3] [c4 c5] [c6 c7] → pairs of neighbours for free (no copy) → repeating it after each hidden layer builds the 2 → 4 → 8 character tree",
+      "Shared weights per level → a pattern learned for one pair works at every position → level 1 costs 20×200 = 4,000 weights instead of 4 × 4,000 for separate ones",
+      "The tree at n_hidden 200 has 170,897 parameters vs the flat model's 22,097 → a win would only prove size → shrink to n_hidden 68 (22,397) so the comparison isolates the architecture"
+    ],
+    "elevated": [
+      "The view groups only <b>contiguous</b> positions and needs T divisible by n → a dilated (skipping) pairing needs a <code>permute</code> first, and <code>FlattenConsecutive(3)</code> on 8 positions errors out",
+      "3-D activations now flow into <code>BatchNorm1d</code> → <code>x.mean(0)</code> keeps separate statistics per position → no error, just wrong normalisation (the next card)"
+    ],
+    "reference": [
+      "the class code of <code>FlattenConsecutive</code> (<code>B, T, C = x.shape</code>, <code>view</code>, <code>squeeze(1)</code>)",
+      "the full shape walk (4, 8, 10) → (4, 4, 20) → (4, 4, 200) → (4, 2, 400) → (4, 2, 200) → (4, 400) → (4, 200) → (4, 27)",
+      "the per-layer parameter breakdown 270 + 1,360 + 136 + 9,248 + 136 + 9,248 + 136 + 1,863",
+      "the explicit equivalent <code>torch.cat([e[:, ::2, :], e[:, 1::2, :]], dim=2)</code>"
+    ]
+  },
+  "compress": {
+    "prompt": "Card closed: draw the 3-level tree for one 8-character context and write the tensor shape (batch of 4, n_embd 10, n_hidden 200) after each <code>FlattenConsecutive</code> and each <code>Linear</code>. Then explain in 2–3 sentences why no loop over pairs is needed.",
+    "checklist": [
+      "(4, 8, 10) → view (4, 4, 20) → Linear (4, 4, 200) → view (4, 2, 400) → Linear (4, 2, 200) → view (4, 400) → Linear (4, 200) → (4, 27)",
+      "<code>@</code> multiplies only the last dimension; the pair dimension is treated as batch",
+      "the view reads contiguous memory, so each row of 2C numbers is two neighbouring positions",
+      "one weight per level, shared by every pair at that level",
+      "the last grouping leaves one group, which is squeezed away"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain what \"leading dimensions are batch dimensions\" means for <code>(4, 5, 80) @ (80, 200)</code>, and why that makes a separate pair loop unnecessary.", "kind": "concept", "answer": ["the 80 is summed against the weight's 80 rows", "(4, 5) are just 20 independent rows, each multiplied by the same W", "the result is (4, 5, 200); grouping pairs into a middle dimension gets them all processed in one call"]},
+    {"q": "Walk through <code>FlattenConsecutive(2)</code> on an input of shape (4, 2, 200). What does <code>view</code> produce, what does the <code>if</code> do, and what shape comes out?", "kind": "mechanism", "answer": ["B, T, C = 4, 2, 200", "view(4, 1, 400): the two hidden vectors of each example side by side", "shape[1] == 1, so squeeze(1) gives (4, 400)", "the final Linear then sees ordinary 2-D input"]},
+    {"q": "Count the parameters of level 2 (its Linear plus BatchNorm) for n_hidden 68, and say why it is much bigger than level 1.", "kind": "mechanism", "answer": ["Linear: 136 × 68 = 9,248 (input is 2 × 68 = 136)", "BatchNorm γ and β: 68 + 68 = 136", "level 1's input is only 2 × 10 = 20 wide (20 × 68 = 1,360), because it fuses embeddings, not hidden vectors"]},
+    {"q": "You could group pairs with <code>view</code>, with <code>torch.cat</code> of even and odd positions, or with a Python loop. They give the same numbers. What does each cost, and when would the view not work at all?", "kind": "tradeoff", "answer": ["view: no copy, one matmul", "cat: correct but allocates and copies a new tensor", "loop: T/2 small matmuls, slow in Python", "the view fails for non-adjacent groupings (dilation) or when T isn't divisible by n"]}
+  ],
+  "compare": [
+    {"with": "z2h-7-wavenet/more-context-baseline", "q": "Flat block_size-8 MLP vs the 3-level tree at the same ~22K parameters: where does each one mix the 8 characters, and what does each spend its parameters on?", "answer": ["flat: all 8 embeddings mixed at once in one Linear(80, 200) = 16,000 weights", "tree: 2 at a time, three times, with weights shared across positions at each level", "at n_hidden 68 the tree spends most weights (2 × 9,248) combining hidden vectors, not raw embeddings", "the notebook's first result is a tie (val 2.027 flat vs 2.029 tree), so the structure alone didn't win yet"]},
+    {"with": "z2h-7-wavenet/convolutions-and-workflow", "q": "This card forwards one tree per 8-character context; a dilated convolution slides the tree along a whole name. What is the same, what does the convolution add, and what does <code>FlattenConsecutive</code> waste?", "answer": ["same: the same shared weights per level and the same tree", "the convolution computes every position's tree in one pass and reuses nodes shared by neighbouring contexts", "with FlattenConsecutive, each training row recomputes its own nodes, even those a neighbouring row already computed", "the lab counts 56 nodes computed for one 8-row name, of which 34 are distinct"]}
+  ],
+  "predict": {"q": "The level-1 output is now (32, 4, 68) during training. The hand-written <code>BatchNorm1d</code> still computes <code>x.mean(0, keepdim=True)</code>. What shape is that mean, and from how many numbers is each entry estimated?", "answer": "(1, 4, 68): a separate mean for each of the 4 pair positions, each from only 32 numbers. Nothing errors, because it broadcasts fine. The intended statistics are one per channel, (1, 1, 68), from 32 × 4 = 128 numbers, which needs <code>x.mean((0, 1))</code>. That is the next card's bug."},
+  "apply": {"task": "Make a 2-level tree: <code>FlattenConsecutive(4)</code>, <code>Linear(40, 68)</code>, BatchNorm1d, Tanh, then <code>FlattenConsecutive(2)</code>, <code>Linear(136, 68)</code>, BatchNorm1d, Tanh, and the output <code>Linear(68, 27)</code> (n_embd 10). Before running, write down the shape after every layer for a batch of 4 and the parameter count. Then run it, and also try <code>FlattenConsecutive(3)</code> on (4, 8, 10).", "done": "Your shapes match (4, 8, 10) → (4, 2, 40) → (4, 2, 68) → (4, 136) → (4, 68) → (4, 27), the count is 14,373, and <code>FlattenConsecutive(3)</code> raises <code>shape '[4, 2, 30]' is invalid for input of size 320</code>.", "hint": "Parameters: 270 + 40×68 + 136 + 136×68 + 136 + 68×27 + 27. For the error, 8 // 3 = 2 groups of 30 is 60 numbers per example, but there are 80."},
+  "reflect": [
+    "Which prediction did you get wrong: the (4, 5, 200) shape, or the BatchNorm mean shape?",
+    "What couldn't you explain cleanly: why the view gives neighbouring pairs, or why the last level is squeezed?",
+    "Which relationship is still fuzzy: batched <code>@</code> → shared weights across pairs, or contiguous memory → which characters end up paired?",
+    "If a 16-character context needed a fourth level, which lines of the model would you add, and what shape would the first view give?",
+    "Would you trust the val 2.029 vs 2.027 tie enough to drop the tree? What would you check first?"
+  ],
+  "revisit": ["z2h-4-mlp/view-storage", "z2h-1-toolkit/matmul-by-shapes"],
+  "prereq": ["z2h-7-wavenet/torch-nn-containers"]
+}

@@ -1,0 +1,65 @@
+{
+  "prime": {
+    "problem": "A layer adds up many products of inputs and weights. With careless weights the numbers grow (or shrink) at every layer, so a deep network's activations blow up or fade out before training even starts, and nothing tells you why unless you can measure spread.",
+    "fits": "It builds on the dot product (one layer output is a sum of fan_in products) and on probability distributions. It is the arithmetic behind L4's Kaiming init and BatchNorm, and later behind attention's divide-by-√head_size.",
+    "expect": ["mean, variance and std", "the Gaussian N(0, 1) and <code>torch.randn</code>", "variances add → std grows like √n", "fan_in and dividing w by √fan_in", "standardising: (x − mean) / std"],
+    "goal": "Predict the std of <code>x @ w</code> from fan_in and Var(w), choose the weight scale that keeps it at 1, and explain what BatchNorm's standardising step does to a batch."
+  },
+  "attend": [
+    "Why does variance square the distances from the mean instead of just averaging them?",
+    "Adding 10 unit-variance numbers: why does the std grow to √10 ≈ 3.16 and not to 10?",
+    "Which assumption about x and w makes Var(y) = fan_in · Var(w) · Var(x) true, and what happens to the rule if it fails?",
+    "Why does dividing w by √fan_in, rather than by fan_in, bring the output std back to 1?",
+    "When would you standardise the outputs after the fact instead of choosing a careful weight scale up front?"
+  ],
+  "core": {
+    "must": [
+      "Independent random numbers → their variances add → a sum of n unit-variance numbers has variance n → its std is √n, not n, because positive and negative draws partly cancel",
+      "One output of <code>x @ w</code> sums fan_in products x·w → each has variance Var(x)·Var(w) → Var(y) = fan_in · Var(w) · Var(x) → with randn weights and fan_in 10 the std becomes √10 ≈ 3.16 (measured 3.1613)",
+      "Choose Var(w) = 1/fan_in (divide w by √fan_in) → the fan_in cancels → every layer passes on std ≈ 1 whatever its width → a deep stack neither explodes (≈295 after five raw layers) nor fades (w·0.01)",
+      "Subtract the mean and divide by the std → any column becomes mean 0, std 1 → BatchNorm does this per batch at every layer, so it fixes the scale even when the init is wrong"
+    ],
+    "elevated": [
+      "<code>torch.var</code>/<code>torch.std</code> divide by n − 1 by default (Bessel's correction) → on 8 numbers that's 4.5714 instead of 4.0 → small batches give noticeably different statistics, and a batch of one gives <code>nan</code>"
+    ],
+    "reference": [
+      "68.3% / 95.4% / 99.7% of a Gaussian lies within 1 / 2 / 3 std",
+      "peak height of N(0, 1): 1/√(2π) = 0.3989",
+      "<code>unbiased=False</code> for /n; <code>keepdim=True</code> so the (1, 200) mean broadcasts against (1000, 200)",
+      "Kaiming gains: 5/3 for tanh, √2 for ReLU; W1 in L4 gets (5/3)/√30 = 0.3043",
+      "seed 2147483647 and the lab's measured values (mean −0.0037, std 1.0014)"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, in 3–5 sentences, explain why <code>randn(1000, 10) @ randn(10, 200)</code> has std about 3.16 and what single change brings it back to 1. Or draw the chain: products → sum → variance → std → weight scale.",
+    "checklist": [
+      "variance = average squared distance from the mean; std = its square root",
+      "independent variances add, so a sum of n unit-variance numbers has std √n",
+      "one output sums fan_in = 10 products, each of variance 1 → std √10",
+      "divide w by √fan_in so Var(w) = 1/fan_in cancels the fan_in",
+      "or standardise afterwards: (y − mean) / std, which is BatchNorm's core step"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain the difference between variance and standard deviation, and why the course reasons with variance but reports std.", "kind": "concept", "answer": ["variance is the mean of squared distances from the mean; std is its square root, in the same units as the data", "variances of independent numbers add, so the arithmetic is simple in variance", "std is what you read off a histogram and what <code>randn</code>'s \"1\" refers to"]},
+    {"q": "Walk through the variance of v = [2, 4, 4, 4, 5, 5, 7, 9] step by step, then say what <code>torch.var(v)</code> prints and why it differs.", "kind": "mechanism", "answer": ["mean 40/8 = 5", "deviations −3, −1, −1, −1, 0, 0, 2, 4; squares sum to 32", "32/8 = 4.0, std 2.0", "<code>torch.var</code> divides by n − 1 by default: 32/7 = 4.5714"]},
+    {"q": "Walk through what happens to the std of the signal as it goes through <code>y = x @ w</code> with fan_in 10, first with plain randn weights, then with w divided by √10.", "kind": "mechanism", "answer": ["each output adds 10 products of variance 1", "variance 10 → std √10 ≈ 3.16 (measured 3.1613)", "w / √10 has variance 0.1, so each product has variance 0.1 and the sum has variance 1 (measured 0.9997)"]},
+    {"q": "You can keep activations at std 1 by careful init (divide by √fan_in) or by standardising every layer (BatchNorm). What does each cost, and when does each fail?", "kind": "tradeoff", "answer": ["init: free at run time, but assumes independence, mean 0 and no squashing, and drifts once training changes the weights", "standardising: holds the scale during training too, but couples the examples in a batch", "standardising needs batch statistics: tiny batches are noisy, a batch of one has no variance (nan)", "nonlinearities like tanh need an extra gain (5/3) for the init rule"]}
+  ],
+  "compare": [
+    {"with": "z2h-1-toolkit/vectors-dot-product", "q": "That card treats x·w as one number with a geometric meaning (alignment). This card treats it as a random sum. What does each view let you predict, and which one explains why weights get divided by √fan_in?", "answer": ["dot-product view: the size and sign of one output for specific vectors", "random-sum view: the typical size (std) of outputs over random x and w", "only the random-sum view shows the spread growing like √fan_in", "same operation, different question: one value vs its distribution"]},
+    {"with": "z2h-5-batchnorm/kaiming-init", "q": "This card derives 1/√fan_in for a purely linear layer. What does Kaiming init add on top, which design choice forces it, and what goes wrong if you skip it?", "answer": ["a gain: 5/3 for tanh, √2 for ReLU", "forced by the nonlinearity squashing (tanh) or discarding half (ReLU) the distribution", "without the gain, activations shrink layer by layer in a deep tanh stack", "for W1 in L4: (5/3)/√30 = 0.3043 vs the hand-tuned 0.2"]},
+    {"with": "z2h-8-gpt/scaled-attention", "q": "Attention divides q·k by √head_size. Which fact from this card is that, and what would fail without it?", "answer": ["q·k is a sum of head_size products of unit-variance numbers → variance head_size", "dividing by √head_size brings the variance back to about 1", "without it the logits are large, softmax becomes nearly one-hot, and attention locks onto one position"]}
+  ],
+  "predict": {"q": "The √n rule needs the numbers to be independent. Suppose instead you add the <i>same</i> randn number to itself 10 times (10·z). Commit: is the std of the result about 3.16, about 10, or about 1?", "answer": "About 10 (computed with seed 2147483647: 10.0136). The copies never cancel each other, so the std scales by n, not √n; Var(10·z) = 100·Var(z). Independence is what gives √n. That's why the init rule weakens when inputs are strongly correlated."},
+  "apply": {"task": "Karpathy's real first layer has fan_in 30 (10-dim embeddings × 3 characters). In a fresh script, make <code>g = torch.Generator().manual_seed(2147483647)</code>, draw <code>x = torch.randn(1000, 30, generator=g)</code> and <code>w = torch.randn(30, 200, generator=g)</code>, and print the std of <code>x @ w</code>, of <code>x @ (w / 30**0.5)</code>, and of <code>x @ (w * (5/3) / 30**0.5)</code>. Predict each value before you run it.", "done": "You predicted about √30 ≈ 5.48, 1 and 5/3 ≈ 1.67, and measured 5.4245, 0.9904 and 1.6506.", "hint": "Var(y) = fan_in · Var(w) · Var(x). The Kaiming gain multiplies the std, so it just scales the second answer by 5/3."},
+  "reflect": [
+    "Which prediction did you get wrong: 3.16 for <code>x @ w</code>, or 10 for the sum of identical copies?",
+    "What couldn't you explain cleanly: why variances add, or why that gives √n rather than n?",
+    "Which relationship is still fuzzy: independence → variances add, or Var(y) → the choice of weight scale?",
+    "Could you now say in one sentence what BatchNorm's first step does to a column of numbers?",
+    "What will you check first the next time a network's loss starts huge or its activations look saturated?"
+  ],
+  "revisit": ["z2h-1-toolkit/vectors-dot-product", "z2h-1-toolkit/probability-distributions-and-sampling", "z2h-1-toolkit/matmul-by-shapes"],
+  "prereq": ["z2h-1-toolkit/vectors-dot-product"]
+}

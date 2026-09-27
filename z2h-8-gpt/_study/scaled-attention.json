@@ -1,0 +1,62 @@
+{
+  "prime": {
+    "problem": "An attention score is a dot product, so it adds up head_size products. Make the head wider and the scores spread wider, and softmax snaps each row to almost one-hot before training has even started.",
+    "fits": "The self-attention-head card built <code>softmax(q @ kᵀ)</code> and showed that bigger scores give peakier weights. This card adds the one factor the paper's formula has and ours didn't: dividing the scores by √head_size.",
+    "expect": ["variance of a dot product", "the scale factor <code>head_size**-0.5</code>", "softmax saturation (peaky rows)", "the Colab's <code>C**-0.5</code> bug"],
+    "goal": "Derive why q·k has variance head_size, predict what an unscaled wide head does to softmax, and pick the right divisor (√head_size, not head_size or √C)."
+  },
+  "attend": [
+    "Which property of variance makes the spread of q·k grow with head_size rather than stay fixed?",
+    "Why a square root: what would dividing by head_size itself do to the scores?",
+    "Softmax only cares about gaps between scores. How does scaling every score by 8 change the gaps, and the weights?",
+    "Why does a near one-hot row starve the queries and keys of gradient?",
+    "What assumption about q and k does the √head_size rule rely on, and does the crux cell's <code>nn.Linear</code> output meet it?"
+  ],
+  "core": {
+    "must": [
+      "q·k sums head_size products → each product has variance 1 when q and k entries are independent with variance 1 → variances of independent terms add → Var(q·k) ≈ head_size (16.00 at 16, 63.10 at 64)",
+      "Multiplying by c multiplies variance by c² → multiplying by 1/√head_size divides the variance by head_size → scores are back near variance 1 whatever the head size (1.000 at 16, 0.986 at 64)",
+      "Softmax is exponential in score gaps → wide scores make rows near one-hot (×8 → 0.80 peak, ×50 → 0.99995) → nudging a score barely moves the weights (gradient size 1.57 → 0.67 → 0.00018) → an unscaled wide head starts out copying one token and learns slowly"
+    ],
+    "elevated": [
+      "The divisor must be the head's own width (<code>k.shape[-1]</code>), not the embedding width C → the Colab's final cell used <code>C**-0.5</code> → at gpt.py sizes the variance would be 64 / 384 = 0.17, so heads start too flat, closer to a plain average"
+    ],
+    "reference": [
+      "<code>wei = q @ k.transpose(-2, -1) * k.shape[-1]**-0.5</code> (gpt.py L83)",
+      "the paper writes it softmax(QKᵀ/√d<sub>k</sub>)V, Vaswani et al. 2017, section 3.2.1",
+      "<code>F.scaled_dot_product_attention</code> applies the same 1/√d scale by default",
+      "the illustrative scores <code>[0.1, -0.2, 0.3, -0.2, 0.5]</code> from the video"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, write the chain from \"q and k have unit-variance entries\" to \"softmax stays diffuse at init\" in 3–5 sentences, or as an arrow chain. Include the one line of arithmetic that gives Var(q·k) = head_size.",
+    "checklist": [
+      "q·k is a sum of head_size products, each with variance 1",
+      "independent variances add, so the sum has variance head_size and standard deviation √head_size",
+      "multiplying by 1/√head_size divides the variance by head_size, back to about 1",
+      "wide scores make softmax near one-hot, and near one-hot rows pass almost no gradient",
+      "the divisor is the head's width, not C (the Colab bug)"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain in plain words why a dot product of two random 64-long vectors is typically about 8 in size, while their entries are typically about 1.", "kind": "concept", "answer": ["64 products, each of typical size 1 and random sign, partly cancel", "variances add: 64 × 1 = 64", "typical size is the standard deviation, √64 = 8"]},
+    {"q": "Walk through what happens to Karpathy's row <code>[0.1, -0.2, 0.3, -0.2, 0.5]</code> when every score is multiplied by 8, from the gaps to the final weights.", "kind": "mechanism", "answer": ["the gap between 0.5 and 0.3 grows from 0.2 to 1.6, a weight ratio of about e<sup>1.6</sup> ≈ 5", "the top weight rises from 0.2872 to 0.8000; the −0.2 entries fall to 0.0030", "the row is now close to one-hot, so the token mostly copies one other token"]},
+    {"q": "A colleague proposes dividing scores by head_size instead of √head_size, \"to be safe\". What does that cost at head_size 64?", "kind": "tradeoff", "answer": ["the variance becomes 1/64 ≈ 0.015 instead of 1", "scores cluster near 0, so every row starts close to a plain average", "the head has to grow its weights a lot before it can attend to anything specific"]},
+    {"q": "Why does the √head_size factor not guarantee unit-variance scores in the crux cell, where q and k come from untrained <code>nn.Linear</code> layers?", "kind": "mechanism", "answer": ["the rule assumes q and k entries have variance 1", "default <code>nn.Linear</code> outputs had variance about 0.34 and 0.32 there", "raw scores had variance 1.92, so scaling brought them to 0.12, flatter than 1"]}
+  ],
+  "compare": [
+    {"with": "z2h-5-batchnorm/kaiming-init", "q": "Kaiming init scales weights by about 1/√fan_in; attention scales scores by 1/√head_size. What is the shared argument, what is being kept at variance 1 in each case, and how does each fail if you drop the factor?", "answer": ["shared: a sum of n independent terms has variance n times one term's, so divide by √n", "Kaiming keeps each layer's activations near unit variance; attention keeps the scores entering softmax near unit variance", "without Kaiming, activations grow or shrink layer by layer (tanh saturates); without the attention scale, softmax saturates to one-hot", "both are fixes for the starting point only; training can move away from them"]},
+    {"with": "z2h-5-batchnorm/squash-the-logits", "q": "Both cards shrink numbers that feed a softmax at initialization. What is different about where the softmax sits and what goes wrong in each case?", "answer": ["squash-the-logits: the output softmax over 27 characters; big logits make confident wrong guesses and a high initial loss", "scaled attention: a softmax inside the model over earlier tokens; big scores make each token copy one other token", "both fail through saturation: near one-hot outputs with tiny gradients"]}
+  ],
+  "predict": {"q": "The next card uses 4 heads of 8 dims each, with C = 32. If you kept the Colab's bug and scaled by <code>C**-0.5</code> instead of <code>head_size**-0.5</code>, what would the variance of unit-variance scores be, and would the heads start sharper or flatter than intended?", "answer": "Flatter. Unscaled variance is head_size = 8; dividing by C = 32 gives 8 / 32 = <b>0.25</b> instead of 1, so the typical score is half the intended size (√0.25 = 0.5). The fix, <code>k.shape[-1]**-0.5</code>, divides by 8 and gives 1. With one 32-wide head the bug is invisible, because then C = head_size."},
+  "apply": {"task": "In <code>labs/scaled-attention.py</code>, add 256 to the <code>for hs in [16, 64]</code> list and predict both variances before running. Then add a check: with seed 0, draw <code>q</code> and <code>k</code> as <code>torch.randn(1000, 8, 64)</code>, form <code>s = q @ k.transpose(-2, -1)</code>, and print the mean of the top softmax weight per row, unscaled and scaled by <code>64**-0.5</code>.", "done": "You see <code>head_size 256: var(q.k) = 259.85   var(q.k / sqrt(256)) = 1.015</code>, and a mean top weight of about 0.874 unscaled vs 0.360 scaled (a plain average over 8 keys would be 0.125).", "hint": "Adding 256 at the end of the list keeps the 16 and 64 lines unchanged, because they draw their random numbers first. Reset the seed before the second check."},
+  "reflect": [
+    "Which prediction did you get wrong: the variance of 16, or how flat the Colab bug makes the next card's heads?",
+    "What couldn't you explain cleanly: why variances add, or why a square root is the right divisor?",
+    "Which relationship is still fuzzy: head_size → score spread, or score spread → how little gradient softmax passes back?",
+    "Could you say why the scaling is an initialization fix and not a guarantee for the whole of training?",
+    "What will you look for when heads are stacked in the model on the next card?"
+  ],
+  "revisit": ["z2h-8-gpt/self-attention-head", "z2h-8-gpt/masked-softmax", "z2h-1-toolkit/mean-variance-gaussian", "z2h-1-toolkit/softmax-and-cross-entropy"],
+  "prereq": ["z2h-8-gpt/self-attention-head"]
+}

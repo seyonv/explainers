@@ -1,0 +1,63 @@
+{
+  "prime": {
+    "problem": "The network now outputs a (32, 27) block of raw scores, but training needs one number that says how wrong those scores are. Without it there is nothing to call <code>.backward()</code> on, and the obvious hand-written version silently returns <code>nan</code> once a score gets large.",
+    "fits": "It closes the forward pass. The hidden-and-output card produced <code>logits</code>; Lecture 2 already graded a bigram model with the average negative log likelihood. This card applies that same grade to logits and swaps the five hand-written steps for one library call before the first training loop.",
+    "expect": ["logits → softmax → probability of the label", "negative log likelihood, averaged over the batch", "picking one entry per row with <code>prob[torch.arange(32), Y]</code>", "overflow: <code>exp(100)</code> is <code>inf</code>", "subtracting the row max"],
+    "goal": "Compute the loss by hand and with <code>F.cross_entropy</code>, get the same number, and explain why the library call is the one to train with."
+  },
+  "attend": [
+    "Why must the logits go through <code>exp</code> before dividing by the row total, instead of dividing the raw scores directly?",
+    "What does <code>prob[torch.arange(32), Y]</code> select, and why does it need both index tensors?",
+    "Which single fact about softmax lets PyTorch subtract the row max without changing the answer?",
+    "Why does a loss of 17.77 mean the untrained net is worse than guessing, and what number would guessing give?",
+    "What changes in the backward pass when five tensor steps become one fused call?"
+  ],
+  "core": {
+    "must": [
+      "logits can be any real number → <code>exp</code> makes every score positive and keeps their order → dividing by the row sum makes each row a probability distribution → −log of the label's probability is 0 when the net is sure and right, and huge when it is sure and wrong → the mean over 32 rows is the loss (17.7697 here)",
+      "adding a constant c to every logit multiplies top and bottom of the softmax by e<sup>c</sup> → probabilities don't change → subtract the row max so the largest exponent is e<sup>0</sup> = 1 → nothing overflows, whereas by hand a logit above 88.7 gives <code>inf</code> → <code>inf/inf</code> = <code>nan</code>",
+      "<code>F.cross_entropy</code> fuses log-softmax and the pick into one op → no <code>counts</code>/<code>prob</code> tensors kept, 2 backward nodes instead of 7 → its gradient is one expression, (prob − one_hot(Y)) / N → cheaper and more robust training with the same loss value"
+    ],
+    "elevated": [
+      "it works in log space (log-softmax = logit − max − log Σ e<sup>logit − max</sup>) → it never takes the log of a probability that rounded to 0 → <code>F.softmax(...).log()</code> can still return <code>inf</code> loss (row with 200: <code>inf</code> vs 197.0), <code>F.cross_entropy</code> can't"
+    ],
+    "reference": [
+      "<code>F.cross_entropy(logits, Y)</code> takes (N, C) float logits and (N,) integer labels; (B, T, C) is flattened with <code>.view(-1, C)</code>",
+      "float32's largest value is about 3.4 × 10³⁸ = e<sup>88.7</sup>",
+      "<code>keepdims=True</code> in <code>counts.sum(1, keepdims=True)</code> keeps shape (32, 1) so the division broadcasts per row",
+      "the backward nodes are named <code>LogSoftmaxBackward0</code> and <code>NllLossBackward0</code>",
+      "uniform guessing over 27 characters scores −ln(1/27) = 3.2958"
+    ]
+  },
+  "compress": {
+    "prompt": "Without scrolling up, write the chain from a (32, 27) block of logits to one loss number in 3–5 sentences, then add one sentence on why you'd call <code>F.cross_entropy</code> instead. Or draw the five steps as boxes and mark where a logit of 100 breaks them.",
+    "checklist": [
+      "exp makes scores positive; dividing by the row sum turns each row into probabilities (softmax)",
+      "pick the label's probability in each row, take −log, average over the batch",
+      "a sure-and-right row costs about 0; a sure-and-wrong row costs a lot, so the average punishes confident mistakes",
+      "shifting all logits in a row by a constant leaves the softmax unchanged, so subtract the max to avoid overflow",
+      "<code>F.cross_entropy</code> gives the same number with fewer stored tensors, a simpler backward pass and no <code>nan</code>"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain what the cross-entropy loss measures for one row of logits, and why a loss of 17.77 on this batch says the net is confidently wrong rather than just unsure.", "kind": "concept", "answer": ["it's −log of the probability the net gives the true next character", "an unsure net that spreads probability evenly scores −ln(1/27) = 3.2958", "17.77 means correct characters typically get probabilities like 10⁻⁸ or smaller, so the net put its mass on wrong characters"]},
+    {"q": "Walk row 0 (context <code>...</code>, label <code>e</code>) through the five manual steps: what is each intermediate value?", "kind": "mechanism", "answer": ["logit for <code>e</code> is −9.9992 (top score 21.6638 for <code>j</code>)", "exp gives 4.544 × 10⁻⁵; the row sums to 2.987 × 10⁹", "divide: 1.52 × 10⁻¹⁴; −log: 31.82", "this row then goes into the mean with the other 31, giving 17.7697"]},
+    {"q": "Walk <code>[-2, 3, -3, 0, 100]</code> through the hand-written softmax and through the max-shifted one. Where exactly does the first fail?", "kind": "mechanism", "answer": ["by hand: <code>exp(100)</code> overflows float32 to <code>inf</code>, so the row sum is <code>inf</code>", "<code>inf / inf</code> = <code>nan</code> for the last entry; the finite ones divide to 0", "shifted: logits become [−102, −97, −103, −100, 0], the largest exponent is 1, and the result is 0, 0, 0, 0, 1.0"]},
+    {"q": "You could write the loss as <code>F.softmax(logits, 1).log()</code> and pick the label, or call <code>F.cross_entropy</code>. What does each cost, and when do they give different answers?", "kind": "tradeoff", "answer": ["both avoid the overflow, because softmax subtracts the max", "softmax-then-log can round a tiny probability to 0.0 first, so log gives −inf and the loss is inf (the row with 200: inf vs 197.0)", "<code>F.cross_entropy</code> stays in log space, stores fewer tensors, and has the one-line gradient; you lose nothing except seeing the intermediate probabilities"]}
+  ],
+  "compare": [
+    {"with": "z2h-3-bigram/softmax-as-exp-normalise", "q": "Lecture 2's neural bigram also did exp-then-normalize by hand and never hit <code>nan</code>. What about that model kept it safe, and why can't the MLP rely on the same thing?", "answer": ["the bigram's logits were just one row of a 27×27 matrix of standard-normal weights, so they stayed within a few units of 0", "the MLP's logits come from <code>h @ W2 + b2</code> with 100 hidden units, so they are already in the ±20s at init (up to 27.9 here)", "the manual version is only safe while every logit stays below about 88.7; training can push logits there", "the loss formula is identical in both; only the numerical safety differs"]},
+    {"with": "z2h-6-backprop-ninja/cross-entropy-analytic", "q": "This card uses the fact that <code>F.cross_entropy</code>'s gradient is (prob − one_hot(Y)) / N. How does that one-liner differ from backpropagating through the five manual steps, and when would you want the manual route anyway?", "answer": ["the manual route multiplies local derivatives through exp, sum, divide, index, log, mean and negate", "the fused route collapses them algebraically into one expression, so it is faster and has fewer places to lose precision", "both give the same gradient (here they agree within 5.6 × 10⁻⁹)", "you'd go manual to learn or to debug, which is exactly what the backprop-ninja course does"]}
+  ],
+  "predict": {"q": "Before any training, suppose every logit in the (32, 27) block were exactly 0. What would <code>F.cross_entropy(logits, Y)</code> return, and is that better or worse than our seeded net's 17.7697?", "answer": "3.2958, which is −ln(1/27): all-zero logits give every character probability 1/27, whatever the label. That is far better than 17.7697. A net that knows nothing but admits it beats one that is confidently wrong, and making the initial logits small is the first fix in the next lecture (the expected-initial-loss card)."},
+  "apply": {"task": "Write your own <code>my_ce(logits, Y)</code> that never overflows: for each row take the max m, compute m + log Σ exp(logit − m) (the log of the softmax denominator), subtract the label's logit, and average. Test it on the seeded 32-example batch and on the single row <code>[[-2., 3, -3, 0, 100]]</code> with label 1, and compare its gradient with <code>F.cross_entropy</code>'s using <code>torch.autograd.grad</code>.", "done": "It prints 17.7697 on the batch and 97.0 on the single row (where the hand-written softmax version gives inf), and the largest gradient difference from <code>F.cross_entropy</code> is below 10⁻⁸ (3.7 × 10⁻⁹ when computed for this card).", "hint": "<code>logits.max(1, keepdim=True).values</code> gives m with shape (32, 1), so <code>logits - m</code> broadcasts per row. Pick the label's logit with <code>logits[torch.arange(len(Y)), Y]</code>."},
+  "reflect": [
+    "Which prediction did you get wrong: the <code>nan</code> for the 100 row, or 3.2958 for all-zero logits?",
+    "What couldn't you explain cleanly: why the exp comes before the division, or why subtracting the max changes nothing?",
+    "Which relationship is still fuzzy: large logit → overflow, or overflow → <code>nan</code> loss → training stops?",
+    "Could you explain to someone why 17.77 is a bad starting loss without saying \"it's high\"?",
+    "Which of Karpathy's three reasons for <code>F.cross_entropy</code> would you give first, and why?"
+  ],
+  "revisit": ["z2h-3-bigram/likelihood-and-nll", "z2h-3-bigram/softmax-as-exp-normalise", "z2h-1-toolkit/exp-and-log"],
+  "prereq": ["z2h-4-mlp/hidden-and-output"]
+}

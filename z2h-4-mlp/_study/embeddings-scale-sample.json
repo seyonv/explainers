@@ -1,0 +1,64 @@
+{
+  "prime": {
+    "problem": "A loss number tells you the model is better but not <i>what</i> it learned or where it is stuck. Without looking inside, you'd keep growing the wrong part of the network, and without sampling you never see what the model actually produces.",
+    "fits": "This closes Lecture 3. The splits card showed train ≈ dev (underfitting) and that 300 hidden neurons barely helped; here you find the real bottleneck in the embedding table <code>C</code> from the Bengio card, scale it, and reuse the multinomial sampling loop from the bigram course.",
+    "expect": ["plotting the 2-D embedding table <code>C</code>", "capacity bottleneck (<code>n_embd</code> vs <code>n_hidden</code>)", "parameter count 11,897", "train/dev gap as a sign of overfitting", "autoregressive sampling with a sliding context window"],
+    "goal": "Read an embedding plot sensibly, explain why widening <code>C</code> beat adding neurons, and write the sampling loop that turns the trained net into new names."
+  },
+  "attend": [
+    "Why do characters that nobody labelled as similar end up near each other in <code>C</code>?",
+    "Tripling the hidden neurons changed dev by 0.03; what does each neuron actually get to see, and why does that cap the gain?",
+    "When the embedding grows from 2 to 10 numbers, which other shape has to change, and where do the extra parameters go?",
+    "After 200k steps the train/dev gap opens to 0.043: what is that telling you about the next knob to turn?",
+    "In the sampling loop, what goes back into the model after each draw, and what does the 3-character window make the model forget?"
+  ],
+  "core": {
+    "must": [
+      "characters used in similar contexts → receive similar gradients on their rows of <code>C</code> → their embeddings drift together → the model can reuse what it learned about one for the other (vowels cluster)",
+      "every hidden neuron reads only the 3 × d embedding numbers → with d = 2 that's 6 numbers, whatever H is → more neurons (100 → 300) gain only 0.03 dev → widening C to d = 10 (30 inputs) gains 0.06 at the same step count with 16% more parameters",
+      "train ≈ dev → underfitting → grow capacity; after scaling, train 2.1268 vs dev 2.1698 → a gap opens → the model is starting to overfit, so further growth needs more data or regularisation, not just size",
+      "sampling draws ix from the model's own probabilities → appends it and slides the 3-char window → the next prediction conditions on its own output → names emerge one character at a time, and anything older than 3 characters is forgotten (wazthoniearyxi.)"
+    ],
+    "elevated": [
+      "<code>torch.multinomial</code> draws in proportion to the probabilities instead of taking the argmax → low-probability picks happen (p('c') = 0.043 at step 1) → variety; argmax would give the same name every time"
+    ],
+    "reference": [
+      "the seeds 2147483647 (init) and 2147483647 + 10 (sampling)",
+      "the exact per-tensor counts 270 + 6,000 + 200 + 5,400 + 27",
+      "the schedule 100k steps at lr 0.1 then 100k at 0.01, batch 32",
+      "<code>plt.scatter(C[:, 0].data, C[:, 1].data)</code> and <code>plt.text</code> for labels",
+      "notebook numbers 2.1260 / 2.1701 vs torch 2.14's 2.1268 / 2.1698"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw the chain from \"train ≈ dev at 2.30\" to \"dev 2.17\": what you diagnosed, which knob you turned and why, and what the new train/dev gap says. Then sketch the sampling loop as four boxes.",
+    "checklist": [
+      "train ≈ dev means underfitting, so the model needs capacity",
+      "more hidden neurons barely helped because each neuron sees only 3 × 2 = 6 numbers",
+      "d 2 → 10 with W1 (30, 200): 11,897 params, dev 2.1698 after 200k steps",
+      "the 0.043 train/dev gap means slight overfitting has begun",
+      "sampling: embed the context → probs → multinomial draw → slide the window, stop at '.'"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why the 2-D scatter shows vowels near each other even though the network was never told which letters are vowels.", "kind": "concept", "answer": ["each character's row of C is trained only through the loss", "vowels appear in similar contexts and predict similar next characters", "so their rows get pushed in similar directions and end up close (each of a, e, i, o has another vowel as nearest neighbour, 0.12–0.25 away)"]},
+    {"q": "Walk through the first step of sampling 'carlah.': what goes in, what the model outputs, and why 'c' came out although it wasn't the top choice.", "kind": "mechanism", "answer": ["context [0, 0, 0] = '...' → C lookup (1, 3, 10) → tanh layer → softmax over 27", "top choices a 0.183, k 0.094, m 0.086; 'c' has 0.043", "multinomial draws in proportion to the probabilities, so a 4% pick happens about 1 time in 23", "then context becomes '..c' and the loop repeats"]},
+    {"q": "You have budget for about 1,600 more parameters on the 10,281-parameter 2-D net. Would you spend them on more neurons or a wider embedding? Justify with the measured numbers and say what the choice costs.", "kind": "tradeoff", "answer": ["the 100 → 300 neuron step cost 6,800 params for 0.03 dev", "d 2 → 10 with H 200 costs 1,616 more params (11,897) for 0.06 dev at 50k steps", "cost: W1 grows to 30 inputs and you can no longer plot C directly as a 2-D picture"]},
+    {"q": "Your 10-D model scores train 2.1268 and dev 2.1698. Name two changes you'd try next and what each would do to that gap.", "kind": "tradeoff", "answer": ["a bigger model would likely lower train more than dev and widen the gap", "more context (block_size) or better init changes what the model can learn, not just its size", "a regulariser or more data narrows the gap; always judge by dev, never by train"]}
+  ],
+  "compare": [
+    {"with": "z2h-3-bigram/sampling-multinomial", "q": "The bigram sampler and this MLP sampler both call <code>torch.multinomial</code> in a loop. What is fundamentally different about where the probabilities come from, which design choice causes it, and how does each fail?", "answer": ["bigram: probabilities are a row of a count table indexed by 1 previous character", "MLP: probabilities come from a forward pass over 3 embedded characters", "the MLP can generalise to 3-char contexts it saw rarely, the bigram cannot see past 1 character", "bigram fails with gibberish that ignores context; the MLP fails by copying training names and losing track beyond 3 characters"]},
+    {"with": "z2h-4-mlp/splits-and-fit", "q": "Both cards try to make the model bigger. Why did 300 hidden neurons disappoint there while 10-D embeddings worked here, and how did the train/dev numbers guide each choice?", "answer": ["there: train ≈ dev showed underfitting, but growing H didn't touch the 6-number input", "here: widening C increases what each neuron sees", "both use dev, not train, to decide", "the gap after scaling is the signal that capacity is no longer the only issue"]}
+  ],
+  "predict": {"q": "Swap <code>torch.multinomial</code> for <code>probs.argmax()</code> in the sampling loop and generate 20 names from the same trained model. How many different names do you get, and what do they look like?", "answer": "One name, 20 times: <code>ari.</code> (computed with the trained 11,897-parameter model). Argmax has no randomness, and every name starts from '...', so every run follows the same path: a (0.183), then r, then i, then '.'. Sampling needs the randomness to produce variety."},
+  "apply": {"task": "Take the trace of <code>carlah.</code> on the card (p = 0.043, 0.465, 0.196, 0.336, 0.085, 0.079, 0.836) and compute by hand the model's loss on this one name: the mean of −ln p over its 7 characters. Then modify the Build-it sampling loop to print that number next to each sample.", "done": "Your hand calculation gives 11.815 / 7 ≈ 1.688, and your modified loop prints 1.688 next to carlah.", "hint": "Keep a running sum <code>nll += -probs[0, ix].log().item()</code> inside the while loop and divide by <code>len(out)</code> after it."},
+  "reflect": [
+    "Which prediction did you get wrong: the size of the 10-D gain, or argmax giving a single name?",
+    "What couldn't you explain cleanly: why neurons can't help when the embedding is too narrow, or why a train/dev gap means overfitting?",
+    "Which relationship is still fuzzy: similar contexts → similar gradients, or similar gradients → nearby embeddings?",
+    "Could you write the sampling loop from memory, including the window slide and the stop condition?",
+    "Before Lecture 4: the first minibatch loss here was 27.88 against 3.30 for a uniform guess. What do you expect is wrong with the init?"
+  ],
+  "revisit": ["z2h-4-mlp/bengio-embeddings", "z2h-3-bigram/sampling-multinomial", "z2h-4-mlp/hidden-and-output"],
+  "prereq": ["z2h-4-mlp/splits-and-fit"]
+}

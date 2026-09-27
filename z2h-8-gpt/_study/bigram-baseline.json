@@ -1,0 +1,64 @@
+{
+  "prime": {
+    "problem": "Before building a Transformer you need a working pipeline (batches in, a loss out, text sampled back) and a number to beat. Without a trivial model first, a bug in the loss or the sampling loop looks exactly like a weak model.",
+    "fits": "It takes the (B, T) batches from the chunks-and-batches card and adds the smallest possible model on top. It's the same bigram you counted and then trained in z2h-3, rewritten as an <code>nn.Module</code> whose interface every later GPT keeps.",
+    "expect": ["a 65×65 lookup table (<code>nn.Embedding</code>) whose rows are logits", "cross-entropy over B·T flattened guesses", "why a random start scores 4.88, not 4.17", "the <code>generate</code> loop: softmax, sample, append"],
+    "goal": "Write <code>BigramLanguageModel</code> with <code>forward</code> and <code>generate</code>, compute one position's loss by hand, and explain why its untrained loss is 4.88 and its trained loss can't get far below about 2.48."
+  },
+  "attend": [
+    "Why is the table exactly 65 wide, and what would have to change to make it narrower?",
+    "Why does <code>F.cross_entropy</code> force the (4, 8, 65) logits to be reshaped, and what does each of the 32 rows stand for?",
+    "Why does a table of random logits score worse than guessing every character equally?",
+    "Two positions hold the same character: what does the bigram predict at each, and what does that say about its ceiling?",
+    "Why does <code>generate</code> pass the whole history into the model when only the last column is used?"
+  ],
+  "core": {
+    "must": [
+      "The current character's id picks one row of the 65×65 table → that row <i>is</i> the 65 logits for the next character → the prediction depends on the current character only → identical characters get identical guesses whatever came before",
+      "Random N(0, 1) logits → ln Σ e<sup>z</sup> averages about ln 65 + 0.5 ≈ 4.67 while the true logit averages 0 → confident wrong guesses cost more than uniform ones → untrained loss 4.73 over all train pairs (4.8786 on the first batch) sits above −ln(1/65) = 4.17",
+      "One character of context → the best possible table is just the pair frequencies → training stalls near the counting answer (2.45 train, 2.48 val; bigram.py reaches 2.49 val) → going lower needs a model that reads earlier characters",
+      "<code>forward(idx, targets) → (logits, loss)</code> and <code>generate</code> feed the full history → the bigram ignores it, but attention models later swap in without touching the training or sampling code"
+    ],
+    "elevated": [
+      "<code>logits.view(B*T, C)</code> and <code>targets.view(B*T)</code> → cross-entropy treats all 32 positions as independent guesses → one batch gives 32 training signals, not 4"
+    ],
+    "reference": [
+      "<code>nn.Embedding(vocab_size, vocab_size)</code> with vocab_size 65 → 4,225 parameters",
+      "PyTorch's cross-entropy expects logits as (N, C) and targets as (N,)",
+      "kick-off token <code>torch.zeros((1, 1), dtype=torch.long)</code> = id 0 = <code>'\\n'</code>",
+      "<code>torch.multinomial(probs, num_samples=1)</code> and <code>torch.cat((idx, idx_next), dim=1)</code>",
+      "seed 1337 set right before building the model to reproduce 4.8786"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw one step of the bigram model for the input <code>'L'</code>: from the id to the loss, and from the id to a sampled next character. Then explain in 3–4 sentences why its untrained loss is above 4.17 and why training can't take it far below 2.5.",
+    "checklist": [
+      "the id selects a row of a 65×65 table; the row is the 65 next-character logits",
+      "softmax turns logits into probabilities; the loss is −ln p(true next char), averaged over B·T = 32 guesses",
+      "generate: take the last position's logits, softmax, <code>torch.multinomial</code>, append, repeat",
+      "random logits are confidently wrong, so the loss is ≈ 4.7–4.9 instead of ln 65 = 4.17",
+      "it only sees one character, so its best is the pair-count answer, ≈ 2.45–2.48"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why the bigram's <code>nn.Embedding</code> is 65×65 here, while the embedding tables later in the course are 65×32.", "kind": "concept", "answer": ["here a row is used directly as the next-character logits, so it must be vocab-sized", "later a row is a 32-number vector that layers process, and a separate <code>lm_head</code> maps it back to 65 logits"]},
+    {"q": "Walk <code>m(xb, yb)</code> through for the 4×8 batch: every shape, and how 32 per-position losses become one number.", "kind": "mechanism", "answer": ["<code>xb</code> (4, 8) → table lookup → logits (4, 8, 65)", "view to (32, 65), targets to (32,)", "each row: ln Σ e<sup>z</sup> − z[target], e.g. 4.6693 + 0.7321 = 5.4015 for 'L' → 'e'", "mean of the 32 = 4.8786"]},
+    {"q": "You could fill the table with exact log pair frequencies instead of training it. What do you gain, and what do you give up for the rest of the course?", "kind": "tradeoff", "answer": ["gain: the best bigram at once, 2.4819 val, no training", "give up: no gradient path, so you can't add attention, feed-forward or any layer and train them together", "the trained table reaches nearly the same loss (2.49 val) and keeps the pipeline differentiable"]},
+    {"q": "Your first GPT prints an untrained loss of 9.3 on this data. Using the bigram's numbers, what does that tell you, and what would you check?", "kind": "tradeoff", "answer": ["uniform is 4.17 and a unit-scale random table is ≈4.7, so 9.3 means very large, confidently wrong logits", "check the logits' scale at init (weight init, a missing normalisation) or a shape/target mismatch in the loss"]}
+  ],
+  "compare": [
+    {"with": "z2h-3-bigram/train-neural-bigram", "q": "The makemore neural bigram used one-hot vectors times a weight matrix on names; this one uses <code>nn.Embedding</code> on Shakespeare. What is fundamentally the same, what implementation choice differs, and when does the difference matter?", "answer": ["same model: one row of a V×V matrix per current character, softmax, NLL", "one-hot @ W picks out the same row as an embedding lookup, but does V times more multiply work", "the lookup matters once vocabularies are large; the maths is identical"]},
+    {"with": "z2h-8-gpt/self-attention-head", "q": "Both end in a softmax over scores. What decides the scores in each, and how does that choice set each model's ceiling?", "answer": ["bigram: scores are a fixed row picked by the current character only", "attention: weights over past tokens are computed from their contents, per sequence", "the bigram is capped near 2.48 val; adding attention and the rest of the Transformer takes gpt.py to 1.48 (video)"]}
+  ],
+  "predict": {"q": "You train the bigram with <code>block_size</code> 256 instead of 8, same batch size and steps. Does the final val loss go well below 2.49? What changes?", "answer": "No. Each position still sees only its own character, so the ceiling stays at the pair-count answer (about 2.48 val). What changes is that each batch holds 32 × 256 guesses instead of 32 × 8, so the gradient is less noisy and each step costs more. Context length only helps a model that reads its context."},
+  "apply": {"task": "In the lab, after building the model, overwrite the table with log pair frequencies: count every pair in <code>train_data</code> into a 65×65 tensor <code>N</code>, then under <code>torch.no_grad()</code> copy <code>((N+1) / (N+1).sum(1, keepdim=True)).log()</code> into <code>m.token_embedding_table.weight</code>. Recompute the loss on the seeded batch and on every pair of <code>val_data</code>.", "done": "The seeded batch's loss drops from 4.8786 to 1.9951, and the val loss over all pairs is 2.4819 (the train-pair loss is 2.4546).", "hint": "<code>N.index_put_((d[:-1], d[1:]), torch.ones(len(d)-1), accumulate=True)</code> counts all pairs in one call. For val, pass <code>val_data[:-1]</code> as a (N,) index and use <code>F.cross_entropy</code> against <code>val_data[1:]</code>. One batch of 32 is easy; that's why 1.9951 is far below the val figure."},
+  "reflect": [
+    "Which prediction did you get wrong: that random is worse than uniform, or that longer blocks don't help a bigram?",
+    "What couldn't you explain cleanly: why the loss is ln Σ e<sup>z</sup> − z[target], or why that averages 4.67 for random logits?",
+    "Which relationship is still fuzzy: one-character context → identical guesses, or identical guesses → a floor near 2.48?",
+    "Could you write <code>generate</code> again without looking, including which axis gets softmaxed and which gets concatenated?",
+    "What will you check first if a later model's untrained loss comes out far above 4.17?"
+  ],
+  "revisit": ["z2h-3-bigram/train-neural-bigram", "z2h-1-toolkit/softmax-and-cross-entropy", "z2h-3-bigram/sampling-multinomial"],
+  "prereq": ["z2h-8-gpt/batches-of-chunks"]
+}

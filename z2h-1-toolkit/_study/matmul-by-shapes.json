@@ -1,0 +1,65 @@
+{
+  "prime": {
+    "problem": "A layer has many neurons and training feeds it many examples at once. Computing every neuron on every example with separate dot products means nested Python loops, and when the shapes don't line up you get errors you can't read.",
+    "fits": "It builds on the dot product card: one neuron is one dot product. This card stacks many neurons and many examples so that a whole layer becomes one operation, <code>X @ W + b</code>, which every lecture from the bigram net to GPT uses.",
+    "expect": ["the shape rule <code>(n, k) @ (k, m) → (n, m)</code>", "each entry is a row · column dot product", "examples as rows, neurons as columns", "batched matmul over leading dimensions", "parameter count fan_in·fan_out + fan_out"],
+    "goal": "Predict the output shape of any matmul before running it, explain why a batch through a layer is one matmul, and count a linear layer's parameters."
+  },
+  "attend": [
+    "Why must the <i>inner</i> sizes match, while the outer sizes can be anything?",
+    "In <code>X @ W</code>, which axis holds the examples, which holds the neurons, and where does the input-feature axis go?",
+    "Why does <code>A @ B</code> working say nothing about whether <code>B @ A</code> works or what shape it has?",
+    "What happens to the leading 4 and 5 in <code>(4, 5, 80) @ (80, 200)</code>, and why is that useful for WaveNet?",
+    "Why does <code>nn.Linear(6, 100)</code> store a (100, 6) weight, and how does that change the code you write?"
+  ],
+  "core": {
+    "must": [
+      "Entry C[i, j] is row i of A dotted with column j of B → a dot product needs two vectors of the same length → the left's columns must equal the right's rows (k) → that k is summed away and only (n, m) survives",
+      "A neuron is x·w + b → put each example in a row of X and each neuron's weights in a column of W → X @ W computes every neuron on every example at once → a whole batch through a layer is one matmul, whatever the batch size",
+      "<code>@</code> only multiplies the last dimension of the left with the first dimension of a 2-D right → any extra leading dimensions pass through as a batch → (4, 5, 80) @ (80, 200) gives (4, 5, 200), the same layer applied to 20 rows",
+      "W holds fan_in weights for each of fan_out neurons, and b holds one bias per neuron → parameters = fan_in·fan_out + fan_out → layer sizes, not data, set the parameter count (e.g. 270 + 6200 + 5427 = 11,897 for the makemore MLP)"
+    ],
+    "elevated": [
+      "The loop and the matmul add the same six products in a different order → float32 rounding differs in the last digits → compare them with a tolerance (<code>atol=1e-5</code>), not exact equality",
+      "<code>nn.Linear</code> stores its weight as (fan_out, fan_in) and computes <code>x @ weight.T</code> → <code>X @ lin.weight</code> raises a shape error → always check which convention a layer uses before multiplying by its weight"
+    ],
+    "reference": [
+      "the error text \"mat1 and mat2 shapes cannot be multiplied (3x2 and 3x2)\"",
+      "<code>torch.matmul</code> and <code>@</code> are the same operation; 1-D @ 1-D is a plain dot product",
+      "the lab's numbers: A @ B = [[4, −1], [10, −1]]; B @ A is (3, 3)",
+      "Karpathy's notebook lines: <code>xenc @ W</code> (bigram), <code>emb.view(-1, 6) @ W1 + b1</code> (MLP)"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, in 3–5 sentences, explain what <code>X @ W + b</code> computes for a (32, 6) X and a (6, 100) W, and how you know the output shape. Or draw the three boxes with their shapes and mark which dimension disappears.",
+    "checklist": [
+      "each output entry is a row of X dotted with a column of W, plus that neuron's bias",
+      "rows of X are examples and columns of W are neurons, so H[i, j] is neuron j on example i",
+      "the inner 6 must match and is summed away; the output is (32, 100)",
+      "one matmul replaces a loop over examples and neurons",
+      "b (100,) is copied to every row by broadcasting"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why the rule is (n, k) @ (k, m) → (n, m) using only the idea of a dot product, without reciting the rule.", "kind": "concept", "answer": ["each output entry pairs one row of the left with one column of the right", "a dot product needs equal lengths, so the row length k must equal the column length k", "there is one entry per (row, column) pair, so n × m entries"]},
+    {"q": "Walk through how PyTorch gets entry C[1, 1] of A @ B for A = [[1, 2, 3], [4, 5, 6]] and B = [[1, 0], [0, 1], [1, −1]].", "kind": "mechanism", "answer": ["take row 1 of A: [4, 5, 6]", "take column 1 of B: [0, 1, −1]", "multiply pairwise and add: 0 + 5 − 6 = −1"]},
+    {"q": "Walk through the shapes of <code>(4, 5, 80) @ (80, 200)</code>: which dimensions are multiplied, which are kept, and how many dot products happen?", "kind": "mechanism", "answer": ["the 80s are the inner size and are summed away", "4 and 5 are treated as batch dimensions and kept", "result (4, 5, 200): 20 rows × 200 neurons = 4,000 dot products of length 80"]},
+    {"q": "You could loop over the 32 examples and do <code>X[i] @ W + b</code> for each, or do one <code>X @ W + b</code>. What do you gain and what, if anything, changes in the numbers?", "kind": "tradeoff", "answer": ["one call instead of 32 Python-level calls, and the code doesn't change when the batch grows", "the values match only up to float32 rounding, because the additions happen in a different order", "so compare them with a tolerance, not exact equality"]}
+  ],
+  "compare": [
+    {"with": "z2h-1-toolkit/vectors-dot-product", "q": "A dot product and a matmul: what is fundamentally the same, what does the matmul add, and what goes wrong if you use one where you need the other?", "answer": ["same: every matmul entry is one dot product", "matmul adds the bookkeeping: all rows × all columns laid out in an (n, m) grid", "one dot product computes one neuron on one example; a matmul computes a whole layer on a whole batch", "a dot product on mismatched lengths fails just like a matmul with mismatched inner sizes"]},
+    {"with": "z2h-1-toolkit/broadcasting-rules", "q": "In <code>X @ W + b</code>, the <code>@</code> and the <code>+</code> both combine tensors of different shapes. How does each one line up the shapes, and how does each fail?", "answer": ["@ matches the left's last dimension with the right's first and sums that dimension away", "+ aligns shapes from the right and stretches size-1 (or missing) dimensions, without summing", "@ fails loudly when the inner sizes differ", "+ can succeed silently on the wrong axis (the keepdim bug), which is harder to catch"]},
+    {"with": "z2h-6-backprop-ninja/matmul-backward-by-shapes", "q": "This card goes forward through H = X @ W. The backprop card needs dW and dX. How can the shape rule alone tell you which matmuls produce them?", "answer": ["dW must have W's shape (6, 100) and dX must have X's shape (32, 6)", "only X.T @ dH gives (6, 100), and only dH @ W.T gives (32, 6)", "so the backward pass of a matmul is again a matmul, found by making the shapes work"]}
+  ],
+  "predict": {"q": "In backprop you will need dW, the gradient for W in H = X @ W. It must have W's shape (6, 100). You have X (32, 6) and dH (32, 100), and you may transpose (swap rows and columns). Which single matmul gives (6, 100), and what does the dimension that gets summed away stand for?", "answer": "<code>X.T @ dH</code>: (6, 32) @ (32, 100) gives (6, 100). The summed-away dimension is the 32 examples, so each weight's gradient adds up its contributions from every example in the batch. This is exactly the formula Karpathy derives in backprop ninja (<code>dW2 = h.T @ dlogits</code>)."},
+  "apply": {"task": "Rebuild Karpathy's bigram check. For the inputs of \"emma\", <code>xs = torch.tensor([0, 5, 13, 13, 1])</code>, make <code>xenc = F.one_hot(xs, num_classes=27).float()</code> and <code>W = torch.randn((27, 27), generator=torch.Generator().manual_seed(2147483647))</code>. Write down the shape of <code>xenc @ W</code> before running it. Then check that entry [3, 13] equals <code>(xenc[3] * W[:, 13]).sum()</code>, and that <code>xenc @ W</code> equals <code>W[xs]</code>.", "done": "The shape is (5, 27), entry [3, 13] is 0.0379 both ways, and <code>torch.equal(xenc @ W, W[xs])</code> prints True.", "hint": "Each one-hot row has a single 1, so row i of <code>xenc @ W</code> is just row <code>xs[i]</code> of W. That is why an embedding lookup is the same thing as a one-hot matmul."},
+  "reflect": [
+    "Which prediction did you get wrong: the shape of B @ A, or the transpose needed for dW?",
+    "What couldn't you explain cleanly: why the inner sizes must match, or why rows are examples and columns are neurons?",
+    "Which relationship is still fuzzy: dot product → one matmul entry, or one matmul → a whole layer on a whole batch?",
+    "When you next hit a shape error, what will you write down first?",
+    "Can you count the parameters of a Linear(10, 64) layer in your head right now?"
+  ],
+  "revisit": ["z2h-1-toolkit/vectors-dot-product"],
+  "prereq": ["z2h-1-toolkit/vectors-dot-product"]
+}

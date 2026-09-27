@@ -1,0 +1,64 @@
+{
+  "prime": {
+    "problem": "After the lookup you hold three separate 2-number embeddings per row. Nothing yet combines them, and nothing turns them into 27 scores for the next character, so there is no prediction to train.",
+    "fits": "This finishes the forward pass of Bengio's MLP. It takes <code>emb.view(-1, 6)</code> from the view card and applies the layer idea from micrograd's neuron card, now as whole matrices, so the cross-entropy card can turn its logits into a loss.",
+    "expect": ["weight matrix and bias (<code>W1</code>, <code>b1</code>, <code>W2</code>, <code>b2</code>)", "preactivation (<code>hpreact</code>) and tanh", "broadcasting <code>+ b1</code>", "logits", "parameter count (3,481)"],
+    "goal": "Write the two layers from memory with the right shapes, explain why the tanh can't be dropped, and count the parameters of any MLP of this shape."
+  },
+  "attend": [
+    "Why does <code>W1</code> have exactly 6 rows, and what else has to change when the embedding grows?",
+    "Which part of the network holds most of the 3,481 parameters, and what sets its size?",
+    "What would the two layers compute if you deleted <code>torch.tanh</code>?",
+    "Which way does <code>b1</code> (shape (100,)) get copied when it is added to a (32, 100) matrix, and why is that the direction you want?",
+    "What do preactivations as spread out as std 2.84 do to the tanh outputs, and why should that worry you before training?"
+  ],
+  "core": {
+    "must": [
+      "a row's 3 embeddings laid side by side → one 6-number input <code>x</code> → <code>x @ W1</code> lets every one of the 100 neurons weigh all three characters together → the hidden layer can react to combinations of characters, not just each one alone",
+      "no nonlinearity between two matmuls → <code>(x@W1 + b1)@W2 + b2</code> equals one (6, 27) layer → 3,481 parameters with the power of 243 → tanh is what makes the hidden layer worth having",
+      "output layer must score every vocab entry → <code>W2</code> is n_hidden × 27 = 2,700 of 3,481 (78%) → the output layer is the expensive one, and with Bengio's 17,000 words it dominates even more",
+      "plain <code>randn</code> weights + a sum over 6 inputs → preactivations with std 2.84 → 32.7% of h stuck near ±1 where the gradient 1 − h² is under 0.02 → those neurons barely learn (fixed by scaling the init in Lecture 4)"
+    ],
+    "elevated": [
+      "<code>+ b1</code> broadcasts (100,) as a (1, 100) row copied down the batch → one bias per neuron, shared by all examples; a (32, 1) bias would also broadcast silently but give one bias per <i>example</i>, a bug with no error"
+    ],
+    "reference": [
+      "the seed 2147483647 and <code>torch.Generator</code>",
+      "<code>p.nelement()</code> for counting values",
+      "writing <code>-1</code> in <code>view</code> instead of 32",
+      "the exact per-tensor counts: C 54, W1 600, b1 100, W2 2,700, b2 27",
+      "makemore.py's <code>nn.Sequential(nn.Linear, nn.Tanh, nn.Linear)</code> version"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw the pipeline from <code>X</code> (32, 3) to <code>logits</code> (32, 27), writing the shape at every arrow, and add one sentence on why tanh sits in the middle.",
+    "checklist": [
+      "<code>C[X]</code> gives (32, 3, 2); <code>view(-1, 6)</code> gives (32, 6)",
+      "<code>@ W1 + b1</code> gives hpreact (32, 100); tanh keeps the shape and squashes into (−1, 1)",
+      "<code>@ W2 + b2</code> gives logits (32, 27): one score per possible next character",
+      "without tanh the two layers collapse into one linear layer",
+      "parameters 54 + 600 + 100 + 2,700 + 27 = 3,481, mostly in W2"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain what the hidden layer adds that a single layer from the 6 embedding numbers straight to 27 logits cannot do.", "kind": "concept", "answer": ["a single linear layer gives each context character a fixed, separate contribution to the scores", "hidden neurons read all three characters at once and pass the sum through tanh", "so the net can respond to combinations (\"m after m\"), not just each character on its own"]},
+    {"q": "Walk row 0 (context <code>...</code>) through the hidden layer for neuron 1: what goes in, what the preactivation is, and what comes out.", "kind": "mechanism", "answer": ["x[0] is C[0] = (1.5674, −0.2373) repeated three times", "hpreact = x[0] · W1[:, 1] + b1[1] = 8.5502", "tanh(8.5502) = 1.0000: saturated, so its local gradient is close to 0"]},
+    {"q": "You want a better model and can afford 10,000 parameters. Growing the hidden layer from 100 to 300 costs how much, and why might it not help while the embeddings are 2-D?", "kind": "tradeoff", "answer": ["n_hidden 300 gives 54 + 1,800 + 300 + 8,100 + 27 = 10,281 parameters", "most of the growth is in W2 (8,100), the output layer", "every neuron still only sees 6 input numbers; if 2-D embeddings are the bottleneck, more neurons can't recover what was never passed in (the splits-and-fit card tests this)"]},
+    {"q": "<code>emb.view(-1, 6) @ W1</code> is (32, 100) and <code>b1</code> is (100,). Say how broadcasting aligns them and what a wrong bias shape would do.", "kind": "mechanism", "answer": ["shapes align from the right; the missing dim becomes 1, so b1 is (1, 100)", "that row is copied down 32 rows: one bias per neuron", "a (32, 1) bias would also broadcast, with no error, but would give each example its own bias"]}
+  ],
+  "compare": [
+    {"with": "z2h-3-bigram/one-hot-and-linear-layer", "q": "The bigram net was one linear layer (27 × 27 weights) on a one-hot input. What is fundamentally different here, which design choice causes it, and how does each one fail?", "answer": ["bigram: one layer, no hidden units, sees 1 character; its logits are just a looked-up row", "MLP: 3 embedded characters, a tanh hidden layer, then an output layer", "the hidden nonlinearity plus more context is what lets it combine characters", "bigram fails by seeing too little context; the MLP fails by saturating (bad init) or by a too-small embedding"]},
+    {"with": "z2h-2-micrograd/a-neuron", "q": "micrograd built a neuron as a Python loop over inputs. How does <code>x @ W1 + b1</code> relate to 100 of those neurons applied to 32 rows, and what do you gain and lose?", "answer": ["each column of W1 is one neuron's weights, each entry of b1 its bias", "the matmul computes all 32 × 100 weighted sums in one call", "gain: speed and short code; lose: you no longer see individual neurons, so shape bugs replace logic bugs"]}
+  ],
+  "predict": {"q": "Keep the same plain <code>randn</code> init but grow the net to 10-number embeddings with 200 hidden neurons (<code>W1</code> (30, 200)). On the same 32 rows, does the fraction of |h| &gt; 0.99 go up, down, or stay near 0.327?", "answer": "Up, to 0.650. Each preactivation now sums 30 products instead of 6, so its spread grows: std 5.81 instead of 2.84 (computed with the lab's seed). Bigger inputs mean more saturation, which is why Lecture 4 scales W1 by gain/√(fan-in) (Kaiming init)."},
+  "apply": {"task": "Before running anything, write the parameter count for <code>n_embd = 10</code>, <code>n_hidden = 200</code>, <code>block_size = 3</code> as a sum of five products. Then change your Build-it code to that size and run it on the 32 rows.", "done": "Your hand count and the printed total both say 11,897 (270 + 6,000 + 200 + 5,400 + 27), and logits are still (32, 27).", "hint": "Three things change: <code>C</code> becomes (27, 10), <code>W1</code> becomes (30, 200), and the view becomes <code>view(-1, 30)</code>. Leave the view at 6 and see what error you get."},
+  "reflect": [
+    "Which prediction did you get wrong: the W2 share, or the saturation going up with more inputs?",
+    "What couldn't you explain cleanly: why the layers collapse without tanh, or why the output layer is so big?",
+    "Which relationship is still fuzzy: preactivation spread → saturation, or saturation → slow learning?",
+    "Could you rebuild the shape chain (32, 3) → (32, 27) without looking?",
+    "What will you check first in the cross-entropy card, knowing the logits range from −24.6 to 27.9?"
+  ],
+  "revisit": ["z2h-2-micrograd/a-neuron", "z2h-1-toolkit/broadcasting-rules", "z2h-4-mlp/embedding-lookup"],
+  "prereq": ["z2h-1-toolkit/matmul-by-shapes", "z2h-4-mlp/view-storage"]
+}

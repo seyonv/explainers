@@ -1,0 +1,65 @@
+{
+  "prime": {
+    "problem": "A fresh network is nothing but random numbers. If they start too big, every residual add piles onto the last and the signal inflates block after block; if the scale is careless, the model begins training from a lopsided place (positions drowning tokens, a stream five times too large).",
+    "fits": "You have the full <code>GPT</code> module, a loss near 10.82 and weight tying. This card revisits the Kaiming rule from the BatchNorm course (std = gain/√fan_in) and the residual connection from the GPT course, and asks what happens when 24 residual adds stack up.",
+    "expect": ["std 0.02 as a fixed Xavier-ish value", "variances add, so a sum of N adds grows as √N", "the residual stream and the two <code>c_proj</code> layers that write to it", "the <code>NANOGPT_SCALE_INIT</code> flag and <code>self.apply(_init_weights)</code>"],
+    "goal": "Explain why GPT-2 uses 0.02 and why only <code>c_proj</code> gets an extra 1/√(2·n_layer), predict the stream's size with and without it, and add the init to your own model."
+  },
+  "attend": [
+    "Why does adding 100 unit-std vectors give std 10 and not 100?",
+    "Which layers in a block write onto the residual stream, and why do only those get the extra scale?",
+    "Where does the factor 2 in 2·n_layer come from in <code>x = x + attn(...)</code>, <code>x = x + mlp(...)</code>?",
+    "Why can GPT-2 use one fixed 0.02 for widths 768 to 1,600, and at what width would that stop matching 1/√width?",
+    "The scaled stream still grows from 0.028 to 0.30: what does the scale actually fix, and what keeps the rest harmless?"
+  ],
+  "core": {
+    "must": [
+      "Independent random adds → their variances add → N adds of std σ give std √N·σ → shrink each add by 1/√N and the sum stays at σ (100 adds: 10.09 vs 1.00)",
+      "Pre-norm blocks do <code>x = x + attn(ln_1(x))</code> then <code>x = x + mlp(ln_2(x))</code> → 2 adds per block → 24 adds in 12 blocks → the two <code>c_proj</code> layers that produce those adds start at 0.02/√24 = 0.00408",
+      "Without the scale all 24 adds land at full size → the stream reaches std 1.54 by block 12 instead of 0.30 (5.1×, close to √24 = 4.9) → with the scale the final size stops depending on depth (24 layers with their own scale: 0.298)",
+      "Xavier picks std = 1/√fan_in so a layer's output keeps its input's size → for GPT-2 widths that is 0.036 to 0.025 → a fixed 0.02 is close enough for every GPT-2 size → the reproduction keeps OpenAI's value rather than a formula"
+    ],
+    "elevated": [
+      "<code>nn.Embedding</code>'s default is std 1, not 1/√fan_in → with PyTorch defaults <code>wpe</code> starts 48× larger than the tied <code>wte</code> → the stream starts at std 1.00 and is mostly position → so <code>_init_weights</code> must also cover the Embedding branch"
+    ],
+    "reference": [
+      "the flag: <code>self.c_proj.NANOGPT_SCALE_INIT = 1</code> (train_gpt2.py L21, L49)",
+      "<code>self.apply(self._init_weights)</code> visits every submodule (L97); <code>_init_weights</code> is L99–L108",
+      "<code>torch.nn.init.normal_(w, mean=0.0, std=std)</code>, <code>torch.nn.init.zeros_(bias)</code>",
+      "the tied <code>wte</code>/<code>lm_head</code> tensor is visited twice (as Linear and as Embedding), both at 0.02",
+      "commit <code>9ac321e</code> (gpt-2 initialization)"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw the residual stream through one block with its two adds, label the layers that get 0.00408, and write in 3–4 sentences why that number is 0.02/√24 and what happens to the stream without it.",
+    "checklist": [
+      "weights start N(0, 0.02), biases 0; 0.02 ≈ 1/√width for GPT-2 sizes",
+      "each block adds to the stream twice (attention, MLP), so 24 adds for 12 blocks",
+      "variances of independent adds sum, so the stream std grows as √(adds)",
+      "only <code>c_proj</code> writes onto the stream, so only it gets × 1/√(2·n_layer) = 0.2041",
+      "measured: 0.30 vs 1.54 at block 12; the scale lowers the curve, LayerNorm handles the rest"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain in plain words why summing more random vectors makes the result bigger, and why it grows with the square root of the count rather than the count.", "kind": "concept", "answer": ["independent random values partly cancel", "variance (std²) adds exactly; std is its square root", "N adds of std σ: variance Nσ², std √N·σ", "so 100 adds give 10×, not 100×"]},
+    {"q": "Walk through what happens to the stream std, from the embeddings to block 12, in the scaled 124M model. Where does each piece of growth come from?", "kind": "mechanism", "answer": ["starts as wte + wpe, both 0.02 → √(0.02² + 0.02²) = 0.028", "each block reads a LayerNorm'd copy, so its output size doesn't depend on the stream's size", "each of the 24 adds contributes a <code>c_proj</code> output started at 0.00408", "the adds pile up as √N: 0.14 at block 3, 0.30 at block 12"]},
+    {"q": "Your model has 24 layers instead of 12. Which is cheaper to get wrong: keeping 0.02 everywhere, or keeping the 12-layer scale 0.00408? What does each cost at the end of the stream?", "kind": "tradeoff", "answer": ["no scale: all 48 adds at full size, the stream grows as √48", "12-layer scale kept: the adds are √2 too big, final std 0.425 vs 0.298 with the right 0.00289", "both are fixed by computing the scale from <code>self.config.n_layer</code>, not hard-coding it"]},
+    {"q": "Why does the extra scale go on <code>c_proj</code> and not on <code>c_attn</code> or <code>c_fc</code>?", "kind": "mechanism", "answer": ["<code>c_attn</code> and <code>c_fc</code> feed the block's inside, after a LayerNorm", "<code>c_proj</code> is the last layer of each branch; its output is what gets added to <code>x</code>", "scaling it sets the size of each add directly"]}
+  ],
+  "compare": [
+    {"with": "z2h-5-batchnorm/kaiming-init", "q": "Kaiming init and GPT-2's residual scale both divide by a square root. What is each one counting, and which failure does each prevent?", "answer": ["Kaiming: √fan_in, the number of terms summed inside one layer; keeps one layer's output the size of its input", "residual scale: √(2·n_layer), the number of adds stacked on the stream across the depth", "Kaiming prevents blow-up or collapse inside a deep stack of layers; the residual scale prevents the stream growing with depth", "GPT-2 needs both: 0.02 ≈ 1/√width per layer, and 1/√24 on <code>c_proj</code>"]},
+    {"with": "z2h-8-gpt/feedforward-residual", "q": "The char-level GPT added residual connections with no special init. Why was that fine there, and what changes at GPT-2's depth?", "answer": ["the residual path keeps gradients flowing because <code>x + f(x)</code> passes the gradient straight through", "with few blocks there are only a handful of adds, so √N growth stays small", "at 12 blocks (24 adds) and more, the growth reaches 5× unless the adds are scaled"]},
+    {"with": "z2h-10-gpt2/first-loss", "q": "The first-loss card checks the loss at init against 10.82. Would that check catch a missing residual scale? What would?", "answer": ["no: the loss at init stays near 10.8–11 either way, because <code>ln_f</code> normalizes the stream before <code>lm_head</code>", "the missing scale shows up in the stream's std (1.54 vs 0.30) or in the <code>c_proj</code> weight std (0.02 vs 0.00408)", "so print weight stds, not just the loss"]}
+  ],
+  "predict": {"q": "You double GPT-2 to 24 layers and set <code>c_proj</code> to 0.02/√(2·24) = 0.00289. At the last block, will the stream's std be about the same as the 12-layer model's 0.30, about √2 bigger, or smaller?", "answer": "About the same: 0.298 (computed with the lab's code, seed 1337) vs 0.300. The scale shrinks each add by 1/√(number of adds), so the total stays put however many adds there are. If you had kept the 12-layer value 0.00408 instead, the 24-layer stream ends at 0.425, about √2 bigger."},
+  "apply": {"task": "Copy <code>labs/init.py</code> to a scratch file. Add a class like <code>NoScale</code> whose <code>_init_weights</code> scales <code>c_proj</code> by <code>self.config.n_layer ** -0.5</code> (the bug: forgetting that each block adds twice). Before running, predict its stream std at block 12, then run it with <code>torch.manual_seed(1337)</code> just before building the model, as the lab does.", "done": "You predicted about √2 × 0.30 ≈ 0.42, and the run prints about 0.4301 at block 12 (computed on the M3: [0.0282, 0.1986, 0.295, 0.3632, 0.4301]) against 0.3001 for the correct scale.", "hint": "Only the one line with the exponent changes: <code>std *= self.config.n_layer ** -0.5</code>. Reuse the lab's <code>stream_std</code>."},
+  "reflect": [
+    "Which prediction did you get wrong: the 100-add std, or the 24-layer stream?",
+    "What couldn't you explain cleanly: why variances add, or why only <code>c_proj</code> gets the scale?",
+    "Which relationship is still fuzzy: number of adds → √N growth, or √N growth → the 1/√(2·n_layer) scale?",
+    "The scaled stream still grows 10× over 12 blocks. Can you say why that is acceptable?",
+    "Where else have you seen a 1/√something scale in this series, and is it counting the same kind of thing?"
+  ],
+  "revisit": ["z2h-5-batchnorm/kaiming-init", "z2h-8-gpt/feedforward-residual", "z2h-1-toolkit/mean-variance-gaussian"],
+  "prereq": ["z2h-10-gpt2/the-module"]
+}

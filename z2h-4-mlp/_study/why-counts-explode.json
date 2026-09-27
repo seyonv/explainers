@@ -1,0 +1,61 @@
+{
+  "prime": {
+    "problem": "The bigram model sees one character of context, so its names barely look like names. The obvious fix, counting longer contexts, needs a table whose rows multiply by 27 per character, and the data can't fill them.",
+    "fits": "This opens the MLP course. It takes the bigram count table from Lecture 2 and asks what happens when you widen its context, which is the reason the course switches to learned embeddings next.",
+    "expect": ["context length <code>n</code> (<code>block_size</code>)", "27ⁿ possible contexts", "sparse rows: seen rarely or never", "fake counts (smoothing) and their cost", "dev loss as the judge"],
+    "goal": "Explain, with numbers, why a count table can't use a long context, and say exactly where a well-smoothed table stops improving."
+  },
+  "attend": [
+    "Why does the number of rows multiply by 27 per extra character while the number of examples stays at 228,146?",
+    "What does a row seen once (like <code>zoo</code>) turn into when you divide counts by the row total?",
+    "Why does dev loss improve from n=1 to n=3 and then get worse, even though longer context carries more information?",
+    "What would have to be true for <code>.em</code> to help predict after <code>.am</code>, and why can't separate table rows do that?"
+  ],
+  "core": {
+    "must": [
+      "each context gets its own row → rows = 27ⁿ → examples per row = 228,146 / 27ⁿ falls 27× per extra character (11.59 at n=3, 0.43 at n=4) → most rows are empty or thin",
+      "thin row → counts / total from a few examples → overconfident probabilities (one example becomes P = 1) → unseen continuations get zero probability → infinite loss unless you add fake counts",
+      "fake counts pull thin rows toward uniform → longer contexts gain information but lose reliability → dev loss bottoms out at n=3 (2.1018) and climbs to 2.5423 by n=8",
+      "rows share nothing → what <code>.em</code> learned can't transfer to <code>.am</code> → the fix is to share parameters across similar contexts (embeddings), so parameters grow linearly with n instead of 27×"
+    ],
+    "elevated": [
+      "the average hides the skew: <code>...</code> alone takes 32,033 of 228,146 examples → the long tail of contexts is even thinner than 11.59 per row suggests"
+    ],
+    "reference": [
+      "the exact counts per n (27 / 602 / 5,686 / 22,135 seen)",
+      "<code>collections.Counter</code> over <code>tuple(row)</code> to count contexts",
+      "27ⁿ includes impossible contexts like <code>a.b</code>; 18,279 are possible at n=3",
+      "the smoothing strength 0.1 used in the dev-loss table"
+    ]
+  },
+  "compress": {
+    "prompt": "Without scrolling up, explain in 3–5 sentences why you can't just give the bigram table a 3- or 8-character context. Or draw the chain from \"one row per context\" to \"dev loss gets worse\".",
+    "checklist": [
+      "rows = 27ⁿ, but the examples stay at 228,146, so examples per row collapse",
+      "most rows are unseen or seen a few times; few counts give overconfident, zero-heavy probabilities",
+      "fake counts fix the zeros but flatten thin rows toward uniform",
+      "so dev loss improves up to n=3 and then worsens",
+      "the deeper cause: rows don't share anything between similar contexts"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why 228,146 examples are plenty for a bigram table but not for a 4-character table.", "kind": "concept", "answer": ["bigram: 27 rows, about 8,450 examples each", "n=4: 531,441 rows, 0.43 examples each; only 4.2% of rows seen at all", "a probability estimate needs many counts per row"]},
+    {"q": "Walk through what the count model does on a dev name whose 3-character context was seen once in training, followed by a different letter.", "kind": "mechanism", "answer": ["the row has one count, so that letter gets P = 1 and the other 26 get 0", "the true next letter has P = 0, so its −log is infinite", "with fake counts it gets a small non-zero P instead, at the cost of a flatter row"]},
+    {"q": "You can add fake counts or shorten the context. For n=4, compare +1 and +0.1 fake counts on dev, and say what each choice costs.", "kind": "tradeoff", "answer": ["+1: dev 2.3574, pulls thin rows almost to uniform", "+0.1: dev 2.1522, keeps more of the counts but trusts thin rows more", "both still lose to n=3's 2.1018, so smoothing can't rescue the sparsity"]}
+  ],
+  "compare": [
+    {"with": "z2h-3-bigram/smoothing", "q": "In Lecture 2, +1 fake counts barely changed the bigram loss (2.4540 → 2.4546). Why does the same knob matter so much at n=4, and how does each model fail if you set it wrong?", "answer": ["bigram rows hold thousands of counts, so +1 per cell is negligible", "n=4 rows hold a few counts, so +1 per cell can outweigh the real data", "too little smoothing: zero probabilities and infinite loss; too much: rows collapse toward uniform (log 27 ≈ 3.30)"]},
+    {"with": "z2h-4-mlp/bengio-embeddings", "q": "The count table and the embedding model both predict the next character from the last n. What design choice lets the embedding model use a long context without a 27ⁿ-row table?", "answer": ["the table stores an independent row per context", "the embedding model stores a vector per character and shares one set of weights across all contexts", "similar characters get nearby vectors, so learning about one context transfers to similar ones", "cost: it must be trained by gradient descent and can underfit, while the table is exact from counting"]}
+  ],
+  "predict": {"q": "Push the table to n=5. Out of 27⁵ = 14,348,907 possible contexts, what share do you expect to appear in names.txt at least once, and how many of the seen ones appear exactly once?", "answer": "41,276 seen, which is 0.29%, and 22,196 of those (more than half) appear exactly once. There are 0.0159 examples per possible row (computed with the lab's <code>build_dataset</code> at <code>block_size=5</code>)."},
+  "apply": {"task": "Turn the counting into a model. Split the words 80/10/10 with <code>random.seed(42)</code>, fill a count table for n=3 from the training words only, and score the dev examples with average NLL: first with +1 fake counts per cell, then with +0.1. Give any context never seen in training a uniform 1/27.", "done": "Your dev loss is 2.1954 with +1 and 2.1018 with +0.1 (22,655 dev examples, 133 of them with an unseen context).", "hint": "Store counts as <code>defaultdict(Counter)</code> keyed by <code>tuple(context)</code>; P = (count + a) / (row total + 27a)."},
+  "reflect": [
+    "Which prediction did you get wrong: the 28.9% seen at n=3, or the dev loss getting worse after n=3?",
+    "What couldn't you explain cleanly: why fake counts hurt, or why more context can hurt?",
+    "Which relationship is still fuzzy: 27ⁿ rows → thin rows, or thin rows → worse dev loss?",
+    "Were you surprised that a smoothed n=3 table beats this lecture's final MLP on dev? What does that say about when to reach for a neural net?",
+    "What will you look for in the Bengio paper to see how it avoids one row per context?"
+  ],
+  "revisit": ["z2h-3-bigram/bigram-counts", "z2h-3-bigram/smoothing", "z2h-3-bigram/likelihood-and-nll"],
+  "prereq": ["z2h-3-bigram/bigram-counts"]
+}

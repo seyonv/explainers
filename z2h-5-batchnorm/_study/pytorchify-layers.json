@@ -1,0 +1,66 @@
+{
+  "prime": {
+    "problem": "The one-hidden-layer MLP lives in one long block of named tensors (<code>W1</code>, <code>bngain</code>, <code>bnmean_running</code>...). Going deeper means editing the init, the forward pass, the parameter list and the inference code by hand, in step, for every layer, and the lecture's diagnostic plots need to see inside every layer.",
+    "fits": "It repackages everything so far (the Kaiming-scaled Linear, the BatchNorm forward and its running statistics, tanh) as classes shaped like <code>torch.nn</code>. It's the same idea as micrograd's <code>Neuron</code>/<code>Layer</code>/<code>MLP</code> classes, now on tensors. The diagnostic cards that follow depend on it.",
+    "expect": ["a layer as a class with <code>__call__</code>", "<code>.parameters()</code> vs buffers", "the <code>.training</code> flag", "a net as a list of 17 layers", "the 47,024-parameter count"],
+    "goal": "Write <code>Linear</code>, <code>BatchNorm1d</code> and <code>Tanh</code> yourself, stack them six layers deep, and explain which tensors backprop trains, which are estimated on the side, and why BatchNorm alone needs a mode flag."
+  },
+  "attend": [
+    "Why can the forward pass shrink to <code>for layer in layers: x = layer(x)</code>, and what does each class have to promise for that to work?",
+    "Why are <code>running_mean</code> and <code>running_var</code> kept out of <code>.parameters()</code>, even though they change every step?",
+    "Of the three classes, why is <code>BatchNorm1d</code> the only one that needs a <code>.training</code> flag?",
+    "Where does each of the 47,024 parameters live, and why does dropping the Linear biases still leave more parameters than the no-BatchNorm stack?",
+    "Why does every layer keep its output in <code>self.out</code>, when the forward pass would work without it?"
+  ],
+  "core": {
+    "must": [
+      "Every layer implements the same contract (<code>__call__</code>, <code>.parameters()</code>) → the net is just a list → the forward pass is one loop and the parameter list is one comprehension → adding a layer means changing one line, not four places",
+      "Parameters get gradients from backprop, but the running stats are moving averages updated under <code>no_grad</code> → they must stay out of <code>.parameters()</code> → otherwise the SGD update has no gradient to apply, and the list would hold a tensor that is replaced every step",
+      "BatchNorm's output depends on the whole batch → a single example (or a different batch) gives different or undefined statistics → so it needs a <code>.training</code> flag that switches to the running buffers at inference → forget to flip it and sampling one name gives <code>nan</code> logits",
+      "BatchNorm follows every Linear → a Linear bias would be subtracted right back out → <code>bias=False</code>, and BN's β does the shifting → 100 biases out, 200 γ/β in per hidden layer → 47,024 parameters instead of 46,497"
+    ],
+    "elevated": [
+      "Each layer stores <code>self.out</code> → you can call <code>.retain_grad()</code> on it and histogram activations and gradients per layer → this is what the diagnostic plots on the next cards read",
+      "The output layer's γ is multiplied by 0.1 at init → the logits start near zero and the model starts out unsure → step-0 loss 3.2870, close to the uniform 3.2958 (the fix-1 idea, moved from <code>W2</code> to γ)"
+    ],
+    "reference": [
+      "the <code>BatchNorm1d(dim, eps=1e-5, momentum=0.1)</code> defaults used by the class",
+      "shapes: <code>C</code> 27×10, <code>Linear</code> weights (30, 100), (100, 100) ×4, (100, 27); n_hidden is 100 in this deep net",
+      "the notebook's gain line is <code>layer.weight *= 1.0 #5/3</code>, so the measured run uses gain 1",
+      "real <code>nn.Linear</code> stores weight as (fan_out, fan_in) and uses a uniform init; <code>model.eval()</code> flips the flag on every sub-module"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw the 17-layer stack from <code>Xb</code> to the loss, and write under each layer what <code>.parameters()</code> returns and whether it has buffers. Then explain in 3–4 sentences why this class design makes a deep net easy to build and inspect.",
+    "checklist": [
+      "a shared contract: <code>__call__</code> computes the layer, <code>.parameters()</code> lists what backprop trains",
+      "the net is a list, so the forward pass is one loop and the parameters are collected in one line",
+      "BatchNorm has parameters γ, β and buffers running mean/var; buffers are updated by a moving average, not by gradients",
+      "the <code>.training</code> flag switches BatchNorm between batch stats and running stats",
+      "<code>self.out</code> is kept so each layer's activations and gradients can be plotted",
+      "the count: 270 + 3,200 + 4×10,200 + 2,754 = 47,024"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain what a layer has to provide so that <code>for layer in layers: x = layer(x)</code> plus <code>[p for l in layers for p in l.parameters()]</code> is all the network code you need.", "kind": "concept", "answer": ["a <code>__call__</code> that takes the previous output and returns this layer's output", "a <code>.parameters()</code> that returns its trainable tensors, or <code>[]</code> for <code>Tanh</code>", "consistent shapes between neighbours: (32, 30) → (32, 100) → ... → (32, 27)"]},
+    {"q": "Walk through one call of <code>BatchNorm1d.__call__</code> in training mode and then in inference mode: which statistics are used, what is written back, and what is returned?", "kind": "mechanism", "answer": ["training: mean and variance over dim 0 of this batch", "normalise with <code>sqrt(var + eps)</code>, then <code>gamma * xhat + beta</code>, stored in <code>self.out</code>", "training only: under <code>no_grad</code>, blend the batch stats into <code>running_mean</code>/<code>running_var</code> with momentum", "inference: use the running buffers and write nothing back"]},
+    {"q": "You add BatchNorm after every Linear. What does that cost and save in parameters, and why is the Linear bias dropped rather than kept alongside β?", "kind": "tradeoff", "answer": ["the bias is wasted: BN subtracts the batch mean, which removes any constant added before it", "per hidden layer: −100 biases, +200 γ/β, so net +100; output layer +27", "46,497 → 47,024 (+527), in exchange for normalised preactivations at every layer"]},
+    {"q": "You finish training and sample a name without switching any layer to inference mode. What happens, and exactly why?", "kind": "mechanism", "answer": ["each forward is a batch of 1", "the unbiased variance of one value is undefined, so BN divides by <code>nan</code>", "the logits are <code>nan</code>, and <code>torch.multinomial</code> raises an error about <code>nan</code> probabilities"]}
+  ],
+  "compare": [
+    {"with": "z2h-2-micrograd/mlp-and-training-loop", "q": "micrograd's <code>Neuron</code>/<code>Layer</code>/<code>MLP</code> classes vs these <code>Linear</code>/<code>BatchNorm1d</code>/<code>Tanh</code> classes: what is the same design idea, what is fundamentally different about what one object represents, and what new kind of state appears here that micrograd never needed?", "answer": ["same: each object is callable and exposes <code>.parameters()</code>, so the training loop is generic", "micrograd: one <code>Value</code> per scalar and one class per neuron; here one class holds a whole weight matrix and processes a batch at once", "new: buffers and a mode flag, because BatchNorm's output depends on the other examples in the batch", "micrograd fails by being too slow; these classes fail through wrong-mode bugs"]},
+    {"with": "z2h-5-batchnorm/batchnorm-inference", "q": "That card keeps <code>bnmean_running</code> as a loose tensor updated in the training loop; this card moves it inside <code>BatchNorm1d</code> as a buffer. What does the move buy you, and what new way to fail does it introduce?", "answer": ["the layer owns its own statistics, so the loop no longer changes as layers are added", "switching to inference becomes one flag per layer instead of a separate evaluation function", "the new failure: forgetting to set <code>training = False</code>, which silently uses batch statistics"]},
+    {"with": "z2h-7-wavenet/torch-nn-containers", "q": "Here the net is a plain Python list and the forward pass is a hand-written loop. What would a <code>Sequential</code>-style container add, and when does a plain list stop being enough?", "answer": ["a container is itself a layer: it's callable and collects its children's parameters", "then you can nest blocks and flip every child's mode in one call", "a plain list is fine for a flat stack, but awkward once layers need to be grouped or reused"]}
+  ],
+  "predict": {"q": "Keep BatchNorm after every Linear but change the hidden gain from 1 to 5/3, or even 3. Does the step-0 loss move from 3.2870? Commit to a guess, then run it.", "answer": "It doesn't move: gains 1, 5/3 and 3 all give <b>3.2870</b> at step 0. BatchNorm divides each Linear's output by its own batch standard deviation, so multiplying the weights by a constant is cancelled exactly (up to ε). Without BatchNorm the same three gains give 3.2988, 3.2962 and 3.2801. The gain still matters for training, though: it changes the size of the updates, which the update:data ratio card shows."},
+  "apply": {"task": "Build the version without BatchNorm: <code>Linear</code> layers with <code>bias=True</code> and <code>Tanh</code>, no <code>BatchNorm1d</code>, <code>layers[-1].weight *= 0.1</code> for the output, and every hidden Linear weight <code>*= 5/3</code>. Count its parameters and print the step-0 loss. Then take your trained BatchNorm stack, leave <code>training = True</code>, and try to sample one name.", "done": "The no-BN stack has 46,497 parameters and prints a step-0 loss of 3.2962. Sampling in training mode fails with <code>RuntimeError: probability tensor contains either `inf`, `nan` or element &lt; 0</code>, and setting <code>training = False</code> fixes it.", "hint": "Use the same seed (2147483647) and create the layers in the same order, so <code>g</code> gives the same random draws. The only changes are the bias flag, removing BatchNorm, and where the 0.1 goes."},
+  "reflect": [
+    "Which prediction did you get wrong: the parameter count, or whether the gain changes the loss under BatchNorm?",
+    "What couldn't you explain cleanly: why buffers aren't parameters, or why only BatchNorm needs a mode flag?",
+    "Which relationship is still fuzzy: batch-dependent output → needs a mode flag, or mode flag → running buffers?",
+    "Could you rebuild the 47,024 count on paper, layer by layer, without looking?",
+    "Before the activation-plot card: do you know which attribute you'll read the histograms from?"
+  ],
+  "revisit": ["z2h-2-micrograd/mlp-and-training-loop", "z2h-5-batchnorm/batchnorm-forward", "z2h-5-batchnorm/kaiming-init"],
+  "prereq": ["z2h-5-batchnorm/batchnorm-inference"]
+}

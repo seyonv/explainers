@@ -1,0 +1,58 @@
+{
+  "prime": {
+    "problem": "Your automatic <code>backward()</code> gives correct gradients for the neuron, but the moment one Value is used twice (<code>a + a</code>, or a weight shared by several examples) it silently returns the wrong number, and nothing crashes.",
+    "fits": "This fixes the engine from the automatic-backward card. It relies on the chain rule you did by hand: each operation passes back local derivative × <code>out.grad</code>. Now you'll see what happens when two of those messages land on the same node.",
+    "expect": ["a node used by more than one operation", "the multivariate chain rule (shares from different paths add)", "<code>=</code> vs <code>+=</code> inside <code>_backward</code>", "why grads must start at 0"],
+    "goal": "Predict a reused node's gradient by summing its per-path shares, explain why <code>=</code> gives a wrong and even order-dependent answer, and fix the engine."
+  },
+  "attend": [
+    "In <code>b = a + a</code>, what are <code>self</code> and <code>other</code> inside <code>__add__</code>, and why does that make the two assignments collide?",
+    "When a leaf reaches the output along two paths, what does each path contribute, and how do the contributions combine?",
+    "Why can the buggy engine print different wrong answers on different runs of the same code?",
+    "What must be true of <code>.grad</code> before a backward pass for <code>+=</code> to give the right total?",
+    "Why did the single-neuron example earlier in the lecture never expose this bug?"
+  ],
+  "core": {
+    "must": [
+      "A Value used in two places → it receives one gradient share from each place → its true gradient (multivariate chain rule) is the sum of the shares → <code>=</code> keeps only the last share, <code>+=</code> keeps all of them",
+      "<code>b = a + a</code> → <code>self</code> and <code>other</code> are the same object → the second line of the closure overwrites the first → a.grad = 1 instead of 2",
+      "Buggy <code>=</code> → the surviving share is whichever closure runs last → that order comes from a topological sort over the set <code>_prev</code> → the wrong answer can change between runs (3/−2 or −6/−6 for f = (a·b)·(a+b))",
+      "<code>+=</code> → gradients only grow and are never cleared automatically → a second backward (or the next training step) adds on top → you must reset every grad to 0 first (zero_grad)"
+    ],
+    "elevated": [
+      "Grads start at <code>0.0</code> in <code>__init__</code> → the first <code>+=</code> equals a plain assignment → the fix changes nothing for Values used only once, which is why the neuron example stayed correct"
+    ],
+    "reference": ["the exact lines changed: <code>self.grad += …</code> in <code>__add__</code>, <code>__mul__</code>, <code>tanh</code> (and later <code>exp</code>, <code>__pow__</code>)", "Karpathy's test values: a = 3 for <code>a + a</code>; a = −2, b = 3 for f = (a·b)·(a+b) = −6", "engine.py L13–L33"]
+  },
+  "compress": {
+    "prompt": "From memory, draw f = (a·b)·(a+b) as a graph, write each branch's gradient share on the arrows into a and b, and in 3–4 sentences explain why the engine must use <code>+=</code>.",
+    "checklist": [
+      "a and b each feed two operations, so each gets two shares",
+      "the shares add (multivariate chain rule): a.grad = 3 + (−6) = −3, b.grad = −2 + (−6) = −8",
+      "<code>=</code> keeps only the share from the closure that runs last",
+      "<code>+=</code> works because grads start at 0 and addition doesn't care about order",
+      "the cost: grads must be reset before the next backward pass"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain, without code, why a variable that affects the output through two routes has a gradient equal to the sum of the two routes' gradients.", "kind": "concept", "answer": ["a small nudge h to a moves both routes at once", "for small h each route changes f by (its path derivative)·h", "the changes add, so the total slope is the sum of the path derivatives"]},
+    {"q": "Walk through <code>b.backward()</code> for <code>b = a + a</code> with the buggy engine: which closure runs, which lines execute, and what is a.grad after each line?", "kind": "mechanism", "answer": ["backward sets b.grad = 1 and runs b's <code>+</code> closure", "<code>self.grad = 1.0 * out.grad</code> sets a.grad to 1", "<code>other.grad = 1.0 * out.grad</code> sets the same a.grad to 1 again", "final 1.0 instead of 2.0"]},
+    {"q": "<code>+=</code> fixes reuse but makes grads pile up across calls. Would you rather have backward() reset every grad to 0 at its start, or leave resetting to the training loop? What does each choice cost?", "kind": "tradeoff", "answer": ["resetting inside backward: can't forget it, but you lose the ability to add gradients from several backward calls on purpose", "leaving it to the loop (micrograd, PyTorch): flexible, but forgetting zero_grad is a silent bug", "either way the reset must happen before, not after, the next accumulation"]},
+    {"q": "With the buggy engine, f = (a·b)·(a+b) at a=−2, b=3 printed a.grad 3.0 on one machine and −6.0 in another run. What decides which, and why does the fixed engine never vary?", "kind": "mechanism", "answer": ["the value left over is from whichever of the d or e closures ran last", "the order comes from the topological sort, which walks the set <code>_prev</code>", "with <code>+=</code> both shares are always added, and the sum is the same in any order"]}
+  ],
+  "compare": [
+    {"with": "z2h-2-micrograd/mlp-and-training-loop", "q": "This card's bug and the forgot-zero_grad bug both come from how <code>.grad</code> is updated. What is fundamentally different about them, which design choice causes each, and how does each one fail?", "answer": ["this card: <code>=</code> drops shares <i>within</i> one backward pass, so gradients are wrong every time", "zero_grad: <code>+=</code> keeps shares <i>across</i> backward passes, so gradients from old steps leak into the new one", "the fix for the first bug creates the need for the second habit", "both fail silently: the loss can still go down on an easy problem"]},
+    {"with": "z2h-2-micrograd/chain-rule-by-hand", "q": "When you backpropagated L = (a·b + c)·f by hand, you never had to add two shares. What about that graph made single-path chain rule enough, and what changes in your hand procedure once a node is reused?", "answer": ["every Value in that graph was used by exactly one operation, so each node had one path to L", "with reuse, you compute each path's product separately and add them", "the engine's <code>+=</code> does exactly this addition automatically"]}
+  ],
+  "predict": {"q": "With the fixed <code>+=</code> engine, you build f = (a·b)·(a+b) at a=−2, b=3 and call <code>f.backward()</code> <b>twice</b> without resetting anything. Does a.grad become 2 × (−3) = −6? Commit to a number.", "answer": "No, it becomes −9.0 (and b.grad −24.0). The second call resets only f.grad to 1; the intermediate grads d and e also accumulate (d.grad 2, e.grad −12), so the leaves receive the doubled shares <i>on top of</i> the −3 they already had: −3 + 2·(−3) = −9. Accumulation compounds through the graph, which is why stale grads are so damaging."},
+  "apply": {"task": "Build <code>g = a * a</code> with <code>a = Value(3.0)</code> and run <code>g.backward()</code> on both the buggy (<code>=</code>) and fixed (<code>+=</code>) engines. Before running, predict each <code>a.grad</code> from the <code>__mul__</code> closure and from d(a²)/da = 2a. Then print <code>len(g._prev)</code> and explain why it doesn't affect the answer.", "done": "The buggy engine prints a.grad = 3.0, the fixed one prints 6.0 (= 2·3), and <code>len(g._prev)</code> is 1 because the set collapses {a, a}; the closure still captured <code>self</code> and <code>other</code>, so both shares are delivered.", "hint": "In <code>__mul__</code>, <code>self.grad</code> gets <code>other.data * out.grad</code> = 3 and <code>other.grad</code> gets <code>self.data * out.grad</code> = 3, and both are a."},
+  "reflect": [
+    "Which prediction did you get wrong: a.grad for <code>a + a</code>, or the double-backward −9?",
+    "What couldn't you explain cleanly: why the shares add, or why the buggy result depends on set order?",
+    "Which relationship is still fuzzy: reuse → several shares, or several shares → must use <code>+=</code> → must zero grads?",
+    "Where in the MLP will a single Value be reused, and how many shares will a weight collect?",
+    "What will you check first the next time a gradient looks plausible but wrong?"
+  ],
+  "revisit": ["z2h-2-micrograd/chain-rule-by-hand", "z2h-2-micrograd/automatic-backward", "z2h-1-toolkit/chain-rule"],
+  "prereq": ["z2h-2-micrograd/automatic-backward"]
+}

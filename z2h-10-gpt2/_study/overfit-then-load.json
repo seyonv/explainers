@@ -1,0 +1,66 @@
+{
+  "prime": {
+    "problem": "A 124M-parameter model can train for hours with a silent bug (gradients never cleared, targets not shifted, a step that updates nothing) and the loss will still wobble downwards a little. You need a fast yes-or-no test that the whole training step works, and then a way to feed the model new text every step.",
+    "fits": "The first-loss card gave you a batch <code>x, y</code> and a loss of 10.96 at init. This card adds the optimizer loop that makes that number fall, the same overfit-one-batch check you did in the MLP course, and the loader that the rest of the lecture grows into sharded, multi-GPU loading.",
+    "expect": ["the four-line step: <code>zero_grad</code>, forward, <code>backward</code>, <code>step</code>", "AdamW at lr 3e-4", "overfitting one batch as a test", "<code>DataLoaderLite</code> and epochs", "the frequency-only loss (entropy, 6.32)"],
+    "goal": "Write the training loop and the loader yourself, use the one-batch test to prove the loop works, and explain why real-data loss stalls near 6.3 after 50 steps instead of falling to 0."
+  },
+  "attend": [
+    "Why is a loss near 0 on one repeated batch evidence that the step works, and not evidence that the model is good?",
+    "Which of the four lines does the init-loss check (10.96 vs 10.82) leave untested, and which does the one-batch run test?",
+    "What does the model learn first on new text, and what number does that alone get you to on tiny shakespeare?",
+    "How does <code>next_batch</code> make <code>y</code> the next token of <code>x</code> without building a separate target array?",
+    "When exactly does the loader wrap to position 0, and why are the last 105 tokens never used?"
+  ],
+  "core": {
+    "must": [
+      "One fixed batch = only 128 answers to fit → 124M parameters can memorise them → loss falls towards 0 (0.36 at step 49) → if it doesn't, something in the forward, backward or optimizer step is broken",
+      "A new batch each step → the model can't memorise what it hasn't seen → the quickest thing to learn is how common each token is → the loss heads for the frequency-only entropy (6.32 here) before context starts to help",
+      "<code>backward</code> adds into <code>.grad</code> → without <code>zero_grad</code> each step would also carry every earlier step's gradients → the update is wrong even though the loss is computed correctly",
+      "Walk the token row in B·T chunks, take B·T + 1 tokens → <code>x = buf[:-1]</code>, <code>y = buf[1:]</code> are shifted by one → every position gets its next-token target for free → one integer of state covers each token once per epoch"
+    ],
+    "elevated": [
+      "The printed loss in run B is measured on that step's own batch → it wobbles (6.95 at step 29, 7.53 at step 39) → never read one step's loss as a trend; the validation loss later averages over many batches"
+    ],
+    "reference": [
+      "<code>torch.optim.AdamW(model.parameters(), lr=3e-4)</code> (commit <code>7822fce</code>)",
+      "<code>DataLoaderLite(B=4, T=32)</code>: 338,025 tokens, 2640 batches per epoch (commit <code>631f7d6</code>)",
+      "the final sharded loader in train_gpt2.py L214–L252 adds <code>process_rank</code>, <code>num_processes</code> and shard files",
+      "<code>loss.item()</code> copies the scalar back to the CPU for printing",
+      "lab: <code>python labs/overfit-then-load.py --steps N</code>"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, write the four lines of a training step and label what each one does. Then in 3–4 sentences explain why run A reaches 0.36 and run B stops near 6.8, and sketch how <code>next_batch</code> cuts <code>x</code> and <code>y</code> out of the token row.",
+    "checklist": [
+      "<code>zero_grad</code> → forward (logits + loss) → <code>backward</code> → <code>optimizer.step</code>",
+      "one repeated batch can be memorised, so its loss falls towards 0; that proves the plumbing",
+      "new batches can't be memorised; token frequencies are learned first",
+      "frequency-only loss = entropy of the token distribution = 6.32, vs 10.82 for a uniform guess",
+      "the loader takes B·T + 1 tokens; <code>x</code> drops the last, <code>y</code> drops the first",
+      "the position advances by B·T and wraps to 0 when the next window won't fit"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why overfitting a single batch is a useful test for a training script even though an overfit model is useless.", "kind": "concept", "answer": ["a working model with a working step must be able to memorise 128 targets", "so a loss that won't fall points to a bug, not to a hard problem", "it runs in under a minute, unlike a real training run", "memorising says nothing about generalisation; that is measured on held-out data"]},
+    {"q": "Walk through two calls of <code>next_batch</code> with B=4, T=32 starting from position 0: which token indices go into <code>buf</code>, <code>x</code> and <code>y</code> each time, and what is the position afterwards?", "kind": "mechanism", "answer": ["call 1: buf = tokens 0–128 (129 ids); x = 0–127, y = 1–128, both viewed as (4, 32)", "position becomes 128", "call 2: buf = tokens 128–256; x = 128–255, y = 129–256", "position becomes 256; it wraps to 0 only when position + 129 would run past 338,025"]},
+    {"q": "Run B ends at 6.80 after 50 steps. Is that a sign something is wrong? What reference numbers would you compare it with, and what would a stubborn 10.8 or an instant 0.4 each suggest?", "kind": "tradeoff", "answer": ["no: 6.80 is between the uniform guess (10.82) and the frequency-only floor (6.32), as expected for 50 steps", "stuck near 10.8: the step isn't updating (missing <code>step</code>, lr 0, gradients not flowing)", "near 0 on new data this fast: the data is leaking or repeating, e.g. the loader returns the same batch", "a single step's value is noisy, so look at several"]},
+    {"q": "Why does the lecture's loader walk the text in order instead of drawing random offsets like the GPT lecture's <code>get_batch</code>? What do you give up?", "kind": "tradeoff", "answer": ["in order: each token is used once per epoch, and the state is one integer", "it extends cleanly to shards and to splitting positions across GPUs by rank", "you give up shuffling: batches arrive in document order, a caveat noted in the results"]}
+  ],
+  "compare": [
+    {"with": "z2h-4-mlp/overfit-one-batch", "q": "The MLP course overfit 32 examples with a small net; here GPT-2 overfits 128 tokens. What is the same about the test, and what does the much larger model change about how fast and how far the loss drops?", "answer": ["same logic: many parameters, few examples → the loss should head towards 0, or there's a bug", "the same caveat: memorising proves the loop, not the model", "GPT-2 has 124M parameters for 128 targets, so it memorises quickly (0.36 in 50 steps) with AdamW", "neither reaches exactly 0 when some identical inputs need different targets"]},
+    {"with": "z2h-8-gpt/batches-of-chunks", "q": "The GPT lecture sampled random chunk starts with <code>torch.randint</code>; <code>DataLoaderLite</code> walks the text in order. What is fundamentally different, which design choice causes it, and when does each one fail?", "answer": ["random offsets: overlapping windows, no epochs, some tokens seen twice and others never in a given number of steps", "in order: disjoint windows, exact epochs, deterministic", "the cause is the state: a random draw per batch vs one advancing position", "random fails to give clean epoch accounting; in-order fails to shuffle, so ordered data can bias training"]},
+    {"with": "z2h-10-gpt2/data-and-evals", "q": "Run A's loss is 0.36 and run B's is 6.80. Which one is closer to what a validation loss would report for each model, and why?", "answer": ["run A's model would score badly on held-out text: 0.36 is on the batch it memorised", "run B's per-batch loss is on text it hadn't seen yet, so it already behaves like a validation measurement", "validation loss averages many held-out batches to remove the step-to-step noise"]}
+  ],
+  "predict": {"q": "Keep run B going for 300 steps instead of 50 (still under one epoch). Will its per-batch loss drop below the 6.32 frequency-only floor, and what would it mean if it stayed pinned at 6.32?", "answer": "It drops below. Run for this card with <code>labs/overfit-then-load.py --steps 300</code>, most batches from step 189 on score between 4.5 and 6.0 (e.g. 4.5151 at step 219, 4.9210 at step 289), though single batches still spike (6.3880 at step 299). Going below 6.32 is only possible by using the tokens before. A loss pinned at 6.32 would mean the model is ignoring context, so suspect the attention, the positions or the <code>x</code>/<code>y</code> shift."},
+  "apply": {"task": "Compute the frequency-only loss yourself. Tokenize tiny shakespeare with tiktoken gpt2, count every token id, turn the counts into shares <i>p</i>, and compute −Σ <i>p</i> ln <i>p</i>. Also count how many distinct token ids appear and how many of the 50,257 never do.", "done": "You get 338,025 tokens, 11,706 distinct ids (38,551 never used), '\\n' as the most common token with 39,996 occurrences, and an entropy of 6.3161.", "hint": "<code>collections.Counter(tokens)</code> gives the counts; divide each by <code>len(tokens)</code>."},
+  "reflect": [
+    "Which prediction did you get wrong: run A's 0.36, run B's 6.80, or whether 300 steps gets below 6.32?",
+    "What couldn't you explain cleanly: why memorising proves the step works, or why frequencies come before context?",
+    "Which relationship is still fuzzy: new batch each step → can't memorise, or can't memorise → loss heads for the entropy?",
+    "If your own loop's loss stayed at 10.96 for 50 steps, which line would you check first, and why?",
+    "What will you revisit before the data-and-evals card, where this loader grows into shards and a validation split?"
+  ],
+  "revisit": ["z2h-4-mlp/overfit-one-batch", "z2h-2-micrograd/accumulate-gradients", "z2h-8-gpt/batches-of-chunks", "z2h-10-gpt2/first-loss"],
+  "prereq": ["z2h-10-gpt2/first-loss"]
+}

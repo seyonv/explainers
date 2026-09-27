@@ -1,0 +1,65 @@
+{
+  "prime": {
+    "problem": "The WaveNet-style model reads one row of 8 characters at a time. Neighbouring rows of the same name overlap by 7 characters, so their trees overlap too, and a row-by-row forward pass recomputes the same nodes again and again. Separately, a model that trains is not the same as a good way of working: without a harness you can't tell a 0.006 gain from noise.",
+    "fits": "It closes the WaveNet lecture. It takes the tree you built with <code>FlattenConsecutive</code> and the shared-weight levels, and shows the efficient way to run that same tree over a whole sequence. The workflow half looks back at the BatchNorm shape bug and the one-run comparisons in the performance log.",
+    "expect": ["overlapping rows → overlapping trees", "a convolution as a sliding, shared filter", "causal and dilated", "receptive field 2, 4, 8", "harness, docs, shapes, Jupyter → repo"],
+    "goal": "Count by hand how much work a convolution saves over a row-by-row loop, explain why it gives identical outputs, and name the habits Karpathy says the real work runs on."
+  },
+  "attend": [
+    "Why does a tree node's value depend only on the characters it covers, and which mode setting is needed for that to be true?",
+    "Where do the 22 repeated nodes for \"diondre\" come from: which property of the rows makes two trees overlap?",
+    "Why does one batched call over the 8 rows still do all 56 node computations?",
+    "What does dilation buy over a plain width-2 convolution, measured in layers needed to see 8 characters?",
+    "Why would a convolution save nothing with makemore's usual random minibatches?",
+    "Which bug earlier in this lecture would a harness or careful shape checks have caught sooner?"
+  ],
+  "core": {
+    "must": [
+      "Rows of one name are the same window shifted by one character → their trees cover overlapping character spans → with shared weights, equal spans give equal nodes → a loop recomputes them (56 nodes for \"diondre\") while a convolution computes each position once (34)",
+      "Convolution = the same filter slid over every position → same weights and the same inputs per node → exactly the same logits as the loop → it is an efficiency change, not a model change",
+      "Dilation doubles the gap between a node's two inputs at each level (1, 2, 4) → the receptive field doubles per layer (2, 4, 8) → 3 layers see 8 characters, where undilated width-2 layers would need 7",
+      "Bugs like the (1, 4, 68) <code>running_mean</code> broadcast silently and a single run can't separate 2.0265 from 2.0202 → shape checks and a harness that repeats and compares runs are what make progress real instead of \"guessing and checking\""
+    ],
+    "elevated": [
+      "Batching and convolution fix different costs → a batched call removes Python overhead but still builds one tree per row → only sharing nodes across positions removes the repeated work (7R vs 3R + 10 nodes for R rows)",
+      "The saving needs outputs from the same sequence → makemore's minibatches draw random rows from different names → nothing to share unless you restructure the data as whole sequences"
+    ],
+    "reference": [
+      "<code>nn.BatchNorm1d</code> expects (N, C, L); the lecture's version expects (N, L, C)",
+      "\"diondre\" is rows 7–14 of <code>Xtr</code>; Karpathy says it aloud as \"DeAndre\"",
+      "the WaveNet paper uses 4 levels in its figure (receptive field 16); the lecture builds 3",
+      "the lecture's roadmap: real dilated convolutions, residual and skip connections, a hyperparameter-search harness, then RNNs, LSTMs, GRUs and Transformers"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw the 15-character padded \"diondre\" and the level-1, level-2 and level-3 nodes above it. Mark two rows' trees and circle the nodes they share. Then write 3 sentences: what a convolution computes, why its outputs equal the loop's, and what the workflow half of the chapter says you need.",
+    "checklist": [
+      "overlapping rows give overlapping trees; the same weights make shared nodes identical",
+      "loop: 7 nodes per row, 56 in total; convolution: 34 distinct positions (14 + 12 + 8)",
+      "the convolution is the same filter slid along the sequence: same function, less work",
+      "dilation 1, 2, 4 gives receptive field 2, 4, 8 in 3 layers",
+      "the workflow: a harness to compare runs, docs read warily, shape checks, prototype in Jupyter then move to a repo"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why running the same tree at every position with one convolution gives exactly the same logits as forwarding each row separately.", "kind": "concept", "answer": ["each node applies the same Linear/BatchNorm/Tanh weights to the same characters in both cases", "in eval mode BatchNorm uses stored statistics, so a node doesn't depend on which rows are in the batch", "the convolution only avoids recomputing nodes; it doesn't change any node's inputs"]},
+    {"q": "Walk through which level-1 nodes rows 3 (<code>.....dio</code>) and 7 (<code>.diondre</code>) compute, and which level-2 node they share.", "kind": "mechanism", "answer": ["row 3 covers positions 3–10: level-1 nodes start at 3, 5, 7, 9", "row 7 covers positions 7–14: level-1 nodes start at 7, 9, 11, 13", "shared: <code>'.d'</code> (7) and <code>'io'</code> (9) at level 1, and <code>'.dio'</code> (7) at level 2"]},
+    {"q": "Your teammate batches the 8 rows into one <code>model(Xtr[7:15])</code> call and says that's \"basically a convolution\". What did they gain, and what did they not?", "kind": "tradeoff", "answer": ["gained: no Python loop, one call running inside PyTorch's kernels", "not gained: each row still builds its own tree, so all 56 nodes are computed", "only sharing nodes across positions (the convolution) gets it down to 34"]},
+    {"q": "The BatchNorm fix moved val from 2.0265 to 2.0202 on your M3. What would a harness do before you believe that?", "kind": "tradeoff", "answer": ["repeat each configuration with several seeds", "compare the gap with the run-to-run spread", "log train and val for every run so comparisons don't rest on the training loss alone"]}
+  ],
+  "compare": [
+    {"with": "z2h-7-wavenet/flatten-consecutive", "q": "<code>FlattenConsecutive</code> plus batched <code>@</code> vs a dilated convolution: both apply one weight matrix to many character groups at once. What is fundamentally different about which groups each one computes, and when does that difference cost you?", "answer": ["<code>FlattenConsecutive</code> groups pairs inside one row, so every row gets its own tree", "the convolution slides over every position of one sequence, so neighbouring outputs share nodes", "same weights and same outputs; the difference is only repeated work", "it costs you when you want outputs at every position of long sequences; with random rows there is nothing to share"]},
+    {"with": "z2h-8-gpt/self-attention-head", "q": "A dilated convolution and a self-attention head both produce an output at every position in one call. Which design choice decides how each one mixes earlier positions, and how does each one fail?", "answer": ["convolution: a fixed tree with learned but position-independent weights; it sees only its receptive field", "attention: mixing weights are computed from the data, over all earlier positions", "the convolution can't see past its receptive field (8 here) without more layers", "attention's cost grows with the square of the context length"]}
+  ],
+  "predict": {"q": "Now feed a 15-letter name as one sequence (16 rows at <code>block_size</code> 8). How many tree nodes does a row-by-row loop compute, how many does the convolution compute, and what happens to the ratio as names get longer?", "answer": "The loop computes 7 × 16 = 112. The convolution computes 3R + 10 = 58 (22 + 20 + 16 per level). As the sequence grows, each new row adds just one new node per level, so the ratio tends to 3 nodes per row against the loop's 7."},
+  "apply": {"task": "Change the node-counting snippet from the Build-it box for a 4-level model with <code>block_size = 16</code> (widths 2, 4, 8, 16, window 16), still over 8 rows. Predict both numbers first, then run it.", "done": "Your loop count is 120 (8 rows × 15 nodes) and your distinct count is 66 (22 + 20 + 16 + 8).", "hint": "Each row now has 8 + 4 + 2 + 1 nodes. For the distinct count, find the range of start positions each level reaches across rows 0–7."},
+  "reflect": [
+    "Which prediction did you get wrong: the 34 distinct nodes, or that batching alone still costs 56?",
+    "What couldn't you explain cleanly about why the convolution gives identical logits?",
+    "Which relationship is still fuzzy: dilation → receptive field, or shared weights → shared nodes?",
+    "Which of Karpathy's workflow habits would have caught the BatchNorm shape bug earliest for you?",
+    "What will you set up (seeds, a results log, a shape assertion) before your next experiment?"
+  ],
+  "revisit": ["z2h-7-wavenet/wavenet-tree-idea", "z2h-7-wavenet/flatten-consecutive", "z2h-7-wavenet/batchnorm-3d-bug"],
+  "prereq": ["z2h-7-wavenet/flatten-consecutive"]
+}

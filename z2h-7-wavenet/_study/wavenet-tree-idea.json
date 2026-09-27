@@ -1,0 +1,64 @@
+{
+  "prime": {
+    "problem": "The flat MLP glues all 8 context characters into one long vector and squashes them in a single hidden layer. Everything is mixed in one step, and that first layer grows every time you widen the window.",
+    "fits": "It builds on the block_size-8 flat baseline (val 2.027) from the previous card. The architecture stays an MLP; only the wiring changes, so the context is fused gradually over several levels.",
+    "expect": ["fusion node (glue two children → Linear → BatchNorm → tanh)", "receptive field = 2<sup>L</sup>", "weights shared across positions within a level", "dilated causal convolution as a fast implementation"],
+    "goal": "Draw the tree for any 8-character context, label every level's receptive field, and explain why a convolution computes the same model rather than a different one."
+  },
+  "attend": [
+    "Why does fusing two characters at a time mean the receptive field doubles per level, rather than growing by 2 each level?",
+    "Level 1 handles 4 pairs with one weight matrix. What does that sharing buy, and what does it assume about the pairs?",
+    "At about 22K parameters the tree only tied the flat net. Which later change made the tree pull ahead?",
+    "If block_size went from 8 to 16, what would the flat net's first layer and the tree each have to add?",
+    "In what sense are dilated causal convolutions \"only an implementation detail\", and what do they save?"
+  ],
+  "core": {
+    "must": [
+      "each node fuses exactly 2 children → nodes halve at every level (8 → 4 → 2 → 1) → a level-<i>L</i> node sees 2<sup><i>L</i></sup> characters → 3 levels for block_size 8, and one more level per doubling of context",
+      "every node in a level uses the same Linear weights → level 1 stores 20 × 68 = 1,360 weights but applies them 4 times → the tree's cost grows with log<sub>2</sub> of the context, while the flat first layer grows linearly (6,000 → 16,000 → 32,000 weights at block_size 3 → 8 → 16)",
+      "the tree is a fixed pattern of \"glue two neighbours, apply a shared layer\" → sliding that pattern along a whole name is a convolution → dilated causal convolutions compute the same nodes for all positions at once and reuse overlapping ones (56 computed vs 34 distinct for <code>diondre</code>) → same model, only faster",
+      "wiring alone doesn't guarantee a win → at equal parameters (22,097 flat vs 22,397 tree) val was 2.027 vs 2.029 (then 2.022 after the BatchNorm fix) → the tree's advantage in the lecture shows up only when it is scaled up (76,579 params, val 1.9937)"
+    ],
+    "elevated": [
+      "the tree pairs fixed positions (1+2, 3+4, …) → which characters meet first is baked into the architecture → a pattern split across a pair boundary (e.g. positions 2 and 3) only meets at level 2"
+    ],
+    "reference": [
+      "the lecture's tree: <code>n_embd</code> 10, <code>n_hidden</code> 68, three <code>FlattenConsecutive(2)</code> + <code>Linear</code> + <code>BatchNorm1d</code> + <code>Tanh</code> blocks",
+      "the paper's figure has 4 levels (receptive field 16), with dilations 1, 2, 4, 8",
+      "WaveNet paper: van den Oord et al. 2016, arXiv 1609.03499",
+      "shape walk at batch 4, <code>n_hidden</code> 200: (4,8,10) → (4,4,20) → (4,2,400) → (4,400) → (4,27)"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw the tree for the context <code>.diondre</code> and label every level's receptive field. Then, in 3–4 sentences, explain why this wiring is different from the flat MLP and why a dilated convolution doesn't change it.",
+    "checklist": [
+      "8 leaves (embeddings), then 4, 2 and 1 fusion nodes, each gluing two children and applying Linear → BatchNorm → tanh",
+      "receptive field 2, 4, 8 (= 2<sup>L</sup>); one extra level per doubling of context",
+      "one weight matrix per level, shared by every node in it",
+      "the flat MLP mixes all 8 characters in its first layer, and that layer grows linearly with block_size",
+      "a dilated causal convolution computes the same tree at every position at once and reuses shared nodes: it's faster, not a different model"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain what \"fusing context slowly\" means in the tree, compared with how the flat MLP handles the same 8 characters.", "kind": "concept", "answer": ["flat: all 8 embeddings concatenated (80 numbers) into one hidden layer at once", "tree: fuse neighbouring pairs, then pairs of pairs, then the two halves", "each node only ever combines two inputs, so the context is built up over 3 levels"]},
+    {"q": "Walk the context <code>.diondre</code> through the tree: what does each level's nodes cover, and what shape does the batch of 4 have after each regrouping?", "kind": "mechanism", "answer": ["level 1: <code>.d</code>, <code>io</code>, <code>nd</code>, <code>re</code>; (4,8,10) → (4,4,20) → Linear → (4,4,n_hidden)", "level 2: <code>.dio</code>, <code>ndre</code>; (4,2,2·n_hidden) → (4,2,n_hidden)", "level 3: <code>.diondre</code>; (4,2·n_hidden) → (4,n_hidden) → output Linear → (4,27) logits"]},
+    {"q": "You want 16 characters of context. Compare what the flat net (200 hidden) and the tree (<code>n_hidden</code> 68) must add, and name one thing the tree gives up for its cheaper growth.", "kind": "tradeoff", "answer": ["flat: the first layer goes from 80 × 200 = 16,000 to 160 × 200 = 32,000 weights", "tree: one more level, 136 × 68 + 136 = 9,384 params", "the tree gives up freedom: which characters meet first is fixed, and every pair must share one set of weights"]},
+    {"q": "Someone says \"WaveNet is a convolutional net, so the lecture's MLP tree isn't really WaveNet.\" What's right and wrong about that?", "kind": "concept", "answer": ["the model (the black tree in the figure) is the same as the lecture's hierarchical MLP", "the convolution is how you compute that tree for every position of a sequence at once, reusing overlapping nodes", "what the lecture really leaves out is gated activations and residual and skip connections"]}
+  ],
+  "compare": [
+    {"with": "z2h-7-wavenet/more-context-baseline", "q": "Flat MLP with block_size 8 vs the tree at the same ~22K parameters: what is fundamentally different, which design choice causes it, and why didn't the tree win straight away?", "answer": ["same data, same embeddings, similar budget (22,097 vs 22,397)", "flat mixes all 80 numbers in one layer; the tree mixes two at a time with shared weights per level", "the val losses tied (2.027 vs 2.029); a BatchNorm bug and no tuning held the tree back", "flat fails by growing linearly and crushing everything early; the tree fails if its fixed pairing splits a pattern that matters"]},
+    {"with": "z2h-7-wavenet/convolutions-and-workflow", "q": "This card's tree vs the convolution view of it: which one is the model and which is the computation strategy? When would you notice the difference?", "answer": ["the tree defines what gets computed; the convolution defines how, for all positions at once", "the Python loop recomputes shared nodes (56 computed vs 34 distinct for diondre's 8 rows); a convolution doesn't", "you'd notice it in speed on long sequences, never in the loss"]},
+    {"with": "z2h-4-mlp/bengio-embeddings", "q": "Bengio's 2003 MLP concatenates the context embeddings into one hidden layer. What does the tree keep from it, and what does it change?", "answer": ["keeps: a learned embedding per character and an MLP predicting the next one", "changes: the concatenation happens in pairs over several levels instead of all at once", "the Bengio layout's first layer scales with context length; the tree's scales with log<sub>2</sub> of it"]}
+  ],
+  "predict": {"q": "Keep the lecture's tree, but set block_size to 6 instead of 8. What goes wrong when you fuse pairs, and what are two ways to fix it?", "answer": "6 → 3 → then 3 nodes can't be split into pairs, so the third level breaks (in code, <code>view</code> fails or the shapes stop matching). Fixes: pad the context to a power of two (8), or fuse in groups of 3 at one level (6 → 2 → 1 with a FlattenConsecutive(3) and a FlattenConsecutive(2)). The pairwise tree quietly assumes the context length is 2<sup>L</sup>."},
+  "apply": {"task": "Extend your drawing to block_size 16 (4 levels, like the paper's figure). Count the fusion nodes per example, then compute the parameter count of the 4-level tree at <code>n_embd</code> 10, <code>n_hidden</code> 68, and of a flat MLP with 200 hidden units on the same 16 characters.", "done": "You get 8 + 4 + 2 + 1 = 15 fusion nodes, 22,397 + 9,384 = 31,781 parameters for the tree, and 270 + 160 × 200 + 400 + 5,427 = 38,097 for the flat net.", "hint": "A new level adds one Linear of (2 × 68) × 68 weights plus BatchNorm's γ and β (2 × 68). In the flat net, only the first layer changes: 16 × 10 = 160 inputs."},
+  "reflect": [
+    "Which prediction did you get wrong: the 3 levels, the single shared matrix, or the block_size-6 break?",
+    "What couldn't you explain cleanly: why sharing weights across pairs is reasonable, or why a convolution is \"the same model\"?",
+    "Which relationship is still fuzzy: pairwise fusion → receptive field 2<sup>L</sup>, or receptive field 2<sup>L</sup> → cheap growth in context?",
+    "The tree tied the flat net at 22K parameters. Would you have believed a new architecture that ties? What evidence would convince you?",
+    "What will you check first in the FlattenConsecutive card: the shapes, or the order the characters are paired in?"
+  ],
+  "revisit": ["z2h-7-wavenet/more-context-baseline", "z2h-4-mlp/bengio-embeddings", "z2h-5-batchnorm/batchnorm-forward"],
+  "prereq": ["z2h-7-wavenet/more-context-baseline"]
+}

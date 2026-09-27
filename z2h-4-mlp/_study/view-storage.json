@@ -1,0 +1,63 @@
+{
+  "prime": {
+    "problem": "The embeddings come out as a (32, 3, 2) block, but the hidden layer's weights want one row of 6 numbers per example. Gluing the pieces together with a copy on every forward pass is clumsy, and it hard-codes the context length.",
+    "fits": "It follows the embedding lookup (<code>emb = C[X]</code>) and comes right before the hidden layer. It reuses tensor shapes and indexing from the toolkit, and shows what a tensor really is underneath.",
+    "expect": ["storage: one flat block of memory", "strides and offset", "<code>.view</code> vs <code>torch.cat</code>", "<code>-1</code> as \"work this dimension out\"", "contiguous vs non-contiguous"],
+    "goal": "Explain why <code>emb.view(-1, 6)</code> costs nothing and gives the same numbers as concatenating, and predict when a view will fail."
+  },
+  "attend": [
+    "Which three small numbers per tensor turn a flat block of memory into a (3, 3, 2) grid?",
+    "Why are each example's six numbers already adjacent in <code>emb</code>'s memory, and in which order?",
+    "What does <code>cat</code> have to do that <code>view</code> doesn't, and how often does that happen in training?",
+    "What goes wrong with <code>.view</code> after a transpose, and why does <code>.reshape</code> still work?"
+  ],
+  "core": {
+    "must": [
+      "A tensor = storage + shape + strides + offset → element [i, j, k] is found at offset + i·s₀ + j·s₁ + k·s₂ → changing shape and strides re-reads the same memory → <code>.view</code> is free (no copy)",
+      "<code>emb</code> has strides (6, 2, 1) → example n's 6 numbers sit together at storage[6n : 6n + 6], character 0 first → <code>view(-1, 6)</code> just declares stride (6, 1) → the same row-of-6 layout <code>cat</code> builds by copying",
+      "A view only re-reads memory, never reorders it → after <code>transpose</code> the numbers aren't in row order → <code>.view</code> raises an error → <code>.reshape</code> (or <code>.contiguous()</code>) has to copy",
+      "<code>-1</code> lets PyTorch infer a dimension from the total count (192 ÷ 6 = 32) → the same line handles a batch of 32, all 228,146 examples, or 1 during sampling"
+    ],
+    "elevated": [
+      "Views share storage → writing through a view changes the original (setting <code>view[0, 0] = 99.</code> sets <code>emb[0, 0, 0]</code>) → harmless in this MLP, a silent bug if you edit a view expecting a copy"
+    ],
+    "reference": [
+      "<code>t.stride()</code>, <code>t.data_ptr()</code>, <code>t.storage_offset()</code>, <code>t.untyped_storage().nbytes()</code>, <code>t.is_contiguous()</code>",
+      "<code>torch.unbind(t, dim)</code> returns a tuple of slices along <code>dim</code>",
+      "the exact RuntimeError text for an incompatible view",
+      "the arange(18) storage is 144 bytes (18 int64s × 8 bytes)"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw <code>torch.arange(18)</code> as a strip of 18 slots, then mark how <code>view(3, 3, 2)</code> reads it. Or explain in 3–5 sentences why <code>emb.view(-1, 6)</code> equals the <code>cat</code> version but costs nothing.",
+    "checklist": [
+      "a tensor is a header (shape, strides, offset) over a flat storage",
+      "stride = slots to skip per step along a dimension; address = offset + Σ index × stride",
+      "<code>emb</code>'s last two dims are already contiguous per example, so rows of 6 need only new strides",
+      "<code>cat</code> allocates and copies every pass; <code>view</code> allocates nothing",
+      "a view fails when the memory isn't in the needed order (e.g. after a transpose)",
+      "<code>-1</code> infers the batch dimension"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain what a stride is, using <code>a.view(9, 2)</code> of <code>torch.arange(18)</code> as your example.", "kind": "concept", "answer": ["strides are (2, 1): one step down a row skips 2 slots, one step across skips 1", "element [i, j] lives at storage slot 2i + j", "all views of <code>a</code> share the same 18-slot storage"]},
+    {"q": "Walk through what PyTorch does when you call <code>emb.view(-1, 6)</code> on the (32, 3, 2) <code>emb</code>: what gets checked, what gets created, and what memory is touched.", "kind": "mechanism", "answer": ["infers -1: 192 elements ÷ 6 = 32", "checks the new shape can be expressed with strides over the existing layout (emb is contiguous with strides (6, 2, 1))", "creates a new tensor header with shape (32, 6), strides (6, 1), same storage and offset", "no numbers are read or copied"]},
+    {"q": "You have a non-contiguous tensor and need it flattened to rows. Compare <code>.view</code>, <code>.reshape</code> and <code>.contiguous().view</code>: what does each cost, and how does each fail?", "kind": "tradeoff", "answer": ["<code>.view</code>: free, but raises a RuntimeError when the layout doesn't allow it", "<code>.reshape</code>: always works, but may silently copy, so you can't count on shared memory", "<code>.contiguous().view</code>: explicit copy first, then a free view; clear about the cost", "and after a transpose, even a successful copy gives a different element order than the untransposed view"]},
+    {"q": "In the final model <code>C</code> is (27, 10) and the code says <code>emb.view(-1, 30)</code>. Why 30, and what would break if you kept <code>view(-1, 6)</code>?", "kind": "mechanism", "answer": ["30 = 3 context characters × 10 numbers each", "<code>view(-1, 6)</code> would still succeed (960 ÷ 6 = 160 rows) but slice each example's 30 numbers into five wrong rows of 6", "the matmul with W1 (30, 200) then fails on shape, which is how you'd notice"]}
+  ],
+  "compare": [
+    {"with": "z2h-4-mlp/embedding-lookup", "q": "Both <code>C[X]</code> and <code>emb.view(-1, 6)</code> produce a new tensor from an old one. Which one copies memory and which doesn't, what design choice causes it, and when would the difference matter?", "answer": ["<code>C[X]</code> is advanced indexing: it gathers rows (repeating C[0] many times), so it must allocate a new (32, 3, 2) tensor; checked: it does not share C's memory", "<code>view</code> only changes the header, so it shares emb's memory", "a gather can't be described by strides when rows repeat or jump around; a reshape of contiguous memory can", "it matters for memory at scale and for writes: editing emb never changes C, but editing a view changes emb"]},
+    {"with": "z2h-7-wavenet/flatten-consecutive", "q": "Here <code>view</code> flattens all 3 characters into one row; in WaveNet a view groups consecutive pairs, (4, 8, 10) → (4, 4, 20). What is the same mechanism in both, and what new question does WaveNet's version raise?", "answer": ["same: contiguous memory, only the strides change, so both are free", "here the whole context is merged at once; WaveNet merges two neighbours at a time to build a tree", "WaveNet's view puts characters 2k and 2k+1 side by side because they are adjacent in memory, which is why it equals <code>torch.cat([e[:, ::2, :], e[:, 1::2, :]], dim=2)</code> without the copy"]}
+  ],
+  "predict": {"q": "Instead of <code>emb.view(-1, 6)</code> you write <code>emb.transpose(1, 2).view(-1, 6)</code>. What happens? And if you fix it with <code>.contiguous()</code> first, does row 0 still read <code>1.5674, -0.2373, 1.5674, -0.2373, 1.5674, -0.2373</code>?", "answer": "The view raises <code>RuntimeError: view size is not compatible with input tensor's size and stride ...</code>: the transpose made strides (6, 1, 2), so rows of 6 aren't contiguous. With <code>.contiguous()</code> it copies and succeeds, but row 0 becomes <code>1.5674, 1.5674, 1.5674, -0.2373, -0.2373, -0.2373</code>: first all three characters' dimension 0, then all their dimension 1. Same numbers, different order, and the model would be wired differently (measured in the course venv)."},
+  "apply": {"task": "Switch to the final model's embedding size: <code>C = torch.randn((27, 10), generator=g)</code> with the same seed, and <code>emb = C[X]</code> for the first 5 words. Before running anything, write down <code>emb.shape</code>, <code>emb.stride()</code>, the strides of <code>emb.view(-1, 30)</code>, and the storage slot of <code>emb[4, 2, 7]</code>. Then check all four, and confirm that <code>emb.view(-1, 30)[4, 27]</code> and <code>emb.flatten()[slot]</code> equal <code>emb[4, 2, 7]</code>.", "done": "You predicted (32, 3, 10), strides (30, 10, 1), view strides (30, 1), slot 4·30 + 2·10 + 7 = 147, and all three reads give the same number (−1.6261 with seed 2147483647).", "hint": "Strides of a contiguous tensor are the products of the sizes to the right: 3·10 = 30, then 10, then 1."},
+  "reflect": [
+    "Which prediction did you get wrong: the memory cost of cat, or the transpose case?",
+    "What couldn't you explain cleanly: why the six numbers are adjacent, or how a stride finds an element?",
+    "Which relationship is still fuzzy: strides → free view, or memory order → when a view fails?",
+    "Where else in your own code could a copy be replaced by a view, and where would the shared writes worry you?",
+    "Before the hidden-layer card: can you say what shape goes into <code>@ W1</code> and why?"
+  ],
+  "revisit": ["z2h-1-toolkit/tensors-dims-and-indexing", "z2h-4-mlp/embedding-lookup"],
+  "prereq": ["z2h-4-mlp/embedding-lookup"]
+}

@@ -1,0 +1,64 @@
+{
+  "prime": {
+    "problem": "The activation and gradient histograms can look healthy while training is still 100× too slow, or while one layer races ahead of the others. Nothing on those plots tells you whether the learning rate fits the weights it is moving.",
+    "fits": "It is the last of the lecture's diagnostic plots, after the activation and gradient histograms. It reuses the learning rate from the lr-finder card and the 6-layer net from the pytorchify card, and it shows what BatchNorm does <i>not</i> fix.",
+    "expect": ["the grad:data ratio (a snapshot without lr)", "<code>ud</code>: log10 of std(lr·grad) / std(data)", "the −3 rule of thumb", "the last layer as an outlier", "BatchNorm's scale invariance (the 1/c² rule)"],
+    "goal": "Add the <code>ud</code> tracker to a training loop, read the plot to say whether lr is too low, too high or about right per layer, and predict how an init change under BatchNorm moves the curves."
+  },
+  "attend": [
+    "Why is the grad:data ratio alone not enough to judge a learning rate, and what does multiplying by lr add?",
+    "Why does changing lr shift every <code>ud</code> curve by the same amount on a log10 scale?",
+    "Why does the last layer's curve start far above the others in the no-BN net, and why does it settle?",
+    "If BatchNorm makes the forward pass ignore a weight matrix's scale, why does shrinking that matrix make its updates relatively <i>bigger</i>?",
+    "When would you trust the −3 target less: which parameters or optimisers break the assumption behind it?"
+  ],
+  "core": {
+    "must": [
+      "Each step moves p by lr·grad → what matters is that step relative to p's own size → std(lr·grad)/std(data) on log10 → about −3 means each step changes the weights by about 1/1000 (the notebook: −2.1 to −2.3 for hidden weights)",
+      "log10(lr·x) = log10(lr) + log10(x) → lr ÷ 100 shifts every curve down by exactly 2 (step 0: −2.81 → −4.81) → ud near −4.5 means training crawls (loss 3.243 vs 2.451 after 1000 steps) → raise lr until the curves sit near −3",
+      "BN after a Linear divides out the weights' scale → loss unchanged when W → c·W → grad shrinks by c while std(W) grows by c → ud moves by −2·log10 c (gain 0.2: +1.40; no fan_in: −1.48 and −2.00) → a new init under BN needs a new lr even though the activations look the same",
+      "A layer with very small weights (the last layer shrunk ×0.1) has a tiny std(data) → its ratio starts far higher than the rest (−0.63 vs about −3.3 at step 0, no BN) → it trains much faster at first until its weights grow and it settles (−1.49)"
+    ],
+    "elevated": [
+      "The ratio is computed after <code>p.data += -lr*p.grad</code> under <code>torch.no_grad()</code> → it measures the step actually applied, and tracking it adds no gradient graph → it is cheap enough to log every step"
+    ],
+    "reference": [
+      "<code>ud.append([((lr*p.grad).std() / p.data.std()).log10().item() for p in parameters])</code>",
+      "plot only <code>p.ndim == 2</code> parameters, with a black line at −3 (<code>plt.plot([0, len(ud)], [-3, -3], 'k')</code>)",
+      "the grad:data printout: <code>t.std() / p.std()</code> per 2-D weight (notebook cell 17)",
+      "the six weight shapes: C (27,10), W (30,100), 4 × W (100,100), W (100,27)"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, explain in 3–5 sentences what the update:data ratio measures, what −3 means, and how to act on a plot where the curves sit at −4.5. Or draw the chain from \"lr × grad\" to \"change lr by 10×\".",
+    "checklist": [
+      "it is the step's std divided by the weights' std, per parameter tensor, on log10",
+      "−3 means each step changes a weight by about a thousandth of its size; a rule of thumb, not a law",
+      "lr adds log10(lr), so each 10× in lr shifts every curve by 1",
+      "an outlying layer trains at a different speed from the rest (the shrunk last layer)",
+      "under BN, rescaling a weight matrix by c shifts its ud by −2·log10 c, so re-tune lr after changing the init"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why the update:data ratio is a better guide to the learning rate than the grad:data ratio Karpathy printed first.", "kind": "concept", "answer": ["grad:data ignores lr, so the same 6.96e-2 is a fine step at lr 0.1 and a tiny one at lr 0.001", "multiplying by lr gives the step actually applied, relative to the weights", "tracking it over time shows the trend, not one snapshot"]},
+    {"q": "Walk through what happens to one (100,100) weight's ud when you rebuild the BN net without the <code>/ fan_in**0.5</code> in <code>Linear</code>, keep lr 0.1, and then raise lr to 1.0.", "kind": "mechanism", "answer": ["the weights are 10× bigger (c = √100)", "BN divides the scale out, so the forward pass and loss are unchanged", "the gradient is 10× smaller and std(data) 10× bigger, so ud drops by 2 (−2.56 → −4.56 at step 0)", "lr × 10 adds 1 back (−3.56); after 1000 steps the hidden weights sit at −2.87 to −2.96"]},
+    {"q": "Your BN net's hidden ud sits at −1.7 after you set gain 0.2, and the activation histograms look perfect (1.6% saturated). Would you lower lr, change the gain back, or leave it? What does each choice cost?", "kind": "tradeoff", "answer": ["the updates are about 25× larger than with gain 1, so training is on the fast, risky side", "lowering lr by about 10× brings ud near −2.7 but also slows C, which isn't scaled (it sits at −3.15)", "restoring gain 1 fixes all hidden layers at once without touching C's step", "leaving it may still train (loss 2.481 after 1000 steps vs 2.451), but it has less margin"]},
+    {"q": "In the no-BN, gain-5/3 net, the last layer's ud is −0.63 at step 0 while the others are around −3.3. Explain the cause and whether you need to fix it.", "kind": "mechanism", "answer": ["the last weight was multiplied by 0.1 to make the output humble, so its std(data) is tiny", "its gradient isn't tiny, so the ratio is large", "it trains fast at first, its weights grow, and it settles (−1.49 by step 1000)", "it's expected from the humble-output init, so watch it rather than fix it"]}
+  ],
+  "compare": [
+    {"with": "z2h-5-batchnorm/activation-gradient-plots", "q": "The histograms and the update:data plot both diagnose a deep net. What does each one measure, which design choice makes BN fool one of them, and when would you look at each first?", "answer": ["histograms: the forward activations and backward gradients at one moment", "update:data: the step size relative to each weight, over time", "BN standardises the activations, so a bad weight scale disappears from the histograms but still shows in ud (gain 0.2: 1.6% saturated, ud −1.7)", "histograms first after changing the architecture or init; ud first when choosing or changing lr"]},
+    {"with": "z2h-4-mlp/learning-rate-finder", "q": "The lr finder sweeps lr and reads the loss; the update:data plot reads per-layer step sizes at one lr. What is fundamentally different, and how does each fail?", "answer": ["the finder needs a sweep of short runs and gives one global lr", "ud needs one run and shows every layer separately, so it catches an outlying layer", "the finder fails when the loss is too noisy to show a valley", "ud fails when −3 is the wrong target (Adam, 1-D parameters), and it can't tell you the final dev loss"]},
+    {"with": "z2h-8-gpt/adam-optimizer", "q": "Plain SGD's step is lr·grad; Adam's step is lr times a per-weight normalised gradient. How does that change what the update:data plot tells you, and the 1/c² rule under BN?", "answer": ["under Adam the step size is roughly lr per weight, whatever the gradient's scale", "so ud mostly reflects lr divided by the weights' std", "BN's 1/c² becomes about 1/c: the gradient's 1/c is normalised away, only the data's c remains", "the plot still flags layers far from the rest, but −3 is no longer the natural target"]}
+  ],
+  "predict": {"q": "Switch the BN net to <code>torch.optim.Adam</code> with lr 1e-3. On the very first step, what ud do you predict for a (100,100) weight with std 0.1, and does gain 0.2 still raise it by 25×?", "answer": "About −2.00: Adam's first step moves each weight by exactly lr·sign(grad), so std(step) ≈ 1e-3 and log10(1e-3 / 0.1) = −2. With gain 0.2 the weights' std is about 0.02, so ud ≈ log10(1e-3 / 0.02) = −1.30: only 5× higher, not 25×, because Adam cancels the gradient's growth. A check on this net measured −2.00 and −1.30 exactly (run in scratch, not in the lab)."},
+  "apply": {"task": "Take the BN net with no fan_in scaling (the lab's <code>deep_mlp(bn=True, gain=1.0, fan_in_scaling=False)</code>). Its hidden weights sit at −4.01 to −4.19 at lr 0.1. Use the lr rule to predict the lr that puts them near −3, run 1001 steps at that lr, and compare the mean loss of the last 100 steps with the lr-0.1 run.", "done": "You predicted about a 10× larger lr (1.0), your hidden weights land between about −2.8 and −3.0 (the lab measures −2.87 to −2.96), and the last-100 loss drops from about 2.73 to about 2.46.", "hint": "Each 10× in lr adds exactly 1 to every curve. How far below −3 are the hidden weights?"},
+  "reflect": [
+    "Which prediction did you get wrong: the direction of the gain-0.2 shift, or the Adam version?",
+    "What couldn't you explain cleanly: why BN makes the gradient shrink when the weights grow, or why the last layer starts as an outlier?",
+    "Which relationship is still fuzzy: weight scale → gradient scale under BN, or gradient scale → update:data ratio?",
+    "In your next training run, which of the three diagnostics (loss, histograms, update:data) would you look at first, and why?",
+    "What will you check when you meet Adam in z2h-8?"
+  ],
+  "revisit": ["z2h-4-mlp/learning-rate-finder", "z2h-5-batchnorm/batchnorm-forward", "z2h-5-batchnorm/kaiming-init", "z2h-5-batchnorm/activation-gradient-plots"],
+  "prereq": ["z2h-5-batchnorm/pytorchify-layers"]
+}

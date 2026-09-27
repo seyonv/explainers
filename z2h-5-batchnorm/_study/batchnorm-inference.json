@@ -1,0 +1,65 @@
+{
+  "prime": {
+    "problem": "In training, BatchNorm standardises with the current minibatch's mean and std. At test time that makes one input's prediction depend on its batchmates, and a batch of one gives nan. A deployed model needs one fixed answer per input.",
+    "fits": "The last card built the BatchNorm forward pass with batch statistics. This card adds the second half of the layer: fixed statistics for inference, kept as buffers beside the learned <code>bngain</code>/<code>bnbias</code>.",
+    "expect": ["batch coupling (and its regularising jitter)", "calibrating over the training set", "running statistics as an exponential moving average (EMA)", "momentum", "parameters vs buffers"],
+    "goal": "Explain why BN needs different statistics at test time, add running buffers to your BN MLP, and choose a momentum that suits your batch size."
+  },
+  "attend": [
+    "Why does the <i>same</i> input get a different prediction in different batches, and why is that tolerable in training but not in deployment?",
+    "Why does a batch of exactly one example turn every logit into nan?",
+    "What does the running mean actually average over, and why does the zeros initial value not matter after 200k steps?",
+    "Why is momentum 0.1 a worse choice than 0.001 at batch 32, and would that still hold at batch 4,096?",
+    "Why must the running buffers be kept out of the list the optimiser updates?"
+  ],
+  "core": {
+    "must": [
+      "BN normalises with batch statistics → each example's output is a function of its batchmates → the same input's prediction jitters (2.2× in the lab) → at test time you must replace the batch statistics with fixed ones",
+      "Batch of one → <code>std</code> divides by n − 1 = 0 → nan std → nan logits → only stored statistics make single-example inference possible",
+      "EMA with momentum m → each step keeps 1 − m of the old estimate → it effectively averages the last ~1/m batches → small m (0.001) smooths out noisy batch-32 means and lands on the calibrated values; large m (0.1) tracks the last few noisy batches (7.5× farther off)",
+      "Running stats are updated by assignment inside <code>no_grad</code>, not by gradients → they are buffers, not parameters → the optimiser must skip them, and the model must be switched to eval mode to use them"
+    ],
+    "elevated": [
+      "The EMA averages over a net that is still changing (half-life ≈ 693 steps) → it can lag the final weights slightly → which is why it differs from calibration by up to 0.0266 in the mean, though the losses agree to 0.0001 on val"
+    ],
+    "reference": [
+      "the lecture's names <code>bnmean_running</code>, <code>bnstd_running</code>, <code>bnmeani</code>, <code>bnstdi</code>",
+      "PyTorch's names <code>running_mean</code>, <code>running_var</code>, <code>num_batches_tracked</code>, and its default <code>momentum=0.1</code>, <code>eps=1e-5</code>",
+      "<code>model.train()</code> / <code>model.eval()</code> and the <code>@torch.no_grad()</code> decorator",
+      "notebook cells: 7 (EMA in the loop), 9 (calibration), 10 (<code>split_loss</code>)"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, explain in 3–5 sentences why BatchNorm needs separate statistics at test time and the two ways to get them. Or draw the training-mode and inference-mode data flow, marking where the running buffers are written and where they are read.",
+    "checklist": [
+      "batch statistics couple the examples, so outputs depend on batchmates (a regulariser in training, a bug in deployment)",
+      "a single example gives a nan std",
+      "option 1: one pass over the whole training set after training (calibration)",
+      "option 2: an EMA of the batch statistics during training, with a small momentum like 0.001",
+      "the two agree closely (val 2.1056 vs 2.1057), so the EMA saves the extra pass",
+      "the running statistics are buffers: no gradient, never touched by the optimiser"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain how BatchNorm's batch coupling can act as a regulariser during training, and why the same effect is unacceptable when the model is deployed.", "kind": "concept", "answer": ["each example is normalised with slightly different statistics every time it's seen, like mild data augmentation", "that makes memorising exact examples harder", "a deployed model must give the same answer for the same input and must work for a single input"]},
+    {"q": "Walk through what happens to <code>bnmean_running</code> on one training step, starting from the minibatch's <code>hpreact</code>.", "kind": "mechanism", "answer": ["take the mean of <code>hpreact</code> over dim 0 (the 32 rows) to get <code>bnmeani</code>, shape 1 × 200", "inside <code>torch.no_grad()</code>, set <code>bnmean_running = 0.999 * bnmean_running + 0.001 * bnmeani</code>", "no graph is recorded, so backprop never sees it; the forward pass itself still uses <code>bnmeani</code>"]},
+    {"q": "You train with batch 32. Choose between momentum 0.1 and 0.001 for the running statistics, and say what each costs.", "kind": "tradeoff", "answer": ["0.1: half-life about 6.6 steps, follows the last few noisy batch means (lab: 0.0570 mean gap to calibrated)", "0.001: half-life about 693 steps, much smoother (0.0076) but slower to catch up with a net whose weights are still changing", "at batch 32 pick 0.001; with large batches the per-batch means are steadier, so 0.1 is fine"]},
+    {"q": "Your model scores well in the training loop but badly when you evaluate a single example in PyTorch. Name the most likely BatchNorm cause and the fix.", "kind": "mechanism", "answer": ["the model is still in train mode, so BN uses batch statistics (nan or unstable for tiny batches) and keeps updating its buffers", "call <code>model.eval()</code> before evaluating so BN reads <code>running_mean</code>/<code>running_var</code>"]}
+  ],
+  "compare": [
+    {"with": "z2h-5-batchnorm/batchnorm-forward", "q": "The forward card's BN and this card's BN compute the same formula. What is different between the two modes, which design choice forces the difference, and how does each fail if used in the wrong place?", "answer": ["training mode: statistics from the current batch; eval mode: statistics from stored buffers", "the difference exists because normalising with batch statistics couples examples", "batch stats at test time: nan for one example, jittery predictions; running stats during training: not what the lecture does, and no gradient would flow through the mean and std"]},
+    {"with": "z2h-8-gpt/layernorm-dropout-scale", "q": "LayerNorm also standardises activations. Why does it need no running statistics and no train/eval switch for normalisation, and when would you pick it over BatchNorm?", "answer": ["LayerNorm normalises each example over its own features, not over the batch", "so there is no coupling between examples and nothing to store for test time", "pick it for sequence models, tiny batches, or one-at-a-time generation; BN's coupling and its train/eval mismatch are the failure modes it avoids"]},
+    {"with": "z2h-7-wavenet/batchnorm-3d-bug", "q": "In the WaveNet course the input to BatchNorm becomes 3-D. How could the running statistics come out with the wrong shape or meaning, and why would training still appear to work?", "answer": ["if the mean is taken over dim 0 only, you get statistics per (position, channel) instead of per channel", "the buffers then have an extra dimension and are estimated from fewer values each", "broadcasting hides the shape mistake, so the loss still goes down"]}
+  ],
+  "predict": {"q": "Instead of running statistics, you evaluate the trained net on the whole validation split as <i>one</i> batch of 22,655 examples, using batch statistics. Will the val loss be close to the running-stats 2.1057, much worse, or nan? And what if you evaluate in chunks of 2?", "answer": "Close: 2.1055, measured on the lecture seed. With 22,655 rows the batch mean and std are almost the population values, so batch statistics and stored statistics nearly coincide. In chunks of 2 it's 3.086, because each pair's mean and std are wildly unrepresentative. Batch size, not the idea of batch statistics, is what breaks."},
+  "apply": {"task": "Train the BN MLP from this card (200k steps, the lecture seed). Then evaluate the val split with <i>batch</i> statistics in consecutive chunks of 32, 4 and 2 rows (sum the per-example losses and divide by the count), and compare each to the val loss with the running statistics.", "done": "Your numbers get worse as the chunk shrinks and all sit above the running-stats loss. On the M3 with the lecture seed: running 2.1057; chunks of 32: 2.1178; chunks of 4: 2.3543; chunks of 2: 3.086.", "hint": "Call the forward pass with batch statistics under <code>torch.no_grad()</code>, and pass a copy of the buffers (or skip the EMA update) so evaluation doesn't change them. Consecutive val rows come from the same name, so your chunks are not random samples."},
+  "reflect": [
+    "Which prediction did you get wrong: the nan for one example, or how close whole-split batch statistics come to the running ones?",
+    "What couldn't you explain cleanly: why the EMA averages ~1/momentum batches, or why a small momentum is safer at batch 32?",
+    "Which relationship is still fuzzy: batch coupling → regularisation, or batch coupling → the need for eval mode?",
+    "Where in your own code would a forgotten <code>model.eval()</code> go unnoticed, and how would you catch it?",
+    "What will you check first when you meet <code>running_var</code> in the next card?"
+  ],
+  "revisit": ["z2h-5-batchnorm/batchnorm-forward", "z2h-1-toolkit/mean-variance-gaussian", "z2h-4-mlp/splits-and-fit"],
+  "prereq": ["z2h-5-batchnorm/batchnorm-forward"]
+}

@@ -1,0 +1,62 @@
+{
+  "prime": {
+    "problem": "One merge makes a 616-byte paragraph only 20 tokens shorter. A useful tokenizer needs thousands of merges, chosen automatically, and a clear boundary between the text it learned from and the model that will use it.",
+    "fits": "The previous card wrote <code>get_stats</code> and <code>merge</code> and did one merge by hand. This card wraps them in a loop that trains a whole tokenizer, then steps back to show where that tokenizer sits relative to the LLM.",
+    "expect": ["<code>vocab_size</code> as a hyperparameter", "the <code>merges</code> dict", "compression ratio", "a merge forest", "the tokenizer's own training set"],
+    "goal": "Write the training loop, predict roughly how compression grows with more merges, and explain why the tokenizer's training text decides which languages and formats come out short."
+  },
+  "attend": [
+    "Why does each merge in the list remove fewer tokens than the one before it?",
+    "Which merges reuse an earlier minted token, and what does that force about the order of <code>merges</code>?",
+    "What exactly is kept after training: the shortened <code>ids</code>, or something else?",
+    "Why can't the LLM's loss adjust the merges once the LLM starts training?",
+    "Why does the blog-trained tokenizer barely shrink the Korean line?"
+  ],
+  "core": {
+    "must": [
+      "Each pass merges the currently most common pair → every later pair is rarer (646 → 144 removals) → compression grows ever more slowly with <code>vocab_size</code> (1.27× at 276, 2.15× at 512)",
+      "A minted id goes back into <code>ids</code> → later passes can pair it again (<code>(259, 256)</code> = 'the␣') → merges form a forest → a merge only makes sense after its parents exist, so the dict's order is part of the tokenizer",
+      "Merges are chosen by counting pairs in the tokenizer's own training text → strings that are frequent there get short → text the tokenizer rarely saw (Korean for a blog-trained tokenizer) stays about one token per byte and eats the LLM's context",
+      "BPE training is counting, not gradient descent → it's done once and frozen before the LLM trains → the LLM only ever sees ids, and a token that's rare in the LLM's data keeps an untrained embedding"
+    ],
+    "elevated": [
+      "Each pass rescans the whole sequence (<code>get_stats</code> then <code>merge</code>) → training cost grows with text length × number of merges → this card's 20 merges on 24,597 bytes finish in about a second, while minbpe's 256 merges on 185,768 bytes took 10.9 s on your M3"
+    ],
+    "reference": [
+      "the Colab names: <code>tokens</code> (raw bytes), <code>ids</code> (the merged copy), <code>num_merges = vocab_size - 256</code>, <code>idx = 256 + i</code>",
+      "the print format <code>merging (101, 32) into a new token 256</code>",
+      "the exact 20 merges and their counts on the blog post",
+      "<code>BasicTokenizer.train</code> in minbpe/basic.py"
+    ]
+  },
+  "compress": {
+    "prompt": "Without scrolling up, explain in 3–5 sentences how a BPE tokenizer is trained and why it's a separate stage from the LLM. Or draw the loop and the two-stage diagram from memory.",
+    "checklist": [
+      "start from the 256 byte values; repeat: count adjacent pairs, merge the most common into a new id",
+      "run <code>vocab_size − 256</code> times; what you keep is the ordered <code>merges</code> dict",
+      "each merge helps less, so compression grows slowly (20 merges: 1.27×)",
+      "merged tokens can merge again, so the order of merges matters",
+      "the tokenizer is trained once on its own text; that text decides what gets short; the LLM later sees only ids"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why the output of tokenizer training is the <code>merges</code> dict and not the shortened <code>ids</code> list.", "kind": "concept", "answer": ["<code>ids</code> is just the training text compressed, useful only to measure the ratio", "<code>merges</code> is a rule you can apply to any new text (encode) and invert (decode)", "its insertion order records which merges must happen first"]},
+    {"q": "Walk through passes 1 and 20 on the blog post: what does <code>get_stats</code> return, which pair wins, and what happens to <code>ids</code>?", "kind": "mechanism", "answer": ["pass 1: counts all byte pairs; (101, 32) 'e␣' wins with 646; <code>ids</code> goes 24,597 → 23,951; <code>merges[(101, 32)] = 256</code>", "pass 20: counts pairs that now include minted ids; (259, 256) 'th'+'e␣' wins with 144; <code>ids</code> ends at 19,438; <code>merges[(259, 256)] = 275</code>"]},
+    {"q": "You're building a tokenizer for an LLM that will read mostly English but must serve Korean users well. What do you put in the tokenizer's training text, and what does each choice cost?", "kind": "tradeoff", "answer": ["more Korean in the tokenizer text → more Korean merges → shorter Korean sequences and more of it fits in context", "at a fixed vocab_size, those merges come at the expense of English ones, so English gets slightly longer", "raising vocab_size instead grows the embedding table and output layer", "Korean-heavy tokens that the LLM rarely sees in its own data may end up undertrained"]}
+  ],
+  "compare": [
+    {"with": "z2h-9-tokenizer/encode", "q": "The training loop and the encode loop both call <code>get_stats</code> and <code>merge</code> repeatedly. What's fundamentally different about how each picks the next pair, and what would go wrong if encode used training's rule?", "answer": ["training picks the most <i>frequent</i> pair in its text (<code>max</code> by count) and mints a new id", "encode picks the pair with the <i>lowest merge index</i> (<code>min</code> over <code>merges</code>) and mints nothing", "using counts at encode time would apply merges in a text-dependent order, so the same string could tokenize differently in different documents and could try merges whose parents don't exist yet"]},
+    {"with": "z2h-8-gpt/train-and-script", "q": "Training the bigram LLM vs training the tokenizer: both are called training. What does each optimise, how does each update, and how does each fail?", "answer": ["LLM: minimises a loss by gradient descent, many small updates to real-valued weights", "tokenizer: greedy counting, one irreversible discrete merge per step, no loss and no gradient", "LLM failure: underfitting or overfitting the loss", "tokenizer failure: merges fitted to the wrong text mixture, so other languages or formats stay long"]}
+  ],
+  "predict": {"q": "You have the 20 merges. A new text contains <code>the␣</code> but in it the pair (259, 256) happens to be rarer than (105, 110). When you encode it, should you apply merges in the order of their counts in the new text, or some other order? Commit before revealing.", "answer": "Training order (lowest merge index first), regardless of counts in the new text. Token 275 is defined as 259 + 256, and those only exist after merges 1 and 4 have been applied. Counts in the new text are irrelevant: the tokenizer is frozen. That's the encode card's <code>min</code> over merge index."},
+  "apply": {"task": "Modify the lab to train a second tokenizer with <code>vocab_size = 276</code> on the first 24,597 characters of tiny Shakespeare (<code>read('input.txt')</code> in <code>labs/common.py</code>). Encode the blog post and the next 24,597 characters of Shakespeare with both tokenizers, and predict which one wins on each text before running.", "done": "Your four counts are: blog 19,438 (blog tokenizer) vs 20,377 (Shakespeare tokenizer); Shakespeare held-out 20,238 vs 19,482. Explain why each wins on its own kind of text, and name one merge the Shakespeare tokenizer learned that the blog one didn't.", "hint": "Use <code>train(tokens, 276)</code> for the merges and <code>encode(text, merges)</code> from common.py. Print <code>build_vocab(merges)[i]</code> for i in 256–275 to see the merges; look for <code>b':\\n'</code> and <code>b'you'</code>."},
+  "reflect": [
+    "Which prediction did you get wrong: the 1.27× ratio, or how little the Korean line shrank?",
+    "What couldn't you explain cleanly: why the merges must stay in order, or why the tokenizer can't learn from the LLM's loss?",
+    "Which relationship is still fuzzy: tokenizer training text → which merges exist, or which merges exist → how much of a language fits in context?",
+    "If you were choosing a vocab_size, what would you want to measure first?",
+    "What do you now expect the decode and encode cards to need from the <code>merges</code> dict?"
+  ],
+  "revisit": ["z2h-9-tokenizer/stats-and-merge", "z2h-9-tokenizer/bpe-by-hand", "z2h-8-gpt/char-tokenizer-split"],
+  "prereq": ["z2h-9-tokenizer/stats-and-merge"]
+}

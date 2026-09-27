@@ -164,6 +164,7 @@ const INDEX_CSS = `/* series-nav */
 .series .cur{color:var(--accent);border-color:var(--accent-border,var(--accent));background:var(--accent-bg);font-weight:600}
 .series span{opacity:.55}
 .needs{font-size:13px;color:var(--muted);margin:4px 0 0}
+.needs a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
 .back{font-size:14px;color:var(--muted);text-decoration:none}
 .rbody{flex:1;display:flex;min-height:0}
 .rbody iframe{flex:1;min-width:0;width:auto}

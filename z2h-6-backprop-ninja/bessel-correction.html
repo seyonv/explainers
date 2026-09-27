@@ -1,0 +1,332 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bessel's correction and BatchNorm's train/test mismatch</title>
+<style>
+:root{
+  --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
+  --text:#1c1f23; --muted:#6b7068; --faint:#b9b9b3;
+  --accent:#4a9d77; --accent-bg:#dcefdf; --accent-border:#8cc79c;
+  --red:#c0492b; --red-bg:#fbeceb;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#15171a; --surface:#1d2024; --surface2:#24282d; --border:#32373d;
+    --text:#e6e8ea; --muted:#9aa1a9; --faint:#4a5057;
+    --accent:#5fb37f; --accent-bg:#1c2b22; --accent-border:#3f7a55;
+    --red:#e57368; --red-bg:#2e1f1e;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text)}
+a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+.card{max-width:820px;margin:0 auto;padding:28px 32px;font-family:-apple-system,"Inter",system-ui,sans-serif;line-height:1.45}
+h1{font-size:26px;font-weight:600;margin:0 0 6px;letter-spacing:-0.01em}
+.sub{font-size:15px;color:var(--muted);margin:0 0 20px}
+h2{font-size:17px;font-weight:600;margin:26px 0 10px}
+p{font-size:15px;margin:0 0 10px}
+.cap{font-size:13px;color:var(--muted);margin:8px 0 0;text-align:center}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+
+/* Horizontal bar chart with running total and cutoff */
+.bars{display:grid;grid-template-columns:110px 1fr 90px;column-gap:14px;row-gap:12px;align-items:center;font-size:14px}
+.bars .hd{font-size:13px;color:var(--muted)}
+.bars .hd.r,.bars .tot{text-align:right;font-variant-numeric:tabular-nums}
+.bars .tok{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:15px}
+.bars .track{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted)}
+.bars .bar{height:22px;border-radius:3px;background:var(--accent)}
+.bars .tot{font-size:15px}
+.bars .strong{font-weight:600}
+.bars .out,.bars .out .tok{color:var(--muted)}
+.bars .track.out .bar{background:var(--faint)}
+.bars .out .tot{font-size:13px}
+.cutoff{grid-column:1 / -1;border-top:2px dashed var(--red);margin-top:4px;padding-top:6px;text-align:center;font-size:13px;color:var(--red)}
+
+/* Tables and formulas */
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border)}
+th{font-size:12px;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:none}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+.hi{color:var(--accent);font-weight:600} .lo{color:var(--red)}
+.formula{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin:10px 0;white-space:pre;overflow-x:auto;line-height:1.55}
+
+/* 2x2 grid */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.cell{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.cell.win{background:var(--accent-bg);border-color:var(--accent-border)}
+.cell h3{font-size:16px;font-weight:600;margin:0 0 5px;display:flex;gap:8px;align-items:baseline}
+.cell p{font-size:14px;margin:0;color:var(--text)}
+.cell.win h3,.cell.win p{color:var(--accent)}
+.x{color:var(--red)} .ok{color:var(--accent)}
+
+/* Clarification box */
+.note{border:1px solid var(--border);border-radius:10px;padding:14px 18px;font-size:14px}
+.note p{font-size:14px} .note p:last-child{margin-bottom:0}
+
+.foot{margin-top:22px;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+svg{display:block;max-width:100%}
+.sl{font-size:12px;fill:var(--muted)} .st{font-size:13px;fill:var(--text)}
+@media (max-width:560px){.grid2{grid-template-columns:1fr}.bars{grid-template-columns:70px 1fr 64px}}
+
+/* z2h series: Build-it box, predict, code */
+.build{border:1.5px solid var(--accent-border);background:var(--accent-bg);border-radius:10px;padding:12px 16px 10px;margin:18px 0}
+.build .hd{display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px}
+.build .hd b{font-size:15px;color:var(--accent)}
+.build .where{font-size:12px;color:var(--muted);border:1px solid var(--border);background:var(--bg);border-radius:999px;padding:2px 9px;white-space:nowrap}
+.build p{font-size:14px;margin:6px 0}
+.build .code{background:var(--bg)}
+.build .out{color:var(--muted)}
+.build .done{border-top:1px dashed var(--accent-border);padding-top:7px;margin-top:8px}
+.predict{border:1px solid var(--border);border-radius:10px;padding:10px 14px;margin:14px 0;background:var(--surface)}
+.predict summary{cursor:pointer;font-size:15px}
+.predict summary b{color:var(--accent)}
+.predict[open] summary{margin-bottom:6px}
+.predict p{font-size:14px;margin:4px 0 0}
+.code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;line-height:1.5;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin:10px 0;white-space:pre;overflow-x:auto;tab-size:4;color:var(--text)}
+.code .k{color:var(--accent);font-weight:600}.code .c{color:var(--muted)}.code .o{color:var(--muted)}
+/* term table (patterns.md §3) */
+.parts td{vertical-align:top} .parts td:first-child{font-weight:600;white-space:nowrap}
+.parts .ex{font-size:13px} .parts .ex span{display:block;color:var(--muted)}
+@media (max-width:560px){.parts .what{display:none}}
+.foot p{font-size:13px;margin:0 0 4px;color:var(--muted)}
+/* MathML formula (patterns.md §1) */
+.mathbox{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px 16px 12px;margin:10px 0;overflow-x:auto}
+.mathbox math{font-size:21px;color:var(--text);font-family:"STIX Two Math","Latin Modern Math","Cambria Math",math}
+.mathbox .t1{color:var(--text)} .mathbox .t2{color:var(--accent)} .mathbox .t3{color:var(--muted)}
+.mathbox .lab{font-size:12px;font-family:-apple-system,"Inter",system-ui,sans-serif;padding-top:3px;border-top:1.5px solid currentColor;margin-top:2px}
+.legend{display:grid;grid-template-columns:auto 1fr auto;column-gap:14px;row-gap:5px;font-size:13px;margin-top:12px;align-items:baseline}
+.legend .sym{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;text-align:right}
+.legend .v{color:var(--muted);text-align:right;font-variant-numeric:tabular-nums}
+@media (max-width:560px){.legend{grid-template-columns:auto 1fr}.legend .v{display:none}}
+.row-hi td{background:var(--accent-bg)}
+.lo-bar{display:block;height:10px;border-radius:2px;background:var(--red);min-width:2px}
+.bar-track{display:block;width:100%;background:var(--surface2);border-radius:2px}
+/* study:css */
+.prime{border:1px solid var(--accent-border,var(--border));background:var(--accent-bg);border-radius:10px;padding:10px 16px 6px;margin:12px 0 18px;font-size:14px}
+.prime p{margin:4px 0}
+.prime-k{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--accent);font-weight:600;margin-bottom:4px}
+.prime .chip{display:inline-block;border:1px solid var(--border);background:var(--surface);border-radius:999px;padding:0 8px;margin:1px 2px;font-size:12.5px}
+.prime ol{margin:2px 0 6px;padding-left:22px}
+.prime li{margin:2px 0}
+.study{border:1px solid var(--border);border-radius:12px;padding:12px 16px;margin:26px 0 18px;background:var(--surface)}
+.study-head{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:4px 12px}
+.study-head h2{margin:0;font-size:18px}
+.study-head span,.study-all-l{font-size:12.5px;color:var(--muted)}
+.study-all{margin:8px 4px 8px 0;vertical-align:middle}
+.study details.st{border-top:1px solid var(--border);padding:8px 0}
+.study details.st>summary{cursor:pointer;font-size:15px}
+.study details.st>summary span{color:var(--muted);font-size:13px}
+.study-all:not(:checked)~details.st:not([open])~details.st{display:none}
+.st-body{font-size:14px;padding:4px 0 2px 2px}
+.st-body p{margin:6px 0}
+.st-body ul,.st-body ol{margin:4px 0;padding-left:22px}
+.st-body li{margin:3px 0}
+.st-rule,.st-how{color:var(--muted);font-size:13px}
+.st-why{font-size:12px;color:var(--muted);text-align:right;margin:2px 0 0}
+.core{display:grid;grid-template-columns:3fr 2fr;gap:6px 18px}
+.core h4{margin:4px 0;font-size:13px}
+.core .muted{color:var(--muted)}
+.up{font-size:11px;border:1px solid var(--accent-border,var(--border));color:var(--accent);border-radius:4px;padding:0 4px;white-space:nowrap}
+.study .kind{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--accent);margin-right:4px}
+.study details.ref{margin:4px 0 8px;padding:4px 10px;border-left:3px solid var(--accent-border,var(--border));background:var(--surface2);border-radius:0 6px 6px 0}
+.study details.ref>summary{cursor:pointer;font-size:13px;color:var(--accent)}
+@media (max-width:620px){.core{grid-template-columns:1fr}}
+/* /study:css */
+/* series-nav */
+.sn{max-width:820px;margin:0 auto;padding:16px 32px 0;font-family:-apple-system,"Inter",system-ui,sans-serif;font-size:13px;line-height:1.5;color:var(--muted)}
+.sn a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
+.sn .crumbs{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 7px}
+.sn .crumbs b{color:var(--text);font-weight:600}
+.sn .sep{color:var(--faint,var(--border))}
+.sn .step{margin-left:auto;white-space:nowrap}
+.sn .dep{margin-top:5px;padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface)}
+.sn .dep .ok{color:var(--accent);font-weight:600}
+.snx{max-width:820px;margin:0 auto;padding:6px 32px 44px;font-family:-apple-system,"Inter",system-ui,sans-serif}
+.snx .nx{display:grid;grid-template-columns:280px 1fr;text-decoration:none;color:var(--text);background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.snx .nx:hover,.snx .nx:focus-visible{border-color:var(--accent-border,var(--accent));outline:none}
+.snx .mini{position:relative;height:210px;overflow:hidden;background:var(--bg);border-right:1px solid var(--border);padding:14px 16px}
+.snx .mini span{display:block}
+.snx .mini .m1{font-size:12.5px;font-weight:600;margin:0 0 4px;line-height:1.3}
+.snx .mini .m2{font-size:9px;color:var(--muted);margin:0 0 8px;line-height:1.4}
+.snx .mini .m3{font-size:8.5px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;margin:0 0 3px}
+.snx .mini .m4{font-size:9.5px;margin:0;line-height:1.45}
+.snx .tx{padding:16px 20px}
+.snx .lab{font-size:12px;font-weight:600;color:var(--accent);letter-spacing:.04em;text-transform:uppercase}
+.snx .tt{display:block;font-size:20px;font-weight:600;margin:5px 0 4px;line-height:1.25}
+.snx .ds{display:block;font-size:14px;color:var(--muted)}
+.snx .nd{display:block;font-size:13px;color:var(--muted);margin-top:10px}
+.snx .go{display:block;margin-top:12px;font-size:14px;font-weight:600;color:var(--accent)}
+.snx .aux{display:flex;justify-content:space-between;gap:12px;margin-top:10px;font-size:13px;color:var(--muted)}
+.snx .aux a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
+@media (max-width:560px){.sn,.snx{padding-left:16px;padding-right:16px}.snx .nx{grid-template-columns:1fr}.snx .mini{display:none}.sn .step{margin-left:0}}
+/* /series-nav */
+</style>
+</head>
+<body>
+<!-- series-nav:top -->
+<nav class="sn" aria-label="Course navigation"><div class="crumbs"><a href="../z2h-0-start/index.html" target="_top">Zero to hero: neural networks, built</a><span class="sep">›</span><a href="index.html" target="_top">6 · makemore 4: backprop ninja</a><span class="sep">›</span><b>10 / 14</b><span class="step"><a href="index.html#tanh-bn-atomic" target="_top">← prev</a> · <a href="index.html#embedding-backward" target="_top">next →</a></span></div>
+<div class="dep"><span class="ok">Stands alone.</span> You can jump in here without reading earlier cards.</div></nav>
+<!-- /series-nav:top -->
+<article class="card">
+<h1>Bessel's correction and BatchNorm's train/test mismatch</h1>
+<p class="sub">Also called: dividing by n − 1, the unbiased variance, <code>unbiased=True</code> / <code>correction=1</code>. Lecture 5 · brief digression: bessel's correction in batchnorm · <a href="https://www.youtube.com/watch?v=q8SA3rM6ckI&amp;t=3917s">1:05:17</a></p>
+<!-- study:prime -->
+<aside class="prime" aria-label="Prime: read this first">
+<div class="prime-k"><a href="../learning-principles/learning-principles.html#prime">Prime</a> · 2 minutes before you read</div>
+<p><b>The problem:</b> BatchNorm measures each neuron's variance on a batch of only 32 examples. Divide by n there and the estimate comes out low on average, and if training and test divide differently, the same input gives a slightly different output at test time than it did during training.</p>
+<p><b>Where it fits:</b> You just wrote <code>dbnvar</code> and saw <code>bnvar</code> divide by <code>n-1</code>. This digression explains that choice, building on the variance from the toolkit and the running statistics from the BatchNorm-at-inference card.</p>
+<p class="prime-links"><b>Needs first:</b> <a href="../z2h-1-toolkit/mean-variance-gaussian.html">Mean, variance and the Gaussian</a> · <a href="../z2h-5-batchnorm/batchnorm-inference.html">BatchNorm at test time: running statistics</a></p>
+<p class="prime-links"><b>Builds on:</b> <a href="../z2h-1-toolkit/mean-variance-gaussian.html">Mean, variance and the Gaussian</a> · <a href="../z2h-5-batchnorm/batchnorm-forward.html">BatchNorm: standardise the preactivations</a> · <a href="../z2h-5-batchnorm/batchnorm-inference.html">BatchNorm at test time: running statistics</a></p>
+<p><b>You'll meet:</b> <span class="chip">biased (÷n) vs unbiased (÷(n − 1)) variance</span> <span class="chip">why the batch's own mean makes ÷n too small</span> <span class="chip">the running variance BatchNorm keeps for test time</span> <span class="chip">the train/test mismatch in the paper and <code>nn.BatchNorm1d</code></span></p>
+<p><b>By the end:</b> Explain why ÷n underestimates a small batch's variance by (n − 1)/n on average, and say which divisor BatchNorm uses in training and which it stores for test time.</p>
+<p class="prime-q"><b>Read with these questions</b> (answer them in your head as you go; don't take notes line by line):</p>
+<ol><li>Why does measuring distances from the batch's own mean, rather than the true mean, shrink the sum of squares?</li><li>The lab's single batch gives 2.8750 and 2.9677, both below the truth of 3.0906. Why doesn't that alone prove the ÷(n − 1) version is biased?</li><li>Which job does <code>nn.BatchNorm1d</code> do with the ÷n variance, and which with the ÷(n − 1) one?</li><li>How does the size of the mismatch scale with batch size, and at what batch size would you stop caring?</li><li>Where does the choice of n − 1 reappear in the backward pass you are writing?</li></ol>
+</aside>
+<!-- /study:prime -->
+
+<p><b>In one breath:</b> the variance of a small batch comes out too small if you divide by n, because the batch's own mean is always the centre that fits that batch best. Dividing by n − 1 instead (Bessel's correction) fixes that on average. The BatchNorm paper and PyTorch divide by n when they normalise during training but by n − 1 for the running variance they use at test time. Karpathy calls that mismatch a bug, and his notebook uses n − 1 everywhere.</p>
+
+<details class="predict">
+<summary><b>Predict first:</b> take 10,000 random batches of 32 values from one neuron and average their divide-by-n variances. What fraction of the true full-data variance do you get: exactly 1, a bit under, or a bit over?</summary>
+<p><b>A bit under: 0.9679 of the true value.</b> Theory says (n − 1)/n = 31/32 = 0.9688, and the lab lands within 0.001 of that. Dividing by n − 1 instead gives 0.9991 of the true value. The next section shows where the missing 1/32 goes.</p>
+</details>
+
+<h2>Two ways to divide</h2>
+<p>Variance measures how spread out numbers are: take each value x<sub>i</sub>, subtract the mean x̄, square it, and average the squares. The only question is what "average" divides by.</p>
+<div class="mathbox">
+<math display="block">
+  <munder class="t3"><msubsup><mi>&#963;</mi><mtext>biased</mtext><mn>2</mn></msubsup><mtext class="lab">divide by n</mtext></munder>
+  <mo>=</mo><mfrac><mn>1</mn><mi>n</mi></mfrac>
+  <munderover><mo>&#8721;</mo><mrow><mi>i</mi><mo>=</mo><mn>1</mn></mrow><mi>n</mi></munderover>
+  <msup><mrow><mo>(</mo><msub><mi>x</mi><mi>i</mi></msub><mo>&#8722;</mo><mover><mi>x</mi><mo>&#175;</mo></mover><mo>)</mo></mrow><mn>2</mn></msup>
+  <mspace width="1.6em"/>
+  <munder class="t2"><msubsup><mi>&#963;</mi><mtext>unbiased</mtext><mn>2</mn></msubsup><mtext class="lab">Bessel's correction</mtext></munder>
+  <mo>=</mo><mfrac><mn>1</mn><mrow><mi>n</mi><mo>&#8722;</mo><mn>1</mn></mrow></mfrac>
+  <munderover><mo>&#8721;</mo><mrow><mi>i</mi><mo>=</mo><mn>1</mn></mrow><mi>n</mi></munderover>
+  <msup><mrow><mo>(</mo><msub><mi>x</mi><mi>i</mi></msub><mo>&#8722;</mo><mover><mi>x</mi><mo>&#175;</mo></mover><mo>)</mo></mrow><mn>2</mn></msup>
+</math>
+<div class="legend">
+  <span class="sym">n</span><span>number of values in the batch</span><span class="v">32 in this lecture</span>
+  <span class="sym">x&#7522;</span><span>one value: neuron 0 of <code>hprebn</code> (the input to BatchNorm) for example i</span><span class="v">i = 1 … 32</span>
+  <span class="sym">x̄</span><span>the mean of <i>this batch</i>, not the true mean of all the data</span><span class="v"><code>bnmeani</code></span>
+  <span class="sym">&#963;&#178;</span><span>variance (sigma squared): the average squared distance from the mean</span><span class="v"><code>bnvar</code></span>
+</div>
+</div>
+<p><b>Why 1/n comes out low:</b> the batch mean x̄ is computed from the same 32 numbers, so it sits exactly in their middle. No other centre, including the true mean of all the data, gives a smaller sum of squared distances. The squared distances are therefore a little too small, by a factor of (n − 1)/n on average. Dividing by n − 1 instead of n scales them back up by n/(n − 1).</p>
+<div class="formula">illustrative: batch x = [1, 3]      x̄ = 2      squared distances 1 + 1 = 2
+divide by n = 2   →  2 / 2 = 1.0
+divide by n − 1   →  2 / 1 = 2.0     (n/(n−1) = 2, the biggest correction there is)</div>
+
+<h2>Measured on one neuron of the course's net</h2>
+<p>The lab computes <code>hprebn</code> for all 182,625 training examples with the 4,137-parameter net at initialisation, and treats neuron 0's variance over all of them as the truth (with N that large, n vs n − 1 changes it by about 0.0005%).</p>
+<table>
+  <tr><th>What</th><th class="num">Variance</th><th class="num">÷ true</th></tr>
+  <tr><td>Full data, N = 182,625 (the truth)</td><td class="num">3.0906</td><td class="num">1</td></tr>
+  <tr><td>One batch of 32, divide by n</td><td class="num">2.8750</td><td class="num">0.9302</td></tr>
+  <tr><td>Same batch, divide by n − 1</td><td class="num">2.9677</td><td class="num">0.9602</td></tr>
+  <tr><td>Average of 10,000 batches, divide by n</td><td class="num lo">2.9913</td><td class="num lo">0.9679</td></tr>
+  <tr class="row-hi"><td>Average of 10,000 batches, divide by n − 1</td><td class="num hi">3.0878</td><td class="num hi">0.9991</td></tr>
+</table>
+<div class="formula">one batch: 2.9677 / 2.8750 = 1.0322 ≈ 32/31 = 1.0323
+           (same squared distances, ÷31 instead of ÷32)
+average:   2.9913 / 3.0906 = 0.9679 ≈ 31/32 = 0.9688
+           (the ÷n estimate is 3.1% low on average)</div>
+<p class="cap">A single batch can miss the truth either way; bias is about the average over many batches. Values from <code>labs/bessel-correction.py</code> on your M3.</p>
+
+<h2>The gap shrinks with batch size</h2>
+<p>On average, dividing by n underestimates the variance by 1/n of the truth (computed: 1 − (n − 1)/n). Red bars show that shortfall; full width is 50%.</p>
+<table>
+  <tr><th>Batch size n</th><th class="num">(n − 1)/n</th><th style="width:45%">Shortfall of 1/n</th><th class="num">Shortfall</th></tr>
+  <tr><td>2</td><td class="num">0.5000</td><td><span class="bar-track"><span class="lo-bar" style="width:100%"></span></span></td><td class="num lo">50%</td></tr>
+  <tr><td>8</td><td class="num">0.8750</td><td><span class="bar-track"><span class="lo-bar" style="width:25%"></span></span></td><td class="num">12.5%</td></tr>
+  <tr class="row-hi"><td>32 (this lecture)</td><td class="num">0.9688</td><td><span class="bar-track"><span class="lo-bar" style="width:6.25%"></span></span></td><td class="num">3.1%</td></tr>
+  <tr><td>256</td><td class="num">0.9961</td><td><span class="bar-track"><span class="lo-bar" style="width:0.78%"></span></span></td><td class="num">0.4%</td></tr>
+  <tr><td>1024</td><td class="num">0.9990</td><td><span class="bar-track"><span class="lo-bar" style="width:0.2%"></span></span></td><td class="num">0.1%</td></tr>
+</table>
+
+<h2>Where BatchNorm mixes the two</h2>
+<p>BatchNorm normalises with the batch's mean and variance during training, and keeps a <b>running variance</b> (a moving average of the batch variances) to use at test time, when there may be only one example and no batch to measure. The paper and <code>nn.BatchNorm1d</code> divide by n for the first job and by n − 1 for the second. The lab feeds that one batch of 32 into <code>nn.BatchNorm1d(1, momentum=1.0)</code>, so the running variance equals that batch's estimate:</p>
+<table>
+  <tr><th>Mode</th><th>Divides the spread by</th><th class="num">Variance used</th><th class="num">Output std on this batch</th></tr>
+  <tr><td>Training (<code>bn.train()</code>)</td><td>n = 32, biased</td><td class="num">2.8750</td><td class="num">1.0000</td></tr>
+  <tr><td>Test, from <code>running_var</code></td><td>n − 1 = 31, unbiased</td><td class="num">2.9677</td><td class="num lo">0.9842</td></tr>
+</table>
+<div class="formula">√(2.8750 / (2.9677 + 1e-5)) = 0.9842 ≈ √(31/32) = 0.9843
+(1e-5 is BatchNorm's eps)</div>
+<p class="cap">Same inputs, two different outputs: the layer is about 1.6% quieter at test time than it was during training, purely from the choice of divisor.</p>
+<p>The notebook avoids this by using n − 1 in both places: <code>bnvar = 1/(n-1)*(bndiff2).sum(0, keepdim=True)</code> in training and <code>hpreact.var(0, keepdim=True, unbiased=True)</code> when it calibrates BatchNorm after training. That choice also shows up in the backward pass: the gradient into <code>bndiff2</code> is <code>1.0/(n-1)</code> broadcast to every row, and the one-line BatchNorm backward carries an <code>n/(n-1)</code> factor.</p>
+
+<div class="build">
+  <div class="hd"><b>▶ Build it</b><span class="where">runs on your M3 · about 3 s</span></div>
+  <p><b>When:</b> pause the video at <a href="https://www.youtube.com/watch?v=q8SA3rM6ckI&amp;t=3917s">1:05:17</a>, right after you've written <code>dbnvar</code>, and run this before he explains.</p>
+<pre class="code"><span class="c"># after the forward pass: hprebn for the WHOLE training set</span>
+<span class="k">with</span> torch.no_grad():
+    hall = C[Xtr].view(Xtr.shape[0], -1) @ W1 + b1  <span class="c"># (182625, 64)</span>
+x_all = hall[:, 0]                          <span class="c"># one neuron</span>
+true_var = x_all.var(unbiased=False)
+xb = x_all[torch.randint(0, x_all.shape[0], (32,))]
+print(xb.var(unbiased=False), xb.var(unbiased=True), true_var)
+ix = torch.randint(0, x_all.shape[0], (10000, 32))
+b = x_all[ix]                               <span class="c"># (10000, 32)</span>
+print(b.var(1, unbiased=False).mean() / true_var)  <span class="c"># ≈ 31/32</span>
+print(b.var(1, unbiased=True).mean() / true_var)   <span class="c"># ≈ 1</span></pre>
+  <p><b>You should see</b> (measured on your M3; the lab prints it like this):</p>
+<pre class="code out">full-data variance of neuron 0: 3.0906  (N = 182,625)
+one batch of 32:  var(unbiased=False) = 2.8750   var(unbiased=True) = 2.9677
+average over 10,000 batches of 32:
+  1/n     (biased)  : 2.9913  = 0.9679 x true   (expected 31/32 = 0.9688)
+  1/(n-1) (unbiased): 3.0878  = 0.9991 x true
+nn.BatchNorm1d on that batch: running_var = 2.9677  (unbiased)
+  but the train-mode output uses the biased 2.8750: output std(unbiased=False) = 1.0000
+  (with the unbiased variance it would be 0.9842)</pre>
+  <p>Your single-batch numbers will differ unless you draw the batch with the lab's generator; the 10,000-batch ratios should land near 0.968 and 1.000 either way.</p>
+  <p class="done"><b>Done when:</b> the divide-by-n average sits near 31/32 of the truth, the divide-by-(n − 1) average near 1, and you can say which of the two <code>nn.BatchNorm1d</code> stores in <code>running_var</code>. · <b>Karpathy's version:</b> <a href="https://github.com/karpathy/nn-zero-to-hero/blob/master/lectures/makemore/makemore_part4_backprop.ipynb">makemore_part4_backprop.ipynb</a> (the <code>bnvar</code> line in the forward-pass cell) · <b>Lab:</b> <a href="https://github.com/seyonv/explainers/blob/main/z2h-6-backprop-ninja/labs/bessel-correction.py">labs/bessel-correction.py</a></p>
+</div>
+
+<h2>Why it beats the alternatives</h2>
+<div class="grid2">
+  <div class="cell"><h3><span class="x">&#10007;</span> Divide by n everywhere</h3><p>Consistent between training and test, but every batch variance is 3.1% low on average at n = 32 (the lab's 0.9679), so the running variance is biased too.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> The paper / PyTorch mix</h3><p>n in training, n − 1 in <code>running_var</code>. On the lab's batch the layer outputs std 1.0000 in training and 0.9842 at test: a small shift the network never saw while it trained.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Ignore it, batches are big</h3><p>True at 1,024 (0.1% gap), but this lecture trains with batches of 32, and small batches are exactly where the gap is large (50% at n = 2).</p></div>
+  <div class="cell win"><h3><span class="ok">&#10003;</span> n − 1 in both places</h3><p>Karpathy's notebook: the batch variance is unbiased on average (0.9991 of the truth), and training and test normalise with the same kind of estimate.</p></div>
+</div>
+
+<h2>Does this matter in practice?</h2>
+<div class="note">
+  <p>Usually only a little. At n = 32 the mismatch changes the output scale by about 1.6%, and the next layer's weights and <code>bngain</code> can absorb a lot. The PyTorch choice also has a defensible reading (my inference, not the lecture's): in training, divide-by-n makes each batch's outputs have exactly unit spread, and <code>running_var</code> is meant to estimate the variance of all the data, where n − 1 is the better estimator. Karpathy's objection is the inconsistency, and he prefers unbiased in both places.</p>
+  <p>It matters more with tiny batches, and the whole problem disappears with layers that don't use batch statistics at all. LayerNorm, used in the GPT lectures, normalises each example on its own, so it keeps no running statistics and behaves the same in training and at test.</p>
+</div>
+
+<!-- study:panel -->
+<section class="study" aria-label="Study this card">
+<div class="study-head"><h2>Study this card</h2><span>Open each step in order · <a href="../learning-principles/learning-principles.html">why this works</a></span></div>
+<input type="checkbox" id="study-all" class="study-all"><label for="study-all" class="study-all-l">show all steps (for revisiting)</label>
+<details class="st"><summary><b>1 · Core model</b> <span>what to internalise, what to just look up</span></summary><div class="st-body"><p class="st-rule">Keep it if it changes what you can <i>explain, predict, compare, choose, build or debug</i>. Otherwise it's reference.</p>
+<div class="core"><div><h4>Understand and remember</h4><ul><li>The batch mean is computed from the same values → it is the centre that minimises their squared distances → Σ(xᵢ − x̄)² is smaller than around the true mean → ÷n underestimates by (n − 1)/n on average (lab: 0.9679 of the truth at n = 32, theory 0.9688) → ÷(n − 1) cancels that (0.9991)</li><li>The bias is 1/n of the truth → 50% at n = 2, 3.1% at n = 32, 0.1% at n = 1024 → it only matters for small batches, which is exactly what BatchNorm trains with</li><li>BatchNorm (paper and <code>nn.BatchNorm1d</code>) normalises with ÷n in training but stores ÷(n − 1) in <code>running_var</code> for test time → test-time variance is n/(n − 1) larger → on the lab's batch the output std drops from 1.0000 to 0.9842 → a train/test shift Karpathy calls a bug; his notebook uses ÷(n − 1) in both places</li><li><span class="up">detail that matters</span> Choosing ÷(n − 1) in the forward pass → <code>dbndiff2 = 1.0/(n-1) * ones * dbnvar</code> in the atomic backward and an <code>n/(n-1)</code> factor in the one-line BatchNorm backward → using the wrong divisor makes <code>cmp</code> fail even though every other line is right</li></ul></div>
+<div><h4>Reference only</h4><ul class="muted"><li><code>x.var(unbiased=False)</code> is ÷n; <code>torch.var</code> defaults to ÷(n − 1) (also spelled <code>correction=1</code>)</li><li><code>nn.BatchNorm1d(momentum=0.1)</code> updates <code>running_var = 0.9·running_var + 0.1·batch_var</code>; the lab sets momentum 1.0 so it equals one batch</li><li>BatchNorm's eps = 1e-5, added to the variance before the square root</li><li><code>nn.BatchNorm1d</code> in training mode refuses a batch of 1: "Expected more than 1 value per channel when training"</li></ul></div></div><p class="st-why"><a href="../learning-principles/learning-principles.html#layers">Why this step?</a></p></div></details>
+<details class="st"><summary><b>2 · Compress</b> <span>write it yourself first</span></summary><div class="st-body"><p>From memory, in 3–5 sentences: why does dividing by n underestimate a batch's variance, what does dividing by n − 1 fix, and what exactly is inconsistent about how BatchNorm uses the two? Or draw the chain from "batch mean" to "output 1.6% quieter at test time".</p><p class="st-how">On paper or in your notes, in your own words, without scrolling up. Aim for the smallest thing that still explains it.</p>
+<details class="ref"><summary>Then compare with this checklist</summary><ul><li>the batch mean comes from the same values, so it minimises their squared distances</li><li>÷n is low by a factor (n − 1)/n on average; ÷(n − 1) is right on average</li><li>bias is about the average over many batches, not one batch</li><li>the gap is 1/n, so it matters at n = 32 (3.1%) and fades for large batches</li><li>BatchNorm uses ÷n to normalise in training and ÷(n − 1) for <code>running_var</code>, so test outputs are scaled by about √((n − 1)/n)</li><li>Karpathy's fix: ÷(n − 1) in both places</li></ul><p class="st-how">Missing a point? Reread only the section about it, not the whole card.</p></details><p class="st-why"><a href="../learning-principles/learning-principles.html#compress">Why this step?</a></p></div></details>
+<details class="st"><summary><b>3 · Retrieve</b> <span>from memory, card closed</span></summary><div class="st-body"><ol class="qs"><li><span class="kind">concept</span> Explain why the variance of a small sample, divided by n, is on average smaller than the variance of the data it was drawn from.<details class="ref"><summary>Check</summary><ul><li>the sample mean is fitted to the sample, so squared distances to it are the smallest possible</li><li>distances to the true mean would be larger on average</li><li>the expected shortfall is a factor (n − 1)/n</li></ul></details></li><li><span class="kind">mechanism</span> Walk through what <code>nn.BatchNorm1d</code> does with one batch of 32 in training mode, and then what it does with one example at test time. Which variance is used at each step?<details class="ref"><summary>Check</summary><ul><li>training: batch mean and ÷n variance normalise the batch (output std exactly 1.0000 on the lab's batch)</li><li>same step: the ÷(n − 1) variance (2.9677) goes into <code>running_var</code></li><li>test: normalise with <code>running_mean</code>/<code>running_var</code>, so the spread is divided by a variance 32/31 larger</li><li>result on that batch: std 0.9842 instead of 1.0000</li></ul></details></li><li><span class="kind">tradeoff</span> You train with batches of 1,024 and a colleague wants to patch PyTorch's BatchNorm to use ÷(n − 1) in training. Is it worth it? Would your answer change at batch size 4?<details class="ref"><summary>Check</summary><ul><li>at 1,024 the gap is 1/1024 ≈ 0.1%: not worth a custom layer</li><li>at 4 the gap is 25% in variance, about 13% in std: worth it, or switch to a layer without batch statistics</li><li>the cost is a non-standard layer the rest of the team must know about</li></ul></details></li><li><span class="kind">mechanism</span> The lab's single batch has var 2.8750 (÷n) and 2.9677 (÷(n − 1)), both under the true 3.0906. Does that show ÷(n − 1) is biased too? What measurement settles it?<details class="ref"><summary>Check</summary><ul><li>no: one batch can land above or below the truth</li><li>bias is the average error over many batches</li><li>averaging 10,000 batches gives 0.9991 of the truth for ÷(n − 1) vs 0.9679 for ÷n</li></ul></details></li></ol><p class="st-why"><a href="../learning-principles/learning-principles.html#retrieve">Why this step?</a></p></div></details>
+<details class="st"><summary><b>4 · Compare</b> <span>against what you already know</span></summary><div class="st-body"><p><b>vs <a href="../z2h-5-batchnorm/batchnorm-inference.html">BatchNorm at test time: running statistics</a>:</b> That card solves "what do I use at test time when there is no batch?" with running statistics or calibration. This card finds a flaw in how those statistics are estimated. What is fundamentally the same problem, and how does each approach fail?</p><details class="ref"><summary>Check</summary><ul><li>both are about test-time statistics matching the ones used in training</li><li>running stats and calibration answer <i>which data</i> to measure; Bessel answers <i>which divisor</i></li><li>running stats fail if the momentum average lags the weights; the divisor mismatch fails by a constant factor n/(n − 1) even with perfect data</li><li>Karpathy's notebook calibrates after training and uses ÷(n − 1) in both places, fixing both</li></ul></details><p><b>vs <a href="batchnorm-analytic-and-train.html">BatchNorm backward in one line, then train with no autograd</a>:</b> Where does the n − 1 you chose here show up in the one-line BatchNorm backward, and what would you change if you switched the forward pass to ÷n?</p><details class="ref"><summary>Check</summary><ul><li>the one-liner has an <code>n/(n-1)</code> factor on the <code>bnraw*(dhpreact*bnraw).sum(0)</code> term</li><li>it comes from differentiating the ÷(n − 1) variance</li><li>with ÷n the factor becomes 1 and the check against autograd must use <code>unbiased=False</code> too</li></ul></details><p class="st-why"><a href="../learning-principles/learning-principles.html#interleave">Why this step?</a></p></div></details>
+<details class="st"><summary><b>5 · Predict</b> <span>commit to an answer before revealing</span></summary><div class="st-body"><p>Shrink the batch all the way to n = 1 and put it through BatchNorm in training mode. What does ÷n give for the variance, what does ÷(n − 1) give, and what does <code>nn.BatchNorm1d</code> do?</p><details class="ref"><summary>Reveal</summary><p>÷n gives 0: the lone value <i>is</i> the mean, so every output collapses to the bias β and the input's information is erased. ÷(n − 1) divides 0 by 0, and <code>torch.randn(1).var()</code> returns <code>nan</code> with a degrees-of-freedom warning. <code>nn.BatchNorm1d</code> refuses: "Expected more than 1 value per channel when training" (measured on torch 2.14). Batch statistics need a batch, which is why test time uses running statistics.</p></details><p class="st-why"><a href="../learning-principles/learning-principles.html#predict">Why this step?</a></p></div></details>
+<details class="st"><summary><b>6 · Apply</b> <span>use the model, don't restate it</span></summary><div class="st-body"><p>Modify <code>labs/bessel-correction.py</code> to draw 10,000 batches of size n = 2, 8 and 32 instead of only 32, and print both averaged ratios (÷n and ÷(n − 1), divided by the full-data variance) next to (n − 1)/n. Before running, write down what you expect for n = 2.</p><p><b>Done when:</b> Your ÷n ratios land near 0.5, 0.875 and 0.969 and the ÷(n − 1) ratios near 1. With <code>torch.Generator().manual_seed(0)</code> for the batch indices, the check run gave ÷n 0.4901 / 0.8722 / 0.9676 and ÷(n − 1) 0.9803 / 0.9968 / 0.9988.</p><details class="ref"><summary>Hint</summary><p>Replace the fixed 32 in <code>torch.randint(0, x_all.shape[0], (trials, 32))</code> with a loop variable, and keep <code>true_var</code> from the full data.</p></details><p class="st-why"><a href="../learning-principles/learning-principles.html#apply">Why this step?</a></p></div></details>
+<details class="st"><summary><b>7 · Reflect</b> <span>and decide whether to move on</span></summary><div class="st-body"><ul><li>Which prediction did you get wrong: the 0.9679 ratio, or what happens at n = 1?</li><li>What couldn't you explain cleanly: why the batch mean makes ÷n too small, or why one batch can't show bias?</li><li>Which relationship is still fuzzy: batch mean → smaller squared distances, or ÷n in training + ÷(n − 1) in <code>running_var</code> → quieter test outputs?</li><li>Would you change PyTorch's default in your own code, and at what batch size would you stop caring?</li><li>Before the next backward step, can you point to the line where n − 1 enters the gradient?</li></ul><p class="st-how">Repair what came up: reopen only that section, then retry the question you missed. Tutor mode: <code>/study z2h-6-backprop-ninja/bessel-correction</code> in Claude Code grades your answers and walks you through each stage.</p><p class="st-why"><a href="../learning-principles/learning-principles.html#reflect">Why this step?</a></p></div></details>
+</section>
+<!-- /study:panel -->
+<div class="foot">
+  <p><b>Watch:</b> <a href="https://www.youtube.com/watch?v=q8SA3rM6ckI&amp;t=3917s">1:05:17 brief digression: bessel's correction in batchnorm</a> · before: <a href="https://www.youtube.com/watch?v=q8SA3rM6ckI&amp;t=3853s">1:04:13 bnvar</a> · next: <a href="https://www.youtube.com/watch?v=q8SA3rM6ckI&amp;t=4154s">1:09:14 bndiff2</a></p>
+  <p><b>Code:</b> <a href="https://github.com/karpathy/nn-zero-to-hero/blob/master/lectures/makemore/makemore_part4_backprop.ipynb">makemore_part4_backprop.ipynb</a> · <a href="http://math.oxford.emory.edu/site/math117/besselCorrection/">Bessel's correction (Emory math notes)</a> · <a href="https://arxiv.org/abs/1502.03167">Ioffe &amp; Szegedy 2015, the BatchNorm paper</a></p>
+  <p><b>Lab:</b> <a href="https://github.com/seyonv/explainers/blob/main/z2h-6-backprop-ninja/labs/bessel-correction.py">labs/bessel-correction.py</a></p>
+  <p><b>Related:</b> <a href="tanh-bn-atomic.html">tanh and BatchNorm, atom by atom</a> · <a href="batchnorm-analytic-and-train.html">BatchNorm backward in one line</a> · <a href="../z2h-5-batchnorm/batchnorm-inference.html">BatchNorm at inference</a> · <a href="../z2h-1-toolkit/mean-variance-gaussian.html">Mean, variance and the Gaussian</a></p>
+</div>
+</article>
+<!-- series-nav:bottom -->
+<div class="snx"><a class="nx" href="index.html#embedding-backward" target="_top">
+<span class="mini" aria-hidden="true"><span class="m1">The embedding gradient: undoing view and indexing</span><span class="m2">Also called: backprop through an embedding lookup; the dC loop; scatter-add. Lecture 5 · exercise 1: backproping the atomic compute graph · 1:18:32</span></span>
+<span class="tx"><span class="lab">Next up · 11 / 14</span><span class="tt">The embedding gradient: undoing view and indexing</span><span class="ds">The first three lines of the forward pass look up character vectors (emb = C[Xb]), flatten them…</span><span class="nd">Stands alone.</span><span class="go">Continue →</span></span></a><div class="aux"><span><a href="index.html#tanh-bn-atomic" target="_top">← tanh and BatchNorm, atom by atom</a></span><a href="index.html" target="_top">All cards in 6 · makemore 4: backprop ninja</a></div></div>
+<!-- /series-nav:bottom -->
+</body>
+</html>

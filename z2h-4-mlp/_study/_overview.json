@@ -1,0 +1,65 @@
+{
+  "prime": {
+    "problem": "The bigram lecture ended at 2.45 with one character of context, and a count table can't look further back: 27³ = 19,683 three-character contexts, only 28.9% of them ever seen. Without a model that shares what it learns between similar contexts, and without habits for checking training, you can type the notebook but not say why it works or what to change next.",
+    "fits": "This is the map of course z2h-4, read first or as a recap. It builds on the bigram lecture's count table, one-hot linear layer and NLL loss, and on micrograd's forward → zero grad → backward → update loop. The next course, z2h-5, starts from this course's final model and fixes its initialisation.",
+    "expect": ["one equation: embed → tanh hidden layer → logits → cross-entropy", "the pipeline with a shape on every arrow", "levers: block_size, d, H, batch size, lr and its decay, steps", "overfit one batch, then judge on dev", "the bottleneck: the 2-number embedding"],
+    "goal": "Write the course's equation and draw its pipeline from memory, then, given a pair of train/dev numbers, say which lever you would change next and what you'd expect it to do."
+  },
+  "attend": [
+    "In the one equation, which symbols are learned, which are data, and which are choices you make before training starts?",
+    "Why does adding a character of context multiply a count table by 27 but add only d·H weights (one slice of W1) to this network?",
+    "Of the seven levers in the table, which ones change what the model can represent and which only change how fast or how well it gets there?",
+    "The lecture's dev loss falls from 2.3279 to 2.1698. Which lever bought each part of that drop?",
+    "What does this course's final model still get wrong at step 0, and how can you tell from one printed number?"
+  ],
+  "core": {
+    "must": [
+      "A context of n characters needs 27ⁿ count rows → the data leaves most rows thin (5,686 of 19,683 seen at n = 3) → give each character a learned row of C shared by every context → similar characters drift together → evidence in one context helps similar ones, and one extra character costs d·H weights, not 27× more rows",
+      "Embed (C[X], a one-hot matmul done by indexing) → view(-1, 3d), free because it only rewrites strides → tanh(x@W1 + b1) → h@W2 + b2 logits → F.cross_entropy, which subtracts the row max so it can't overflow → one differentiable number, so backward reaches every parameter including C",
+      "A loop that can't memorise 32 rows can't learn 228,146 → overfit first (0.2561 vs a 0.2515 floor) → then 32 random rows per step, ~1,000× cheaper than the full batch → near the bottom the gradient noise dominates → decay lr 0.1 → 0.01 (2.4175 → 2.3401)",
+      "Training loss can't tell fitting from memorising → hold out dev and test names → train ≈ dev means underfitting → grow the part that squeezes the model: 3× hidden units gave dev −0.03, 2 → 10 embedding numbers −0.06 → dev 2.1698 with 11,897 parameters"
+    ],
+    "elevated": [
+      "Plain randn init → logits far from zero → first loss 17.7697 on 32 rows (27.8817 on the final model's first minibatch) instead of 3.2958, and 32.7% of tanh units saturated → wasted early steps and weak gradients → the next lecture's first fix"
+    ],
+    "reference": [
+      "block_size 3; seeds 2147483647 (parameters) and 42 (the name shuffle)",
+      "split sizes 182,625 / 22,655 / 22,866 (the Part 2 notebook prints 182,441 / 22,902 / 22,803)",
+      "parameter counts 3,481 (d 2, H 100), 10,281 (d 2, H 300), 11,897 (d 10, H 200)",
+      "<code>torch.randint</code>, <code>10**torch.linspace(-3, 0, 1000)</code>, <code>torch.multinomial</code>",
+      "the notebook's final train 2.1260 / dev 2.1701"
+    ]
+  },
+  "compress": {
+    "prompt": "Course-level compress: on one sheet, draw the whole course's causal map from memory. Start from <i>why counts fail</i>, then the pipeline with a shape on each arrow and the equation under it, then the training loop, then the train/dev reading that chose the final model. Label every arrow with the number that justified the next step.",
+    "checklist": [
+      "27ⁿ rows and 28.9% seen at n = 3 → learned embeddings shared across contexts",
+      "X (32, 3) → C[X] (32, 3, d) → view (32, 3d) → tanh layer (32, H) → logits (32, 27) → F.cross_entropy",
+      "first loss 17.7697, where a uniform guess scores 3.2958",
+      "overfit 32 rows to 0.2561 (floor 0.2515) before training on everything",
+      "minibatches of 32, lr from a log sweep, 0.1 then 0.01: full-set 2.3401, below the bigram's 2.45",
+      "train ≈ dev → underfitting → the embedding was the bottleneck → d = 10, H = 200: dev 2.1698"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain to someone who knows only the bigram count table why a network with 3,481 numbers can say something useful about three-character contexts that a 531,441-cell table can't.", "kind": "concept", "answer": ["the table gives every context its own row, and at n = 3 most rows have few or no counts", "the network shares C and the weights across all contexts", "characters that behave alike get nearby embeddings, so a rare context borrows from similar common ones", "it generalises smoothly because its output changes smoothly as the input points move"]},
+    {"q": "Walk one minibatch through the whole course's training step: from <code>ix</code> to the parameter update, naming each tensor's shape for the final model.", "kind": "mechanism", "answer": ["<code>ix = torch.randint(0, Xtr.shape[0], (32,))</code> picks 32 rows", "<code>C[Xtr[ix]]</code> (32, 3, 10) → <code>view(-1, 30)</code> (32, 30)", "<code>tanh(@W1 + b1)</code> (32, 200) → <code>@W2 + b2</code> (32, 27)", "<code>F.cross_entropy(logits, Ytr[ix])</code> → a scalar", "set every <code>p.grad = None</code>, <code>loss.backward()</code>, then <code>p.data += -lr * p.grad</code> with lr 0.1 or 0.01"]},
+    {"q": "Your net ends at train 2.30 / dev 2.31. A teammate wants to triple the hidden layer; you want to widen the embedding. Using this course's measurements, argue which to try first, and name what each change costs.", "kind": "tradeoff", "answer": ["train ≈ dev says underfitting, so more capacity is the right direction", "tripling H (3,481 → 10,281 params) moved dev only 0.03, because every neuron still reads the same 6 numbers", "d 2 → 10 with H 200 (11,897 params) moved dev about 0.06 at the same step budgets", "both need more steps to pay off (50k → 200k), and a bigger model can start to overfit: the final gap is 0.043"]},
+    {"q": "Which of this course's measured numbers are sanity checks with a known target, and which can only be judged against another run?", "kind": "concept", "answer": ["known targets: 3.2958 for a uniform guess at step 0, 0.2515 as the overfit floor for the 32 rows, <code>F.cross_entropy</code> equal to the manual loss", "relative only: dev loss vs the bigram's 2.45, vs the previous setting, vs train", "the known-target checks catch bugs; the relative ones choose settings"]}
+  ],
+  "compare": [
+    {"with": "z2h-3-bigram/train-neural-bigram", "q": "The bigram course's overview idea was that counting and gradient descent land on the same model (≈ 2.45). Why can't gradient descent beat counting there, while here the MLP reaches 2.17? What design choice makes the difference, and how does each approach fail?", "answer": ["bigram: one-hot @ W is just a row per previous character, the same free parameters the count table has, so the best either can do is the counts", "MLP: longer context plus shared embeddings and a hidden layer, so it can use 3 characters without a row per context", "the counting model fails on long contexts (empty rows); the neural bigram fails because it has no more information than the counts", "the MLP fails differently: a fixed 3-character window and a careless init"]},
+    {"with": "z2h-4-mlp/big-ideas", "q": "This page gives one equation and a table of levers; the big-ideas card gives six claims. Which claims map onto which terms of the equation, and which claims are about the training process rather than the model?", "answer": ["counts vs embeddings and lookup = matmul describe the x<sub>i</sub> term", "F.cross_entropy is the outer loss term", "overfit one batch, noisy minibatch steps and judging on held-out data describe the update rule and how it is checked, not the model"]}
+  ],
+  "predict": {"q": "The next lecture keeps this exact 11,897-parameter model. Its first minibatch loss is 27.8817, against 3.2958 for a uniform guess. Before watching: which parameters would you scale to fix step 0, what should step 0 print after the fix, and would the final dev loss change?", "answer": "Shrink the output layer: <code>W2 *= 0.01</code> and <code>b2 *= 0</code> make the logits nearly equal, and step 0 prints 3.3221 (measured in z2h-5's squash-the-logits lab). The final dev loss improves too, 2.1698 → 2.1311 over the same 200k steps, because the first thousand steps are no longer spent just shrinking the logits. The next fix is the saturated tanh layer."},
+  "apply": {"task": "Do E01 in miniature. Run <code>python labs/embeddings-scale-sample.py --quick</code> and note its 20,000-step baseline (train 2.3093 / dev 2.3190). Pick one lever from the table, write down which direction you expect dev to move and why, change only that lever in the lab's second section, and rerun.", "done": "You have a before/after dev pair from the same 20,000-step budget, a one-line reason written before running, and a verdict on whether the train/dev pair says you're still underfitting.", "hint": "Levers that change the model (d, H, block_size) usually need more steps to show their gain; at a fixed budget the lr schedule or batch size can win instead."},
+  "reflect": [
+    "Which prediction did you get wrong: the size of the dev gain from widening C, or how much a fixed init would help?",
+    "What couldn't you explain cleanly without the page: why the view is free, why F.cross_entropy can't overflow, or why the minibatch loss isn't the model's loss?",
+    "Which relationship is still fuzzy: train ≈ dev → underfitting, or underfitting → which part to grow?",
+    "Which lever would you reach for first on a new dataset, and which card would you reopen before touching it?",
+    "Can you redraw the pipeline with every shape and write the equation beneath it without looking?"
+  ],
+  "revisit": ["z2h-3-bigram/train-neural-bigram", "z2h-3-bigram/likelihood-and-nll", "z2h-2-micrograd/mlp-and-training-loop"],
+  "prereq": []
+}

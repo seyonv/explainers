@@ -1,0 +1,64 @@
+{
+  "prime": {
+    "problem": "The last lecture's network was a pile of loose tensors (<code>C</code>, <code>W1</code>, <code>bngain</code>…) and a forward pass typed out line by line. Every architecture change meant editing the forward pass and the parameter list separately, and the deeper tree-shaped net coming next would make that unmanageable.",
+    "fits": "You already turned <code>Linear</code>, <code>BatchNorm1d</code> and <code>Tanh</code> into classes in the BatchNorm lecture. This card finishes the job: the embedding lookup and the flatten become modules too, and a container ties them into one callable model, which is what lets the WaveNet cards simply stack more layers.",
+    "expect": ["the module interface (<code>__call__</code> + <code>parameters()</code>)", "<code>Embedding</code> and <code>Flatten</code>", "the <code>Sequential</code> container", "the <code>training</code> flag and why a batch of 1 breaks BatchNorm"],
+    "goal": "Build the three modules, count the model's 12,097 parameters from the layer shapes, and explain exactly why sampling with BatchNorm in training mode produces nan."
+  },
+  "attend": [
+    "Which two methods must an object have to be a layer here, and which part of the training loop uses each?",
+    "Why can <code>Sequential</code> itself be dropped into another <code>Sequential</code> as a single layer?",
+    "Where does each of the 12,097 parameters live, and which modules own none at all?",
+    "Why does a batch of exactly one example turn BatchNorm's variance into nan, and why would a batch of two not?",
+    "After the nan sample, why is eval mode broken too, even though eval mode never uses the batch statistics?"
+  ],
+  "core": {
+    "must": [
+      "Each module owns its tensors and its forward step → <code>Sequential</code> just loops <code>x = layer(x)</code> and concatenates <code>parameters()</code> → the forward pass and the parameter list can't drift apart → changing the architecture is editing one list",
+      "<code>Sequential</code> has the same interface as a layer → containers nest → big models are trees of small modules (this is <code>torch.nn</code>'s design)",
+      "BatchNorm in training mode uses the current batch's statistics → sampling feeds a batch of 1 → unbiased variance divides by n − 1 = 0 → 0/0 = nan → every logit is nan and <code>torch.multinomial</code> fails",
+      "Training mode also updates the running buffers → <code>running_var</code> = 0.9 × old + 0.1 × nan = nan → the forgotten flag poisons eval mode too, so the model must be re-trained or the buffers reset"
+    ],
+    "elevated": [
+      "<code>Flatten</code> is a <code>view</code>, not a copy → (4, 3, 10) becomes (4, 30) for free, with each example's 3 embeddings side by side → the next card generalises it to <code>FlattenConsecutive</code> to group only pairs"
+    ],
+    "reference": [
+      "the exact class code of <code>Embedding</code>, <code>Flatten</code> and <code>Sequential</code>",
+      "the parameter breakdown 270 + 6000 + 200 + 200 + 5400 + 27",
+      "<code>nn.Linear</code> stores its weight as (out, in), e.g. (200, 30)",
+      "<code>model.eval()</code> / <code>model.train()</code> in real <code>torch.nn</code>",
+      "the torch 2.14 error text <code>probability tensor contains either inf, nan or element &lt; 0</code>"
+    ]
+  },
+  "compress": {
+    "prompt": "Card closed: draw the six-layer <code>Sequential</code> for the 3-character MLP with the shape after each layer for a batch of 4, then write in 3–4 sentences what the container adds and why forgetting <code>training = False</code> breaks sampling.",
+    "checklist": [
+      "a module = <code>__call__</code> for the forward step + <code>parameters()</code> for the tensors it owns",
+      "shapes (4, 3) → (4, 3, 10) → (4, 30) → (4, 200) → (4, 200) → (4, 200) → (4, 27)",
+      "<code>Sequential</code> runs layers in order and joins their parameter lists; it is itself a module, so it nests",
+      "sampling uses a batch of 1 → variance divides by n − 1 = 0 → nan",
+      "the nan also lands in <code>running_var</code>, so eval mode breaks afterwards"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain what problem the module-plus-container design solves compared with the previous lecture's loose tensors and hand-typed forward pass.", "kind": "concept", "answer": ["each layer owns its parameters and forward step", "the forward pass and the parameter list come from the same list of layers, so they can't drift apart", "the architecture becomes data (one list) instead of code you rewrite"]},
+    {"q": "Walk through <code>model(Xb)</code> for a batch of 4 contexts: which methods run, in what order, and what shape comes out of each?", "kind": "mechanism", "answer": ["<code>Sequential.__call__</code> loops over <code>self.layers</code>", "Embedding (4, 3, 10) → Flatten (4, 30) → Linear (4, 200) → BatchNorm1d (4, 200) → Tanh (4, 200) → Linear (4, 27)", "each layer also stores its result in <code>self.out</code>"]},
+    {"q": "Count the parameters of the flat MLP from its layer sizes, and say which layer dominates.", "kind": "mechanism", "answer": ["27 × 10 = 270; 30 × 200 = 6000; γ and β 200 + 200; 200 × 27 + 27 = 5427", "total 12,097", "the first Linear (6000) dominates, closely followed by the output layer (5427)"]},
+    {"q": "Our home-made modules vs real <code>torch.nn</code>: what do you gain by switching, and what did building them yourself buy you?", "kind": "tradeoff", "answer": ["torch.nn gives <code>model.eval()</code> for every sub-module, parameter registration, <code>state_dict()</code>, <code>.to(device)</code>, and a clear error for a training-mode batch of 1", "building them shows that a module is just a callable that owns tensors, so the library stops being magic and its bugs (like the training flag) make sense"]}
+  ],
+  "compare": [
+    {"with": "z2h-5-batchnorm/batchnorm-inference", "q": "That card computed running statistics so a trained net could handle one example at a time. Here the flag that selects them was forgotten. What exactly differs between the two modes, and how does each one fail?", "answer": ["training mode: normalise with the batch's own mean and variance and update the running buffers", "eval mode: normalise with the stored running mean and variance, no updates", "training mode fails on a batch of 1 (nan) and also poisons the buffers", "eval mode fails only if the buffers were never estimated well (or were poisoned by the bug)"]},
+    {"with": "z2h-7-wavenet/flatten-consecutive", "q": "<code>Flatten</code> vs <code>FlattenConsecutive(n)</code>: what does each glue together, and why does the tree-shaped model need the second one?", "answer": ["Flatten: (B, T, C) → (B, T·C), all characters fused at once", "FlattenConsecutive(2): (B, T, C) → (B, T/2, 2C), only neighbouring pairs fused", "the tree fuses context slowly, two at a time, so each level needs pairs, not everything", "FlattenConsecutive(8) on 8 characters behaves like Flatten (it squeezes the middle dim)"]}
+  ],
+  "predict": {"q": "Suppose BatchNorm used the <i>biased</i> variance (divide by n, not n − 1). You still forget <code>training = False</code> and sample one context at a time. Does sampling crash, and are the samples any good?", "answer": "No crash, and that's worse. With n = 1 every value equals its own mean, so x − x̄ = 0 and the variance is 0/1 = 0. Then x̂ = 0 / √(0 + 1e-5) = 0, so every hidden unit outputs just β, whatever the context was. The logits are the same for every context, so the model samples every character from one fixed distribution: names come out, but they ignore the context completely. A nan that crashes is easier to catch than a silently wrong answer."},
+  "apply": {"task": "Port the flat model to real <code>torch.nn</code>: <code>nn.Sequential(nn.Embedding(27, 10), nn.Flatten(), nn.Linear(30, 200, bias=False), nn.BatchNorm1d(200), nn.Tanh(), nn.Linear(200, 27))</code>. Count its parameters, print the shape of the first Linear's weight, call it on <code>torch.tensor([[0, 0, 0]])</code> while it is in training mode, then call <code>model.eval()</code> and try again.", "done": "You see 12,097 parameters, a weight of shape (200, 30) (transposed from our (30, 200)), a <code>ValueError: Expected more than 1 value per channel when training</code> for the batch of 1, and a (1, 27) output after <code>model.eval()</code>.", "hint": "<code>sum(p.numel() for p in model.parameters())</code> counts parameters; <code>model[2]</code> indexes into an <code>nn.Sequential</code>."},
+  "reflect": [
+    "Which prediction did you get wrong: the nan from a batch of 1, or the silent failure with biased variance?",
+    "What couldn't you explain cleanly: why <code>Sequential</code> can nest, or why the running buffers get poisoned?",
+    "Which relationship is still fuzzy: training flag → batch statistics, or batch statistics → nan when n = 1?",
+    "Could you add a new layer type (say, one that multiplies its input by a constant) to the model without touching the training loop? What would it need?",
+    "What will you check first the next time a model samples garbage?"
+  ],
+  "revisit": ["z2h-5-batchnorm/pytorchify-layers", "z2h-5-batchnorm/batchnorm-inference", "z2h-4-mlp/embedding-lookup", "z2h-4-mlp/view-storage"],
+  "prereq": ["z2h-5-batchnorm/pytorchify-layers"]
+}
