@@ -1,0 +1,55 @@
+{
+  "prime": {
+    "problem": "To train a network you need the gradient of the loss with respect to every input. A plain float forgets how it was computed, so there is nothing to walk back through.",
+    "fits": "This is the first piece of the engine. The derivative cards gave you the rule for one operation; this card makes the computation <i>remember itself</i>, so the next cards can apply those rules automatically.",
+    "expect": ["<code>Value</code> (data + parents + op)", "operator overloading (<code>__add__</code>, <code>__mul__</code>)", "the computation graph", "leaves vs computed nodes"],
+    "goal": "Explain why recording parents and the operation on every result is exactly what backprop needs, and build the class that does it."
+  },
+  "attend": [
+    "Which field makes backprop <i>possible</i>, and which fields are only for drawing?",
+    "When Python runs <code>a*b</code>, at what moment does the result learn who its parents are?",
+    "Why does a leaf have an empty <code>_prev</code>, and what does that mean for backprop later?",
+    "Why is one forward pass that records a graph cheaper than nudging each input separately?"
+  ],
+  "core": {
+    "must": [
+      "Every <code>+</code>/<code>*</code> goes through <code>__add__</code>/<code>__mul__</code> → the result is created <i>inside</i> the method → so it can store <code>(self, other)</code> as <code>_prev</code> and the op → the whole expression becomes a graph for free",
+      "Graph recorded on the forward pass → one backward pass can visit each node once → every gradient for the cost of about one extra pass (reverse-mode autodiff), instead of one pass per input for numerical nudging",
+      "Scalar nodes (one object per number) → easy to see and debug, but Python-object overhead per number → hopeless for real nets → PyTorch keeps the same idea at the granularity of whole tensor ops"
+    ],
+    "elevated": [
+      "<code>_prev</code> is a <b>set</b> → the order of parents isn't stable between runs → backprop must get its order from a topological sort, not from <code>_prev</code> (the automatic-backward card)"
+    ],
+    "reference": ["the <code>label</code> field and the <code>draw_dot</code>/graphviz plotting helpers", "the exact <code>__repr__</code> format", "installing graphviz (<code>brew install graphviz</code>)"]
+  },
+  "compress": {
+    "prompt": "Without scrolling up, explain in 3–4 sentences what a <code>Value</code> is and why it exists. Or draw <code>L = (a*b + c)*f</code> as a graph and annotate one node with every field it stores.",
+    "checklist": [
+      "wraps one number (<code>data</code>) and records its parents (<code>_prev</code>) and the operation (<code>_op</code>)",
+      "the recording happens inside the overloaded operators, so ordinary-looking arithmetic builds the graph",
+      "the graph is what lets backprop walk from the output back to every input",
+      "<code>grad</code> starts at 0 and means dL/d(this node); it stays 0 until the backward pass",
+      "why it matters: one recorded forward pass replaces one extra pass per input"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why a training loop can't get gradients from plain Python floats, and what minimal information each number must carry instead.", "kind": "concept", "answer": ["floats keep only the result, not how it was made", "each result needs its inputs (<code>_prev</code>) and the operation (<code>_op</code>), because that's what the local derivative depends on"]},
+    {"q": "Trace <code>d = e + c</code> step by step: which method runs, what object is created, and what ends up in its fields?", "kind": "mechanism", "answer": ["Python calls <code>e.__add__(c)</code>", "which returns <code>Value(e.data + c.data, (e, c), '+')</code>", "data 4.0, _prev {e, c}, _op '+', grad 0.0"]},
+    {"q": "A net has 41 parameters. Compare the cost of getting all 41 gradients by nudging each input with the cost of a recorded graph plus one backward pass. What do you give up with the graph?", "kind": "tradeoff", "answer": ["nudging: about 41 extra forward passes, each only approximate", "graph: one forward that records plus one backward, and the gradients are exact", "you pay memory to keep the graph, plus Python-object overhead per node"]}
+  ],
+  "compare": [
+    {"with": "z2h-2-micrograd/more-ops-and-pytorch", "q": "micrograd's <code>Value</code> vs a PyTorch tensor with <code>requires_grad=True</code>: what is fundamentally the same, what architectural choice makes one teachable and the other fast, and when would the difference ever bite you?", "answer": ["same: each result records the op and its inputs (<code>grad_fn</code>), and <code>.backward()</code> walks the graph", "difference: one node per scalar vs one node per whole tensor op run in C++/CUDA", "scalar graphs make every step visible; tensor graphs cut the per-node overhead by orders of magnitude", "it bites when you try to scale micrograd: a small MLP is fine, and GPT-2's 124M parameters are not"]},
+    {"with": "z2h-2-micrograd/automatic-backward", "q": "This card <i>builds</i> the graph and that card <i>walks</i> it. What does each need from the other, and what breaks if the graph records the wrong parents?", "answer": ["backward needs <code>_prev</code> to find inputs and <code>_op</code> to know which local derivative to apply", "wrong or missing parents mean gradients silently fail to reach some inputs"]}
+  ],
+  "predict": {"q": "You compute <code>g = a*a</code>. How many entries does <code>g._prev</code> hold, and what problem might that cause when gradients flow back to <code>a</code>?", "answer": "One entry: <code>_prev</code> is a set, so <code>{a, a}</code> collapses to <code>{a}</code>. And <code>a</code> contributes to <code>g</code> twice, so its gradient must be the <i>sum</i> of both paths. Any code that assigns (<code>=</code>) instead of accumulating (<code>+=</code>) gets it wrong. That's the \"+= bug\" card."},
+  "apply": {"task": "Extend your <code>Value</code> with <code>__sub__</code> without writing a new graph operation: express <code>a - b</code> using only <code>+</code> and <code>*</code>. Build <code>(a - b) * c</code> with a=2, b=−3, c=10, then walk <code>_prev</code> from the result and list every node's <code>_op</code>.", "done": "The result is 50.0, and your walk shows which ops your subtraction actually used (<code>*</code> by −1, then <code>+</code>).", "hint": "<code>a - b</code> = <code>a + (b * -1)</code>. Wrap −1 in a <code>Value</code> first, or accept plain numbers in <code>__mul__</code>."},
+  "reflect": [
+    "What surprised you about how little code turns arithmetic into a graph?",
+    "Could you explain, without saying \"it's for autograd\", <i>why</i> the result must be created inside <code>__mul__</code>?",
+    "Which prediction did you get wrong (the node count, or the <code>a*a</code> set)?",
+    "Which link feels fuzzy: graph → backward order, or graph → cost savings?",
+    "What will you revisit before the automatic-backward card?"
+  ],
+  "revisit": ["z2h-1-toolkit/python-you-need"],
+  "prereq": ["z2h-2-micrograd/partial-derivatives"]
+}

@@ -50,6 +50,16 @@ The `perf-*` folders form one linked series. `perf-series.json` lists the course
 
 On the hub, each series shows as one wide tile (on its map folder) that lists its courses. Its member courses are hidden from the grid unless a search matches them.
 
+## Study Mode
+
+Cards teach through a sequence of study stages: Prime → Learn → Encode → Compress → Retrieve → Compare → Predict → Apply → Reflect. [learning-principles/](learning-principles/learning-principles.html) explains why.
+
+- Each card's stages live in `<course>/_study/<slug>.json`. `study-lib.mjs` has the schema and the rules.
+- `study-build.mjs` injects a **Prime** block under the card's subtitle and a CSS-only **Study this card** stepper before the footer (cards can't run script). Each stage appears only once the previous one is opened.
+- `publish.sh` runs it before `course-nav.mjs`. Use `--card course/slug` to build a single card.
+- `verify-study.mjs <course>` checks the JSON, flagging generic or repeated questions, missing causal chains and links to cards that don't exist.
+- For interactive tutoring, `/study <course>/<slug>` in Claude Code walks through the stages one at a time and grades your answers.
+
 ## Papers
 
 Cards made from a paper (via `concept-curriculum` pointed at an arXiv paper) land in a

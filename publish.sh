@@ -29,12 +29,14 @@ trap 'rmdir "$lock"' EXIT
 if [ "$unattended" -eq 1 ]; then
   paths=(':(glob)paper-*/**' index.html hub.json)
   node sync-papers.mjs
+  node study-build.mjs paper-*
   node course-nav.mjs
   git add -A -- ':(glob)paper-*/**'
   node build-hub.mjs --tracked
 else
   paths=(.)
   node sync-papers.mjs || echo "papers: sync failed, publishing without paper changes"
+  node study-build.mjs
   node course-nav.mjs
   node build-hub.mjs
 fi
