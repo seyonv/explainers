@@ -1,0 +1,58 @@
+{
+  "prime": {
+    "problem": "The grammar thinks in characters; the model writes in tokens that span several characters. When the token the model wants crosses a grammar boundary (a comma inside <code>89,000</code>, a space glued to a quote), the mask blocks it, the model takes a token it rated unlikely, and every later token is written from an unusual spot. That's where valid-but-drifted answers come from.",
+    "fits": "Last card of part 2. Token masking showed that the mask rescales whatever survives. This card shows what happens when the survivors are far from what the model wanted, and why tokens not lining up with characters makes it worse.",
+    "expect": ["token boundary vs grammar boundary", "forced vs leading token", "the gap <code>ln(p_lead / p_forced)</code>", "token healing", "whitespace is tokens too"],
+    "goal": "Spot a prompt or grammar that fights the model, measure how hard it fights with the forced-vs-leading gap, and pick the fix: a prompt that asks for what the schema enforces, a looser grammar, or token healing."
+  },
+  "attend": [
+    "In the 89,000 example, which single token does the grammar block, and why does blocking it change the <i>value</i> and not just the format?",
+    "Why does the model's natural token <code> \"</code> (space plus quote) have to be split, and what does the grammar hand over instead?",
+    "What does token healing change at the end of the prompt, and why does a lone <code>:</code> mislead the model?",
+    "Why did Ollama's grammar let the model's newlines through, while the cookbook warns that forced whitespace can degrade into nonsense?",
+    "When is the forced-vs-leading gap near zero, and what does a large gap tell you to change?"
+  ],
+  "core": {
+    "must": [
+      "Grammar rules end at characters, tokens span several → a token that crosses a rule boundary (<code>89,</code>, space + quote) is masked even though its first characters were fine → the model takes a low-probability alternative → later tokens continue from an off-distribution prefix → drift (89,000 → 890000, or a sum cut to 64500)",
+      "The mask removes the model's leading token → gap = ln(p_lead / p_forced), 1.98 to 6.81 nats in the probe → a big gap means the prompt or grammar fights the model → ask for exactly what the schema enforces, or loosen the grammar",
+      "The prompt ends mid-token (<code>http:</code>) → the model reads the lone token as \"not <code>://</code>\" → token healing backs up one token and constrains the next to start with it → the model can pick its natural token",
+      "Rigid whitespace or field order in the grammar → the model's preferred newline or space tokens get masked → it's pushed off-distribution → allow any whitespace where the format permits"
+    ],
+    "elevated": [
+      "Qwen writes digits one per token → banning the comma leaves every digit choice open → the number just keeps going (890000) or closes early (64500); a tokenizer that groups digits would fail differently"
+    ],
+    "reference": ["Guidance's notebook figures (34 colon tokens, ~70% of the 10k most common tokens are prefixes)", "the exact logprob values in each probe row", "Ollama's <code>logprobs</code>/<code>top_logprobs</code> options", "LM Format Enforcer's <code>output_scores</code> flag"]
+  },
+  "compress": {
+    "prompt": "Draw the 89,000 story as a chain from \"the model wants <code>,</code>\" to \"valid but wrong number\". Then add one arrow for each of the three fixes, showing where it cuts the chain.",
+    "checklist": [
+      "the grammar blocks the token the model rated highest",
+      "the model continues from text it rarely saw in training",
+      "result: a valid but drifted value",
+      "fix 1: the prompt asks for exactly the format the schema enforces",
+      "fix 2: the grammar allows the whitespace and field order the model prefers",
+      "fix 3: token healing at the prompt boundary"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain how a mask that removes only invalid tokens can still change the value of a <i>valid</i> answer.", "kind": "concept", "answer": ["the mask rescales what's left, but the text so far becomes something the model wouldn't have written", "every later token is conditioned on that unusual prefix", "e.g. the comma in 89,000 is blocked, the model continues with digits and writes 890000; or the sum loses its second term and closes at 64500"]},
+    {"q": "Walk through row 2 of the residents probe: after <code>89</code>, what did the model want, what did the grammar allow, what was picked, and how big is the gap?", "kind": "mechanism", "answer": ["the model wanted <code>,</code> at 85.6% (a thousands separator)", "a JSON integer can't contain a comma, so it's masked", "<code>0</code> at 11.82% was picked", "gap = ln(85.6 / 11.82) = ln 7.2 = 1.98 nats; this greedy run still reached 89000"]},
+    {"q": "You see a large forced-vs-leading gap on a date field. Rank three fixes by cost: rewrite the prompt, loosen the grammar, switch to an engine with token healing.", "kind": "tradeoff", "answer": ["prompt first: ask for exactly the format the schema enforces; it's free, and the only lever on hosted APIs", "loosen the grammar where the format allows (whitespace, key order), then check strictly after decoding", "switching engines costs most, and healing only fixes the prompt boundary, not conflicts in the middle of the output"]}
+  ],
+  "compare": [
+    {"with": "structured-outputs/token-masking", "q": "Token masking's formula says the survivors keep their order. This card says masking can still derail the answer. Which is right, and what does the formula leave out?", "answer": ["both: at one step, the order of the allowed tokens is unchanged", "the formula describes a single step; it says nothing about the next step, which is conditioned on the forced token", "drift is a multi-step effect: one forced token shifts every later distribution"]},
+    {"with": "structured-outputs/quality-shift", "q": "Token healing is the paper's guess for why Guidance scored 3.3–3.7 points above prompt-only. What would you measure to test that guess, and what else could explain the gap?", "answer": ["run Guidance with healing on and off, same tasks, same prompts", "other candidates: how each engine handles whitespace and field order, fast-forward changing the tokenization, or noise (no error bars)", "the paper's Figure 16: no engine wins every instance"]}
+  ],
+  "predict": {"q": "Your schema forces dates as <code>\"YYYY-MM-DD\"</code>, but the prompt shows dates like \"March 5, 2024\". Will the output be invalid, valid but at risk of being wrong, or fine? And where do you expect the largest gap? Commit before revealing.", "answer": "Valid, because the grammar guarantees the pattern, but at risk of being wrong. Expect the largest gap on the first character after the opening quote: the model wants to start with <code>March</code> or <code>Mar</code> and is forced to a digit, and the rest is then written from a spot it rarely saw. This is reasoning from the card's mechanism, not a measurement. The cheap fix is the prompt: show dates in the same format the schema enforces."},
+  "apply": {"task": "Reproduce the forced-vs-leading view on a model whose logits you can read (Ollama with <code>logprobs</code> and <code>top_logprobs</code>). Use a schema with one integer field and a prompt that asks for a thousands separator, then fix the prompt to ask for digits only. For each run, list every step where the picked token differs from the model's top token, and compute the gap in nats. If you can't run a model, compute the three gaps from the card's probe table instead.", "done": "You have two tables (fighting prompt, fixed prompt) of overruled steps with their gaps, and you can say whether the fix reduced them. If it didn't, you can name the token that still fights.", "hint": "gap = ln(p_lead / p_forced). For comparison, the card's fighting prompt overruled 3–4 tokens per run, and its three rows give 6.81, 1.98 and 3.62 nats."},
+  "reflect": [
+    "Which prediction did you get wrong: whether the date comes out valid, or where the gap peaks?",
+    "What couldn't you explain cleanly: why a one-step renormalisation can cause a multi-step drift?",
+    "Which relationship is still fuzzy: token boundary → masked leading token, or masked leading token → wrong value?",
+    "Where in your own prompts does the example format differ from what the schema enforces?",
+    "What will you look for in the quality card: whether these small drifts show up in benchmark accuracy at all?"
+  ],
+  "revisit": ["structured-outputs/token-masking", "structured-outputs/json-schema"],
+  "prereq": ["structured-outputs/token-masking"]
+}

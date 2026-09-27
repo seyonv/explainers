@@ -1,0 +1,62 @@
+{
+  "prime": {
+    "problem": "Every speed-up in this course is only as real as the measurement behind it. A <code>time.time()</code> around an asynchronous launch measures the launch; a hot-L2 loop can report more bandwidth than HBM can deliver; Nsight Compute's own duration comes from replayed, cache-flushed, clock-locked runs. And a fast kernel that writes out of bounds is worthless.",
+    "fits": "The last card, and the tools for the loop the overview described. It uses the occupancy card's achieved vs theoretical occupancy, the MIO throttle stall from matmul II and the launch gaps from fusion, and gives you the method to check every notebook number you'll produce.",
+    "expect": ["Compute Sanitizer (memcheck, racecheck, initcheck, synccheck)", "Nsight Systems: where the time goes", "Nsight Compute: Speed of Light, roofline, stall reasons", "hot vs cold L2", "warm-up, events, <code>do_bench</code>, median and p90"],
+    "goal": "Pick the right tool for each question (correct? where? why? how long?), set up a timing that doesn't lie, and read a kernel's bound from Speed of Light and stall reasons."
+  },
+  "attend": [
+    "Which question does nsys answer that ncu can't, and the other way round?",
+    "Why shouldn't you quote ncu's kernel duration as your production time? Name the four things it changes.",
+    "A GEMV \"achieves\" 5.5 TB/s on an H100. What does that tell you, and how would you fix the benchmark?",
+    "Why does <code>long_scoreboard</code> mean latency-bound rather than necessarily bandwidth-bound?",
+    "Why run Compute Sanitizer before timing, and never time under it?"
+  ],
+  "core": {
+    "must": [
+      "Correct first (sanitizer) → where does time go across the program (nsys timeline, one pass) → why is the top kernel slow (ncu Speed of Light, roofline, stall reasons) → fix → re-measure → each tool answers one question and misleads on the others",
+      "ncu replays kernels, flushes caches, serialises launches and locks clocks to get deterministic metrics → its duration differs from production → use it for why, and CUDA events or nsys for how long",
+      "A tight benchmark loop keeps inputs in L2 → a bandwidth-bound kernel reads from L2 instead of HBM → it looks up to ~1.64× faster on an H100 than it runs in production → rotate input copies to ≥ 2× L2 or flush L2 before every run",
+      "Launches are asynchronous → host timers around a launch measure queueing, not execution → GPU-side events after warm-up, many runs, reported as median and p90"
+    ],
+    "elevated": [
+      "Stall reasons matter only when schedulers fail to issue every cycle → <code>math_pipe_throttle</code> on a GEMM is the good problem (compute-bound), <code>long_scoreboard</code> on a GEMV means waiting on global loads, and MIO throttle means the shared-memory instruction queue is full (siboehm's kernel 3)"
+    ],
+    "reference": [
+      "ncu section names (SpeedOfLight, MemoryWorkloadAnalysis, roofline charts) and CLI flags (<code>--clock-control</code>, <code>--cache-control</code>, <code>--replay-mode</code>)",
+      "<code>do_bench</code> defaults (warmup 25 ms, rep 100 ms, 256 MB flush, mean unless quantiles)",
+      "CUTLASS's methodology numbers (> 1,000 iterations, 3 s clock settling, Blackwell 10,000/4,000/1 s)",
+      "the four sanitizer tools' exact coverage"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, write the loop as five boxes (correct → where → why → fix → re-measure) with the tool for each box, and next to it a 5-item checklist for a timing you'd trust.",
+    "checklist": [
+      "Compute Sanitizer first; memcheck before the others",
+      "nsys: timeline, top kernel, launch gaps",
+      "ncu: Speed of Light, roofline dot, stall reasons; not its duration",
+      "timing: GPU events or do_bench, warm-up, many runs, cold L2 (flush or rotate ≥ 2× L2)",
+      "report median and p90; realistic input data; say when you measure hot on purpose"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why a benchmark can report a GEMV faster than HBM physically allows, and why that number is wrong for decode.", "kind": "concept", "answer": ["after the first run the weights sit in the 50 MB L2", "later runs read from L2 (~5.5 TB/s measured) instead of HBM (3.35 TB/s)", "in a real decode step other kernels evict them, so each GEMV pays HBM bandwidth: up to ~1.64× slower"]},
+    {"q": "Walk through profiling an unfamiliar slow kernel: which tools you run in which order, what you read from each, and how you decide the fix.", "kind": "mechanism", "answer": ["compute-sanitizer memcheck (then racecheck/synccheck) until clean", "nsys: is the time in this kernel, in gaps, or in copies?", "ncu on the top kernel: compute vs memory % of peak, the roofline dot vs the ridge, dominant stall reason", "memory-bound → fewer bytes; compute-bound → tensor cores; latency stalls → more work in flight; gaps → graphs or fusion; then re-measure"]},
+    {"q": "Benchmarking a 40 MB GEMV on an H100: compare rotating buffers with flushing L2 via <code>do_bench</code>. How many copies does CUTLASS's rule need, and what does each approach cost or miss?", "kind": "tradeoff", "answer": ["rotation to ≥ 2× L2 (≥ 100 MB): 3 copies = 120 MB; costs memory, but keeps back-to-back timing realistic", "flush: zeroing 256 MB before each run; simple, but adds a kernel between runs and times one call at a time", "both give cold-L2 numbers: hot 7.27 µs vs cold 11.94 µs at the two bandwidths"]}
+  ],
+  "compare": [
+    {"with": "perf-3-kernels/_overview", "q": "The overview's loop says measure → place → fix → re-measure. Map each step onto a tool from this card, and say which step each tool is <i>wrong</i> for.", "answer": ["measure: nsys (and events for durations); wrong for why", "place: ncu's Speed of Light and roofline; wrong for production duration", "fix: the course's cards, chosen by the bound", "re-measure: do_bench or events with cold caches; wrong if run hot or once"]},
+    {"with": "perf-5-engines/benchmarking", "q": "Kernel microbenchmarks vs engine benchmarks: what does each measure, and which questions (tokens/s under load, a GEMM regression) belong to which?", "answer": ["kernel benchmarks isolate one kernel with controlled caches and clocks", "engine benchmarks run real traffic with batching, contention and launch overhead", "a GEMM regression is a kernel question; tokens/s and latency under load are engine questions, where kernel microbenchmarks mislead"]}
+  ],
+  "predict": {"q": "A batch-1 decode GEMV reads a 40 MB weight matrix on an H100 (it fits in the 50 MB L2). Commit: what time does a hot tight loop report, what does production pay, and would CUTLASS-style rotation with 2 copies be enough?", "answer": "Hot: 40 MB ÷ 5.5 TB/s ≈ 7.27 µs; cold: 40 MB ÷ 3.35 TB/s ≈ 11.94 µs, so the hot loop flatters it by ~1.64×. Two copies total 80 MB, under the ≥ 2× L2 (100 MB) rule, and the pair could partly stay resident. You need 3 copies (120 MB), or flush L2 before each run as <code>do_bench</code> does."},
+  "apply": {"task": "Open <code>labs/profiling.ipynb</code> on a T4. Run Compute Sanitizer on the four broken kernels and match each to its tool. Time a GEMV with <code>time.time()</code>, with CUDA events, and with <code>do_bench</code> (hot and with L2 flush), and report median and p90 for each. If nsys and ncu run on your Colab image, profile the naive and shared-memory transposes and read off each one's memory % of peak and top stall reason.", "done": "You have one row per timing method with median and p90, a sentence on how far the hot-L2 number sits from the cold one on your T4 (using the notebook's printed L2 size), and each sanitizer bug matched to the tool that caught it.", "hint": "The T4's L2 size isn't in the course facts; the notebook prints it. If the hot number beats 320 GB/s, it's reading from cache."},
+  "reflect": [
+    "Which prediction did you get wrong: the hot-vs-cold gap, or the number of rotation copies?",
+    "Could you explain why ncu's duration differs from production without listing flags?",
+    "Which relationship is still fuzzy: stall reason → bound, or bound → which card's fix?",
+    "Which number in this course's notebooks would you now re-measure first, and with which method?",
+    "What will you revisit before perf-4: how you'd profile an attention kernel's memory traffic?"
+  ],
+  "revisit": ["perf-3-kernels/occupancy", "perf-3-kernels/matmul-coalescing-smem", "perf-3-kernels/fusion-cuda-graphs"],
+  "prereq": ["perf-3-kernels/occupancy"]
+}

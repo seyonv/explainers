@@ -1,0 +1,67 @@
+{
+  "prime": {
+    "problem": "\"Build a request scheduler\" can be scoped a dozen ways. Start by designing everything and at minute 45 nothing runs; start without a memory model and your scheduler asks for 17 blocks from a pool of 12. You need the interface, the three constraints and the questions that change the code before writing a line.",
+    "fits": "First card of group 3, the build section. Groups 1–2 explained why the loop looks the way it does; this card turns it into an interface (add, step, finish_step), three inequalities, a test trace and a v1 → v2 → v3 plan that the next eight cards fill in.",
+    "expect": [
+      "Request, Scheduler.add / step / finish_step",
+      "three inequalities: token budget, max sequences, KV blocks",
+      "questions to ask first, and the harder defaults",
+      "v1 → v2 → v3 in 45 minutes",
+      "the 8-request toy trace as a test"
+    ],
+    "goal": "State the problem, the interface and the three constraints from memory, choose defaults for the open questions, and plan a build that runs every 15 minutes and is checked on the toy trace."
+  },
+  "attend": [
+    "Priorities and tenants don't add an inequality. What do they change instead?",
+    "Why does v1 fail on the toy trace even though it respects the budget and the seat cap?",
+    "Why is \"are output lengths known?\" the question that changes the most code?",
+    "Why does the sanity bound use prompt + output − 1 tokens per request?",
+    "The card says most bugs here are bookkeeping bugs. Which invariants would catch them earliest?"
+  ],
+  "core": {
+    "must": [
+      "Every step must satisfy Σn ≤ budget, |running| ≤ max_seqs and Σ⌈(c_i + n_i) ÷ B⌉ ≤ N blocks → the scheduler is a greedy loop that serves running requests and admits from the queue while all three hold",
+      "Output lengths are unknown → either reserve the maximum at admission (never preempt, fewer fit) or allocate lazily and preempt when memory runs out → that one answer decides v2 vs v3",
+      "Build in versions that each run → v1 (budget + FCFS) overflows memory (17 of 12 blocks), v2 (reserve) is safe but slower (22 steps), v3 (lazy + preempt) finishes in 21 steps with 3 preemptions → each failure motivates the next version",
+      "The hard part is state, not the algorithm → a request in exactly one container, num_computed matching its blocks, every block freed once → write invariant checks before tuning policy"
+    ],
+    "elevated": [
+      "The last output token is never fed back → a request needs prompt + output − 1 forward tokens → the toy trace needs 139 → at least ⌈139 ÷ 16⌉ = 9 steps, a bound any correct scheduler must respect"
+    ],
+    "reference": [
+      "the name mapping to nano-vllm and vLLM (add_request, update_from_output)",
+      "the list of public practice repos",
+      "the Jaillet et al. competitive-ratio quote"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, write the six-line engine loop, the three inequalities, and the three versions with what each adds and what it gets wrong on the toy trace.",
+    "checklist": [
+      "loop: drain inbox → add → step() → forward → finish_step()",
+      "budget, seat cap and KV blocks, checked every step",
+      "v1: budget + FCFS, no memory model, overflows the pool",
+      "v2: reserve blocks up front, never preempts, 22 steps",
+      "v3: lazy blocks + preempt newest + chunking, 21 steps, 3 preemptions"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why the scheduler is a greedy loop rather than an optimisation problem, and where its real difficulty lies.", "kind": "concept", "answer": ["arrivals are online and lengths unknown; no deterministic online algorithm has a constant competitive ratio", "so engines serve running first and admit greedily while things fit", "the difficulty is keeping state consistent: containers, counters, blocks freed exactly once"]},
+    {"q": "Walk through step 0 of the toy trace against the three inequalities.", "kind": "mechanism", "answer": ["request 0's 12-token prompt fits; request 1's 5-token prompt gets a 4-token chunk: 12 + 4 = 16 ≤ 16", "running = 2 ≤ 4 seats", "blocks ⌈12/4⌉ + ⌈4/4⌉ = 4 ≤ 12, 8 free", "request 2 waits: no budget left"]},
+    {"q": "Nobody tells you whether the exercise needs cancellation or streaming. What defaults do you pick, and what does each cost in code?", "kind": "tradeoff", "answer": ["streaming: yes; finish_step must emit each token, and ITL becomes an SLO (smaller budgets)", "cancellation: yes; a rid → request map and blocks freed exactly once, never mid-step", "choosing the harder default costs some code but avoids a redesign later; say the assumption out loud"]}
+  ],
+  "compare": [
+    {"with": "llm-request-scheduler/reference-solution", "q": "This card plans v1 → v2 → v3; the reference solution is the finished v3. What does the plan's ordering buy you that writing the final file top to bottom doesn't?", "answer": ["each version runs and fails visibly, so you know what the next one fixes", "bugs are localised: overflow is a v1 fact, slowness a v2 fact, thrashing a v3 fact", "writing v3 directly hides which part (admission, growth, preemption) caused a wrong trace"]},
+    {"with": "perf-5-engines/scheduler", "q": "Course 5's scheduler card describes a real engine's KV budget and preemption. Which of this card's three inequalities and open questions does a real engine answer with a default, and which does it expose as a flag?", "answer": ["budget and seat cap are flags (max_num_batched_tokens, max_num_seqs) with per-GPU defaults", "the KV pool is derived from free memory (gpu_memory_utilization)", "unknown lengths are answered by lazy allocation plus recompute preemption in vLLM, by reservation in TGI"]}
+  ],
+  "predict": {"q": "You run v1 (no memory model) on the toy trace but with a 48-block pool instead of 12. Before running: does it still overflow, and how many steps does it take?", "answer": "It no longer overflows: v1's peak is 17 blocks, well under 48. It runs the same 16 steps and 76.7 ms as the card's v1 row, because v1 never looked at memory in the first place. A larger pool makes the unsafe version safe by accident; the invariant, not the pool size, is what makes it correct."},
+  "apply": {"task": "Using the toy config (budget 16, 4 seats, blocks of 4 tokens, 12 blocks): (a) a proposed step schedules a decode for A (num_computed 7, 2 blocks held), a decode for B (num_computed 15, 4 blocks held) and a new request C with a 9-token prompt. Check all three inequalities and say how many blocks are free afterwards. (b) Compute the lower bound on steps for a trace of three requests with (prompt, output) = (10, 5), (20, 3), (6, 8).", "done": "(a) tokens 1 + 1 + 9 = 11 ≤ 16; 3 ≤ 4 running; A needs ⌈8/4⌉ = 2 (no new), B ⌈16/4⌉ = 4 (no new), C ⌈9/4⌉ = 3 new, so 9 of 12 blocks held and 3 free. (b) (10 + 5 − 1) + (20 + 3 − 1) + (6 + 8 − 1) = 49 forward tokens → at least ⌈49 ÷ 16⌉ = 4 steps.", "hint": "A block is needed for token positions up to c + n, where c is num_computed before the step."},
+  "reflect": [
+    "Which prediction did you get wrong: whether a bigger pool fixes v1, or its step count?",
+    "Could you state the three inequalities without looking, including the ceiling in the blocks one?",
+    "Which relationship is still fuzzy: unknown lengths → lazy allocation → preemption, or reservation → fewer requests fit?",
+    "Which open question would you have forgotten to ask?",
+    "What will you revisit before the data-structures card: which container holds each state?"
+  ],
+  "revisit": ["llm-request-scheduler/continuous-batching", "llm-request-scheduler/chunked-prefill", "llm-request-scheduler/kv-cache"],
+  "prereq": ["llm-request-scheduler/continuous-batching"]
+}

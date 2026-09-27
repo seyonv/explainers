@@ -1,0 +1,128 @@
+{
+  "prime": {
+    "problem": "Prompt-only JSON fails because nothing stops the sampler from picking <code>Sure</code> or <code>```</code>. To <i>guarantee</i> the format, some component has to veto invalid tokens before the pick, at every single step, across the whole vocabulary.",
+    "fits": "First card of part 2. Part 1 showed the failure (sampling ignores the parser) and the contract (the schema). This card is the mechanism every grammar engine shares; the next cards are about how the engine knows <i>which</i> tokens to veto, and how fast.",
+    "expect": [
+      "the paper's Algorithm 1 loop",
+      "<code>p′(t) = m(t)·p(t) / Σ m·p</code>",
+      "the mask as one bit per vocabulary token",
+      "mask and forward pass in parallel"
+    ],
+    "goal": "Walk through one constrained decoding step from logits to sampled token, and compute what the mask does to the probabilities."
+  },
+  "attend": [
+    "Which two steps of the loop can run at the same time, and why doesn't the model need to know a mask exists?",
+    "After masking, does the <i>order</i> of the surviving tokens ever change? What does change?",
+    "In the cookbook's step 1, 85% of the probability was masked, 70% of it on <code>Sure</code> and <code>Here</code>. Where did that mass go, and why does it matter which tokens it came from?",
+    "Why do engines set masked logits to −∞ rather than multiplying by 0 as the paper writes it?",
+    "The mask guarantees the format. Which kind of error can it never catch, and why?"
+  ],
+  "core": {
+    "must": [
+      "Grammar state after the tokens so far → which next tokens keep the output valid → a 0/1 mask over the whole vocabulary → masked tokens get probability 0 → the sampler can't pick an invalid token, so the first pass always parses",
+      "Masking removes probability mass and renormalises the rest → survivors keep their relative order but grow (<code>{</code> 5% → 33.3%) → if the removed tokens were chatter nothing is lost, but if the prompt fights the schema the model is pushed onto tokens it rated unlikely",
+      "The mask only removes options → the model still chooses among valid values → schema-valid but wrong values (60 for 54) pass → correctness needs a separate check",
+      "The mask covers every vocabulary token every step (248,320 on the M3) → computed on the CPU while the GPU runs the model → cheap only if the engine avoids checking tokens one by one"
+    ],
+    "elevated": [
+      "Mask and forward pass run in parallel → the mask is free until it is slower than the model step → then the GPU waits every token (the fast-masks card)"
+    ],
+    "reference": [
+      "the paper's Algorithm 1 line numbers and its <code>m ⊙ v′</code> typo",
+      "the mask size in bytes (31,040 B at 248,320 tokens)",
+      "Ollama's <code>logprobs</code> / <code>top_logprobs</code> options"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, write the per-token loop of constrained decoding as a chain of arrows, from the tokens written so far to the next sampled token. Then add one sentence on what the mask does to probabilities, and one on what it can't do.",
+    "checklist": [
+      "the grammar state is updated with the tokens written so far",
+      "the mask marks every vocabulary token allowed (1) or not (0), in parallel with the forward pass",
+      "invalid tokens go to probability 0 and the survivors are rescaled to sum to 1",
+      "a token is sampled and appended; stop when end-of-sequence is picked",
+      "the mask guarantees validity, not correct values"
+    ]
+  },
+  "retrieve": [
+    {
+      "q": "Explain why masking guarantees the first pass parses, while no prompt wording can.",
+      "kind": "concept",
+      "answer": [
+        "the prompt only shifts probabilities; the mask sets invalid ones to exactly 0",
+        "an invalid token can never be sampled, so every prefix stays completable",
+        "the loop ends only at end-of-sequence, which the grammar allows only when the object is complete"
+      ]
+    },
+    {
+      "q": "Walk through step 1 of the cookbook's example: which tokens survive, why, and what the sampler actually draws from.",
+      "kind": "mechanism",
+      "answer": [
+        "<code>Sure</code>, <code>Here</code> (not JSON), <code>{'cust</code> (single quotes) and the wrong-first-key tokens get m = 0",
+        "<code>{</code>, <code>{\"</code>, <code>{\"customer\"</code>, <code>{\"cust</code> survive with 15% of the mass",
+        "rescaled: 33.3%, 26.7%, 20.0%, 20.0%"
+      ]
+    },
+    {
+      "q": "When is masking the wrong tool, even though it guarantees format?",
+      "kind": "tradeoff",
+      "answer": [
+        "when you can't reach the logits (hosted APIs only offer their own version)",
+        "for free-form reasoning text you don't want shaped",
+        "as a correctness check: it can't tell 60 from 54",
+        "when the prompt asks for a format the schema forbids, it forces unlikely tokens"
+      ]
+    },
+    {
+      "q": "Redo the cookbook's step 1 for <i>our</i> schema, which has no customer block, so <code>{\"customer\"</code> and <code>{\"cust</code> are masked too. What survives, and with what probabilities?",
+      "kind": "mechanism",
+      "answer": [
+        "only <code>{</code> (5%) and <code>{\"</code> (4%) survive: 9% of the mass",
+        "p′(<code>{</code>) = 5/9 ≈ 55.6%, p′(<code>{\"</code>) = 4/9 ≈ 44.4%",
+        "the model now chooses inside an even smaller corner of its own distribution"
+      ]
+    }
+  ],
+  "compare": [
+    {
+      "with": "structured-outputs/why-json-breaks",
+      "q": "Same model, same prompt: prompt-only got 7/30 raw parses, masking got 30/30. What single change in the sampling step causes the difference, and what new way of failing does masking introduce?",
+      "answer": [
+        "masking multiplies the distribution by m(t) before sampling",
+        "invalid tokens can't be drawn, so fences and preambles vanish",
+        "the new failure: forced low-probability tokens when prompt and schema disagree, and valid-but-wrong values"
+      ]
+    },
+    {
+      "with": "nucleus-sampling/nucleus-sampling",
+      "q": "Top-p and a grammar mask both set some tokens to zero and rescale the rest. What decides which tokens each one removes, and why does that make them dangerous together?",
+      "answer": [
+        "top-p removes by probability rank: the unlikely tail",
+        "the mask removes by validity, whatever the probability",
+        "if top-p runs first it can remove the only valid token, leaving nothing (the sampling-with-grammar card)"
+      ]
+    }
+  ],
+  "predict": {
+    "q": "The mask only needs to say which tokens are allowed. For our flat order schema, how many distinct masks does the whole answer need? One per output token (38), or fewer? Commit, then reveal.",
+    "answer": "Fewer. Many steps share the same situation (\"inside a SKU string\", \"after a comma between items\"), so a precomputed engine can store one mask per grammar <i>state</i> and look it up. That's the idea behind the next card: compile the schema into a finite set of states once, so each step is a lookup instead of a scan of 248,320 tokens."
+  },
+  "apply": {
+    "task": "Build the smallest mask by hand. The allowed outputs are exactly <code>ab</code> and <code>ac</code>. The vocabulary is <code>a</code>, <code>b</code>, <code>c</code>, <code>ab</code>, <code>ac</code>, <code>aa</code>, plus EOS. Write down the legal tokens (m = 1): (1) at the start, (2) after the token <code>a</code>, (3) after the single token <code>ab</code>. (4) State the rule for when EOS becomes legal. Then break it: a buggy checker validates only the <i>first character</i> of the text. Name one token it wrongly admits at the start, and say what goes wrong next. If you missed anything, repair with a harder variant: allowed outputs <code>xy</code> and <code>xyz</code>, and vocabulary <code>x</code>, <code>y</code>, <code>z</code>, <code>xy</code>, <code>yz</code>, <code>xx</code>, plus EOS. Answer the same questions (1)–(4). Here one output is a prefix of the other, so watch EOS.",
+    "done": "You have written all five answers, each with a one-line reason, <i>before</i> opening the check. Every answer matches it, or you did the <code>xy</code>/<code>xyz</code> variant and its answers match.",
+    "hint": "Check, only after trying: (1) start: <code>a</code>, <code>ab</code>, <code>ac</code> are legal; <code>b</code> and <code>c</code> (wrong first letter), <code>aa</code> (no allowed output continues with a second <code>a</code>) and EOS are masked. (2) After <code>a</code>: only <code>b</code> and <code>c</code>. (3) After <code>ab</code>: only EOS. (4) EOS is legal only once the text is a complete allowed output (<code>ab</code> or <code>ac</code>), never after a bare <code>a</code>. Buggy checker: it admits <code>aa</code> (or an invented <code>ax</code>): right first letter, impossible output. From <code>aa</code> no allowed output is reachable, but the buggy checker keeps saying yes, so invalid text ships: an under-constrained mask. <details class=\"ref\"><summary>Variant check (open only after you have tried the xy/xyz variant)</summary>Variant (<code>xy</code>/<code>xyz</code>): start {<code>x</code>, <code>xy</code>}; after <code>x</code> {<code>y</code>, <code>yz</code>}; after <code>xy</code> {<code>z</code>, EOS}. Both are legal, because <code>xy</code> is already complete but <code>xyz</code> can still continue, so EOS is a real choice left to the model.</details>"
+  },
+  "reflect": [
+    "Which prediction did you get wrong: how many distinct masks an answer needs, or which token the buggy checker lets through?",
+    "What couldn't you explain cleanly: why the survivors' order never changes, yet the model can still drift?",
+    "Which relationship is still fuzzy: mask → guaranteed parse, or mask → unlikely forced tokens?",
+    "Where does the 70% of removed probability go, and could you explain it to someone without the formula?",
+    "What will you look for in the regex-FSM card: how the engine knows the mask without checking every token?"
+  ],
+  "revisit": [
+    "structured-outputs/why-json-breaks",
+    "structured-outputs/json-schema"
+  ],
+  "prereq": [
+    "structured-outputs/why-json-breaks"
+  ]
+}

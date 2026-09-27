@@ -1,0 +1,64 @@
+{
+  "prime": {
+    "problem": "Past one GPU there are half a dozen ways to split a model (TP, PP, DP, EP, prefill/decode and attention/expert disaggregation), and each trades speed or memory for communication. Without a map you pick by habit and pay for it in latency, GPUs or failures.",
+    "fits": "The map of course 6, read first for the gist or last as a recap. It needs course 2's step-time model and sharding cards; every card in this course fills in one row of its layout table or one lever in its ranking.",
+    "expect": ["the step-time formula with an all-reduce term", "where each split lives: NVLink inside a node vs InfiniBand between", "the layout decision table", "levers ranked by what they change", "why the multipliers don't multiply"],
+    "goal": "Given a model size, traffic and latency target, say which split to start with and why, and name the one number (all-reduce latency) that can flip the answer."
+  },
+  "attend": [
+    "In the step formula, which term shrinks as you add GPUs and which doesn't?",
+    "Why is the rule \"keep the chatty splits inside a node\", and which splits count as chatty?",
+    "Which rows of the layout table are decided by memory, and which by latency?",
+    "Why are the DistServe and MegaScale-Infer multipliers not additive with the others?",
+    "What changes about the \"inside a node\" line on a 72-GPU NVLink rack?"
+  ],
+  "core": {
+    "must": [
+      "Splitting a model divides the bytes each GPU reads (W/n) → but adds communication that doesn't shrink with n → TP pays 2 all-reduces per layer, fine on 450 GB/s NVLink, too slow on 50 GB/s IB → chatty splits (TP, and EP's all-to-all where possible) stay inside the node; PP, DP and KV transfers cross it",
+      "Memory decides the minimum and the count (weights + KV for every resident user) → speed decides the TP degree inside a replica → capacity comes from replicas → PP or EP only when one copy must span nodes",
+      "MoE stores all experts but computes a few → each expert sees a sliver of the batch → only pooling tokens from many GPUs (EP, or separate attention and expert pools) makes experts efficient → and the busiest GPU sets the pace, so hot experts get copies",
+      "Prefill and decode have opposite bottlenecks → on one GPU prefill stalls decode and both share one sizing → split them when traffic is large, prompts long and the per-token SLO strict; otherwise chunked prefill and replicas are simpler"
+    ],
+    "elevated": [
+      "Every TP verdict here uses an illustrative 1 µs per ring hop (NVIDIA publishes none) → TP16-vs-TP8 flips around a 30 µs cross-node all-reduce → measure your cluster's latency (the sizing card's rented-node script) before choosing"
+    ],
+    "reference": [
+      "each lever's exact multiplier and its baseline",
+      "the glossary aliases (xPyD, M2N, busbw)",
+      "per-paper GPU and model names behind each number",
+      "newer rack-scale NVLink domains (GB200 NVL72)"
+    ]
+  },
+  "compress": {
+    "prompt": "Draw the whole course's causal map from memory: one box per split (TP, PP, DP, EP, P/D, AFD), an arrow from each to what it buys and what it costs, and the NVLink/IB boundary through the middle. Then write the step formula under it.",
+    "checklist": [
+      "TP: faster token, 2 all-reduces per layer → inside the node",
+      "PP: memory and throughput, not speed → crosses nodes with one activation per stage",
+      "DP: capacity with no communication, but a weight copy each",
+      "EP: pooled expert batches via all-to-all, straggler-bound → hot-expert copies",
+      "P/D and attention/expert disaggregation: size and split each part separately, at the cost of transfers",
+      "memory first, then latency, then failures and dollars"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain the one rule underneath every layout in this course, and give the two numbers that justify it.", "kind": "concept", "answer": ["keep the splits that communicate every layer inside one NVLink node", "NVLink 450 GB/s per direction per GPU vs InfiniBand 50 GB/s, about 9×", "so TP (and EP's all-to-all where possible) stays in the node; PP, replicas and KV transfers cross it"]},
+    {"q": "Fill in the step formula for Llama-3.1-70B BF16 at TP4, batch 1, 8k context: each term and the total.", "kind": "mechanism", "answer": ["weights 141.1 GB ÷ 4 ÷ 3.35 TB/s ≈ 10.53 ms", "KV 2.68 GB ÷ 4 ÷ 3.35 TB/s ≈ 0.20 ms", "all-reduces 160 × (6 hops × 1 µs + 1.5 × 16 kB ÷ 450 GB/s) ≈ 0.97 ms", "total ≈ 11.70 ms, the pipeline card's TP4 figure"]},
+    {"q": "A team says \"DistServe gives 7.4×, MegaScale-Infer 1.9× and TP 2.8×, so together we'll get ~40×.\" What's wrong?", "kind": "tradeoff", "answer": ["each multiplier is against its own baseline and setup (older engines, different GPUs and models)", "DistServe's and MegaScale's baselines lacked chunked prefill or large-scale EP", "the levers overlap (e.g. MoE's byte saving shrinks with batch, which is what EP exists for), so they don't compose multiplicatively"]}
+  ],
+  "compare": [
+    {"with": "perf-6-scaling-out/megatron-scaling", "q": "Across the course: tensor parallelism vs expert parallelism vs pipeline parallelism. For each, what crosses the wire, how often, and on which link does it belong?", "answer": ["TP: an all-reduce of the B × D activation, twice per layer → NVLink only", "EP: dispatch and combine all-to-alls capped by top-k, twice per MoE layer → NVLink first, IB with node-limited routing", "PP: one activation per stage boundary per step → the natural way across IB"]},
+    {"with": "perf-6-scaling-out/megascale-infer-design", "q": "The course's two disaggregations: prefill vs decode (DistServe) and attention vs experts (MegaScale-Infer). What problem does each solve, and what does each cost?", "answer": ["P/D removes prefill stalls and decouples phase sizing; it costs a KV transfer per request and a second queue", "AFD pools tokens so experts become compute-bound and lets each side use its cheapest GPU; it costs two transfers per MoE layer and needs ping-pong micro-batches", "both only pay at scale with the right workload"]},
+    {"with": "perf-0-map/stack", "q": "Where does this course sit in the whole inference stack, and which earlier course's idea does each of its splits extend?", "answer": ["course 2's sharding and step-time model become the TP/PP/DP layouts", "course 2's critical batch becomes the MoE critical batch", "course 5's chunked prefill is the colocated alternative to disaggregation", "course 4's KV sizes (GQA, MLA) set KV room and transfer sizes"]}
+  ],
+  "predict": {"q": "Move the 70B deployment to a rack where 72 GPUs share one NVLink domain. Which of this course's layout verdicts change first, and which stay? Commit first.", "answer": "The \"TP stays inside an 8-GPU node\" line moves: TP16 no longer pays cross-node latency and IB bandwidth, so its batch-1 case improves. But the KV-head limit (8 KV heads, so the cache stops splitting past TP8) and the 1/n diminishing returns on the weight read stay, so TP beyond 8 still buys little for 70B. Memory-first sizing, replicas for capacity and blast-radius arguments don't change."},
+  "apply": {"task": "Use the overview's layout table as a decision procedure for three cases and justify each with one number from the course: (a) Llama-3.1-8B BF16, 2,000 chat users; (b) Llama-3.1-70B, 500 users at 4k, 20 tok/s; (c) DeepSeek-V3 at hundreds of billions of tokens a day. Then fill the step formula for (b)'s TP4 replica at batch 1 and 8k context.", "done": "Each case has a starting layout, the card that justifies it and one number; your TP4 total is within 0.1 ms of the hint.", "hint": "(a) replicas only: 16.06 GB fits one H100 with 57.5 GB of KV room (PP & DP, sizing). (b) TP4 × 4 in FP8 on 16 H100s, or 8 H200s: memory binds (sizing). (c) attention DP + EP with redundant experts, disaggregated prefill/decode: ~9,440 tokens per step per expert on H100 (MoE, EP, V3 II). TP4 batch 1: 10.53 + 0.20 + 0.97 ≈ 11.70 ms."},
+  "reflect": [
+    "Which prediction did you get wrong: what a 72-GPU NVLink domain changes, or what it doesn't?",
+    "Can you explain the NVLink/IB rule without quoting the 9×?",
+    "Which link in the course map is still fuzzy: memory → replica count, or MoE sparsity → need for EP?",
+    "Which card's multiplier would you most want to re-measure on your own hardware?",
+    "Which course card will you reopen first, and which question from it are you trying to answer?"
+  ],
+  "revisit": ["perf-2-scaling-book-inference/step-time", "perf-2-scaling-book-inference/sharding-prefill-generation", "perf-0-map/stack"],
+  "prereq": ["perf-2-scaling-book-inference/sharding-prefill-generation"]
+}

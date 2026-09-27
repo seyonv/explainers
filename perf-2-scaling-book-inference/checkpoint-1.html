@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Checkpoint 1: what one decode step costs</title>
+<style>
+:root{
+  --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
+  --text:#1c1f23; --muted:#6b7068; --faint:#b9b9b3;
+  --accent:#4a9d77; --accent-bg:#dcefdf; --accent-border:#8cc79c;
+  --red:#c0492b; --red-bg:#fbeceb;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#15171a; --surface:#1d2024; --surface2:#24282d; --border:#32373d;
+    --text:#e6e8ea; --muted:#9aa1a9; --faint:#4a5057;
+    --accent:#5fb37f; --accent-bg:#1c2b22; --accent-border:#3f7a55;
+    --red:#e57368; --red-bg:#2e1f1e;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text)}
+.card{max-width:820px;margin:0 auto;padding:28px 32px;font-family:-apple-system,"Inter",system-ui,sans-serif;line-height:1.45}
+h1{font-size:26px;font-weight:600;margin:0 0 6px;letter-spacing:-0.01em}
+.sub{font-size:15px;color:var(--muted);margin:0 0 20px}
+h2{font-size:17px;font-weight:600;margin:26px 0 10px}
+p{font-size:15px;margin:0 0 10px}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+
+/* Tables and formulas */
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border)}
+th{font-size:12px;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:none}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+.formula{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin:10px 0;white-space:pre;overflow-x:auto;line-height:1.55}
+
+.foot{margin-top:22px;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+.foot p{font-size:13px}
+a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+
+/* Checkpoint */
+.how{border:1px solid var(--border);border-radius:10px;padding:10px 16px;background:var(--surface);margin:0 0 8px}
+.how p{font-size:14px;margin:4px 0}
+ol.qs{padding-left:24px;margin:6px 0}
+ol.qs>li{margin:0 0 16px;font-size:15px}
+.tag{display:inline-block;font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:var(--accent);border:1px solid var(--accent-border);border-radius:4px;padding:0 5px;margin-right:6px;vertical-align:1px}
+details.chk{margin:6px 0 0;padding:4px 12px;border-left:3px solid var(--accent-border);background:var(--surface2);border-radius:0 6px 6px 0;font-size:14px}
+details.chk>summary{cursor:pointer;color:var(--accent);font-size:13px;font-weight:600}
+details.chk ul,details.chk ol{margin:6px 0;padding-left:20px}
+details.chk li{margin:3px 0}
+.re{font-size:13px;color:var(--muted);margin:4px 0 6px}
+.tw{overflow-x:auto;margin:8px 0}
+table.cmp{min-width:680px;font-size:13.5px;table-layout:fixed}
+table.cmp th,table.cmp td{vertical-align:top}
+table.cmp td:first-child{font-weight:600;width:19%}
+table.cmp td.blank{height:64px;background:var(--surface);border:1px dashed var(--border)}
+table.fix td{vertical-align:top}
+.proj{border:1px solid var(--accent-border);border-radius:10px;padding:12px 18px;margin:8px 0}
+.proj h3{font-size:15px;margin:12px 0 4px}
+.proj p,.proj li{font-size:14px}
+.proj ol,.proj ul{padding-left:20px;margin:4px 0}
+.proj li{margin:5px 0}
+.card>ul{font-size:15px;padding-left:22px}
+.card>ul li{margin:3px 0}
+.done{background:var(--accent-bg);border:1px solid var(--accent-border);border-radius:8px;padding:8px 12px;font-size:14px;margin:10px 0}
+@media (max-width:560px){.card{padding:22px 16px}}
+</style>
+</head>
+<body>
+<article class="card">
+<h1>Checkpoint 1: what one decode step costs</h1>
+<p class="sub">Ties together <a href="kv-cache-sampling.html">sampling and the KV cache</a>, <a href="roofline.html">the roofline</a>, <a href="critical-batch-size.html">linear layers and the critical batch size</a>, <a href="attention-intensity.html">attention's arithmetic intensity</a> and <a href="step-time.html">the step-time formula</a>: why a decode step is bound by bytes, which bytes are shared and which aren't, and how that becomes the one equation of LLM serving.</p>
+
+<div class="how">
+<p><b>How to use this page.</b> Close the five cards. Answer each question in writing, in full sentences, <i>before</i> opening its Check. A wrong or shaky answer isn't a failure; it tells you exactly which section to reopen. The questions are mixed on purpose, so you have to work out which idea applies before you can answer.</p>
+</div>
+
+<h2>1 · Mixed retrieval</h2>
+<ol class="qs">
+<li><span class="tag">which concept?</span>A team serves Llama-3.1-8B at batch 1 on an H100 and sees the MLP matmuls using about 0.3% of peak FLOPs. They switch the matmuls to fp8 but keep the weights in bf16, and expect each token to arrive faster. Which idea predicts what happens, and what should they have changed instead?
+<details class="chk"><summary>Check</summary><ul>
+<li>at batch 1 the step is bound by reading the weights (35 µs of bytes vs 0.12 µs of math on one MLP matrix), so faster math changes nothing</li>
+<li>faster math on the same bytes doubles the ridge (295 → ≈ 591): the step is <i>further</i> from compute-bound</li>
+<li>fix: quantize the weights (fp8 × fp8 halves the bytes and the step; weight-only fp8 also lowers B<sub>crit</sub> to ≈ 148)</li>
+</ul><p class="re">Missed it? Reopen <a href="critical-batch-size.html">linear layers and the critical batch size</a>, "Precision changes B<sub>crit</sub> (β)".</p></details></li>
+
+<li>A bf16 matmul X[1,024, 4,096] · Y[4,096, 4,096] runs on one TPU v5e. Give T<sub>math</sub>, T<sub>comms</sub>, the lower and upper bound on its time, and the regime.
+<details class="chk"><summary>Check</summary><ul>
+<li>FLOPs 2·1024·4096·4096 = 3.436e10 → T<sub>math</sub> = 174.4 µs at 1.97e14</li>
+<li>bytes 2(BD + DF + BF) = 5.033e7 → T<sub>comms</sub> = 61.4 µs at 8.2e11</li>
+<li>lower bound max = 174.4 µs, upper bound sum = 235.8 µs; compute-bound (intensity 682.7 > 240)</li>
+</ul><p class="re">Missed it? Reopen <a href="roofline.html">the roofline</a>, worked example 2.</p></details></li>
+
+<li><span class="tag">which concept?</span>On one H100 at 2k context, raising the decode batch from 32 to 64 sequences takes throughput from 4,349 to 6,450 tokens/s: 1.48×, not 2×. The weights didn't change. Which idea explains the missing half, and would the gap shrink or grow at 8k context?
+<details class="chk"><summary>Check</summary><ul>
+<li>each sequence reads its own KV cache; attention's intensity doesn't rise with batch, so the KV term grows linearly with B (2.56 → 5.13 ms)</li>
+<li>only the 4.79 ms weight read is shared, so the step goes 7.36 → 9.92 ms</li>
+<li>at 8k each sequence brings 4× the KV bytes, so the gap grows (and B = 64 no longer even fits)</li>
+</ul><p class="re">Missed it? Reopen <a href="attention-intensity.html">attention's arithmetic intensity</a>, "Running example: which bytes dominate", and <a href="step-time.html">the step-time formula</a>, the H100 table.</p></details></li>
+
+<li>Llama-3.1-8B has 32 query heads sharing 8 KV heads. What is its decode attention intensity at 8k context, why doesn't a bigger batch change it, and how far is it from the H100's ridge?
+<details class="chk"><summary>Check</summary><ul>
+<li>with GQA, decode intensity → G = N/K = 4 (3.998 at S = 8,192)</li>
+<li>B cancels: every sequence adds FLOPs and KV bytes at the same rate</li>
+<li>about 74× below 295, so decode attention is memory-bound at any batch</li>
+</ul><p class="re">Missed it? Reopen <a href="attention-intensity.html">attention's arithmetic intensity</a>, "With GQA: intensity → G".</p></details></li>
+
+<li><span class="tag">which concept?</span>A colleague says: <i>the KV cache cut the FLOPs for a 1,000-token prompt plus 200 generated tokens by 183×, so generation must be about 183× faster.</i> Which idea shows why that's wrong, and roughly what is the real speedup on an H100?
+<details class="chk"><summary>Check</summary><ul>
+<li>FLOPs fell 183×, but each cached generation step still streams all 16.06 GB of weights for ≈ 16 GFLOP of work: memory-bound</li>
+<li>time is set by max(FLOPs ÷ peak, bytes ÷ bandwidth), and the bytes didn't fall 183×</li>
+<li>floors: 3.57 s naive vs 0.979 s cached, about 3.6×</li>
+</ul><p class="re">Missed it? Reopen <a href="kv-cache-sampling.html">sampling and the KV cache</a>, "But wall-clock time doesn't fall 183×".</p></details></li>
+
+<li>Work the book's Pop Quiz at batch 4: a 30B dense model in int8 with bf16 math on a TPU v5e 4x4 (16 chips), 8,192 context, 100 kB of KV per token. Which term dominates?
+<details class="chk"><summary>Check</summary><ul>
+<li>W = 16 × 8.2e11 = 1.312e13 B/s; KV per sequence 819 MB</li>
+<li>KV 4 × 819 MB ÷ W = 0.25 ms; MLP max(math 0.08 ms, weights 30 GB ÷ W = 2.29 ms)</li>
+<li>≈ 2.54 ms (book: 2.5 ms); the weight read dominates at this small batch</li>
+</ul><p class="re">Missed it? Reopen <a href="step-time.html">the step-time formula</a>, "The book's Pop Quiz, worked".</p></details></li>
+
+<li>Prefill of a 1,000-token prompt and decode at batch 1 both run through the same weight matrices. Why is the first compute-bound and the second memory-bound, and at what prompt length does prefill <i>attention</i> (plain MHA) turn compute-bound on an H100?
+<details class="chk"><summary>Check</summary><ul>
+<li>prefill puts all 1,000 tokens in one step, so B = 1,000 > B<sub>crit</sub> = 295 for the linear layers</li>
+<li>decode puts one token per sequence in the step: B = 1, intensity ≈ 1</li>
+<li>prefill attention has intensity T/2, which passes 295 at T ≈ 590 (480 on v5e)</li>
+</ul><p class="re">Missed it? Reopen <a href="critical-batch-size.html">the critical batch size</a>, "What batch means", and <a href="attention-intensity.html">attention's intensity</a>, "Intensity vs the ridge".</p></details></li>
+</ol>
+
+<h2>2 · Compare the ways to estimate a step</h2>
+<p>Fill this in on paper first. Rows are the ways people estimate how long a decode step takes; columns ask what each one computes, which design choice causes its answer to differ, when you'd use it, and how it fails.</p>
+<div class="tw"><table class="cmp">
+<tr><th>Approach</th><th>Core mechanism</th><th>Design choice that causes the difference</th><th>When to choose it</th><th>How it fails</th></tr>
+<tr><td>FLOPs ÷ peak</td><td class="blank"></td><td class="blank"></td><td class="blank"></td><td class="blank"></td></tr>
+<tr><td>Bandwidth ÷ weight bytes</td><td class="blank"></td><td class="blank"></td><td class="blank"></td><td class="blank"></td></tr>
+<tr><td>Per-op roofline, max(T<sub>math</sub>, T<sub>comms</sub>)</td><td class="blank"></td><td class="blank"></td><td class="blank"></td><td class="blank"></td></tr>
+<tr><td>Step formula, KV + max(math, weights)</td><td class="blank"></td><td class="blank"></td><td class="blank"></td><td class="blank"></td></tr>
+<tr><td>Benchmark only</td><td class="blank"></td><td class="blank"></td><td class="blank"></td><td class="blank"></td></tr>
+</table></div>
+<details class="chk"><summary>Check: the filled-in table</summary>
+<div class="tw"><table class="cmp">
+<tr><th>Approach</th><th>Core mechanism</th><th>Design choice that causes the difference</th><th>When to choose it</th><th>How it fails</th></tr>
+<tr><td>FLOPs ÷ peak</td><td>2·N FLOPs per token over the chip's peak</td><td>ignores bytes entirely</td><td>prefill, or decode past B<sub>crit</sub></td><td>295× too optimistic at batch 1 (16.2 µs vs the 4.79 ms weight read)</td></tr>
+<tr><td>Bandwidth ÷ weight bytes</td><td>one weight read per token: 3.35e12 ÷ 16.06e9 ≈ 209 tok/s</td><td>ignores KV reads and batching</td><td>batch 1, short context (205 vs 209)</td><td>off by 41× in total throughput at B = 128, 2k, and wrong about per-user speed</td></tr>
+<tr><td>Per-op roofline</td><td>intensity vs ridge picks the bound; max/sum brackets the time</td><td>one op at a time, overlap assumed</td><td>deciding whether one matmul or attention call is memory- or compute-bound</td><td>doesn't say which op dominates the step, or that KV bytes aren't shared</td></tr>
+<tr><td>Step formula</td><td>B·S<sub>KV</sub>/W + max(2·B·N/C, S<sub>params</sub>/W)</td><td>splits bytes into shared weights and per-sequence KV</td><td>sizing, what-ifs, picking the lever</td><td>a floor: assumes peak bandwidth and perfect overlap; misses kernel overheads, prefill interference and communication</td></tr>
+<tr><td>Benchmark only</td><td>measure one configuration</td><td>no model of why</td><td>final validation of a chosen setup</td><td>one number per setup: can't say that KV is 80% of the step at 8k, so it can't tell you which change to try</td></tr>
+</table></div>
+<p class="re">Shaky rows? Rows 1–2: <a href="step-time.html">the step-time formula</a>, "Why it beats the alternatives". Row 3: <a href="roofline.html">the roofline</a>. Row 4: <a href="step-time.html">the step-time formula</a>, "Is this what a real server will do?".</p>
+</details>
+
+<h2>3 · Project: build and validate a step-time calculator</h2>
+<div class="proj">
+<p><b>What it reinforces:</b> T<sub>math</sub> vs T<sub>comms</sub> (<a href="roofline.html">the roofline</a>), the weight read shared by the batch and B<sub>crit</sub> (<a href="critical-batch-size.html">critical batch size</a>), the per-sequence KV read that never turns compute-bound (<a href="attention-intensity.html">attention's intensity</a>), KV bytes per token (<a href="kv-cache-sampling.html">the KV cache</a>), and the whole formula (<a href="step-time.html">step time</a>).</p>
+<p>In about 30 lines of Python, with no lab code copied:</p>
+<ol>
+<li><b>Inputs.</b> A function <code>step(params, bytes_per_weight, kv_bytes_per_token, context, B, chips, flops_per_chip, bw_per_chip)</code> that returns the KV term, the weight term, the math term, the step and tokens/s.</li>
+<li><b>Validate on the book.</b> Reproduce the Pop Quiz: 30B int8, 100 kB/token, 8,192 context, 16 v5e chips, B = 4 and B = 256.</li>
+<li><b>Validate on the H100.</b> Llama-3.1-8B bf16 (8.03e9 params, 131,072 B/token), 2,048 context, B = 1, 128 and 238.</li>
+<li><b>Add a memory check.</b> Refuse any B whose weights plus KV exceed 80 GB, and report the largest B that fits.</li>
+<li><b>Find the crossovers.</b> Solve for the B where the KV term equals the weight term, and the B where the math term equals the weight term. Which one does HBM let you reach?</li>
+<li><b>One what-if.</b> Halve the KV bytes (FP8 KV) at 8k context and full batch. What happens to the batch and to tokens/s?</li>
+</ol>
+<div class="done"><b>Done when:</b> your calculator reproduces the Pop Quiz and the H100 rows within 1%, rejects B = 256 at 2k, prints both crossovers, and you can say in one sentence why the FP8-KV what-if roughly doubles throughput without shortening the step. Then compare with the check.</div>
+<details class="chk"><summary>Check: the numbers (from the cards' labs)</summary>
+<ul>
+<li>Pop Quiz: B = 4 → 0.25 + max(0.08, 2.29) ≈ 2.54 ms. B = 256 → 15.98 + max(4.87, 2.29) ≈ 20.86 ms (book: 2.5 and 21 ms).</li>
+<li>H100, 2k: B = 1 → 4.87 ms, 205 tok/s; B = 128 → 10.26 + 4.79 = 15.05 ms, 8,505 tok/s; B = 238 → 23.86 ms, 9,973 tok/s. B = 256 needs 68.7 + 16.06 = 84.8 GB: rejected.</li>
+<li>KV = weights at B = 16.06 GB ÷ 268.4 MB ≈ 59.8 (2k) and ≈ 15.0 (8k). Math = weights at B ≈ 295, but HBM stops you at 238 (2k) or 59 (8k).</li>
+<li>FP8 KV at 8k: KV per sequence 1.07 → 0.54 GB, so 119 sequences fit instead of 59; HBM is still full, so the step stays ≈ 23.9 ms, and throughput goes 2,489 → ≈ 4,986 tok/s.</li>
+</ul></details>
+</div>
+
+<h2>4 · Reflect</h2>
+<ul>
+<li>Which link between these cards is still fuzzy: <i>shared weights → intensity ≈ B</i>, <i>private KV → intensity ≈ 1</i>, or <i>both → the step formula</i>?</li>
+<li>Can you say why the step formula's attention term has no FLOPs side, without writing ST/(S+T)?</li>
+<li>Which question did you answer with the wrong concept? That confusion is the comparison to redo.</li>
+<li>In the project, did the HBM limit or B<sub>crit</sub> come first? Did that surprise you?</li>
+</ul>
+<table class="fix">
+<tr><th>If this is fuzzy</th><th>Reopen</th></tr>
+<tr><td>why the lower bound is a max and the upper a sum</td><td><a href="roofline.html">the roofline</a>, "Three times, two bounds"</td></tr>
+<tr><td>why batching makes linear layers efficient</td><td><a href="critical-batch-size.html">critical batch size</a>, the derivation and the step-time-vs-batch plot</td></tr>
+<tr><td>why attention can't be batched into efficiency</td><td><a href="attention-intensity.html">attention's intensity</a>, the byte accounting and "What gets read"</td></tr>
+<tr><td>why fewer FLOPs didn't mean proportionally less time</td><td><a href="kv-cache-sampling.html">the KV cache</a>, "But wall-clock time doesn't fall 183×"</td></tr>
+<tr><td>which term dominates and which lever to pull</td><td><a href="step-time.html">the step-time formula</a>, the H100 table and "Why it beats the alternatives"</td></tr>
+</table>
+
+<p class="foot">Related: <a href="_overview.html">overview</a> · <a href="kv-cache-sampling.html">kv-cache-sampling</a> · <a href="roofline.html">roofline</a> · <a href="critical-batch-size.html">critical-batch-size</a> · <a href="attention-intensity.html">attention-intensity</a> · <a href="step-time.html">step-time</a> · <a href="../learning-principles/learning-principles.html">learning principles</a><br>
+Sources: the five cards above (Scaling Book Parts 1 and 7, and the course's recomputations for Llama-3.1-8B on one H100). Every number on this page comes from those cards and their labs; the FP8-KV what-if uses the card's own formula with half the KV bytes.</p>
+</article>
+</body>
+</html>

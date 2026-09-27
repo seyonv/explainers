@@ -1,0 +1,69 @@
+{
+  "prime": {
+    "problem": "A B-tree updates pages in place, so a write-heavy workload becomes a stream of random page writes, up to ~41 bytes written per byte changed, which is exactly what flash handles worst.",
+    "fits": "Second storage card. It builds on the B-tree card's read/write trade-off and is the storage engine behind the Bigtable card that follows; log-structured memory later applies the same append-then-clean idea in RAM.",
+    "expect": ["memtable and write-ahead log", "sorted runs (SSTables) and levels", "compaction and tombstones", "write amplification T·L", "Bloom filters"],
+    "goal": "Trace writes, deletes and reads through a small LSM, compute its write amplification and Bloom false-positive rate, and choose between an LSM and a B-tree for a workload."
+  },
+  "attend": [
+    "Why does never updating in place make writes sequential, and what does a read have to do as a result?",
+    "When <code>get 3</code> runs after <code>del 3</code>, why must the tombstone be found before the stale 3:12, and when is it finally safe to drop the tombstone?",
+    "Where do the two factors in write amplification ≈ T·L come from, and which one grows when the data grows?",
+    "What does a Bloom filter answer, what can it never answer, and why do 10 bits per key give about 0.8% false positives?",
+    "Which workload makes compaction the bottleneck, and how does size-tiered compaction change the trade?"
+  ],
+  "core": {
+    "must": [
+      "Writes go to a sorted memtable (plus a WAL) → a full memtable is flushed as one immutable sorted file → every disk write is sequential → ingest is cheap even on flash",
+      "Files are immutable, so updates and deletes are new entries → a read checks newest to oldest (memtable, L0 files, then each level) → the first match wins, which is why a tombstone hides older values",
+      "Compaction merges runs into the next level, keeping only the newest version → each entry is rewritten about T times per level → write amplification ≈ T · ⌈log<sub>T</sub>(N/M)⌉ = 10 × 2 = 20 for 1 GB",
+      "A per-file Bloom filter says ‘definitely not here’ or ‘maybe’ → with 10 bits/key and k = 7, false positives ≈ 0.82% → a missing-key lookup over 6 runs drops from 6 reads to 0.049 expected"
+    ],
+    "elevated": [
+      "A tombstone can only be dropped when compaction reaches the last level → until then it must shadow older copies → deletes cost space and read work for a while",
+      "L0 files overlap and are checked one by one → if flushes outpace compaction, L0 piles up → engines slow or stop writes (write stalls)"
+    ],
+    "reference": [
+      "RocksDB's defaults (×10 level multiplier, 64 MB write buffer) and its cache-friendly filter at ~1%",
+      "the toy MEM_LIMIT = 3 and L0_LIMIT = 3",
+      "skip list as the memtable structure",
+      "the FD-tree's name for the same design"
+    ]
+  },
+  "compress": {
+    "prompt": "Without looking, draw the write path and the read path of an LSM tree as two arrows through memtable → L0 → L1 → L2. Mark where a tombstone lives, where the Bloom filter is checked, and write the write-amplification formula with its two factors explained in one line each.",
+    "checklist": [
+      "writes: WAL + memtable, flush to immutable sorted files, background compaction",
+      "reads: newest to oldest, first match wins; a tombstone ends the search",
+      "compaction keeps the newest version and drops tombstones at the last level",
+      "write amp ≈ T (rewrites per level) × L (levels, ⌈log<sub>T</sub> N/M⌉)",
+      "Bloom filter: no false negatives, ~1% false positives at 10 bits/key"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why an LSM tree turns random writes into sequential ones, and what it gives up on the read side to do so.", "kind": "concept", "answer": ["writes are buffered in memory and written out as whole sorted files", "nothing on disk is modified in place", "a read may have to check the memtable, several L0 files and each level", "Bloom filters and compaction keep that read cost bounded"]},
+    {"q": "Walk through the card's toy trace from <code>put 5:20</code> to the first compaction: what's in the memtable, L0 and L1 after each step, and why do 7:30 and 3:12 disappear?", "kind": "mechanism", "answer": ["put 5:20 flushes file B (3:†, 5:20, 7:35) above file A", "4:8 and 1:15, then 2:40 flushes file C; L0 now has 3 files → compact into L1", "L1 = 1:15 2:40 4:8 5:20 7:35 9:55", "7:30 and 3:12 are shadowed by newer entries; the tombstone for 3 is dropped because L1 is the last level", "disk writes 3 + 3 + 3 + 6 = 15 for 9 user writes: 1.67"]},
+    {"q": "Compute the Bloom false-positive rate at 10 bits per key and the expected wasted reads for a missing key over 6 runs. What does the filter cost in RAM for 10⁷ keys?", "kind": "mechanism", "answer": ["k = round(10 × ln 2) = 7", "(1 − e<sup>−0.7</sup>)<sup>7</sup> = 0.5034<sup>7</sup> ≈ 0.0082", "6 × 0.0082 ≈ 0.049 expected reads instead of 6", "10 bits × 10⁷ = 12.5 MB"]},
+    {"q": "An analytics team reads far more than it writes and needs predictable latency. Argue whether they should use an LSM engine, and what would change your answer.", "kind": "tradeoff", "answer": ["read-heavy OLTP: a B-tree is the better default (one path, no background merges)", "LSM reads may probe several files and compete with compaction for disk bandwidth", "switch to LSM if ingest dominates (events, metrics, time series) or writes land on flash"]}
+  ],
+  "compare": [
+    {"with": "cs-6-data-systems/database-indexes", "q": "Both keep keys sorted. What fundamentally differs in how a B-tree and an LSM tree apply an update, and how does each fail under the other's favourite workload?", "answer": ["B-tree: in place, random page writes, one read path", "LSM: out of place, sequential runs, several places to read", "B-tree under heavy ingest: random-write bound, up to 41× per 100 B row", "LSM under read-heavy load: extra probes and compaction interference"]},
+    {"with": "cs-6-data-systems/log-structured-memory", "q": "Compaction and RAMCloud's cleaner both copy live data to reclaim space. What does each one copy, what triggers it, and what number sets its cost?", "answer": ["LSM compaction merges sorted runs to bound read cost and drop old versions; cost ≈ T·L rewrites", "the cleaner copies live records out of mostly-dead segments to free memory; cost u/(1−u)", "both run in the background and can throttle foreground writes when they fall behind"]},
+    {"with": "cs-5-distributed-systems/compaction-xa", "q": "cs-5 called compaction a hidden cost of append-only storage. Which part of that cost does this card quantify, and which part does it leave out?", "answer": ["quantified: write amplification (T·L) and the read-side cost of uncompacted runs", "left out: the operational side, such as stalls, disk bandwidth theft and retention of deleted data until compaction"]}
+  ],
+  "predict": {"q": "You cut the filter to 5 bits per key to save RAM. Commit first: roughly how many wasted reads does a missing-key lookup over 6 runs now cost, and is halving the RAM worth it?", "answer": "k = round(5 × 0.693) = 3, false-positive rate (1 − e<sup>−0.6</sup>)<sup>3</sup> ≈ 9.2%, so 6 × 0.092 ≈ 0.55 expected wasted reads, more than 11× the 0.049 at 10 bits, to save 6.25 MB on 10⁷ keys. The false-positive rate falls roughly exponentially in bits per key, so the last few bits are cheap insurance for a workload with many misses."},
+  "apply": {
+    "task": "Replay the card's nine operations by hand (put 7:30, 3:12, 9:55, 7:35, del 3, put 5:20, 4:8, 1:15, 2:40) with the memtable limit still 3 but <code>L0_LIMIT = 2</code>. After each flush or compaction, write down L0 and L1 and the running disk-write count. Then check with <code>code/lsm-trees.py</code> by setting <code>L0_LIMIT = 2</code>.",
+    "done": "You end with L0 = [1:15 2:40 4:8] and L1 = [5:20 7:35 9:55], 12 disk writes for 9 user writes (1.33), and you can say why the tombstone for 3 vanished at the first compaction and why this short run's ratio is lower than the card's 1.67 (one compaction, over only 3 live entries, before the run ended).",
+    "hint": "Compaction fires the moment L0 holds 2 files, which happens after the second flush."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: the 5-bit false-positive rate, or whether halving RAM was worth it?",
+    "What couldn't you explain cleanly: why a tombstone can't be dropped before the last level?",
+    "Which relationship is still fuzzy: fan-out T → levels L, or levels → read cost?",
+    "Could you pick between leveled and size-tiered compaction for a metrics store and say what each amplifies?",
+    "What will you look for in the Bigtable card: where SSTables and the sorted row order show up in its model?"
+  ],
+  "revisit": ["cs-6-data-systems/database-indexes", "cs-5-distributed-systems/compaction-xa"],
+  "prereq": ["cs-6-data-systems/database-indexes"]
+}

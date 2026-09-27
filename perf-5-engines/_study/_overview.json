@@ -1,0 +1,62 @@
+{
+  "prime": {
+    "problem": "An engine can make one GPU serve one user very fast or hundreds of users slowly, and every technique in this course moves it somewhere on that trade-off. Without a map you'd judge each technique by its headline multiplier, which don't multiply together and were measured against very different baselines.",
+    "fits": "The map for the whole course. It reuses course 2's step-time formula (weights read once per step, KV read per user, math per token) and shows which term each of the fourteen cards attacks.",
+    "expect": ["the throughput–latency curve", "moving along the curve vs pushing it outward", "one step-time formula with four terms", "levers grouped by what they change", "why multipliers don't stack"],
+    "goal": "Name, for any serving technique in this course, which term of the step formula it changes, whether it moves you along the curve or shifts it, and at which batch size it stops helping."
+  },
+  "attend": [
+    "Which term of the step formula does each lever group shrink: weight bytes, math, KV reads or CPU time?",
+    "Why does batching raise total tokens per second while every individual user gets slower?",
+    "Chunked prefill doesn't change the average step. What does it change, and which metric shows it?",
+    "Why do speculation and big batches compete for the same resource?",
+    "Why is a 36.9× or 30× multiplier on the lever table not something you could get today by switching it on?"
+  ],
+  "core": {
+    "must": [
+      "One step reads all weights once, whoever is in it → adding a user costs only their KV read and a little math while the step is memory-bound → total tok/s = B ÷ step climbs while per-user tok/s = 1 ÷ step falls → batching moves you along one curve",
+      "Quantization and a lighter CPU loop shrink terms every step pays → the whole curve shifts outward; continuous batching and paging let you reach larger B → you slide further right on the same curve",
+      "A prompt packed whole into a decode step turns it compute-bound (4,096 tokens: 7.36 → 74.04 ms for 32 users) → one huge gap between tokens → chunked prefill caps prefill tokens per step → the P99 gap shrinks while the average barely moves",
+      "Speculation turns idle math into extra tokens → at large batch the math is no longer idle → it lifts only the left end of the curve and can lose at B = 256 (0.70× in course 2's model)"
+    ],
+    "elevated": [
+      "KV reads grow with B × context and no weight quantization touches them → at B = 238 they're 80% of the step → this is why W4A16 gives 3.7× at B = 1 but 1.04× at full batch"
+    ],
+    "reference": [
+      "the exact lever-table multipliers and which paper/baseline each came from",
+      "vLLM's default token budget (8,192 on an H100)",
+      "the per-row numbers for Llama-3.1-8B at B = 1, 64 and 238"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw the whole course as one causal map: the step formula in the middle (weights, math, KV, CPU), then an arrow from each card group to the term it attacks and a note saying along-the-curve or outward. Add one arrow for the thing that limits each lever.",
+    "checklist": [
+      "continuous batching (Orca) and the scheduler/paging: bigger B, along the curve, limited by KV memory",
+      "chunked prefill (Sarathi): bounds each step's math, fixes the P99 gap, costs a little TTFT",
+      "quantization: fewer weight bytes (and faster math for W8A8), outward, fades once KV reads dominate",
+      "speculation (Leviathan, Medusa, EAGLE): more tokens per weight read, only while compute is idle",
+      "engine loop, masks, adapters: CPU and side work, matter most at small batch",
+      "benchmarking: you only know where you are by measuring the whole curve under realistic load"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain in terms of the step formula why going from 1 to 64 users on the running example costs each user about half their speed but multiplies the server's output by about 31.", "kind": "concept", "answer": ["the 4.79 ms weight read is shared by all users", "64 users add 5.13 ms of their own KV reads and 1.04 ms of math that hides under the weight read", "step 4.87 → 9.92 ms: per user 205 → 101 tok/s, total 205 → 6,450"]},
+    {"q": "Walk through what happens to one step's time, and to every decoding user, when a scheduler packs a whole 4,096-token prompt into a 32-user decode step, and what chunked prefill does instead.", "kind": "mechanism", "answer": ["4,128 tokens of math, far past the ≈ 295-token ridge, so the step becomes compute-bound", "7.36 → 74.04 ms: a 10× gap for all 32 users", "chunked prefill adds only a budget-sized slice per step, so each step stays near the decode time and the prompt finishes over several steps"]},
+    {"q": "An interactive service promises TPOT ≤ 20 ms. Using the overview's formula, roughly how many 2k-context users fit on the BF16 H100, and which single lever would raise that number most, and why?", "kind": "tradeoff", "answer": ["BF16: about 189 users (≈ 19.9 ms/step, ≈ 9,480 tok/s total), our recomputation", "FP8 halves the weight read and raises the ridge-bound math rate, so about 219 fit under 20 ms", "speculation wouldn't help at this batch: compute isn't idle any more", "the KV reads that dominate need KV quantization or fewer KV heads"]}
+  ],
+  "compare": [
+    {"with": "perf-2-scaling-book-inference/inference-engine-design", "q": "Course 2 designed an engine from the step formula; this course walks the papers that built one. What does the course-2 design already predict, and what did the real systems have to add that the formula alone doesn't show?", "answer": ["predicted: continuous batching, interleaving prefill and decode, disaggregation, prefix caching", "added: selective batching to make mixed batches runnable, a token budget and stall-free ordering, KV admission and preemption rules, CPU overhead removal", "the formula gives averages; tail latency (P99 TBT) needs the scheduling details"]},
+    {"with": "perf-6-scaling-out/_overview", "q": "This course tunes one GPU; the next splits a model across many. Which lever from here stops being enough when a model doesn't fit one GPU, and which new cost enters the step formula?", "answer": ["no single-GPU lever helps if the weights don't fit", "splitting adds communication (all-reduces for TP, bubbles for PP) to every step", "disaggregation moves the prefill/decode interference problem between machines, at the cost of moving KV"]}
+  ],
+  "predict": {"q": "You move the same service from an H100 (3.35 TB/s) to a GPU with twice the HBM bandwidth and the same FLOP/s. Which levers in the table get <i>more</i> valuable and which get less? Commit before revealing.", "answer": "The ridge point (FLOP/s ÷ bandwidth) halves, so steps turn compute-bound at about half as many tokens. Speculation and piggybacked prefill both lose headroom, since there's less idle math to spend. Weight-only quantization matters less, because the weight read is already cheaper. CPU overhead matters <i>more</i>, because each GPU step is shorter while the CPU work per step stays the same. FP8's faster math becomes relatively more valuable."},
+  "apply": {"task": "Pick an operating point. For Llama-3.1-8B at 2k context on one H100, use the overview's formula (ignore CPU time) to find the largest batch whose step stays ≤ 20 ms in BF16, then repeat with FP8 weights (8.03 GB, math at 1,979 TFLOPS). Report the batch, the step time and the total tok/s for each, and say which term now dominates the step.", "done": "You have two rows (BF16 and FP8) with B, step and total tok/s, and one sentence naming the dominant term and the lever that would attack it next.", "hint": "Check after trying (our recomputation): BF16 B = 189, 19.94 ms, ≈ 9,480 tok/s. FP8 B = 219, 19.95 ms, ≈ 10,980 tok/s. KV reads are about 15–18 ms of the 20, so KV quantization or fewer KV heads is the next lever, not more weight quantization."},
+  "reflect": [
+    "Which lever did you put in the wrong group (along the curve vs outward), and why did it seem to belong there?",
+    "Which prediction did you get wrong about the faster-memory GPU?",
+    "Which relationship is still fuzzy: batch size → idle compute, or idle compute → whether speculation pays?",
+    "Could you explain to a colleague why the lever multipliers don't multiply?",
+    "Which part of the course will you read first, and which card will you come back to this map from?"
+  ],
+  "revisit": ["perf-2-scaling-book-inference/step-time", "perf-2-scaling-book-inference/critical-batch-size", "perf-1-foundations/serving-metrics"],
+  "prereq": ["perf-2-scaling-book-inference/step-time"]
+}

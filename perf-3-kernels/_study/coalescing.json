@@ -1,0 +1,62 @@
+{
+  "prime": {
+    "problem": "Two kernels can ask for exactly the same bytes and differ 8× in speed. Global memory is delivered in fixed 32-byte sectors per warp request, so if neighbouring threads touch scattered addresses, most of every sector you pay for is thrown away, and the profiler still shows the bus 100% busy.",
+    "fits": "The first-kernel card showed that vector add lives or dies by bandwidth. This card explains what decides the bandwidth a warp actually gets: the pattern of its 32 addresses. It sets up the shared-memory card (how to fix a stride the algorithm needs) and siboehm's kernel 2.",
+    "expect": ["warp request and 32-byte sectors", "sector efficiency η", "misaligned vs strided access", "the naive transpose's writes", "why caches fix offsets but not strides"],
+    "goal": "Count the sectors a warp's access pattern touches, turn that into the fraction of bandwidth that is useful, and say which patterns a cache rescues and which need a different algorithm."
+  },
+  "attend": [
+    "What decides the number of sectors a warp request needs: the number of threads, the element size, or where the addresses fall?",
+    "Why does an offset of 1 float cost one extra sector, while an offset of 8 floats costs none?",
+    "Why does every stride from 8 floats upward give the same 12.5%?",
+    "Why did the L1 cache nearly erase the offset penalty on Fermi but leave the naive transpose's writes slow?",
+    "If Llama-3.1-8B's weights were read at η = 12.5%, what would the profiler's memory-throughput number show, and why is that misleading?"
+  ],
+  "core": {
+    "must": [
+      "A warp's load is served in aligned 32-byte sectors → sectors needed = distinct sectors the 32 addresses fall in → useful fraction η = 32·b ÷ (32 B × S) → memory time = useful bytes ÷ (η × bandwidth)",
+      "Thread k reads element k → 32 floats fill exactly 4 sectors → η = 100% → map the fastest-varying thread index (<code>threadIdx.x</code>) to contiguous memory and coalescing is free",
+      "Stride ≥ 8 floats (32 B) → every lane gets its own sector → 32 sectors for 128 useful bytes → η = 1/8 whatever the architecture → a naive transpose's writes (4,096 B apart) run at 18.8 vs 105.2 GB/s on an M2050",
+      "Misalignment adds one sector that the next warp needs anyway → caches since Fermi absorb it (V100: ~9/10 achieved vs 4/5 predicted) → strides spread useful bytes across many sectors no other warp may want → caches don't rescue them"
+    ],
+    "elevated": [
+      "Wider loads per lane (float4 = 16 B) keep η = 100% and move 4× the bytes per instruction → that is why serving kernels read weights 16 bytes per thread at a time"
+    ],
+    "reference": [
+      "the C870/C1060/C2050 per-generation coalescing rules (half-warp, 32/64/128 B segments)",
+      "128-byte cache lines vs 32-byte sectors terminology in Nsight Compute",
+      "<code>cudaMalloc</code>'s 256-byte alignment",
+      "the full offset 0–32 and stride 1–32 sweep"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, write the rule in one sentence, the η formula, and the three canonical rows (stride 1, offset 1, stride 32) with their sector counts. Then add one line: which of those a cache fixes and why.",
+    "checklist": [
+      "a warp's accesses coalesce into as many 32-byte sectors as the addresses touch",
+      "η = bytes asked ÷ bytes moved = 32·b ÷ (32 × S)",
+      "stride 1: 4 sectors, 100%; offset 1: 5 sectors, 80%; stride 32: 32 sectors, 12.5%",
+      "caches help offsets (the extra sector is the next warp's), not strides",
+      "fix a needed stride by staging through shared memory or changing the layout"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why the naive transpose's reads are fine but its writes throw away 7/8 of the bandwidth, in terms of which index each thread varies.", "kind": "concept", "answer": ["reads: neighbouring threads read neighbouring elements of a row, 4 sectors per warp", "writes: neighbouring threads write down a column, 1,024 floats = 4,096 B apart", "each lane lands in its own sector: 32 sectors for 128 useful bytes, η = 12.5%"]},
+    {"q": "Count the sectors and η for one warp reading bf16 (2-byte) elements at stride 1, then at offset 1, then at stride 16.", "kind": "mechanism", "answer": ["stride 1: 64 bytes, 2 sectors, 100%", "offset 1: bytes 2–65, 3 sectors, 64 ÷ 96 = 66.7%", "stride 16 (32 B): each lane its own sector, 32 sectors, 64 ÷ 1,024 = 6.25%"]},
+    {"q": "Your algorithm needs column access (a transpose, a gather). Choose between trusting the cache, changing the data layout, and staging through shared memory. What does each cost, and when does each fail?", "kind": "tradeoff", "answer": ["cache: free to write, but only helps if another warp uses the rest of each sector before eviction, which is luck", "layout change (AoS → SoA, pre-transposed weights): no runtime cost, but you must control how data is stored", "shared-memory staging: read and write coalesced, do the stride on-chip; costs a barrier and possibly bank conflicts (the next card)"]}
+  ],
+  "compare": [
+    {"with": "perf-3-kernels/matmul-coalescing-smem", "q": "Harris's naive transpose and siboehm's kernel 1 are both uncoalesced. What is the same about the two access patterns, what single design choice fixes each, and why is siboehm's fix only an index change while the transpose needs shared memory?", "answer": ["both have neighbouring threads touching addresses a whole row apart", "siboehm: remap which thread computes which output so a warp walks along a row (15 → 110 GB/s)", "the transpose must read rows and write columns, so no mapping makes both coalesced; the stride has to happen on-chip", "matmul has freedom in which thread owns which output; transpose has a stride built into the operation"]},
+    {"with": "perf-3-kernels/shared-memory-transpose", "q": "Global-memory sectors vs shared-memory banks: both are about what 32 lanes of a warp touch. What is the unit in each, what makes an access pattern bad in each, and why is a column read good for one and terrible for the other?", "answer": ["global: 32-byte sectors; bad when lanes spread over many sectors", "shared: 32 banks of 4 bytes; bad when lanes hit different words in the same bank", "a column of a 32-wide float tile is 32 words in one bank (32-way conflict), but in global memory a column is a stride and wastes sectors instead", "padding fixes banks; staging fixes sectors"]}
+  ],
+  "predict": {"q": "A kernel reads Llama-3.1-8B's BF16 weights on an H100 with every warp at stride 2 (η = 50%) instead of stride 1. Commit: what decode ceiling at batch 1, and would Nsight Compute show DRAM throughput near peak or near half?", "answer": "The step moves 16.06 ÷ 0.5 = 32.12 GB instead of 16.06 GB: 9.59 ms instead of 4.79 ms, so about 104 tok/s instead of 209. DRAM throughput would still read near peak, because the bus really is busy moving whole sectors; only effective (useful) bandwidth halves. That is why \"memory throughput 90%\" alone doesn't prove a kernel is efficient."},
+  "apply": {"task": "Extend <code>labs/coalescing.py</code> (or work by hand) to cover three patterns the card doesn't list: floats at offset 3, floats at stride 3, and doubles (8 B) at stride 1. For each, count sectors, 128-byte lines and η. Then predict what Harris's C2050 would show for the offset-3 case vs the stride-3 case, and why.", "done": "You have offset 3 → 5 sectors, 80%; stride 3 → 12 sectors, 33.3%; double stride 1 → 8 sectors, 100%; and a one-line prediction that the C2050 shows almost no offset penalty but a clear stride penalty.", "hint": "Stride 3: lane k reads bytes 12k to 12k+3, so the warp spans 384 bytes = 12 sectors for 128 useful bytes. A double at stride 1 asks for 256 bytes and gets exactly 256."},
+  "reflect": [
+    "Which prediction did you get wrong: the decode ceiling, or what the profiler would show?",
+    "Can you say why a cache fixes misalignment but not stride, without saying \"caches are small\"?",
+    "Which relationship is still fuzzy: address pattern → sectors, or sectors → time?",
+    "Did any row in the sector table surprise you (offset 8, bf16 at stride 16)?",
+    "What will you revisit before the shared-memory card: the naive transpose's 4,096-byte write stride?"
+  ],
+  "revisit": ["perf-3-kernels/first-kernel", "perf-3-kernels/execution-model"],
+  "prereq": ["perf-3-kernels/first-kernel"]
+}

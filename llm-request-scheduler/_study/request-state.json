@@ -1,0 +1,67 @@
+{
+  "prime": {
+    "problem": "A scheduler touches its containers thousands of times a second. Pick a list where you need a heap, or a deque where you need to remove from the middle, and step() goes from microseconds to milliseconds. Keep a prefill/decode flag and chunking, preemption and prefix caching each need their own special case.",
+    "fits": "Second card of group 3. The build-it card named the interface; this card fills in the request record (two counters, no phase), its four states and the six containers, each with its Big-O, before step() puts them to work.",
+    "expect": [
+      "WAITING → RUNNING → FINISHED, plus preempt and cancel edges",
+      "<code>n = min(num_tokens − num_computed, budget_left)</code>",
+      "waiting: deque, heap or per-tenant deques",
+      "running: list; free blocks: deque or linked list",
+      "O(R + A·log W + K) per step"
+    ],
+    "goal": "Trace a request's counters through its lifecycle, choose a container for each scheduler operation and state its cost, and explain why step() cost follows running requests, not waiting ones."
+  },
+  "attend": [
+    "Which one expression replaces the prefill/decode flag, and how does it cover a preempted request and a prefix-cache hit?",
+    "Why is the back of the running list the natural preemption victim, in terms of cost?",
+    "Waiting grew 100× and step() time grew only 1.4–3.3×. Which design choice made that true?",
+    "Why does a prefix-cache hit on a free block force a linked list instead of a deque?",
+    "Why keep running as a plain list if removing from it is O(R)?"
+  ],
+  "core": {
+    "must": [
+      "A request keeps num_tokens (prompt + generated) and num_computed (KV in cache) → n = min(remaining, budget) → fresh prompt, decode, preempted request and prefix hit are the same rule with different starting counters → no phase flag",
+      "Admission only peeks and pops the head of the waiting queue → deque O(1) for FCFS, heap O(log W) for SJF/priority → step() cost follows R, not W (E9: 10,000 waiting cost about the same as 100)",
+      "Running is walked every step anyway → a list gives admission order and O(1) newest-first victims → O(R) removal adds one pass over a short list (R ≤ max_num_seqs)",
+      "Preemption resets num_computed to 0 and pushes the request to the front → its next admission recomputes prompt + generated tokens → toy request 4 computes 68 tokens to keep 32 (thrashing)"
+    ],
+    "elevated": [
+      "Free cached blocks can be hit from the middle → deque.remove is O(N) (1.4–1.8 ms at 30,469 blocks) → vLLM's intrusive doubly linked list unlinks in O(1) and doubles as the LRU"
+    ],
+    "reference": [
+      "vLLM's separate PREEMPTED status name",
+      "the M3 timeit figures per container (±50%)",
+      "the exact dataclass fields beyond the two counters (num_cached, block_hashes, timestamps)"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw the four-state diagram with its five edges and what triggers each. Next to it, list the six containers, the operation each one needs most and its cost.",
+    "checklist": [
+      "states: WAITING, RUNNING, FINISHED (+ ABORTED); preempt goes RUNNING → WAITING",
+      "the two counters and n = min(remaining, budget)",
+      "waiting: deque O(1) / heap O(log W) / per-tenant O(T)",
+      "running: list, O(1) append and pop-newest, O(R) walk",
+      "free blocks: deque, or a linked list for O(1) middle removal; ref counts; block table; prefix map"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why two counters are enough for the scheduler, and what each of the four kinds of request looks like in terms of them.", "kind": "concept", "answer": ["remaining = num_tokens − num_computed decides how many tokens a request needs", "fresh prompt: remaining = prompt; decode: remaining = 1", "preempted: num_computed reset to 0, remaining = prompt + generated", "prefix hit: num_computed starts above 0"]},
+    {"q": "Walk through toy request 4's life from step 4 to step 12: its counters, its blocks and what each preemption threw away.", "kind": "mechanism", "answer": ["admitted at step 4 with 8 tokens, then 14 more at step 5 (22 computed, 6 blocks)", "preempted at step 6: 22 tokens lost, blocks freed", "readmitted with 14, preempted again at step 8: 14 lost", "step 9: 14, step 10: 16 more → 30 computed, first token; steps 11–12 decode; 68 computed to keep 32"]},
+    {"q": "Cancels are frequent and the waiting queue is a heap of 10,000. Compare list.remove + heapify with lazy deletion.", "kind": "tradeoff", "answer": ["list.remove + heapify: 4,908–7,394 µs per cancel on the M3", "lazy: mark ABORTED in O(1), discard when it reaches the top", "cost of lazy: dead entries use memory until popped, and len() needs a live counter"]}
+  ],
+  "compare": [
+    {"with": "llm-request-scheduler/block-manager", "q": "This card lists the free-block structures by their cost; the block manager card shows them in code. What decides whether a deque is enough, and what breaks if you keep it with prefix caching on?", "answer": ["a deque is enough when blocks only leave from one end and return to the other", "with prefix caching, a freed cached block can be hit while it sits in the middle of the free list", "deque.remove then scans 30,469 entries, 1.4–1.8 ms per hit, a third of a decode step for one block"]},
+    {"with": "llm-request-scheduler/policies", "q": "The waiting container changes with the policy. What is fundamentally different about the key a heap needs for SJF, for priority, and for fairness, and which one can't be a single heap?", "answer": ["SJF: (prompt + predicted output, arrival)", "priority: (priority, arrival)", "fairness picks a tenant by a counter that changes as tokens are served, so it is per-tenant deques plus an O(T) min, not one heap"]}
+  ],
+  "predict": {"q": "Your deployment raises max_num_seqs to 4,096 and cancels are frequent. Before measuring: which container's choice now matters that didn't before, and what would you switch it to?", "answer": "The running list. With R in the thousands, list.remove on every cancel or finish scans a long list outside the per-step walk, so the O(R) removal starts to show. Switch to an OrderedDict keyed by id (or an intrusive linked list) for O(1) removal, keeping admission order. The card's own guidance is to switch when removals are frequent and R reaches thousands."},
+  "apply": {"task": "Fill in request 6's row-by-row table for the toy trace (prompt 16, output 5), like the card's table for request 4. Use these plan entries from the reference run: step 11 gives it 11 prompt tokens, step 12 preempts it, step 13 gives it 15, step 14 gives it 1, and steps 15–18 give it 1 decode each. For each step write num_computed after the step, num_generated, and blocks held (blocks of 4). Then total the tokens computed, needed and thrown away.", "done": "Step 11: 11 computed, 3 blocks. Step 12: preempted, 0, 0 blocks. Step 13: 15, 4 blocks. Step 14: 16 = the prompt, first token (generated 1), 4 blocks. Steps 15–18: 17, 18, 19, 20 computed, generated 2–5, 5 blocks; finished at step 18 (91.1 ms). Computed 11 + 15 + 1 + 4 = 31, needed 16 + 4 = 20, thrown away 11.", "hint": "Blocks = ⌈num_computed ÷ 4⌉ after allocation; the 5th output token is never fed back."},
+  "reflect": [
+    "Which prediction did you get wrong: which container matters at R = 4,096?",
+    "Could you explain why admission cost doesn't depend on W, in one sentence?",
+    "Which relationship is still fuzzy: preemption → num_computed reset → recompute cost, or prefix hit → num_computed head start?",
+    "Did any Big-O in the core table surprise you once you saw its timing?",
+    "What will you revisit before the step() card: which container each phase of step() touches?"
+  ],
+  "revisit": ["llm-request-scheduler/problem-spec", "llm-request-scheduler/chunked-prefill"],
+  "prereq": ["llm-request-scheduler/problem-spec"]
+}

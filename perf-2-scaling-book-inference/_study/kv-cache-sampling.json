@@ -1,0 +1,116 @@
+{
+  "prime": {
+    "problem": "A language model emits one token at a time. Run literally, every new token re-processes the whole prefix, so generating n tokens costs O(n²) MLP work and O(n³) attention work. Without a fix, long answers get quadratically slower.",
+    "fits": "The first card of the chapter. It builds on perf-1's attention card (Q, K, V and GQA) and introduces the object the rest of the course keeps measuring: the KV cache, and the split of inference into prefill and generation.",
+    "expect": ["the naive sampling loop", "causal attention → K and V never change", "the KV cache: 2·L·K·H·bytes per token", "prefill vs generation", "FLOPs saved vs time saved"],
+    "goal": "Explain why caching K and V is exact and what it saves, compute its memory cost for a real model, and say why a 183× FLOP cut becomes only a 3.6× time cut."
+  },
+  "attend": [
+    "What property of causal attention makes a past token's keys and values safe to reuse forever?",
+    "Why does the card cache K and V rather than each layer's hidden state, which would also skip earlier work?",
+    "Where do the book's O(n²) and O(n³) naive costs come from, and what do they drop to with the cache?",
+    "The cache cuts FLOPs 183× in the worked example. Why does wall-clock time drop only about 3.6×?",
+    "When is there nothing to cache at all?"
+  ],
+  "core": {
+    "must": [
+      "Attention is causal → a token's K and V depend only on earlier tokens → they never change once computed → store them once (the KV cache) → each step feeds only the newest token, cutting MLP work from O(n²) to O(n) and attention from O(n³) to O(n²)",
+      "The cache splits inference in two → prefill processes the whole prompt in one parallel pass and fills the cache (compute-heavy) → generation adds one token per step and reads the cache (memory-heavy) → two different jobs with different bottlenecks, the chapter's theme",
+      "Each generation step still streams all 16.06 GB of weights to do only ~16 GFLOP of work → the step is memory-bound → cutting FLOPs 183× cuts time only 3.6× on an H100",
+      "KV bytes per token = 2·L·K·H·bytes (128 KiB for Llama-3.1-8B) → it grows with every token of every sequence → memory, not FLOPs, becomes the constraint (≈ 59 sequences of 8k fit in 63.9 GB)"
+    ],
+    "elevated": [
+      "Caching hidden states instead would store D = 4,096 values per token per layer vs 2·K·H = 2,048 for GQA's K and V, and would force recomputing K, V projections on all past tokens every step → back to O(n) work per step"
+    ],
+    "reference": [
+      "the tiny numpy decoder's dimensions and its 12.1× FLOP ratio",
+      "the table of naive/cached ratios at n = 100, 1,000, 10,000",
+      "the M3 measurements (188 tok/s prefill, 14.1 tok/s decode)",
+      "4·L·D FLOPs per (query, key) pair"
+    ]
+  },
+  "compress": {
+    "prompt": "In 3–4 sentences from memory: why the naive loop is quadratic, what the KV cache stores and why that is exact, and why the cache turns inference into two different jobs. Then write the KV-bytes formula and fill it in for Llama-3.1-8B.",
+    "checklist": [
+      "naive loop re-runs every earlier token each step: Θ(n²) overall",
+      "causal attention means past K, V never change, so caching them changes no output",
+      "prefill fills the cache in one parallel pass; generation adds one token per step and reads it",
+      "2·L·K·H·bytes = 2·32·8·128·2 = 131,072 B = 128 KiB per token",
+      "fewer FLOPs, but each step is still bound by reading the weights"
+    ]
+  },
+  "retrieve": [
+    {
+      "q": "Explain why caching K and V gives exactly the same tokens as the naive loop, while a fixed-size recurrent state would not.",
+      "kind": "concept",
+      "answer": [
+        "future tokens only need past tokens' K and V for their q·k and p·v products, and those values never change",
+        "the cache stores them exactly, so attention computes the same numbers (the lab's max logit difference is 2.7e-15)",
+        "a recurrent or SSM state compresses history into a fixed size, so it cannot replay exact attention and needs a different trained model"
+      ]
+    },
+    {
+      "q": "Trace one generation step with a KV cache: what goes into the model, what is read, what is written, and what comes out?",
+      "kind": "mechanism",
+      "answer": [
+        "input: only the newest sampled token",
+        "each layer computes that token's Q, K, V; Q attends over all cached K, V plus its own",
+        "its K and V are appended to the cache (one new entry per layer)",
+        "out: logits for the next token, from which one token is sampled and fed back"
+      ]
+    },
+    {
+      "q": "The cache trades compute for memory. For a 1,200-token run it costs 157 MB; why does the card still call memory, not FLOPs, the chapter's recurring constraint?",
+      "kind": "tradeoff",
+      "answer": [
+        "a server holds one cache per sequence in the batch, and each grows with every token",
+        "at 8k tokens one sequence is 1.07 GB, so the 63.9 GB left after weights fits only about 59",
+        "the FLOPs saved are huge, but the bytes stored cap how many users share each weight read"
+      ]
+    }
+  ],
+  "compare": [
+    {
+      "with": "perf-2-scaling-book-inference/params-vs-kv",
+      "q": "This card computes one sequence's cache; the memory card sets it against the weights. What is fundamentally different about the two kinds of bytes, and which one decides how many users fit?",
+      "answer": [
+        "weights: one shared copy, fixed size, read once per step for the whole batch",
+        "KV: one cache per sequence, grows with context, read by that sequence only",
+        "weights decide whether the model fits; KV decides how many sequences fit",
+        "for LLaMA 2-13B, four 8k caches (26.8 GB) already outweigh the 26 GB model"
+      ]
+    },
+    {
+      "with": "perf-1-foundations/prefill-vs-decode-mac",
+      "q": "Your M3 measured prefill about 13× faster per token than decode. Using this card, which design choice causes that gap, and would it close or widen on an H100?",
+      "answer": [
+        "prefill processes all prompt tokens in one pass, so each weight read feeds many tokens",
+        "decode processes one token per step, so each weight read feeds one token",
+        "the gap follows the chip's FLOPs per byte: on an H100 prefill of 1,000 tokens takes ≥ 16.2 ms (16 µs/token) vs ≥ 4.8 ms per decode token, a far wider gap"
+      ]
+    }
+  ],
+  "predict": {
+    "q": "A 500-token prompt, 100 generated tokens, same loop as the card. Commit first: how many token-passes does the naive loop do, how many does the cached loop do, and is the ratio closer to 90× or to 180×?",
+    "answer": "Naive: 100 × 500 + (0 + 1 + … + 99) = 50,000 + 4,950 = 54,950 token-passes. Cached: 500 + 99 = 599. Ratio ≈ 92×, closer to 90×. The ratio grows with the number of generated tokens, not the prompt: the card's 1,000 + 200 case gives 183× because it generates twice as many."
+  },
+  "apply": {
+    "task": "Run <code>labs/kv-cache-sampling.py</code>, then change the prompt to 500 tokens and the output to 100. Before running, predict the naive and cached token-pass counts and the KV cache size in MB for Llama-3.1-8B at 600 tokens. Then double n to 200 and 400 and check the card's claim that the ratio roughly doubles once n is much larger than the prompt.",
+    "done": "Your predictions match the lab: 54,950 vs 599 token-passes (≈ 92×) and 600 × 131,072 B ≈ 78.6 MB of KV, and you can say in one sentence why doubling n roughly doubles the ratio.",
+    "hint": "Naive passes = n·prompt + n(n−1)/2; cached = prompt + n − 1. When n ≫ prompt the naive count is ≈ n²/2 and the cached one ≈ n, so the ratio ≈ n/2."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: the pass counts, or which ratio (90× or 180×)?",
+    "Could you explain, without saying it's faster, why the cached answer is bit-for-bit the same?",
+    "Which relationship is still fuzzy: fewer FLOPs → still memory-bound, or cache per sequence → batch limit?",
+    "Could you rebuild the 128 KiB figure from L, K, H and bytes without looking?",
+    "What will you check first on the memory card: how the cache compares with the weights?"
+  ],
+  "revisit": [
+    "perf-1-foundations/attention",
+    "perf-1-foundations/prefill-vs-decode-mac"
+  ],
+  "prereq": [
+    "perf-1-foundations/attention"
+  ]
+}

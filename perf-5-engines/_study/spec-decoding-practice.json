@@ -1,0 +1,61 @@
+{
+  "prime": {
+    "problem": "Theorem 3.8 says speculation is fast when the draft is both accurate and cheap. In practice people reach for the next-smaller model in the family, which is accurate but not cheap, and then run it on a server that is already batching. Both mistakes can turn a promised 2–3× into 1× or a slowdown.",
+    "fits": "Second speculative card. It takes Part I's formula into the paper's T5 experiments, Chen's Chinchilla run, our own Mac measurement, and course 2's large-batch model.",
+    "expect": ["the cost ratio c (draft step ÷ target step)", "acceptance falling with draft length", "Chen's shallow 4B draft (c = 0.128)", "our Mac: 3B target, 1B draft, c = 0.665", "why speculation fades at large batch"],
+    "goal": "Predict from measured α and c whether a draft will pay, explain why the Mac measured about 1× despite high acceptance, and say at what batch size speculation stops helping on an H100."
+  },
+  "attend": [
+    "In Leviathan's Table 2, why does the smallest draft win even though it has the lowest α?",
+    "How did Chen et al. make a 4B draft cost only 13% of Chinchilla's step?",
+    "On the Mac, why is c close to the ratio of the two models' file sizes?",
+    "Why does acceptance fall as draft length n grows from 2 to 8?",
+    "At what batch does the verify pass stop fitting under the weight read on the H100, and what happens after that?"
+  ],
+  "core": {
+    "must": [
+      "At batch 1 both models are memory-bound → a step's time ≈ its weight bytes ÷ bandwidth → c ≈ draft bytes ÷ target bytes → a 1B Q8 draft for a 3B Q4 target reads 65% as many bytes → c = 0.665 → even α = 1 at n = 2 gives only 1.29×",
+      "α rises slowly with draft size but c rises fast → smallest drafts win (T5-small 3.4× vs T5-large 1.7×) → drafts about two orders of magnitude smaller, or near-free drafts, are what pay",
+      "Verify carries B(γ + 1) tokens → past ≈ 295 tokens the verify step turns compute-bound → every drafted token now costs real math → 2.24× at B ≤ 59 falls to 1.26× at 128 and 0.70× at 256 in course 2's model"
+    ],
+    "elevated": [
+      "Chen's draft has only 8 layers (Chinchilla has 80) → little cross-chip communication per step on 16 TPUs → 1.8 vs 14.1 ms/token → a draft can be made cheap by its shape, not only its size",
+      "llama.cpp's accepted ÷ drafted isn't exactly Leviathan's α (early stop when unsure, non-i.i.d. acceptance) → long-draft predictions (0.26–0.57×) were too pessimistic vs measured ≈ 1×"
+    ],
+    "reference": [
+      "Leviathan Table 2/3 per-task α and c values",
+      "the raw llama-server run timings",
+      "Chen's benchmark scores (XSum, HumanEval)",
+      "llama.cpp tool names and flags"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, fill in a four-row table: Leviathan T5-small, Chen 4B, course-2 H100 model, our Mac, with c, α and the best speedup. Under it, write the one-line rule it teaches and the one-line rule for batch size.",
+    "checklist": [
+      "Leviathan c 0.02, α 0.75, 3.4×; Chen c 0.128, α ≈ 0.85, 2.46×; H100 model c 0.125, α 0.8, 2.24×; Mac c 0.665, α 0.915, 1.18× predicted",
+      "c ≈ draft bytes ÷ target bytes at batch 1",
+      "high α can't rescue a high c",
+      "past B(γ + 1) ≈ 295 tokens on the H100 the gain fades and can invert"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why our Mac got the highest acceptance rate in the comparison table and still the lowest speedup.", "kind": "concept", "answer": ["the 1B draft costs 66.5% of a target step (c = 0.665), vs 2–13% in the papers", "each iteration pays γc + 1 target steps, so drafting nearly doubles the cost at n = 2", "E = 2.75 at n = 2 over a cost of 2.33 gives 1.18× at best"]},
+    {"q": "Walk through why speculation's gain falls at B = 128 on the course-2 H100 model: what is in the verify pass, how long it takes, and how the speedup is computed.", "kind": "mechanism", "answer": ["verify carries 128 × 5 = 640 tokens, past the ≈ 295 ridge", "its time is math: 2 × 8.03e9 × 640 ÷ 9.89e14 = 10.39 ms, longer than the 4.79 ms weight read", "speedup = E × normal ÷ (verify + draft) = 3.36 × 4.79 ÷ (10.39 + 2.39) = 1.26×"]},
+    {"q": "You have a 3B target on a laptop. Options: a 1B Q8 draft, a much smaller or lower-bit draft, or prompt-lookup n-grams. Which would you try for chat and which for code editing, and why?", "kind": "tradeoff", "answer": ["the 1B Q8 draft: c ≈ 0.665, measured ≈ 1×, not worth it", "a far cheaper draft lowers c; worth testing for chat (untested on this Mac)", "n-grams cost ≈ 0 and shine when the output copies the input: code editing, not free chat"]}
+  ],
+  "compare": [
+    {"with": "perf-5-engines/eagle", "q": "EAGLE's draft is one decoder layer plus the target's own LM head; our Mac's draft is a whole 1B model. What is fundamentally different about how each keeps c low and α high, and how does each fail?", "answer": ["EAGLE reuses the target's features and sampled token, so a tiny draft stays accurate (α ≈ 0.8) and cheap", "a separate model must be both small and aligned; making it small lowers α, making it big raises c", "EAGLE fails at large batch and needs training per target; the separate draft fails when no small sibling with the same tokenizer exists, or when c is too high"]},
+    {"with": "perf-5-engines/quantization-serving", "q": "Both a smaller draft and quantizing the draft lower c. Which one did our Mac actually suffer from, and why would quantizing the target instead make speculation <i>worse</i>?", "answer": ["the 1B draft was stored at 8 bits vs the target's 4, so its bytes were 65% of the target's", "quantizing the target shrinks the target step, so the same draft is a bigger fraction of it (c rises)", "a 4-bit target also has a lower ridge (B_crit 76), so the verify pass turns compute-bound at smaller batches"]}
+  ],
+  "predict": {"q": "Chat on the Mac measured 70.2% acceptance at n = 2. Without looking, is the break-even c for that case above or below our 0.665, and what c would you need for 1.5×? Commit to a direction and a rough number.", "answer": "Break-even c = (E − 1) ÷ n with E = (1 − 0.702³) ÷ 0.298 = 2.19, so c ≈ 0.60: below our 0.665, which is why chat at n = 2 is predicted just under 1× (0.94×). For 1.5× you'd need c ≤ (2.19 ÷ 1.5 − 1) ÷ 2 ≈ 0.23, about a third of what the 1B Q8 draft costs (our calculation)."},
+  "apply": {"task": "Two calculations. (1) For code at n = 2 (α = 0.915) and n = 4 (α = 0.867), compute E, the break-even c, and the c needed for 1.5×. (2) Extend the card's batch table to B = 48, 96 and 192 with course 2's model (α = 0.8, K = 4, 1.0B draft taking 2.39 ms for 4 steps, 4.79 ms weight read): verify tokens, verify time, speedup. Then, if you have llama.cpp, run labs/spec-mac.py --quick, and do a full run on an idle machine to see whether target-only speed returns to about 28.8 tok/s.", "done": "Two rows of E / break-even c / c for 1.5×, three batch rows with speedups, and one sentence on where the gain crosses below 2× and below 1×.", "hint": "Check after trying (our calculation): code n = 2: E 2.75, break-even c 0.88, 1.5× needs c ≤ 0.42. n = 4: E 3.84, break-even 0.71, 1.5× needs c ≤ 0.39. Batch: B = 48 → 240 tokens, 4.79 ms, 2.24×; B = 96 → 480, 7.79 ms, 1.58×; B = 192 → 960, 15.59 ms, 0.90×."},
+  "reflect": [
+    "Which prediction did you get wrong: the break-even c for chat, or how far c must fall for 1.5×?",
+    "Could you explain to a colleague why 'acceptance was great' doesn't mean 'speculation helps'?",
+    "Which relationship is still fuzzy: bytes → c on the Mac, or batch → verify tokens → compute-bound?",
+    "How much do you trust the busy-machine timings, and what would you change before re-running?",
+    "Before Medusa and EAGLE: how could a draft cost almost nothing and still be accurate?"
+  ],
+  "revisit": ["perf-5-engines/spec-decoding-math", "perf-2-scaling-book-inference/critical-batch-size", "perf-1-foundations/prefill-vs-decode-mac"],
+  "prereq": ["perf-5-engines/spec-decoding-math"]
+}

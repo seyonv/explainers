@@ -1,0 +1,55 @@
+{
+  "prime": {
+    "problem": "Chat apps and agents re-send the same long system prompt, documents and history on every request. Without caching the model re-reads all of it each time: seconds on a laptop, and full price on an API.",
+    "fits": "Sixth mechanism card, and the first that attacks the start rather than the writing. TTFT showed prefill as one part of the wait; this card removes it for a repeated prefix. Context growth later shows why agents depend on it.",
+    "expect": ["prefill", "exact-prefix match", "cache hit vs miss", "cache write and read pricing", "cache lifetime"],
+    "goal": "Structure prompts so they hit the cache, and predict when caching helps a lot, a little, or costs extra."
+  },
+  "attend": [
+    "Why does changing only the first words of the prompt throw away the whole cache?",
+    "Why is the speed-up 83× for reading but much less for the whole response?",
+    "Why does caching barely matter for the 26-token FizzBuzz prompt?",
+    "When does a prompt cost more with caching than without?"
+  ],
+  "core": {
+    "must": [
+      "Prefill turns every prompt token into stored state (the KV cache) → the state for a token depends on every token before it → a saved prefix can be reused only if it matches exactly from the first token → one changed early token misses everything after it",
+      "A cache hit skips reading the shared prefix → only the new tail is read → TTFT drops (33.88 s → 0.41 s on the M3) → but writing time is untouched",
+      "Hosted caches charge to write (1.25× or 2×) and discount reads (0.1×) → worth it only when the prefix is reused within the cache lifetime → a one-off prompt costs more"
+    ],
+    "elevated": [
+      "Put stable content first (system prompt, tools, documents) and changing content last (timestamps, the question) → otherwise every request misses, as in the 25.99 s \"new first words\" row"
+    ],
+    "reference": ["OpenAI's 1,024-token minimum for automatic caching", "the 5-minute and 1-hour lifetimes", "Anthropic's published 100K-book example (11.5 s → 2.4 s)"]
+  },
+  "compress": {
+    "prompt": "From memory, draw a prompt as a row of blocks and mark what is cacheable. Show the three requests from the worked example (first send, identical repeat, new first words) and explain the timing of each in one line.",
+    "checklist": [
+      "caching saves the result of reading a prefix",
+      "reuse requires an exact match from the very first token",
+      "first send 33.88 s; repeat 0.41 s; a changed start re-reads everything (25.99 s)",
+      "only prompt reading gets faster, not the answer",
+      "stable content first, variable content last"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why the cache must match from the first token, rather than matching any repeated chunk anywhere in the prompt.", "kind": "concept", "answer": ["each token's stored state depends on all tokens before it", "if an early token changes, every later token's state changes too", "so only an identical prefix can be reused"]},
+    {"q": "Trace what happens on three agent calls whose prompts are: system prompt + history A; system prompt + history A + turn B; timestamp + system prompt + history A + turn B.", "kind": "mechanism", "answer": ["call 1: full read, the prefix is written to the cache", "call 2: system prompt + A hit, only turn B is read", "call 3: the timestamp changes the first tokens, so nothing matches: full read"]},
+    {"q": "Your API app sends a 20k-token document once per user, and each user asks one question. Should you turn on caching? What if each user asks ten?", "kind": "tradeoff", "answer": ["one question: you pay the 1.25× write and never read it: more expensive", "ten questions within the lifetime: nine reads at 0.1× plus faster TTFT: clearly worth it", "the decision is reuse count within the cache lifetime"]}
+  ],
+  "compare": [
+    {"with": "llm-latency/grammar-compilation", "q": "Both are one-time costs that a cache hides. What exactly is cached in each, what invalidates it, and which one grows with prompt length?", "answer": ["prompt caching stores the prefix's KV state; grammar caching stores the compiled schema", "a changed prefix invalidates the first; a changed schema structure the second", "prefill grows with prompt length; compile time depends on schema complexity and engine"]},
+    {"with": "llm-request-scheduler/prefix-caching", "q": "Here caching is a feature you call; in a scheduler it's a memory-management decision. What does the server have to decide that the API user never sees?", "answer": ["which prefixes to keep in limited GPU memory and which to evict", "how to share cached blocks between concurrent requests", "the user sees only hit/miss and price; the server trades cache space against batch size"]}
+  ],
+  "predict": {"q": "On the M3, a 2,605-token prompt is cached. You append a 300-token question at the end. Predict the prefill time using the fresh read rate of about 207 tokens/s, and say what would happen if you had put the question at the start instead.", "answer": "Only the 300 new tokens are read: about 300 ÷ 207 ≈ 1.4 s (a little more, since each new token attends to the long cached prefix). With the question at the start, the first tokens differ, so nothing matches: all ~2,900 tokens are re-read, about 14 s at 207 t/s."},
+  "apply": {"task": "In Ollama, send the same ~2,000-token prompt twice and record <code>prompt_eval_duration</code> both times. Then change one word near the start and send it again, and finally change one word near the end. Explain each of the four timings from the exact-prefix rule.", "done": "You have four prompt-read times: first (slow), identical (fast), early change (slow), late change (fast, only the tail re-read). Each is explained in one line.", "hint": "Ollama keeps the last prompt's state in memory while the model stays loaded; run the four requests back to back."},
+  "reflect": [
+    "Which prediction did you get wrong: where to put the variable part of the prompt?",
+    "What couldn't you explain cleanly: why the match must start at the first token?",
+    "Which relationship is still fuzzy: prefix match → skipped prefill, or skipped prefill → lower TTFT but same writing time?",
+    "Which of your prompts has something variable (a date, an ID) near the start?",
+    "What do you expect context growth to show about caching in agents?"
+  ],
+  "revisit": ["llm-latency/ttft", "llm-latency/memory-bandwidth"],
+  "prereq": ["llm-latency/ttft"]
+}

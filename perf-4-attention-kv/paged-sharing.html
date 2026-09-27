@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>PagedAttention I: KV memory as pages</title>
+<title>PagedAttention II: sharing, copy-on-write and preemption</title>
 <style>
 :root{
   --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
@@ -117,6 +117,37 @@ a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
 .snx .aux a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
 @media (max-width:560px){.sn,.snx{padding-left:16px;padding-right:16px}.snx .nx{grid-template-columns:1fr}.snx .mini{display:none}.sn .step{margin-left:0}}
 /* /series-nav */
+/* study:css */
+.prime{border:1px solid var(--accent-border,var(--border));background:var(--accent-bg);border-radius:10px;padding:10px 16px 6px;margin:12px 0 18px;font-size:14px}
+.prime p{margin:4px 0}
+.prime-k{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--accent);font-weight:600;margin-bottom:4px}
+.prime .chip{display:inline-block;border:1px solid var(--border);background:var(--surface);border-radius:999px;padding:0 8px;margin:1px 2px;font-size:12.5px}
+.prime ol{margin:2px 0 6px;padding-left:22px}
+.prime li{margin:2px 0}
+.study{border:1px solid var(--border);border-radius:12px;padding:12px 16px;margin:26px 0 18px;background:var(--surface)}
+.study-head{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:4px 12px}
+.study-head h2{margin:0;font-size:18px}
+.study-head span,.study-all-l{font-size:12.5px;color:var(--muted)}
+.study-all{margin:8px 4px 8px 0;vertical-align:middle}
+.study details.st{border-top:1px solid var(--border);padding:8px 0}
+.study details.st>summary{cursor:pointer;font-size:15px}
+.study details.st>summary span{color:var(--muted);font-size:13px}
+.study-all:not(:checked)~details.st:not([open])~details.st{display:none}
+.st-body{font-size:14px;padding:4px 0 2px 2px}
+.st-body p{margin:6px 0}
+.st-body ul,.st-body ol{margin:4px 0;padding-left:22px}
+.st-body li{margin:3px 0}
+.st-rule,.st-how{color:var(--muted);font-size:13px}
+.st-why{font-size:12px;color:var(--muted);text-align:right;margin:2px 0 0}
+.core{display:grid;grid-template-columns:3fr 2fr;gap:6px 18px}
+.core h4{margin:4px 0;font-size:13px}
+.core .muted{color:var(--muted)}
+.up{font-size:11px;border:1px solid var(--accent-border,var(--border));color:var(--accent);border-radius:4px;padding:0 4px;white-space:nowrap}
+.study .kind{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--accent);margin-right:4px}
+.study details.ref{margin:4px 0 8px;padding:4px 10px;border-left:3px solid var(--accent-border,var(--border));background:var(--surface2);border-radius:0 6px 6px 0}
+.study details.ref>summary{cursor:pointer;font-size:13px;color:var(--accent)}
+@media (max-width:620px){.core{grid-template-columns:1fr}}
+/* /study:css */
 </style>
 <body>
 <!-- series-nav:top -->
@@ -126,6 +157,20 @@ a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
 <article class="card">
 <h1>PagedAttention II: sharing, copy-on-write and preemption</h1>
 <p class="sub">Also called parallel sampling and beam search on shared blocks, shared prefix, reference counts, swap vs recompute, sequence groups. This card walks the PagedAttention paper (Kwon et al., SOSP '23) §4.4–4.6 in order: how several sequences share KV blocks, how vLLM picks and restores victims when blocks run out, and how one block table serves many GPUs. The paper's memory numbers are OPT-13B on an A100; Llama-3.1-8B on an H100 is our recomputation.</p>
+<!-- study:prime -->
+<aside class="prime" aria-label="Prime: read this first">
+<div class="prime-k"><a href="../learning-principles/learning-principles.html#prime">Prime</a> · 2 minutes before you read</div>
+<p><b>The problem:</b> Parallel samples, beams and requests with the same system prompt all hold identical KV for their shared history. With one private buffer per sequence, four samples store the prompt four times, and beam search keeps copying whole caches between beams.</p>
+<p><b>Where it fits:</b> Second PagedAttention card. The block table from card I is just a list of pointers, so two sequences can point at the same physical block; this card adds reference counts, copy-on-write, preemption and the multi-GPU layout.</p>
+<p class="prime-links"><b>Needs first:</b> <a href="paged-memory.html">PagedAttention I: KV memory as pages</a></p>
+<p class="prime-links"><b>Builds on:</b> <a href="paged-memory.html">PagedAttention I: KV memory as pages</a> · <a href="../perf-2-scaling-book-inference/sharding-kv-cache.html">Sharding the KV cache</a></p>
+<p class="prime-links"><b>Used in the field guides:</b> <a href="https://agents-inference-software-factory.svas.workers.dev/agents/#f-F05">F05: Prompt caching is on, and the cache keeps missing</a> (Agents Field Guide) · <a href="https://agents-inference-software-factory.svas.workers.dev/serving/#f-F07">F07: Prefix cache hit rate is zero because of a timestamp</a> (Serving Field Guide) · <a href="https://agents-inference-software-factory.svas.workers.dev/agents/#pr-6">Principle 6: Keep the prefix byte-identical and the history append-only.</a> (Agents Field Guide) · <a href="https://agents-inference-software-factory.svas.workers.dev/serving/#pr-10">Principle 10: Make the prefix identical, or it will not be cached.</a> (Serving Field Guide)</p>
+<p><b>You'll meet:</b> <span class="chip">reference counts per physical block</span> <span class="chip">fork = copy the block table</span> <span class="chip">copy-on-write on the shared last block</span> <span class="chip">all-or-nothing eviction, sequence groups</span> <span class="chip">swap vs recompute</span></p>
+<p><b>By the end:</b> Count blocks with and without sharing for samples and beams, trace copy-on-write, and choose between swap and recompute when memory runs out.</p>
+<p class="prime-q"><b>Read with these questions</b> (answer them in your head as you go; don't take notes line by line):</p>
+<ol><li>When a request forks into four samples, what is copied and what isn't?</li><li>Why is only the partly filled last prompt block ever copied, and never a full one?</li><li>Why does beam search save more than parallel sampling at the same number of sequences?</li><li>Why does vLLM evict all of a sequence's blocks or none, unlike an OS that evicts single pages?</li><li>What does swapping cost that recomputation doesn't, and vice versa?</li></ol>
+</aside>
+<!-- /study:prime -->
 
 <h2>In one breath</h2>
 <p>A block table is just a list of pointers, so two sequences can point at the same physical KV block. vLLM gives every block a reference count, lets samples and beams share their common history, and copies a block only when a sequence has to write into one that someone else is still reading (copy-on-write). When memory runs out it evicts whole sequences, never parts of them, and brings them back by copying from CPU memory or by recomputing the KV cache.</p>
@@ -479,6 +524,22 @@ saved 2,079 × 2 MiB = 4.36 GB</div>
   <p><a href="https://github.com/seyonv/explainers/blob/main/perf-4-attention-kv/labs/paged-cow.py">Run it: labs/paged-cow.py</a> <b>[L]</b> runs on your Mac in under a second with numpy. It's a block manager with reference counts, fork, copy-on-write append and free. It prints the Fig 8 and Fig 9 traces, the n = 2, 4, 6 parallel-sampling table, the synthetic beam-search table (seed 0), the shared-prefix, swap-vs-recompute and tensor-parallel arithmetic. Try P = 20 (an Alpaca-length prompt), where the saving drops to the paper's single digits.</p>
 </div>
 
+<!-- study:panel -->
+<section class="study" aria-label="Study this card">
+<div class="study-head"><h2>Study this card</h2><span>Open each step in order · <a href="../learning-principles/learning-principles.html">why this works</a></span></div>
+<input type="checkbox" id="study-all" class="study-all"><label for="study-all" class="study-all-l">show all steps (for revisiting)</label>
+<details class="st"><summary><b>1 · Core model</b> <span>what to internalise, what to just look up</span></summary><div class="st-body"><p class="st-rule">Keep it if it changes what you can <i>explain, predict, compare, choose, build or debug</i>. Otherwise it's reference.</p>
+<div class="core"><div><h4>Understand and remember</h4><ul><li>A block table is a list of pointers → forks copy the table and bump reference counts → samples share the prompt's physical blocks → the first write into a block with ref > 1 triggers copy-on-write of just that block → 4 samples of a 1,000-token prompt: 328 → 142 blocks (−56.7%)</li><li>Full blocks are never written again → only the last, partly filled block is ever copied → at most one copy per fork → beam search, whose sharing pattern changes every step, copies 23 blocks (48 MB) instead of 3.36 GB in our k = 4 run</li><li>Every decode step reads all of a sequence's blocks → evicting part of a sequence stalls it and wastes the rest → evict whole sequences (and whole sequence groups, which share blocks) → bring back by swapping over PCIe or recomputing in one prefill pass</li><li><span class="up">detail that matters</span> Swap vs recompute depends on block size → small blocks mean many small PCIe transfers far below peak bandwidth → recompute wins at small blocks, swap at large, about equal at 16–64 (§7.3)</li></ul></div>
+<div><h4>Reference only</h4><ul class="muted"><li>the Fig 8 and Fig 9 physical block numbers</li><li>the paper's per-dataset saving percentages</li><li>the synthetic beam survival probabilities</li><li>PCIe 64 GB/s per direction (our assumption)</li><li>the TP = 2 per-GPU block slice sizes</li></ul></div></div><p class="st-why"><a href="../learning-principles/learning-principles.html#layers">Why this step?</a></p></div></details>
+<details class="st"><summary><b>2 · Compress</b> <span>write it yourself first</span></summary><div class="st-body"><p>From memory, write the four operations (reference count, fork, copy-on-write, free) as a chain for one request with 2 samples, then one sentence on why eviction is all-or-nothing.</p><p class="st-how">On paper or in your notes, in your own words, without scrolling up. Aim for the smallest thing that still explains it.</p>
+<details class="ref"><summary>Then compare with this checklist</summary><ul><li>prompt blocks computed once, ref = number of sequences</li><li>fork copies the table, bumps refs, copies no KV</li><li>first write into a shared partial block: allocate, copy, decrement, write</li><li>free decrements refs; blocks at 0 return to the free list</li><li>all blocks are read every step, so partial eviction only wastes memory</li></ul><p class="st-how">Missing a point? Reread only the section about it, not the whole card.</p></details><p class="st-why"><a href="../learning-principles/learning-principles.html#compress">Why this step?</a></p></div></details>
+<details class="st"><summary><b>3 · Retrieve</b> <span>from memory, card closed</span></summary><div class="st-body"><ol class="qs"><li><span class="kind">concept</span> Explain why sharing blocks is safe even though each sample generates different text.<details class="ref"><summary>Check</summary><ul><li>shared blocks hold only the common history, which is identical</li><li>a sample writes only into its last block</li><li>if that block is shared, copy-on-write gives the writer a private copy first</li></ul></details></li><li><span class="kind">mechanism</span> Walk through what happens to reference counts in Fig 9's beam step when candidates 0 and 3 drop out and the new top 4 all come from candidates 1 and 2.<details class="ref"><summary>Check</summary><ul><li>the dropped candidates' blocks are decremented</li><li>blocks 2, 4, 5 and 8 reach 0 and are freed</li><li>new candidates fork from 1 and 2, bumping shared blocks' refs</li><li>new blocks 9–12 are allocated for the new tokens</li></ul></details></li><li><span class="kind">tradeoff</span> A 1,300-token Llama-3.1-8B sequence must be preempted on an H100. Compare swapping and recomputation as ideal floors, and say why the paper still found them about equal at B = 16.<details class="ref"><summary>Check</summary><ul><li>swap: 170.4 MB at 64 GB/s, ≥ 2.66 ms each way, needs CPU RAM, blocks new admissions</li><li>recompute: ≥ 21.1 ms of prefill at 100% MFU, no CPU memory</li><li>small blocks make swapping many small transfers far below peak PCIe, so measured costs converge</li></ul></details></li></ol><p class="st-why"><a href="../learning-principles/learning-principles.html#retrieve">Why this step?</a></p></div></details>
+<details class="st"><summary><b>4 · Compare</b> <span>against what you already know</span></summary><div class="st-body"><p><b>vs <a href="radixattention.html">RadixAttention I: the radix tree of KV caches</a>:</b> PagedAttention shares a prefix only when the provider lists it (or within one request); RadixAttention finds shared prefixes across arbitrary requests automatically. What data structure makes the difference, and what does each do with finished requests' KV?</p><details class="ref"><summary>Check</summary><ul><li>vLLM's §4.4 uses reserved blocks for provider-chosen prefixes; a radix tree keys cached KV by token sequence</li><li>the radix tree matches any prefix, at token granularity</li><li>PagedAttention frees a finished request's blocks; RadixAttention keeps them as an LRU cache</li></ul></details><p><b>vs <a href="../perf-2-scaling-book-inference/sharding-kv-cache.html">Sharding the KV cache</a>:</b> Under tensor parallelism vLLM gives every GPU the same block IDs but only its heads' slice of each block. How does that relate to perf-2's ways of sharding the KV cache, and when does it stop working?</p><details class="ref"><summary>Check</summary><ul><li>it is head sharding: each GPU holds its KV heads for every position</li><li>one central block manager suffices because every shard needs the same positions</li><li>it stops working when there are fewer KV heads than GPUs, which is perf-2's topic</li></ul></details><p class="st-why"><a href="../learning-principles/learning-principles.html#interleave">Why this step?</a></p></div></details>
+<details class="st"><summary><b>5 · Predict</b> <span>commit to an answer before revealing</span></summary><div class="st-body"><p>Same 1,000-token prompt, 300-token outputs, but n = 3 samples. How many blocks with and without sharing, the saving, and how many copy-on-write copies at the first step? Commit first.</p><details class="ref"><summary>Reveal</summary><p>Without sharing 3 × 82 = 246 blocks (515.9 MB); with sharing 62 + 3 × 20 = 122 blocks (255.9 MB), saving 50.4%. The last prompt block (8 tokens) is shared by 3 writers: 2 copy it, the third writes in place, so 2 copies (our arithmetic, same formula as the card).</p></details><p class="st-why"><a href="../learning-principles/learning-principles.html#predict">Why this step?</a></p></div></details>
+<details class="st"><summary><b>6 · Apply</b> <span>use the model, don't restate it</span></summary><div class="st-body"><p>Run labs/paged-cow.py, then set P = 20 (an Alpaca-length prompt) and rerun the n = 2, 4, 6 table. Before running, predict whether the saving goes up or down and roughly to what range. Then set the beam drop-out probability to 0 and check that beam search collapses to the parallel-sampling numbers.</p><p><b>Done when:</b> You have both reruns recorded next to your predictions, and one sentence each on why a short prompt shrinks the saving and why beams without drop-out share only the prompt.</p><details class="ref"><summary>Hint</summary><p>With a 20-token prompt the shared part is a tiny share of each sequence, so the saving falls to the paper's single digits (Alpaca: 6.1–9.8%). With no drop-out every beam keeps its own history, so only the prompt is shared: exactly parallel sampling.</p></details><p class="st-why"><a href="../learning-principles/learning-principles.html#apply">Why this step?</a></p></div></details>
+<details class="st"><summary><b>7 · Reflect</b> <span>and decide whether to move on</span></summary><div class="st-body"><ul><li>Which prediction did you get wrong: the saving at n = 3, or the number of copies?</li><li>Could you explain copy-on-write with the Unix fork() analogy?</li><li>Which relationship is still fuzzy: block table → sharing, or sharing → larger batch?</li><li>Why is all-or-nothing eviction the right call here but not for an OS?</li><li>What will you look for in PagedAttention III: what the fused kernels do to hide the indirection?</li></ul><p class="st-how">Repair what came up: reopen only that section, then retry the question you missed. Tutor mode: <code>/study perf-4-attention-kv/paged-sharing</code> in Claude Code grades your answers and walks you through each stage.</p><p class="st-why"><a href="../learning-principles/learning-principles.html#reflect">Why this step?</a></p></div></details>
+</section>
+<!-- /study:panel -->
 <div class="foot">
 <p><b>Read next:</b> Kwon et al., "Efficient Memory Management for Large Language Model Serving with PagedAttention", SOSP '23: §4.4–4.6 in full, including Fig 8–10, then Fig 14–15 in §6.3, ~40 min. <a href="https://arxiv.org/abs/2309.06180">arxiv.org/abs/2309.06180</a></p>
 <p><b>Related:</b> <a href="paged-memory.html">PagedAttention I: KV memory as pages</a> · <a href="paged-results.html">PagedAttention III: implementation and results</a> · <a href="radixattention.html">RadixAttention I: prefix sharing across requests, automatically</a> · <a href="../perf-2-scaling-book-inference/sharding-kv-cache.html">sharding the KV cache</a> · <a href="../llm-latency/prompt-caching.html">prompt caching</a></p>

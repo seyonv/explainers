@@ -1,0 +1,67 @@
+{
+  "prime": {
+    "problem": "Thousands of clients call the server at once, but step() must see a consistent world: every block in one place, every request in one container. Put a lock around it and you get no parallelism and one missed lock away from a double free. Put the model on a thread per request and you lose batching.",
+    "fits": "Seventh card of group 3. It wraps the single-threaded step() from the earlier cards in the parts that face the network: an async API server, an inbox, streaming, cancellation and backpressure. It is where the problem-spec's \"who calls add, and from which thread?\" gets its answer.",
+    "expect": [
+      "async front end → input queue → one engine loop → output queue",
+      "one owner, no locks (the actor pattern)",
+      "streaming (SSE) and cancellation as messages",
+      "backpressure: bounded queue → 429",
+      "serial vs overlapped CPU: sum vs max"
+    ],
+    "goal": "Draw the inside of one replica, explain why a single engine loop beats a locked scheduler, handle cancel and overload correctly, and compute what CPU time in the loop costs."
+  },
+  "attend": [
+    "Where does concurrency actually happen, if one loop runs everything?",
+    "Why is a cancel sent as a message instead of freeing the request's blocks right away?",
+    "Client 18 gets a 429 at zero GPU cost. Why is a token cap a better backpressure signal than a count?",
+    "Why does overlap scheduling turn a sum into a max, and what does it have to guess?",
+    "Why did vLLM V1 move tokenizing and detokenizing out of the engine loop?"
+  ],
+  "core": {
+    "must": [
+      "step() keeps several invariants true together (blocks in one place, ref counts, seats, budget) → one owner applies adds and aborts between steps → no locks, deterministic order → concurrency lives at the edges (sockets, tokenizing) and turns into batching at the GPU",
+      "A client disconnects → its stream's finally sends an abort message → the loop frees the blocks between steps → never while a step may still write them, and never twice",
+      "Past capacity, an unbounded queue only makes every request late → cap accepted work and return 429 with Retry-After → rejection costs zero GPU time and lets the client or router go elsewhere",
+      "The loop is serial → its CPU work adds to every GPU step (t_GPU + t_CPU) → overlap plans step N+1 while N runs → max(t_GPU, t_CPU), at the cost of planning before N's tokens exist"
+    ],
+    "elevated": [
+      "CPU time matters most when GPU steps are short → 1.2 ms is 3–5% of a 25 ms step but about 20% of a 5 ms step → small models on fast GPUs need the overlap and the multi-process split most"
+    ],
+    "reference": [
+      "the ZMQ hop and process layout of vLLM V1 (API server, EngineCore, workers)",
+      "SGLang's DetokenizerManager process",
+      "the lab's exact caps (8 seats + 10 waiting) and client table"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw one replica from socket to GPU and back: API server, input queue, engine loop (its four steps), GPU, output queue, streams. Mark where a 429 and an abort enter, and write the serial vs overlapped step formulas.",
+    "checklist": [
+      "async API server: one coroutine and one stream per client",
+      "one engine loop drains adds/aborts, calls step(), runs the GPU, emits tokens",
+      "abort is a message applied between steps; blocks freed once",
+      "bounded queue → 429 + Retry-After",
+      "serial t_GPU + t_CPU vs overlapped max(t_GPU, t_CPU)"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why a single engine loop that owns the scheduler beats many threads sharing it behind a lock.", "kind": "concept", "answer": ["the lock would be held for all of step() and finish_step(), so threads just queue on it", "the GPU is one serial resource: planning two steps at once gains nothing", "one owner keeps the invariants trivially and makes the event order deterministic"]},
+    {"q": "Walk through client 5's cancellation in the lab: from the socket closing to its blocks returning.", "kind": "mechanism", "answer": ["the stream's finally runs and puts an abort message on the inbox", "the step already in flight still computes one token nobody reads", "between steps the loop finds the request by id (O(1)), removes it from running and frees its 9 blocks", "the next step() can give its seat to a waiting client (client 8)"]},
+    {"q": "At 100 running requests our Python step() costs 0.3–0.6 ms against a 12.8 ms GPU step. Is overlap scheduling worth its complexity here, and when would it clearly be?", "kind": "tradeoff", "answer": ["here it recovers 2.3–4.5% of throughput", "it matters far more when steps are short: a 5 ms step loses about 20% to 1.2 ms of CPU", "its cost: planning before the last tokens are known (placeholder tokens) and more code"]}
+  ],
+  "compare": [
+    {"with": "perf-5-engines/engine-anatomy", "q": "Course 5 anatomises vLLM and SGLang's processes. Map this card's lab onto each: which box is which process, and where do the two engines split the output side differently?", "answer": ["API server (+ tokenizer) → vLLM's API server process, SGLang's main process with TokenizerManager", "inbox → ZMQ sockets; engine loop → EngineCore / Scheduler subprocess", "vLLM detokenizes in the API server's OutputProcessor; SGLang has a separate DetokenizerManager process"]},
+    {"with": "llm-latency/parallel-calls", "q": "The latency course sends parallel calls from the client side. What happens to those calls inside this replica, and why can their total throughput rise while each gets slower?", "answer": ["they arrive as concurrent streams and become rows of the same steps", "one weight read is shared, so total tok/s rises (28.9 → 100.2 on the M3)", "each step gets longer, so each call's speed falls (31.7 → 8.5 tok/s) and TTFT grows"]}
+  ],
+  "predict": {"q": "You enable overlap scheduling, and a client cancels while two steps are in flight. Before reading the card's caveat: when is it safe to free that request's blocks?", "answer": "Only after both in-flight steps that include it have finished, because either may still be writing its KV into those blocks. With overlap the loop has two steps in flight, so the \"between steps\" rule must become \"after every step that references it has completed\"; SGLang tracks this with its future tensors. Freeing earlier risks another request reusing the block while the old writes land (the ABA bug)."},
+  "apply": {"task": "Compute the cost of a serial loop at two operating points with E9's 0.3–0.6 ms of Python step() time: (a) 32 running requests at 2k context, and (b) a single request at 2k. Use CostModel.raw for t_GPU and report t_GPU, serial vs overlapped tok/s for (a), and the share of each step lost to the CPU in both. Then say which deployment most needs overlap scheduling.", "done": "(a) t_GPU ≈ 7.36 ms; serial 4,179–4,021 tok/s vs overlapped 4,349; 3.9–7.5% lost. (b) t_GPU ≈ 4.87 ms; 5.8–11.0% lost (19.8% at 1.2 ms). Small batches and short steps need overlap most.", "hint": "Lost share = t_CPU ÷ (t_GPU + t_CPU)."},
+  "reflect": [
+    "Which prediction did you get wrong: when blocks can be freed under overlap?",
+    "Could you explain \"concurrency becomes batching\" to someone who expects a thread per request?",
+    "Which relationship is still fuzzy: abort message → safe free, or serial CPU → lost throughput?",
+    "Where would you put the backpressure limit in your own server: count, tokens, or predicted SLO?",
+    "What will you revisit before the prefix-caching card: how a returning request finds its old KV?"
+  ],
+  "revisit": ["llm-request-scheduler/step-algorithm", "llm-request-scheduler/request-state", "llm-request-scheduler/bottlenecks"],
+  "prereq": ["llm-request-scheduler/step-algorithm"]
+}

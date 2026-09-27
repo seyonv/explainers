@@ -1,0 +1,123 @@
+{
+  "prime": {
+    "problem": "A generation stall happens because one step can hold an unbounded amount of prompt work. Refusing prompts during decoding avoids stalls but starves throughput. The engine needs a rule that still processes prompts but never lets one step grow much longer than a decode step.",
+    "fits": "Second Sarathi card, the fix for the stalls diagnosed in Sarathi I. Its token budget becomes vLLM V1's max_num_batched_tokens, which the scheduler card builds on.",
+    "expect": [
+      "chunked prefill",
+      "stall-free batching (Algorithm 3): decodes first",
+      "the token budget τ, chosen from the TBT SLO",
+      "chunking overheads: KV re-reads, tile quantization",
+      "capacity under an SLO"
+    ],
+    "goal": "Explain why chunking and stall-free ordering are both needed, choose a token budget from a TBT target, and say what each choice costs in TTFT."
+  },
+  "attend": [
+    "Why can a prompt be cut into ~512-token pieces without losing much prefill efficiency?",
+    "In Algorithm 3, in what order are tokens packed into the budget, and why does that order guarantee no stall?",
+    "Table 4 separates hybrid batching and chunking. What does each one alone get wrong?",
+    "Why does profiling the budget on one batch overestimate what meets a P99 SLO in a full simulation?",
+    "Why does a chunk size of 257 cost 32% more than 256 in some cases?"
+  ],
+  "core": {
+    "must": [
+      "Prefill throughput saturates around a few hundred tokens and real prompts are thousands long → a prompt can be cut into chunks that each still fill the GPU → each chunk fits beside the running decodes → no single step carries a whole prompt",
+      "Every iteration gets a fixed budget τ → running decodes take 1 token each first, then ongoing chunks, then new requests → the step never exceeds what τ tokens cost → decodes never stall (P99 TBT 72.7 → 12.4 ms in our sim)",
+      "A smaller τ → shorter steps and better TBT → but more chunks, more KV re-reads and fixed costs, and less budget left for prompts → worse TTFT → τ is set as the largest budget whose iteration meets the TBT SLO (512 strict, 2,048 relaxed)",
+      "Once TBT has a target, stalls, not memory, set capacity (vLLM's capacity barely changed across max batch 32/64/128) → bounding step time raises capacity 2.6–5.6× in the paper"
+    ],
+    "elevated": [
+      "Matmuls run in fixed-size tiles → a size just past a tile boundary pays for a whole extra tile (257 → +32%) → pick budgets that are multiples of the tile size"
+    ],
+    "reference": [
+      "Table 1–3 model/GPU/SLO setups and dataset medians",
+      "the per-cell capacity multipliers in Figs 10–11",
+      "Vidur, the simulator used for profiling",
+      "vLLM's docs guidance (2,048 for ITL, > 8,192 for throughput)"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, write Algorithm 3 in four lines of pseudocode, then one line each for: why chunks, why decodes first, how τ is chosen, and what it costs.",
+    "checklist": [
+      "per iteration: add every decode (1 token), then ongoing chunks, then new requests' first chunks, until τ",
+      "chunks are big enough to use the GPU, small enough to hide beside decodes",
+      "decodes first means no decode ever waits for a prefill",
+      "τ = largest budget whose iteration meets the TBT SLO, profiled once",
+      "cost: TTFT (re-reads, fixed overheads, leftover budget only)",
+      "both pieces needed: chunking alone hurts TTFT, hybrid alone still stalls"
+    ]
+  },
+  "retrieve": [
+    {
+      "q": "Explain why chunked prefill on its own (chunks alternating with decode iterations) is worse than chunked prefill packed into hybrid iterations.",
+      "kind": "concept",
+      "answer": [
+        "alternating: every chunk iteration still pauses the decodes, just for less time",
+        "chunks and decodes take turns, so TTFT is the worst (1.04 s vs 0.53 s in Table 4; 78 vs 39 ms in our sim)",
+        "hybrid packing lets decodes ride in every iteration and uses their idle math for the chunk"
+      ]
+    },
+    {
+      "q": "Walk through the four timelines when request C (1,730 tokens) arrives during 64-user decoding with τ = 512: how many iterations does C take, what goes in each, and what is the worst gap any user sees?",
+      "kind": "mechanism",
+      "answer": [
+        "64 decodes take 64 of the 512 tokens, leaving 448 for C",
+        "C is done in four iterations: 448, 448, 448, 386",
+        "each iteration is about 13.8 ms, so no user waits more than one of them",
+        "C's TTFT is 54.0 ms vs 29.0 under vLLM V0's prefill-first"
+      ]
+    },
+    {
+      "q": "Your SLO tightens from 50 ms to 20 ms P99 TBT with 64 users at 2k. What happens to the budget from the card's one-batch profiling, and what do you give up?",
+      "kind": "tradeoff",
+      "answer": [
+        "the largest chunk that keeps the iteration ≤ 20 ms shrinks to 832 tokens (τ = 896) in our model, from 2,576 at 50 ms",
+        "more, smaller chunks per prompt: more KV re-reads and fixed overhead",
+        "TTFT rises and throughput at a given load has less prefill room",
+        "and the one-batch number is optimistic: bigger batches and longer contexts need a smaller τ"
+      ]
+    }
+  ],
+  "compare": [
+    {
+      "with": "perf-5-engines/scheduler",
+      "q": "Sarathi's τ and vLLM V1's max_num_batched_tokens are the same knob. What does V1 add around it that Sarathi's Algorithm 3 doesn't cover, and how does a too-large budget fail differently from a too-small one there?",
+      "answer": [
+        "V1 adds KV admission (blocks must fit), preemption by recompute, max_num_seqs and priorities",
+        "too large: long steps (142.6 ms at 8,192 in the burst), bad TBT",
+        "too small: slower admission and more preemptions in the burst (65 vs 33), because prompts trickle in while early requests grow"
+      ]
+    },
+    {
+      "with": "perf-4-attention-kv/mooncake-scheduling",
+      "q": "Mooncake disaggregates prefill and decode but still chunks its prefills. Why would a system that already separates the phases still want chunks?",
+      "answer": [
+        "chunks let one long prefill be pipelined across nodes (chunked pipeline parallelism)",
+        "bounded chunk compute keeps the pipeline stages evenly loaded, the same reason Sarathi needs uniform batches under PP",
+        "so chunking is about bounding per-step work, not only about protecting decodes"
+      ]
+    }
+  ],
+  "predict": {
+    "q": "The lab's model has no fixed per-iteration CPU or launch cost. Add 2 ms to every iteration (the lab's FIXED_MS knob). Which scheduler's median TTFT suffers most, and does stall-free batching's capacity lead over vLLM V0 at a 50 ms P99 SLO grow or shrink? Commit first.",
+    "answer": "We ran it (our run of labs/chunked-prefill-sim.py with FIXED_MS = 2.0). Chunked-only suffers most in TTFT (78 → 137 ms at 6 req/s), because it spends the most iterations per prompt and each one now pays 2 ms. Stall-free τ = 512 goes 51 → 74 ms. The lead <i>grows</i>, from 2.8× to 3.3×: vLLM V0's 50 ms capacity falls 4.56 → 3.29 req/s (−28%), while stall-free τ = 512 falls 12.75 → 10.83 (−15%). V0's stall gap is a prefill iteration plus a decode iteration, and both now pay the fixed cost. The one-batch safe chunk at 50 ms shrinks from 2,576 to 2,464 tokens."
+  },
+  "apply": {
+    "task": "Profile the budget for 64 users at 2k context using the card's iteration model (the lab's step_ms: KV reads plus max(math, weight read), with causal attention FLOPs for the chunk). Find the largest chunk that keeps one iteration ≤ 30 ms, then repeat with 128 users. Then count how many iterations a 5,696-token (P90) prompt needs at τ = 512 with 64 decodes running.",
+    "done": "Two chunk sizes with their τ, an explanation of why the 128-user budget is smaller, and the iteration count, before checking.",
+    "hint": "Check after trying (our run of the lab's formula): 64 users → chunk 1,424 (τ = 1,488) at 30 ms; 128 users → chunk 1,056 (τ = 1,184), because the decodes' own KV reads (15.1 ms clean step) eat the SLO. P90 prompt at τ = 512: 448 tokens per chunk, so ⌈5,696 ÷ 448⌉ = 13 iterations."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: the direction of the budget, or which scheduler suffers most from fixed costs?",
+    "Could you explain why chunking alone hurts TTFT but chunking plus stall-free batching mostly doesn't?",
+    "Which relationship is still fuzzy: τ → step time → P99 TBT, or τ → number of chunks → TTFT?",
+    "Why does capacity, not throughput, become the headline metric once there is a TBT SLO?",
+    "What will you check on the scheduler card: what happens when the KV pool, not the budget, is the limit?"
+  ],
+  "revisit": [
+    "perf-5-engines/sarathi-stalls",
+    "perf-3-kernels/matmul-naive"
+  ],
+  "prereq": [
+    "perf-5-engines/sarathi-stalls"
+  ]
+}

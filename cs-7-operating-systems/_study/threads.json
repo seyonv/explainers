@@ -1,0 +1,121 @@
+{
+  "prime": {
+    "problem": "A process is expensive to start (72 ms) and shares no memory, so splitting one program into many processes means pickling data back and forth. Programs want several lines of execution that share one heap. In CPython, though, a lock called the GIL decides whether those lines can actually run at the same time.",
+    "fits": "Second card. It splits the process from the last card into threads that share its address space, and sets up the next part: sharing a heap is exactly what makes the locks cards necessary.",
+    "expect": [
+      "what threads share (heap, code, files) vs own (PC, registers, stack)",
+      "kernel vs user-level threads",
+      "the GIL and its 5 ms switch interval",
+      "CPU-bound vs I/O-bound speedups",
+      "free-threaded 3.14t"
+    ],
+    "goal": "Predict from the kind of work and the Python build whether threads will speed it up, and explain the measured 1.00×, 7.95× and 2.65× from the GIL's rules."
+  },
+  "attend": [
+    "Which per-thread state must be separate for two threads to run the same function at once, and which state is shared by design?",
+    "When does a CPython thread give up the GIL on its own, and when is it asked to give it up after 5 ms?",
+    "Why did 8 sleeping threads overlap into 0.105 s while 4 computing threads gained nothing on 3.10?",
+    "What does removing the GIL (3.14t) buy, and what protection does it take away?",
+    "Why does a user-level thread (a goroutine, an asyncio task) need a runtime of its own on top of kernel threads?"
+  ],
+  "core": {
+    "must": [
+      "Threads share the address space and keep only their own PC, registers and stack → switching threads skips the page-table change → cheaper than a process switch → but every thread can touch every object, so shared writes race",
+      "CPython threads must hold the GIL to run bytecode → only one runs Python at a time → 4 × fib(27) on 4 threads: 0.121 s → 0.121 s (1.00×) on 3.10 → threads don't speed up pure-Python CPU work",
+      "Blocking calls (sleep, file and socket reads) release the GIL → waits overlap → 8 × sleep(0.1): 0.835 s → 0.105 s (7.95×) → threads are the right tool for waiting",
+      "Free-threaded 3.14t removes the GIL → threads run on several cores (0.045 → 0.017 s, 2.65×) → but plain <code>+=</code> on shared data loses updates (1,082,391 of 4,000,000 kept) → shared state needs a lock either way"
+    ],
+    "elevated": [
+      "The 5 ms switch interval is CPython asking the GIL holder to let go, not an OS time slice → the kernel only sees a thread blocked on a condition variable → this is why GIL hand-offs and OS preemption are counted separately (the switch-initiation card)"
+    ],
+    "reference": [
+      "<code>threading.get_native_id()</code> and the four distinct native IDs",
+      "<code>sys.getswitchinterval()</code> = 0.005 and <code>setswitchinterval</code>",
+      "the noisy single-run timings under load average 81",
+      "PEP 703 and the list of GIL-releasing stdlib modules"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw two threads inside one process: shade what they share and outline what each owns. Under it, draw a GIL timeline for two CPU-bound threads and for two sleeping threads, and write the speedup each gets on 3.10.",
+    "checklist": [
+      "shared: code, globals, heap, open files; own: PC, registers, stack",
+      "one thread runs bytecode at a time while it holds the GIL",
+      "blocking I/O and sleep release the GIL, so waits overlap",
+      "a thread holding the GIL is asked to let go after 5 ms if another is waiting",
+      "3.10: 1.00× for CPU, 7.95× for sleeps; 3.14t: 2.65× for CPU",
+      "no GIL means shared writes need locks"
+    ]
+  },
+  "retrieve": [
+    {
+      "q": "Explain why threads in standard CPython speed up a web scraper but not a pure-Python matrix multiply.",
+      "kind": "concept",
+      "answer": [
+        "the scraper spends its time blocked in socket reads, which release the GIL, so waits overlap",
+        "the matrix loop is bytecode, and only the GIL holder runs bytecode",
+        "so the scraper gains roughly one wait's time for all; the loop gains about 1.00×"
+      ]
+    },
+    {
+      "q": "Walk through what the GIL does over 15 ms when two threads both run a tight fib loop on 3.10.",
+      "kind": "mechanism",
+      "answer": [
+        "T1 holds the GIL and runs; T2 waits for it",
+        "after the 5 ms switch interval, T2's wait sets a request and T1 drops the GIL at its next check point",
+        "T2 runs the next slice while T1 waits; they alternate",
+        "total work is unchanged: the same CPU time, interleaved, no speedup"
+      ]
+    },
+    {
+      "q": "You need to run 4 CPU-heavy pure-Python tasks. Compare threads on 3.10, processes on 3.10 and threads on 3.14t, using the card's numbers, and name the cost of each.",
+      "kind": "tradeoff",
+      "answer": [
+        "threads 3.10: 1.00×, no gain; cheap and share memory",
+        "processes 3.10: 3.78×; pay start-up (72 ms fresh) and pickling of arguments",
+        "threads 3.14t: 2.65×; share memory, but every shared write needs a lock and some libraries may not yet support it"
+      ]
+    }
+  ],
+  "compare": [
+    {
+      "with": "cs-7-operating-systems/modern-concurrency",
+      "q": "Threads vs asyncio tasks for I/O: both overlap waits on one core. What is fundamentally different about how each gives up control, and how does each fail at scale?",
+      "answer": [
+        "a thread is preempted by the OS or blocks in a system call; a task gives up control only at <code>await</code>",
+        "threads cost a kernel object and a stack each (the M3 stopped at 6,143); tasks are small heap objects (10,000 in 0.25 s)",
+        "threads fail by limits and memory; tasks fail when one blocking call or CPU loop inside a coroutine stalls the whole loop"
+      ]
+    },
+    {
+      "with": "cs-7-operating-systems/locks",
+      "q": "The GIL is a lock, and the next card's <code>threading.Lock</code> is a lock. What does each one protect, and why does holding the GIL not make your own code safe?",
+      "answer": [
+        "the GIL protects the interpreter's internals (refcounts, object state) and is handed off between bytecodes",
+        "a user lock protects your critical section, a span of several bytecodes, calls or I/O",
+        "the GIL can be handed over between your read and your write (a call, a sleep), so your multi-step update still races"
+      ]
+    }
+  ],
+  "predict": {
+    "q": "You run 16 × <code>sleep(0.1)</code> on 8 threads, and separately 4 × fib(27) on 8 threads, both on 3.10. Predict both wall times from the card's measurements before running anything.",
+    "answer": "The sleeps run in two waves of 8 because each thread takes 2 in turn, so about 0.2 s (the card's 8 sleeps on 8 threads took 0.105 s). The fib run stays at about 0.121 s: extra threads can't raise p above 1 under the GIL, and only 4 of the 8 threads get any work anyway."
+  },
+  "apply": {
+    "task": "Modify <code>code/threads.py</code>: time 8 × <code>sleep(0.1)</code> on 1, 2, 4 and 8 threads, where each thread takes jobs from a shared list. Before running, write the ideal time for each, based on waves of 0.1 s. Then replace <code>sleep(0.1)</code> with a pure-Python loop that takes about 0.1 s alone, and predict and time the same four rows.",
+    "done": "You have two 4-row tables (threads, predicted, measured): sleeps near 0.8, 0.4, 0.2 and 0.1 s, and the CPU loop near 0.8 s in every row on 3.10. You can say in one sentence why the columns diverge.",
+    "hint": "Waves = ceil(8 / threads) × 0.1 s. Use a <code>queue.Queue</code> or <code>list.pop()</code> under a lock to hand out jobs; don't share a plain index without one."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: the 16-sleep time, or the CPU loop's time on more threads?",
+    "Can you say, without the chart, why sleeping releases the GIL but a loop doesn't?",
+    "Which relationship is still fuzzy: shared heap → races, or GIL → no CPU speedup?",
+    "What did the free-threaded numbers change about when you'd reach for processes?",
+    "What will you look for in the locks card: the exact point where the GIL stops protecting you?"
+  ],
+  "revisit": [
+    "cs-7-operating-systems/processes"
+  ],
+  "prereq": [
+    "cs-7-operating-systems/processes"
+  ]
+}

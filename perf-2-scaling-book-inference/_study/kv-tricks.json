@@ -1,0 +1,127 @@
+{
+  "prime": {
+    "problem": "The modelling card showed a wall: KV bytes per sequence set both how many users fit and the throughput ceiling. The book lists several ways to shrink or pack those bytes, but they differ in who can apply them, what they cost in quality, and whether they cut reads or only storage.",
+    "fits": "Ninth card, the book's <i>Tricks for improving generation throughput and latency</i>. It turns the modelling card's magic 5× into real mechanisms, applied one at a time to Llama-3.1-8B on one H100.",
+    "expect": ["GQA / MQA", "local (sliding-window) layers", "cross-layer KV sharing", "KV and weight quantization", "ragged reads and PagedAttention"],
+    "goal": "Explain why throughput ∝ 1 / KV bytes per token when HBM is full, rank the tricks on a concrete model, and sort them into training-time and serving-time choices."
+  },
+  "attend": [
+    "When HBM is full, why does the step time stay near 23.9 ms whatever trick you apply?",
+    "Which tricks reduce bytes stored, which reduce bytes read, and which reduce both?",
+    "Why does cross-layer sharing halve storage but not necessarily the step time?",
+    "Why does a 4k local window save far more at 128k context than at 8k?",
+    "Which tricks can a serving team turn on for a model it didn't train?"
+  ],
+  "core": {
+    "must": [
+      "Fill free HBM with sequences → each step reads nearly all 80 GB → step ≈ 80 GB / 3.35 TB/s ≈ 23.9 ms regardless of trick → throughput = B<sub>max</sub> / 23.9 ms ∝ 1 / KV bytes per token → every KV byte saved is throughput gained (27.7× less KV → 28.0× throughput)",
+      "GQA/MQA share KV heads across query heads → KV ÷ the Q:KV ratio; local layers cap a layer's cache at the window; cross-layer sharing lets neighbours reuse one cache → all three change the architecture → they must be trained in, a server can't add them",
+      "Quantizing KV (fp8/int8) halves bytes per token post hoc; ragged reads skip padding and PagedAttention stops reserving it → these are serving-time choices a team controls day to day",
+      "Sharing a KV cache across layers halves storage → if each layer still re-reads it, bytes read don't halve → 28.0× becomes 15.6× in the ladder → a trick must cut bytes read, not only bytes stored, to speed up the step"
+    ],
+    "elevated": [
+      "8-bit weights with bf16 math → each weight byte feeds 2 FLOPs per token → B<sub>crit</sub> halves (240 → 120 on v5e, 295 → 148 on H100) → quantizing weights both shortens the weight read and makes compute-bound easier to reach",
+      "Once the batch is large enough to be compute-bound (the MQA variant reaches it) → shrinking KV further stops raising throughput"
+    ],
+    "reference": [
+      "Character.ai's MQA 8×, 1-in-6 global layers, 1,024 window, 2–3× sharing",
+      "Gemma 3's 5:1 local:global, Mistral 7B's GQA + sliding window",
+      "vLLM's <code>kv_cache_dtype=\"fp8\"</code> option",
+      "the padding example (42.3% of reads skipped; 20 tokens wasted with 16-token pages)",
+      "MLA's −93.3% KV (DeepSeek-V2)"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, write the ladder as a chain: MHA → GQA → FP8 KV → local layers → sharing, with the KV bytes per token at each rung. Next to each rung write <i>train</i> or <i>serve</i> for who can apply it. Then one sentence on why throughput tracks the KV shrink almost exactly.",
+    "checklist": [
+      "512 → 128 → 64 → 37 → 18.5 KiB per token",
+      "GQA, local layers, sharing (and MLA) are training-time; quantization and paging are serving-time",
+      "HBM full → the step reads ≈ 80 GB → ≈ 23.9 ms → throughput ∝ sequences that fit",
+      "sharing helps the step only if the shared cache is read once",
+      "paging and ragged reads remove waste rather than shrink real tokens"
+    ]
+  },
+  "retrieve": [
+    {
+      "q": "Explain why, on a full H100, throughput is inversely proportional to KV bytes per token rather than to anything about compute.",
+      "kind": "concept",
+      "answer": [
+        "decode is memory-bound here: the lab checks 2·P·B/989 TFLOPS stays below the memory time",
+        "with HBM full, each step reads weights plus every cache ≈ 80 GB, so the step is fixed at ≈ 23.9 ms",
+        "throughput = sequences that fit / 23.9 ms, and sequences that fit ∝ 1 / KV bytes per token"
+      ]
+    },
+    {
+      "q": "Walk through the local-layers rung: how the card gets 37 KiB per token, 206 sequences and 8,626 tok/s at 8k context.",
+      "kind": "mechanism",
+      "answer": [
+        "5 global layers keep all 8,192 tokens; 27 local layers keep 4,096: (5·8192 + 27·4096) / (32·8192) = 0.578",
+        "64 KiB (FP8 GQA) × 0.578 ≈ 37 KiB per token; × 8,192 ≈ 0.310 GB per sequence",
+        "⌊63.94 / 0.310⌋ = 206 sequences",
+        "(206 × 0.310 + 16.06) GB / 3.35 TB/s ≈ 23.9 ms → ≈ 8,626 tok/s"
+      ]
+    },
+    {
+      "q": "You serve an existing Llama-3.1-8B checkpoint and need more users per GPU at long context. Which tricks are on the table, what does each cost, and which ones are not yours to choose?",
+      "kind": "tradeoff",
+      "answer": [
+        "yours: FP8/int8 KV (halves bytes, needs quality evals) and paged / ragged reads (remove padding waste, no quality cost)",
+        "also yours: weight quantization, which shortens the weight read and lowers B<sub>crit</sub>",
+        "not yours: GQA (already built in), local layers, cross-layer sharing, MLA; those are set at training time"
+      ]
+    },
+    {
+      "q": "Four requests of 1,200 / 3,000 / 6,500 / 8,192 tokens sit in padded 8k slots. What do ragged reads fix, and what extra does paging fix?",
+      "kind": "mechanism",
+      "answer": [
+        "padded slots reserve 32,768 tokens (4.295 GB) for 18,892 real tokens",
+        "ragged reads skip reading the 42.3% of padding each step, but the memory stays reserved",
+        "paging stores only real tokens in 16-token pages: 20 tokens wasted instead of 13,876, so more sequences fit"
+      ]
+    }
+  ],
+  "compare": [
+    {
+      "with": "perf-4-attention-kv/kv-quantization",
+      "q": "FP8 KV and GQA both halve or quarter KV bytes. What is fundamentally different about how each gets there, and how does each one fail?",
+      "answer": [
+        "GQA stores fewer heads (structure changed at training); FP8 stores fewer bits per number (precision changed at serving)",
+        "GQA is decided by the model's trainers; FP8 KV is a serving switch",
+        "GQA can cost quality if trained too aggressively; FP8 or lower-bit KV can lose accuracy, especially at 2–4 bits, so it needs evals per model"
+      ]
+    },
+    {
+      "with": "perf-4-attention-kv/paged-memory",
+      "q": "Paging appears here as one row of the ladder. Why doesn't it shrink KV bytes per token, and why can it still raise the batch as much as a quantization step?",
+      "answer": [
+        "a real token still costs the same bytes; paging only stops reserving space for tokens that don't exist",
+        "with padded slots, much of HBM holds padding (42.3% in the card's example)",
+        "reclaiming that space fits more real sequences, which is the same lever as fewer bytes per token"
+      ]
+    }
+  ],
+  "predict": {
+    "q": "Rerun the ladder at 32k context instead of 8k (4k local window). Commit first: how many MHA sequences fit, how many for the real GQA model, and does the local-layer rung help more or less than at 8k?",
+    "answer": "MHA: 512 KiB × 32,768 = 17.2 GB per sequence, 3 fit (≈ 149 tok/s). GQA: 4.29 GB, 14 fit (≈ 616 tok/s). FP8 KV: 29 fit. Local layers help much more: the window keeps 4,096 of 32,768 tokens in 27 layers, so the mix is (5·32,768 + 27·4,096)/(32·32,768) = 0.26 instead of 0.578, giving ≈ 16.8 KiB per token, 113 sequences and ≈ 4,757 tok/s."
+  },
+  "apply": {
+    "task": "Change <code>labs/kv-tricks.py</code> to a 32,768-token context and rebuild the ladder: for each rung (MHA, GQA, FP8 KV, local layers with a 4k window, cross-layer sharing read once) write KV per token, GB per sequence, sequences that fit, step time and throughput. Then check that every row stays memory-bound (2·P·B / 989 TFLOPS below the memory step).",
+    "done": "Your ladder reads roughly: MHA 3 seqs ≈ 149 tok/s; GQA 14 ≈ 616; FP8 29 ≈ 1,240; local 113 ≈ 4,757; sharing 227 ≈ 9,523, and the largest compute time (≈ 3.7 ms at 227 sequences) is well under ≈ 23.8 ms.",
+    "hint": "Local mix at 32k = (5 × 32,768 + 27 × 4,096) / (32 × 32,768) = 0.262. Step = (B × GB per sequence + 16.06) / 3.35 TB/s."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: how few MHA sequences fit at 32k, or how much the window helps?",
+    "Can you explain why sharing that re-reads the cache helps memory but not speed?",
+    "Which relationship is still fuzzy: bytes stored → sequences that fit, or bytes read → step time?",
+    "Could you sort all six tricks into training-time and serving-time without looking?",
+    "Before the sharding cards: once KV no longer fits on one chip, what would you split it by?"
+  ],
+  "revisit": [
+    "perf-2-scaling-book-inference/params-vs-kv",
+    "perf-2-scaling-book-inference/modeling-13b",
+    "perf-2-scaling-book-inference/attention-intensity"
+  ],
+  "prereq": [
+    "perf-2-scaling-book-inference/modeling-13b"
+  ]
+}

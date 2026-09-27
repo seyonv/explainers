@@ -1,0 +1,116 @@
+{
+  "prime": {
+    "problem": "Model parallelism in decode can spread the weights over many chips, but the KV cache has only K heads to split by, and GQA makes K small on purpose. Replicate the cache and every chip reads far more bytes; shard it the wrong way and attention needs expensive communication. And at small batch, collectives cost their fixed latency, not their bytes.",
+    "fits": "Eleventh card. The previous card said generation can shard up to F/(B·β) ways <i>if</i> the KV cache can be fully sharded; this card shows how (heads, then batch), what it costs (two AllToAlls) and when communication is latency-bound (Appendix C).",
+    "expect": ["KV[2, B<sub>Z</sub>, S, K<sub>Y</sub>, H]: heads first, then batch", "two AllToAlls per attention layer", "sequence-sharding the KV cache", "latency-bound collectives (≈ 1 µs per hop)", "2D weight-stationary sharding (Appendix B)"],
+    "goal": "Lay out a KV cache over a chip mesh without copies, count the communication it adds, and say when that communication is bound by latency rather than bandwidth."
+  },
+  "attend": [
+    "Why does the book prefer never to replicate the KV cache, even at the cost of extra communication?",
+    "Why can head sharding go only K ways, and what fills the remaining chips?",
+    "What do the two AllToAlls move, and why are they cheap compared with what stays put?",
+    "When is sequence-sharding the cache the better choice, and what has to be combined afterwards?",
+    "Why does adding chips at small batch cut HBM time per chip but not communication time?"
+  ],
+  "core": {
+    "must": [
+      "The KV cache is the main source of attention latency → replicating it makes every copy be read each step → shard it with no copies: heads first (up to K ways), then batch → KV[2, B<sub>Z</sub>, S, K<sub>Y</sub>, H] spreads over Y·Z chips",
+      "The rest of the layer is sharded by heads → Q arrives split by head, but the cache is split by sequence → AllToAll Q from heads to batch, attend locally, AllToAll the output back → two collectives on small activations (131 kB) instead of moving stationary KV (537 MB per layer at B = 16, 8k)",
+      "A collective costs max(T<sub>min</sub> × hops, bytes ÷ bandwidth) → at small batch the bytes per shard are tiny (16.4 kB at B = 16, D = 8,192 int8, 8-way) → the ≈ 1 µs per-hop floor dominates → latency-bound once Y > BD/45,000",
+      "Latency-bound comms don't shrink when you add chips (the ring's T<sub>min</sub>·|X|/2 grows) → small-batch multi-chip decode doesn't scale linearly → the same fixed-cost story as launch overhead in the compute roofline"
+    ],
+    "elevated": [
+      "Sequence-sharding the cache splits S across chips → each returns a running max, softmax denominator and unnormalised output → combined exactly like Flash Attention combines tiles → the right move when the batch is too small or the context very long"
+    ],
+    "reference": [
+      "the 12-line algorithm with its subscript notation and {U<sub>YZ</sub>} for unreduced",
+      "Appendix B's AllGather/ReduceScatter order for 2D weight-stationary",
+      "the Appendix C per-batch table (B = 4, 16, 64, 256)",
+      "H100 NVLink AllReduce measurements (≈ 370 GB/s at 10 GB, ≈ 150 GB/s at 58 MB)"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw a 2 × 4 mesh (2 ways by heads, 4 by batch) and mark which chip holds which sequences and heads of the cache. Then draw the attention layer as a pipeline and mark where the two AllToAlls go and what each moves. One sentence on when the whole thing is latency-bound.",
+    "checklist": [
+      "shard heads first (≤ K ways), then batch; no copies",
+      "AllToAll 1 moves Q from head-sharded to batch-sharded; attention is local; AllToAll 2 moves the output back",
+      "the activations moved are thousands of times smaller than the cache that stays",
+      "if the batch is tiny or the context long, shard S instead and combine like Flash Attention",
+      "latency-bound when bytes per shard ÷ bandwidth < ≈ 1 µs"
+    ]
+  },
+  "retrieve": [
+    {
+      "q": "Explain why MQA makes head sharding impossible, and what the book's layout does instead.",
+      "kind": "concept",
+      "answer": [
+        "MQA has K = 1: one KV head, so there's nothing to split by head",
+        "the only way to spread the cache is by sequence: each chip holds whole sequences (batch sharding)",
+        "the price is two AllToAlls per attention layer to bring each chip the queries for its sequences"
+      ]
+    },
+    {
+      "q": "Trace lines 3–9 of the book's algorithm: where Q starts, what AllToAll 1 does, where attention reads from, and what AllToAll 2 undoes.",
+      "kind": "mechanism",
+      "answer": [
+        "line 3: each chip computes its slice of query heads for every sequence (Q[B, N<sub>YZ</sub>, H])",
+        "line 4: AllToAll along Z trades heads for sequences (Q[B<sub>Z</sub>, N<sub>Y</sub>, H])",
+        "lines 6–8: scores, softmax over S, and the weighted sum all use the local K, V cache; no comms",
+        "line 9: AllToAll trades sequences back for heads, so W<sub>O</sub>'s head sharding and the usual AllReduce can follow"
+      ]
+    },
+    {
+      "q": "At B = 4, 8-way sharding of a D = 8,192 int8 activation sends 4.1 kB per shard. Would going 16-way help or hurt the collective's time, and why?",
+      "kind": "tradeoff",
+      "answer": [
+        "it's already latency-bound: 4.1 kB takes 0.09 µs against a ≈ 1 µs per-hop floor",
+        "going 16-way halves the bytes per shard but adds hops, and the latency term grows with chip count",
+        "so it hurts or stays flat for comms; it only helps the HBM side"
+      ]
+    }
+  ],
+  "compare": [
+    {
+      "with": "perf-2-scaling-book-inference/sharding-prefill-generation",
+      "q": "The previous card shards weights and moves activations; this card shards the cache and moves activations. What is the common principle, and where does each hit its limit?",
+      "answer": [
+        "common: keep the big, stationary bytes (weights, KV) where they are and move small activations",
+        "weights: model sharding hits comms vs weight read at Y > F/(B·β)",
+        "KV: head sharding stops at K ways; batch sharding needs two AllToAlls; at small batch those are latency-bound"
+      ]
+    },
+    {
+      "with": "perf-6-scaling-out/collectives",
+      "q": "Appendix C models a collective as max(fixed latency × hops, bytes ÷ bandwidth). Where does that simple model sit against what an 8×H100 node actually achieves, and what does that mean for small-batch decode?",
+      "answer": [
+        "the book gives no per-collective latency for NVLink, so the fixed term is unknown here",
+        "measured AllReduce bandwidth is far below peak at mid-size messages (≈ 150 GB/s at 58 MB) while TPUs reach peak at smaller messages",
+        "so on GPUs, small-batch decode collectives are dominated by fixed overhead at least as much as on TPU (our inference on the card)"
+      ]
+    }
+  ],
+  "predict": {
+    "q": "LLaMA 3-70B (K = 8, N = 64, H = 128) on 16 chips, batch 32, 8,192 context. Commit first: how is the cache split, and is the AllToAll payload per layer more or less than one-thousandth of the cache that stays put?",
+    "answer": "8 ways by heads (Y = 8, one KV head per chip) × 2 ways by batch (Z = 2). Q moved per AllToAll is B·N·H·2 bytes = 32 × 64 × 128 × 2 = 524 kB; the stationary cache per layer is B·S·2·K·H·2 = 1.07 GB. Ratio 2,048, so the payload is less than one-thousandth. This is the book's <i>modestly expensive comms, huge bandwidth saved</i>."
+  },
+  "apply": {
+    "task": "Lay out LLaMA 3-70B's KV cache (K = 8) on 16 chips at batch 32, 8k context: choose Y and Z, compute Q bytes per AllToAll and stationary KV per layer. Then run Appendix C's test for its D = 8,192 activations in int8 at B = 32 over an 8-way ring: bytes, bytes per shard, µs per hop at 4.5e10 B/s, the latency-bound verdict, and the Y at which it becomes latency-bound.",
+    "done": "Y = 8, Z = 2; 524,288 B vs ≈ 1.07 GB per layer (2,048×); 262 kB total, 32.8 kB per shard, ≈ 0.73 µs per hop → latency-bound; latency-bound once Y > BD/45,000 ≈ 5.8.",
+    "hint": "BD = 32 × 8,192 × 1 byte = 262,144 B. Per shard divide by 8; time = bytes ÷ 4.5e10."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: the mesh split, or the payload ratio?",
+    "Could you explain the two AllToAlls without the subscript notation?",
+    "Which relationship is still fuzzy: few KV heads → batch sharding, or small batch → latency-bound comms?",
+    "Can you say when you'd sequence-shard the cache instead of batch-sharding it?",
+    "For Llama-3.1-8B on one 8-GPU node, which of this card's machinery do you actually need?"
+  ],
+  "revisit": [
+    "perf-2-scaling-book-inference/sharding-prefill-generation",
+    "perf-2-scaling-book-inference/kv-tricks",
+    "perf-2-scaling-book-inference/attention-intensity"
+  ],
+  "prereq": [
+    "perf-2-scaling-book-inference/sharding-prefill-generation"
+  ]
+}

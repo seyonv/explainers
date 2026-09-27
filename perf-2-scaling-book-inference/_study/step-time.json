@@ -1,0 +1,118 @@
+{
+  "prime": {
+    "problem": "You know linear layers need a batch to get busy and attention never does. But a server owner asks one question: how long does a decode step take at this batch and context, and how many tokens per second does that buy? Without one formula that combines the pieces, you can't size a server or say which change will help.",
+    "fits": "Sixth card, the one the book says to take away from the whole chapter. It combines the KV cache (sampling card), B<sub>crit</sub> (linear layers) and attention's intensity into one step time, which every later card reuses.",
+    "expect": ["T<sub>step</sub> = B·S<sub>KV</sub>/W + max(2·B·N/C, S<sub>params</sub>/W)", "throughput = B / T<sub>step</sub>", "the book's Pop Quiz (2.5 ms and 21 ms)", "the latency–throughput Pareto curve", "why it's a lower bound"],
+    "goal": "Fill the formula for any model, chip, batch and context; say which term dominates; and predict where throughput flattens and why."
+  },
+  "attend": [
+    "Why does the attention term have no FLOPs side while the MLP term takes a max?",
+    "When is the small-batch formula (everything bandwidth-bound) good enough, and when does it undercount?",
+    "In the Pop Quiz, what changes between B = 4 and B = 256 that makes the math term win?",
+    "Why does throughput flatten toward bandwidth ÷ KV bytes per sequence rather than rising forever?",
+    "Why does an H200's extra HBM mostly buy batch rather than per-user speed?"
+  ],
+  "core": {
+    "must": [
+      "Every decode step reads each sequence's KV cache (never compute-bound, never shared) and either reads all weights once or does 2 FLOPs per parameter per token, whichever is longer → T<sub>step</sub> = B·S<sub>KV</sub>/W + max(2·B·N/C, S<sub>params</sub>/W)",
+      "Small B → the weight read dominates and is shared → throughput B/T<sub>step</sub> climbs almost linearly; large B → the KV term grows with B while the weight read stays fixed → throughput flattens toward W/S<sub>KV</sub> → per-user speed keeps falling",
+      "The max flips to math only past B<sub>crit</sub> → on one H100 with Llama-3.1-8B, HBM fills first (238 sequences at 2k, 59 at 8k) → this model never reaches its compute roofline in decode on one chip",
+      "Each term maps to a knob (batch, context × KV size, weight precision, chip count) → the dominant term tells you which knob matters → at 8k and full batch the KV read is 80% of the step, so a smaller KV beats FP8 weights"
+    ],
+    "elevated": [
+      "Past B<sub>crit</sub> both the KV and math terms grow linearly in B → B/T<sub>step</sub> becomes constant, 1/(S<sub>KV</sub>/W + 2N/C) → that is the plateau the book's PaLM frontier shows <i>around batch 240</i>",
+      "The formula assumes perfect overlap of HBM reads and FLOPs → real XLA and GPU engines overlap imperfectly and add launch and prefill work → treat it as a floor on latency, ceiling on throughput"
+    ],
+    "reference": [
+      "the H100/H200/B200 comparison table",
+      "the Pop Quiz's per-chip plateau (767 tok/s)",
+      "the PaLM figure caption bullets",
+      "the perf-1 cross-check at ~1,100 context (26.26 ms vs 23.86 ms)"
+    ]
+  },
+  "compress": {
+    "prompt": "Write the general formula from memory with each term labelled by what is physically read or computed. Under it, draw the Pareto curve (per-user speed vs total throughput) and annotate the steep part, the flat part and the HBM wall with the term that causes each.",
+    "checklist": [
+      "KV term: B × KV bytes per sequence ÷ bandwidth, always memory-bound",
+      "MLP term: max of math (2·B·N/C) and weight read (bytes/W)",
+      "throughput = B / T<sub>step</sub>; per-user speed = 1 / T<sub>step</sub>",
+      "steep part: sharing the weight read; flat part: KV read per sequence; wall: HBM capacity",
+      "it's a lower bound on step time"
+    ]
+  },
+  "retrieve": [
+    {
+      "q": "Explain why doubling the batch past B<sub>crit</sub> no longer raises throughput, using the two terms that grow with B.",
+      "kind": "concept",
+      "answer": [
+        "past B<sub>crit</sub> the MLP term is math, 2·B·N/C, which grows with B",
+        "the KV term B·S<sub>KV</sub>/W also grows with B",
+        "the step is proportional to B, so B / T<sub>step</sub> is constant"
+      ]
+    },
+    {
+      "q": "Work the book's Pop Quiz at B = 256: 30B dense, int8 weights, bf16 math, v5e 4x4, 8,192 context, 100 kB of KV per token. Give each term and the total.",
+      "kind": "mechanism",
+      "answer": [
+        "W = 16 × 8.2e11 = 1.312e13 B/s; C = 16 × 1.97e14 = 3.152e15 FLOP/s",
+        "KV: 256 × 819 MB ÷ 1.312e13 = 15.98 ms",
+        "MLP: max(2·256·30e9 / 3.152e15 = 4.87 ms, 30 GB / 1.312e13 = 2.29 ms) = 4.87 ms",
+        "total ≈ 20.9 ms (book: roughly 21 ms); B = 256 > B<sub>crit</sub> = 120 for int8 weights"
+      ]
+    },
+    {
+      "q": "At 8k context and full batch on one H100, a team can either quantize weights to FP8 or halve the KV cache. Which buys more throughput, and why does the formula say so before anyone benchmarks?",
+      "kind": "tradeoff",
+      "answer": [
+        "the step is 18.91 ms KV + 4.79 ms weights = 23.70 ms, so KV is 80%",
+        "FP8 weights only shrink the 4.79 ms term",
+        "halving KV bytes both shortens the dominant term and doubles how many sequences fit, so it roughly doubles throughput"
+      ]
+    }
+  ],
+  "compare": [
+    {
+      "with": "perf-2-scaling-book-inference/critical-batch-size",
+      "q": "The critical-batch card studies one matrix; this card studies a whole step. What does adding the KV term change about the conclusion <i>batch up to B<sub>crit</sub></i>?",
+      "answer": [
+        "for one matrix, throughput rises almost free up to B<sub>crit</sub>",
+        "for the whole step, each extra sequence also adds its KV read, so throughput bends over well before B<sub>crit</sub>",
+        "and HBM caps the batch: 59 at 8k on one H100, far below 295"
+      ]
+    },
+    {
+      "with": "llm-latency/memory-bandwidth",
+      "q": "The consumer-side card explains tokens/s as bandwidth ÷ model size. Where does that rule agree with this formula, and where is it off by 41×?",
+      "answer": [
+        "it agrees at batch 1 with short context: 3.35e12 / 16.06e9 = 209 vs the formula's 205 tok/s",
+        "it ignores KV reads and batching",
+        "at B = 128 and 2k context the H100 does 8,505 tok/s total (41× the rule) while each user gets 66, not 209"
+      ]
+    }
+  ],
+  "predict": {
+    "q": "Llama-3.1-8B on one H100 at 8k context, B = 16 (step 9.92 ms). Commit first: if you switch to FP8 weights only, by roughly what percentage does the step shrink? And if you instead switch to FP8 KV only?",
+    "answer": "FP8 weights: the weight read drops from 4.79 to 2.40 ms, so the step goes 9.92 → 7.53 ms, about 24% faster. FP8 KV: the KV read drops from 5.13 to 2.56 ms, so the step goes to 7.36 ms, about 26% faster. At B = 16 the two terms are nearly equal, so the levers are about equal too; at B = 59 (KV 18.9 ms) FP8 KV would win clearly."
+  },
+  "apply": {
+    "task": "Extend <code>labs/step-time.py</code> with a row for Llama-3.1-8B on one H100 at 8k context and B = 16. Compute the three terms, the step, per-user and total tokens/s. Then add three variants: FP8 weights (8.03 GB, fp8 math at 1.979e15), FP8 KV (half the KV bytes), and both. Say which term dominates in each.",
+    "done": "Base: KV 5.13 ms, math 0.26 ms, weights 4.79 ms → 9.92 ms, ≈ 1,613 tok/s. FP8 weights → ≈ 7.53 ms (≈ 2,126 tok/s); FP8 KV → ≈ 7.36 ms; both → ≈ 4.96 ms (≈ 3,225 tok/s), and you've named the dominant term in each.",
+    "hint": "KV read = 16 × 8,192 × 131,072 B ÷ 3.35e12. Both-FP8: 2.56 ms KV + max(0.13 ms math, 2.40 ms weights)."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: the FP8-weights saving or the FP8-KV saving?",
+    "Could you explain the plateau past B<sub>crit</sub> without writing any formula?",
+    "Which relationship is still fuzzy: HBM capacity → batch limit, or batch → which term dominates?",
+    "Can you say why the book's numbers are a floor on latency, and name two things it leaves out?",
+    "Before the memory card, can you already guess how many LLaMA 2-13B 8k sequences fit on 8 v5e chips?"
+  ],
+  "revisit": [
+    "perf-2-scaling-book-inference/kv-cache-sampling",
+    "perf-2-scaling-book-inference/critical-batch-size",
+    "perf-2-scaling-book-inference/attention-intensity"
+  ],
+  "prereq": [
+    "perf-2-scaling-book-inference/critical-batch-size",
+    "perf-2-scaling-book-inference/attention-intensity"
+  ]
+}

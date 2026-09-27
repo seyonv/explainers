@@ -1,0 +1,56 @@
+{
+  "prime": {
+    "problem": "The model API remembers nothing between calls, so an agent re-sends its whole history every time. Input grows each call, and the total read over a session grows with the square of the call count: slower, pricier, and eventually worse answers.",
+    "fits": "Third multiplier card. Harness calls showed that an agent makes many calls; this card shows that each one is bigger than the last. Prompt caching is the main defence, and compaction the second.",
+    "expect": ["<code>input on call k = start + step × (k − 1)</code>", "session total ∝ N²", "cached stable prefix", "compaction", "context rot"],
+    "goal": "Compute a session's input tokens and cost with and without caching, and choose when to compact or restart."
+  },
+  "attend": [
+    "Why does input per call grow in a straight line while the session total grows with the square of the calls?",
+    "Why does doubling the calls from 30 to 60 cost 3.2× the tokens, not 2×?",
+    "How does caching turn $2.94 into $0.47 without changing the number of tokens sent?",
+    "Why does truncating old turns break the cache?",
+    "Beyond speed and cost, what else goes wrong as context grows?"
+  ],
+  "core": {
+    "must": [
+      "The API is stateless → the harness re-sends system prompt, tools and full history each call → input grows by a fixed step per call → the session total is a sum of a growing series ∝ N² (1,470,000 tokens for 30 calls)",
+      "Every call's prefix is the previous call's whole input → a byte-identical prefix hits the cache → only the new turn is read and written → cost and prefill time drop (6.2× cheaper, 2 h → 6 min on the M3)",
+      "Long contexts degrade answers (lost in the middle, context rot) → a big window is a hard limit, not a quality promise → compact history into a summary or start fresh between tasks"
+    ],
+    "elevated": [
+      "Any edit near the start (truncating old turns, a timestamp, compaction) changes the prefix → the next call misses the cache → compaction saves tokens (23% here) but pays one full re-read"
+    ],
+    "reference": ["Sonnet 5 input prices ($2 / 1M, cache read $0.20, write $2.50)", "the 1,000,000-token window and call 491", "the illustrative 20k start and +2k per turn"]
+  },
+  "compress": {
+    "prompt": "From memory, write the formulas for input on call k and the session total, fill them in for 30 calls (20k start, +2k per turn), and explain in two sentences why caching makes the square growth affordable. Add one sentence on what compaction trades away.",
+    "checklist": [
+      "call k: 20,000 + 2,000 × (k − 1); call 30 = 78,000",
+      "total: 30 × 20,000 + 2,000 × 435 = 1,470,000",
+      "cached: earlier tokens read at 0.1×, only the new turn written at 1.25×",
+      "$2.94 → $0.47; prefill 2 h → 6 min on the M3",
+      "compaction cuts tokens but drops details, costs a call, and resets the cache"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why agent context grows at all, and why the total grows faster than the number of calls.", "kind": "concept", "answer": ["the model keeps no memory, so every call must include everything so far", "each call adds a turn, so input grows linearly with k", "summing a linearly growing series over N calls grows with N²"]},
+    {"q": "Walk through the cached cost for 30 calls: what is read from cache, what is written, and at what prices?", "kind": "mechanism", "answer": ["reads: each call re-reads the previous call's whole input: 1,392,000 tokens at $0.20 / 1M ≈ $0.28", "writes: call 1's 20,000 plus 29 new turns of 2,000 = 78,000 at $2.50 / 1M ≈ $0.20", "total ≈ $0.47 vs $2.94 uncached"]},
+    {"q": "Mid-task, your agent's context reaches 150k tokens and answers are getting sloppy. Compare truncating, compacting and starting a fresh session.", "kind": "tradeoff", "answer": ["truncate: cheap, but forgets what was tried and misses the cache", "compact: keeps the gist at lower cost, loses detail, costs a summary call and a cache reset", "fresh session: best reset, but only safe if you've written the plan and findings down first"]}
+  ],
+  "compare": [
+    {"with": "llm-latency/prompt-caching", "q": "The prompt-caching card showed one prompt repeated; here the prompt grows by appending. Why does appending still hit the cache, and which harness habit would break it every call?", "answer": ["the previous call's whole input is an exact prefix of the next", "so everything but the new turn is reused", "putting anything variable near the start (a timestamp, reordered tools, edited history) breaks it"]},
+    {"with": "perf-2-scaling-book-inference/params-vs-kv", "q": "Here growing context costs tokens and money per call. On the server it costs KV-cache memory. How does a long agent context change what a server can batch?", "answer": ["each request's KV cache grows with its context length", "memory held by long contexts limits how many requests fit in a batch", "so long contexts cost the host throughput, which is why cache pricing and window limits exist"]}
+  ],
+  "predict": {"q": "Keep the 30-call session but make the per-turn growth 10,000 tokens instead of 2,000 (big tool results). Predict the uncached session total and whether caching still gives a similar saving ratio. Commit, then reveal.", "answer": "Total = 30 × 20,000 + 10,000 × 435 = 4,950,000 tokens, about 3.4× the 2k case. Cache reads = 29 × 20,000 + 10,000 × 406 = 4,640,000 at $0.20 / 1M ≈ $0.93; writes = 20,000 + 29 × 10,000 = 310,000 at $2.50 / 1M ≈ $0.78; total ≈ $1.70 vs $9.90 uncached, about 5.8×. The ratio holds up; big tool results are exactly what compaction should target."},
+  "apply": {"task": "Build a small spreadsheet or script for your own agent: a start size, a per-turn growth, a call count and your model's prices. Compute the uncached and cached input cost and the session total, then add a compaction step at the halfway call (summary size of your choice) and compute the saving.", "done": "Your model reproduces the card's 30-call numbers (1,470,000 tokens, $2.94, $0.47, and 1,128,000 with compaction at call 15), then gives numbers for your own agent.", "hint": "Cache reads on call k = input of call k − 1; cache writes = call 1's input + each later call's new turn."},
+  "reflect": [
+    "Which prediction did you get wrong: how bigger tool results change the total and the caching ratio?",
+    "What couldn't you explain cleanly: why the session total grows with the square of the calls?",
+    "Which relationship is still fuzzy: stateless API → re-sent history, or re-sent history → cache hits?",
+    "What in your harness setup could be silently breaking the prefix?",
+    "Which of the agent cards do you expect to reuse this growth?"
+  ],
+  "revisit": ["llm-latency/harness-calls", "llm-latency/prompt-caching", "llm-latency/ttft"],
+  "prereq": ["llm-latency/harness-calls", "llm-latency/prompt-caching"]
+}

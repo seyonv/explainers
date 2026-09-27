@@ -1,0 +1,56 @@
+{
+  "prime": {
+    "problem": "Some calls fail (429 rate limits, 529 overloads) and some hang. Handled well, a failure costs a second. Handled badly, a timeout kills a two-minute thinking call three times over, or a retry sends the same email twice.",
+    "fits": "Second agent card. Tail latency covered calls that are slow; this covers calls that fail or never return. Compounding errors, next, covers calls that return the wrong answer.",
+    "expect": ["429 vs 529 vs 400", "exponential backoff with jitter", "timeouts and streaming", "fallback providers", "idempotent tool actions"],
+    "goal": "Set retries, timeouts and fallbacks for an agent so failures cost seconds, not the task."
+  },
+  "attend": [
+    "Which status codes should never be retried, and why?",
+    "Why does backoff double each wait, and what problem does jitter solve?",
+    "Why does a 60 s timeout turn a 147.4 s call into 181.5 s and no answer?",
+    "What does streaming change about how a timeout behaves?",
+    "Why can a retry cause two payments?"
+  ],
+  "core": {
+    "must": [
+      "Transient failures (429, 529, dropped connections) clear on their own → retry after a wait that doubles each time (0.5, 1, 2 s…) → a busy server gets breathing room → jitter spreads clients so they don't retry in the same instant",
+      "A non-streaming call sends nothing until it's done → a timeout shorter than the whole call kills it every attempt → work is thrown away each retry (3 × 60 s, no answer) → stream long calls so the timeout only catches true silence",
+      "A step can fail after its tool already ran → retrying the step runs the tool again → duplicate side effects → make tool actions idempotent (request IDs, check before write, set rather than add)"
+    ],
+    "elevated": [
+      "SDKs retry silently (max_retries = 2) → you see \"slow\", not \"failed twice\" → log retries and alert on the rate, and don't retry errors that can't succeed (400, bad key, spent cap)"
+    ],
+    "reference": ["SDK constants (INITIAL_RETRY_DELAY 0.5, MAX_RETRY_DELAY 8.0, 10-minute timeout)", "OpenAI's 2-minute retry-after limit", "the x-stainless-retry-count header"]
+  },
+  "compress": {
+    "prompt": "From memory, write the backoff formula and compute the total sleep for 2 and 4 retries. Then explain the 181.5 s timeout disaster in two sentences and give the one-line fix.",
+    "checklist": [
+      "wait(n) = min(0.5 × 2<sup>n−1</sup>, 8) s × (1 − 0.25 × random)",
+      "2 retries: 1.125–1.5 s; 4 retries: 5.625–7.5 s",
+      "a 60 s timeout on a 147.4 s non-streaming call: 3 × 60 + 1.5 = 181.5 s, then an error",
+      "fix: stream, so pings keep bytes arriving and the timeout only catches silence",
+      "don't retry 400/401 or a spent cap; make tools idempotent"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain the difference between a retry, a timeout and a fallback, and which failure each one handles.", "kind": "concept", "answer": ["retry: send the same call again after a wait; for brief failures", "timeout: how long to wait before giving up; for hung calls", "fallback: send to another provider/model; for failures that persist"]},
+    {"q": "Walk through what the SDK does when call 2 of a 4-call agent loop gets a 529, then succeeds on retry.", "kind": "mechanism", "answer": ["the first attempt fails with 529 after its own time", "the SDK sleeps 0.375–0.5 s (first backoff)", "the retry succeeds; the task is about 0.4–0.5 s plus the failed attempt's time slower"]},
+    {"q": "You're adding a fallback provider for an agent. What could go wrong with quality, cost and side effects, and how do you limit each?", "kind": "tradeoff", "answer": ["quality: the fallback model may answer differently; check its outputs", "cost: it bills at its own price", "side effects: a step retried on the fallback may re-run tools; make them idempotent"]}
+  ],
+  "compare": [
+    {"with": "llm-latency/tail-latency", "q": "A hedged request and a retry both send the same call twice. What triggers each, what happens to the first call, and why is a hedge the riskier one for side effects?", "answer": ["retry: after a failure or timeout; the first call is gone", "hedge: after a slow wait (p95); both calls stay live and the first reply wins", "both may run, so any side effect can happen twice"]},
+    {"with": "llm-latency/compounding-errors", "q": "Retries here and retries after a failed check there look alike. What does each one fix, and which kind of failure can neither fix?", "answer": ["here: transport failures (429, 529, timeouts) where the answer never arrived", "there: wrong answers caught by a test or validator", "neither fixes a model that is systematically wrong the same way every time"]}
+  ],
+  "predict": {"q": "The same 147.4 s max-effort call runs with streaming on and a 60 s timeout. Predict whether it succeeds, and what would make the timeout fire.", "answer": "It succeeds in about 147.4 s. With streaming, thinking and ping events keep bytes arriving, and the SDK timeout limits the wait for the next bytes, not the whole call. It fires only if the server goes silent for 60 s, which is exactly the case you want to catch."},
+  "apply": {"task": "Write (or read) the retry logic in your agent or script. Answer four questions in writing: which errors are retried, how long the worst-case sleep is, what the timeout is and whether calls stream, and which tool actions would do damage if run twice. Fix the worst one.", "done": "You have the four answers, a worst-case sleep computed with the backoff formula, and one concrete fix (streaming, a request ID, a skip for 400s, or a fallback) applied or written down.", "hint": "With default SDK settings: 2 retries, at most 1.5 s of sleep, 10-minute timeout."},
+  "reflect": [
+    "Which prediction did you get wrong: whether streaming saves the long call?",
+    "What couldn't you explain cleanly: why jitter matters when a thousand clients fail together?",
+    "Which relationship is still fuzzy: short timeout → wasted attempts, or streaming → timeout only on silence?",
+    "Which of your tools would do real damage if run twice?",
+    "What happens when the call returns fine but the answer is wrong?"
+  ],
+  "revisit": ["llm-latency/harness-calls", "llm-latency/thinking-tokens", "llm-latency/tail-latency"],
+  "prereq": ["llm-latency/harness-calls"]
+}

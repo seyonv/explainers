@@ -1,0 +1,59 @@
+{
+  "prime": {
+    "problem": "Every serving number later in the series (16 GB of weights, 128 KiB of KV per token, 16 GFLOP per token) starts from one question: what does one forward pass compute, and where do the weights sit? Without that inventory those numbers have no origin, and you can't tell which part of the model a trick is shrinking.",
+    "fits": "First content card of the course; it assumes nothing. The attention card opens the attention box, the FLOPs card turns this parameter count into work, and the machine cards ask how long it takes to read these weights.",
+    "expect": ["embedding → 32 blocks → LM head", "the residual stream <code>x = x + f(norm(x))</code>", "attention mixes tokens, the MLP works per token", "the parameter formula", "prefill and decode as the same pass"],
+    "goal": "Count Llama-3.1-8B's 8.03B parameters from its config, say which part holds most of them, and explain why every decode step reads all 16.06 GB."
+  },
+  "attend": [
+    "Which of the two sublayers is the only place tokens exchange information, and what does the other one do instead?",
+    "Why does the embedding table cost memory but no multiplications, and where does the same V × D shape come back as a real matmul?",
+    "The MLP holds 70.2% of the weights. Why doesn't that mean it holds most of the per-request memory?",
+    "If prefill and decode run the same code, what differs between them in tensor shape and in how often the pass runs?",
+    "If you set K = N, or double F, which terms of the parameter formula change?"
+  ],
+  "core": {
+    "must": [
+      "The residual stream stays <code>[T, D]</code> → each sublayer reads <code>norm(x)</code> and adds its result back → the 32 blocks are identical and stackable → params = L × (attention + MLP + norms) + embedding + LM head = 8.03B",
+      "A dense model uses every weight for every token → one forward pass touches all 8.03B → each decode step must read all 16.06 GB of BF16 weights → reading, not math, will set decode speed (the machine cards)",
+      "Attention is the only step where tokens talk → each token's k and v must stay available to later tokens → they're cached per token per layer (128 KiB) → per-request memory belongs to attention even though the MLP holds 70% of the weights",
+      "Decode feeds each sampled token back in → one full pass per generated token; prefill runs the same pass over all T prompt tokens at once → same weights, very different amount of work per weight read"
+    ],
+    "elevated": [
+      "Llama 3.1 doesn't tie embedding and LM head → 2 × 525.34M = 13.1% of the model → in a small model with tied embeddings that slice halves",
+      "MoE (DeepSeek-V3) stores 671B but uses 37B per token → count total parameters for memory, active parameters for FLOPs and bytes per token"
+    ],
+    "reference": ["the exact shapes of Wq, Wk, Wv, Wo, W_gate, W_up, W_down", "RMSNorm gain count (266,240) and RoPE θ = 500,000", "the tiny lab model's shapes (D = 64, F = 224, 4 query heads, 2 KV heads)", "encoder-only / encoder-decoder / Mamba distinctions"]
+  },
+  "compress": {
+    "prompt": "Without scrolling up, draw one token's path from token id to next token (embedding → 32 × [norm → attention → add, norm → MLP → add] → norm → LM head → sample) and write the parameter count beside each box. Then two sentences: where do the weights live, and where does the per-request memory live?",
+    "checklist": [
+      "embedding and LM head are each V × D = 525.34M, untied",
+      "attention 41.94M and MLP 176.16M per layer, × 32; total 8.03B = 16.06 GB in BF16",
+      "attention mixes tokens, the MLP transforms each token alone, the residual adds rather than overwrites",
+      "decode is one full pass per output token; prefill is one pass over the whole prompt",
+      "per-request memory is attention's KV cache, though the MLP dominates the weights"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why generating a single new token still has to read all 16.06 GB of Llama-3.1-8B's weights.", "kind": "concept", "answer": ["in a dense model every weight is used for every token", "the weights are far bigger than on-chip memory, so each pass streams them again", "with one token, each weight is used for only 2 FLOPs, so the read is the cost"]},
+    {"q": "Walk a 5-token prompt through Llama-3.1-8B and give the shape after the embedding lookup, after <code>q = h·Wq</code>, of one layer's attention scores, after the MLP's gate, and at the logits.", "kind": "mechanism", "answer": ["<code>[5, 4096]</code>", "<code>[5, 32, 128]</code>", "<code>[32, 5, 5]</code> (causal)", "<code>[5, 14336]</code>", "<code>[5, 128256]</code>, and only the last row is sampled"]},
+    {"q": "Using the formula, compute one layer's parameters for the lab's tiny model (D = 64, F = 224, N = 4, K = 2, H = 16).", "kind": "mechanism", "answer": ["attention 2 · 64 · (4 + 2) · 16 = 12,288", "MLP 3 · 64 · 224 = 43,008", "norms 2 · 64 = 128, so 55,424 per layer"]},
+    {"q": "To cut memory, one designer proposes tying the embedding and LM head; another wants to go back from GQA-8 to plain MHA for quality. What does each do to the parameter count and to per-request memory?", "kind": "tradeoff", "answer": ["tying saves 525.34M parameters (about 1.05 GB in BF16) and leaves the KV cache unchanged", "MHA grows attention from 41.94M to 67.11M per layer (8.84B total, computed with the card's formula)", "MHA also makes the KV cache 4× bigger per token (512 vs 128 KiB), which costs far more memory than the extra weights at long context"]}
+  ],
+  "compare": [
+    {"with": "perf-1-foundations/attention", "q": "This card treats attention as one box of 41.94M parameters; the attention card opens it. What does each view explain that the other can't?", "answer": ["this card: where the weights sit, their share, and why every step reads all of them", "the attention card: what the box computes, why its score grid grows as T², and why KV heads (not query heads) set the cache", "the parameter view hides per-request memory; the mechanism view hides that the MLP dominates the weights"]},
+    {"with": "perf-2-scaling-book-inference/params-vs-kv", "q": "Parameters vs KV cache: both take HBM. What is fundamentally different about them, what causes the difference, and which one runs you out of memory first when serving?", "answer": ["parameters are one shared copy (16.06 GB); the KV cache is per sequence and grows with every token (128 KiB each)", "the cause is attention: later tokens need earlier tokens' k and v", "at batch 1 and short context the weights dominate; with many long sequences the KV cache does (59 × 1.07 GB at 8k is about 4× the weights)", "weights too big: the model doesn't fit at all; KV too big: the batch is capped"]}
+  ],
+  "predict": {"q": "A hypothetical Llama-3.1-8B variant keeps every shape but doubles the vocabulary to 256,512. Before computing: how many parameters does it add, which share grows, and does the KV cache per token change?", "answer": "The 2·V·D term doubles from 1.05B to 2.10B, so the model grows by 1.05B to 9.08B, and embedding + head go from 13.1% to about 23%. The KV cache per token is unchanged: it depends only on L, K and H. Each decode step now reads about 18.16 GB instead of 16.06, so the H100 floor rises from 4.79 to about 5.42 ms (computed)."},
+  "apply": {"task": "Write a 10-line <code>params(L, D, F, N, K, H, V)</code> from the card's formula and check that it returns exactly 8,030,261,248 for Llama-3.1-8B. Then use it for three variants: MHA (K = 32), MQA (K = 1), and F doubled to 28,672. For the last one, also print the MLP's share.", "done": "Your function prints 8,030,261,248, then 8,835,567,616 (MHA), 7,795,380,224 (MQA) and 13,667,405,824 with an MLP share of 82.5%, matching the lab's 'try this' line.", "hint": "Per layer: attention 2·D·(N+K)·H, MLP 3·D·F, norms 2·D. Then add 2·V·D for embedding + head, and D for the final norm."},
+  "reflect": [
+    "Which prediction did you get wrong: how much a bigger vocabulary adds, or whether it touches the KV cache?",
+    "Could you explain, without saying \"because it's dense\", why a decode step for one token reads every weight?",
+    "Which relationship is still fuzzy: attention mixes tokens → KV cache must exist, or KV cache → per-request memory?",
+    "Which part of the parameter formula would you have to look up again?",
+    "What will you reopen before the attention card: the residual stream, or the prefill/decode shapes?"
+  ],
+  "revisit": [],
+  "prereq": []
+}

@@ -1,0 +1,119 @@
+{
+  "prime": {
+    "problem": "A real deployment decision asks every question of the chapter at once: does the model fit, how many users fit beside it, is the step memory- or compute-bound, how far can it be sharded, and what does a query cost? Answer them separately and you'll pick the smallest slice that fits, which the book shows is often not the cheapest.",
+    "fits": "Thirteenth card, Part 8 of the book. It is the whole course applied to one model: the step-time formula, the memory fit, B<sub>crit</sub> with β, the sharding limits and the engine-design pipeline, ending in QPS per chip.",
+    "expect": ["the sizing sheet (KV per token, minimum slice)", "QPS per chip ∝ 1 / cost per query", "quantization × topology", "the ICI limit on model parallelism", "the latency–throughput curve and its code"],
+    "goal": "Size a deployment end to end: fit the weights, compute the batch the leftover HBM allows, check the bound and the sharding limit, and read the cost off QPS per chip."
+  },
+  "attend": [
+    "Why is the minimum slice's batch 43 in all three precisions (bf16, int8, int4)?",
+    "Why does the step time stay near 19 ms when you double the slice, and what does the extra HBM buy?",
+    "Why does quantization help beyond faster math, according to the sharding section?",
+    "What makes KV loading overtake FLOPs as context grows, and at what context does it happen?",
+    "Why does the book say the real numbers are about half its tables?"
+  ],
+  "core": {
+    "must": [
+      "Fit the weights on the fewest chips → the leftover HBM holds KV caches → that count is the batch → halving bytes (bf16 → int8 → int4) halves both free HBM and KV per token → 43 sequences at 8k in every row, far below B<sub>crit</sub> 120–240",
+      "HBM full → each step reads a whole chip's HBM → T<sub>step</sub> ≈ 16 GB / 8.2e11 ≈ 19 ms on any slice → doubling the slice keeps the step but raises B from 43 to 140 → QPS per chip × 1.63 → the smallest topology is not the cheapest when KV caps the batch",
+      "QPS per chip = B / (T<sub>step</sub> × decode steps × chips) and chips are billed hourly → it is cost per query → int4 on a 2x4 gives 1.80 vs 0.27 for bf16 on its minimum 4x4: 6.7×",
+      "Model parallelism is ICI-bound past Y ≈ F·M<sub>Y</sub>/2200 (26 for 2 axes at F = 28,672) → quantized models fit on smaller slices with pure model parallelism → quantization lets you run a larger batch before comms bind"
+    ],
+    "elevated": [
+      "KV load beats FLOPs once context S > (2·N/C)·W/KV<sub>token</sub> → 3,557 tokens with int8 KV (1,778 in bf16) → at long context the KV cache, not the math, is the throughput lever for this model"
+    ],
+    "reference": [
+      "the Part 8 price table ($1.2/h v5e, $10.8/h H100, Feb 2025)",
+      "the book's printed numpy code and its batch-index bug (max_idx 34 vs 137)",
+      "the H100 panel (QPS per GPU 0.29 … 4.14)",
+      "the book's quirk 2.81 vs 2.19 for int4's minimum chips",
+      "the three unanswered homework problems"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, write the sizing sheet as five steps with one formula each: bytes → slice → batch → bound → cost. Then state in two sentences why doubling the slice raises QPS per chip and why quantizing does.",
+    "checklist": [
+      "bytes: params × bytes per weight; KV per token 2·K·H·L × bytes",
+      "slice: fewest chips whose HBM holds the params, rounded to a real topology",
+      "batch: leftover HBM ÷ KV per sequence",
+      "bound: B vs B<sub>crit</sub> (β-adjusted); ICI limit F·M<sub>Y</sub>/2200",
+      "cost: QPS per chip = B / (T<sub>step</sub> × steps × chips); doubling adds batch at the same step; quantizing fits the model on fewer chips"
+    ]
+  },
+  "retrieve": [
+    {
+      "q": "Explain why the minimum-slice batch comes out at 43 whether LLaMA 3-70B is in bf16, int8 or int4.",
+      "kind": "concept",
+      "answer": [
+        "the minimum slice is sized to the weights, so free HBM scales with the weight bytes (116 / 58 / 29 GB)",
+        "KV per token scales with the same bytes per value (324 / 162 / 81 kB)",
+        "both halve together, so free HBM ÷ KV per 8k sequence stays ≈ 43"
+      ]
+    },
+    {
+      "q": "Walk the book's batch-32, 8k, int8 question on a 4x2: memory, bound, step time and per-chip throughput.",
+      "kind": "mechanism",
+      "answer": [
+        "KV 160e3 × 8,192 × 32 = 41.9 GB + 70 GB params = 112 GB → 7 chips → 4x2 (tight), 4x4 realistically",
+        "B<sub>crit</sub> for int8 weights with bf16 math ≈ 120 ≫ 32 → memory-bound",
+        "T<sub>step</sub> ≈ 112e9 / (8 × 8.2e11) ≈ 17 ms",
+        "32 / 0.017 ≈ 1,882 tok/s, ≈ 235 per chip"
+      ]
+    },
+    {
+      "q": "A product needs LLaMA 3-405B at a firm 15 ms per token. Why is maximising QPS per chip the wrong objective here, and what does the latency target force?",
+      "kind": "tradeoff",
+      "answer": [
+        "a hard latency cap limits the batch, because each sequence adds KV read time to the step",
+        "it forces more sharding so each chip reads fewer weight bytes per step",
+        "cost per token rises; the target, not the cheapest point, sets the configuration"
+      ]
+    }
+  ],
+  "compare": [
+    {
+      "with": "perf-2-scaling-book-inference/modeling-13b",
+      "q": "Both cards turn the step-time formula into tables. What question does Part 8 ask that the 13B tables never did, and how does it change the recommendation?",
+      "answer": [
+        "13B asked how throughput moves with batch on a fixed 8-chip slice",
+        "Part 8 also varies precision and slice size and measures QPS per chip, i.e. cost",
+        "it concludes you should buy more HBM (a bigger slice) to raise the batch; for MHA 13B more chips barely helped because 16 sequences already sat near the per-chip wall, while 70B's GQA cache leaves 43 sequences far below its wall, so extra batch still pays"
+      ]
+    },
+    {
+      "with": "perf-6-scaling-out/sizing-deployment",
+      "q": "The book sizes by QPS per chip on TPUs; a GPU sizing guide sizes by VRAM and TP degree. Which of the book's five steps carry over unchanged, and which constants must be swapped?",
+      "answer": [
+        "unchanged: bytes → slice → batch → bound → cost",
+        "swap: 80 GB and 3.35 TB/s per GPU, NVLink instead of ICI, FP8 instead of int8, TP limited to a node (≈ 8)",
+        "the card's H100 panel shows the same shape: more GPUs → more KV room → bigger batch → more QPS per GPU"
+      ]
+    }
+  ],
+  "predict": {
+    "q": "int8 LLaMA 3-70B on a 4x8 (32 chips) at 8k. Commit first: roughly how many sequences fit, does the 19 ms step assumption still hold, and is QPS per chip above or below 1?",
+    "answer": "Free HBM = 512 − 70 = 442 GB, so B = 442e9 / (162e3 × 8,192) = 333. That is past B<sub>crit</sub> = 120 for int8 weights with bf16 math, so the MLP is math-bound (7.40 ms > 2.67 ms of weight read), and the step is 16.84 ms KV + 7.40 ms = 24.2 ms, not 19. QPS per chip = 333 / (0.0242 × 512 × 32) ≈ 0.84, below 1. The naive 19 ms figure would have said 1.07."
+  },
+  "apply": {
+    "task": "Extend <code>labs/serving-llama-70b.py</code>'s QPS table with an <i>int8 on a 4x8</i> row. Compute HBM for KV, the batch at 8k (162 kB per token), the three terms of the step (KV load, param load, FLOPs at 1.97e14 per chip), the step and QPS per chip. Then compare with the book's shortcut that assumes a 19 ms step, and explain the gap.",
+    "done": "442 GB free, B = 333, KV ≈ 16.84 ms, params ≈ 2.67 ms, FLOPs ≈ 7.40 ms, step ≈ 24.2 ms, QPS/chip ≈ 0.84 (vs ≈ 1.07 with the 19 ms shortcut), and you name the cause: B passed B<sub>crit</sub>, so the math term replaced the weight read.",
+    "hint": "KV load = 333 × 8,192 × 162e3 / (32 × 8.2e11). FLOPs = 2 × 70e9 × 333 / (32 × 1.97e14)."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: the batch, or that the 19 ms shortcut breaks?",
+    "Could you explain to a finance person why a bigger slice can be cheaper per query?",
+    "Which relationship is still fuzzy: HBM full → fixed step, or batch past B<sub>crit</sub> → math term?",
+    "Did you account for the <i>real ≈ ½</i> haircut when you judged the numbers?",
+    "Which homework problem from Part 8 will you do first, and which card will you need for it?"
+  ],
+  "revisit": [
+    "perf-2-scaling-book-inference/step-time",
+    "perf-2-scaling-book-inference/params-vs-kv",
+    "perf-2-scaling-book-inference/sharding-prefill-generation",
+    "perf-2-scaling-book-inference/inference-engine-design"
+  ],
+  "prereq": [
+    "perf-2-scaling-book-inference/step-time",
+    "perf-2-scaling-book-inference/sharding-prefill-generation"
+  ]
+}

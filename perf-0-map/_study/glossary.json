@@ -1,0 +1,59 @@
+{
+  "prime": {
+    "problem": "The field's vocabulary hides the mechanism: the same word means different things in different sources (batch, α, β, K, TPS, NVLink bandwidth), and a new term tells you nothing about whether it saves FLOPs or bytes. Without a sorting rule, 80 terms stay 80 isolated facts.",
+    "fits": "The reference card for the whole series. The overview and stack cards named the levers and layers; this card gives each word one sentence, one number from the running example (Llama-3.1-8B, BF16, one H100) and the card that teaches it.",
+    "expect": ["model · machine · arranging work", "saves FLOPs or saves bytes?", "the most-confused pairs (TTFT vs TPOT, total vs active, TP vs DP)", "overloaded symbols (batch, α, β, K)", "memory-bound vs compute-bound"],
+    "goal": "Place any new term into model / machine / arranging and say whether it saves FLOPs or bytes, tell the confused pairs apart with a number, and catch an overloaded word before comparing two sources."
+  },
+  "attend": [
+    "For the terms you already half-know, which of the three groups (model, machine, arranging work) does each belong to, and does it save FLOPs or bytes?",
+    "Why does the card single out memory-bound vs compute-bound as the pair that matters most?",
+    "Why does GQA raise the number of 8k-token sequences that fit from 14 to 59, and what does MQA push it to?",
+    "When the Scaling Book says \"batch\" and Kiely says \"batch\", what is each counting, and when do the two agree?",
+    "Why can goodput be zero at a batch size where raw throughput is higher?"
+  ],
+  "core": {
+    "must": [
+      "Every term names a model part, a machine part or a way of arranging work → arranging work (batching, caching, sharding, quantizing) exists to keep the machine busy → metrics (TTFT, TPOT, throughput) say whether the arranging worked → so a new word is understood once you know its group and whether it saves FLOPs or bytes",
+      "Operation intensity vs the chip's ops:byte (≈ 295 on an H100) → below it the reads finish last (memory-bound), above it the math does (compute-bound) → memory-bound work speeds up from fewer bytes or more batching, compute-bound from better tensor-core use → so classify first, tune second",
+      "TTFT is paid once (queue + prefill) and TPOT on every later token (one decode step) → for a 1,000-in / 200-out request, 16.2 ms vs 199 × 4.84 ms → TPOT is about 98% of the wait → decode work usually matters more than prefill work for long answers",
+      "Words and symbols are reused across sources (batch = tokens vs requests, α = ops:byte vs acceptance rate, NVLink 450 vs 900 GB/s) → comparing numbers without checking the meaning gives wrong ratios → check the definition before comparing"
+    ],
+    "elevated": [
+      "Total vs active parameters → memory follows total, FLOPs and per-token reads follow active → DeepSeek-V3 stores 671B but uses 37B per token (74 GFLOP/token, not 1,342) → MoE needs much more memory than its compute suggests"
+    ],
+    "reference": ["the exact Kiely definitions and page numbers (Appendix A, pp. 211–229)", "hardware specs: 132 SMs, 256 KB SMEM per SM, 50 MB L2, H200/B200 figures", "number-format names (E4M3, E5M2, MXFP4, NVFP4)", "the Scaling Book symbol table (B, T, S, D, F, L, V, N, K, H, C, W)", "library names (cuBLAS, CUTLASS, Triton, FlashInfer)"]
+  },
+  "compress": {
+    "prompt": "Course-level compress: without looking, draw three boxes (model, machine, arranging work) with the metrics underneath, and drop ten terms into them. Mark each term F (saves FLOPs), B (saves bytes) or neither.",
+    "checklist": [
+      "model: weights, attention, KV cache, MLP, MoE; machine: SM, tensor cores, HBM, NVLink",
+      "arranging: batching, continuous batching, prefix caching, paging, sharding, quantizing, speculation",
+      "metrics: TTFT, TPOT, throughput, goodput, percentiles",
+      "most serving tricks save bytes (GQA, FP8, quantized weights, paging) because decode is memory-bound",
+      "the dividing line: intensity vs ops:byte (≈ 295 on an H100)"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain goodput to someone who only knows throughput, using the card's 10 ms TPOT example, and say why a provider sells goodput rather than throughput.", "kind": "concept", "answer": ["goodput counts only requests that meet their latency targets", "under a 10 ms TPOT SLO: 12,050 tok/s at batch 120, but 0 at batch 443 even though raw throughput is higher there", "requests that miss the SLO aren't a product anyone pays for"]},
+    {"q": "Walk through why GQA shrinks the KV cache: what is shared, how the per-token bytes change from MHA to GQA-8 to MQA, and what that does to how many 8k sequences fit.", "kind": "mechanism", "answer": ["several query heads share one key/value head", "KV per token: 512 KiB (MHA) → 128 KiB (GQA-8) → 16 KiB (MQA)", "fewer bytes per sequence → 14 → 59 → 476 sequences of 8k tokens fit", "a bigger batch, and fewer KV bytes read per step"]},
+    {"q": "Tensor parallel vs data parallel across 8 H100s: what does each buy and cost, and which would you choose for a latency-critical product vs a cost-critical one?", "kind": "tradeoff", "answer": ["TP splits one model copy: weight read per step 4,794 → 599 µs, so each request gets faster, but chips talk every layer", "DP runs 8 whole copies: 8× the tokens at the same 4.8 ms step, with no talking and no single request faster", "latency-critical → TP; cost/throughput-critical with a model that fits → DP"]},
+    {"q": "A dashboard says a model runs at \"50 TPS\". Before comparing it with your number, which two meanings could it have, and what else would you check in the same breath?", "kind": "concept", "answer": ["Kiely's TPS is per-user perceived speed; most dashboards mean total server throughput", "check the batch meaning too: tokens per step vs requests", "and the units: GB vs GiB differ by 7%"]}
+  ],
+  "compare": [
+    {"with": "perf-1-foundations/serving-metrics", "q": "The glossary gives TTFT, TPOT, goodput and percentiles one line each; the serving-metrics card measures them. What does a one-line definition miss that you need before setting an SLO?", "answer": ["how the metrics interact: bigger batch raises throughput but lengthens TPOT", "that averages hide the tail: P99, not P50, is what users notice", "measured numbers include queueing and overhead that the floors leave out"]},
+    {"with": "perf-2-scaling-book-inference/critical-batch-size", "q": "The glossary says B<sub>crit</sub> = β·α<sub>hbm</sub> and gives 240/295/120/3,840. What does the full card explain that turns those numbers into a decision about batch size?", "answer": ["why a linear layer switches from memory- to compute-bound at that many tokens per step", "why int8 weights with bf16 math halve it (β = ½)", "why MoE multiplies it by E/k: each expert sees only part of the batch", "below B<sub>crit</sub>, batching is nearly free; above it, each extra token costs math time"]},
+    {"with": "perf-0-map/_overview", "q": "The overview ranks levers by effect on $/token; the glossary sorts words by what they name. Take speculative decoding: how does each card describe it, and which description helps you decide whether to turn it on?", "answer": ["glossary: an arranging technique that uses idle math, with α and expected tokens per pass", "overview: a lever worth 2.2× at batch 1 but a 0.70× slowdown at batch 256", "the overview's view decides; the glossary's formula explains why the result flips with batch"]}
+  ],
+  "predict": {"q": "Keep K = 4 drafted tokens but drop the acceptance rate α from 0.8 to 0.6. Before computing: does the expected number of tokens per verify pass fall a little or a lot from 3.36?", "answer": "It falls a lot, to about 2.31: (1 − 0.6<sup>5</sup>) ÷ (1 − 0.6) = 0.922 ÷ 0.4 ≈ 2.31. The later drafted tokens only count if every earlier one was accepted, so a lower α cuts the tail of the chain hardest."},
+  "apply": {"task": "Use the glossary as a calculator. (1) E2E latency for 1,000 tokens in and 500 out on the H100 floor, using TTFT 16.2 ms and TPOT 4.84 ms. (2) Expected tokens per verify pass for α = 0.6 and α = 0.8 at K = 4. (3) Label each of these as saving FLOPs, bytes or neither: GQA, FP8 KV, FlashAttention, prefix caching, continuous batching, tensor parallelism.", "done": "(1) ≈ 2,431 ms; (2) ≈ 2.31 and 3.36; (3) GQA and FP8 KV save bytes; FlashAttention saves HBM traffic (bytes); prefix caching skips prefill (FLOPs and time); continuous batching and TP save neither directly but rearrange work (more users per weight read; less weight read per GPU).", "hint": "E2E = TTFT + (n<sub>out</sub> − 1) × TPOT; tokens per pass = (1 − α<sup>K+1</sup>) ÷ (1 − α)."},
+  "reflect": [
+    "Which prediction did you get wrong: how sharply α changes the tokens per pass?",
+    "What couldn't you explain cleanly: why TPOT dominates a 200-token answer's wait?",
+    "Which relationship is still fuzzy: intensity → memory-bound, or memory-bound → which lever helps?",
+    "Which overloaded word (batch, α, β, K, TPS) would have tripped you before this card?",
+    "Which linked card will you open first to turn a one-line definition into a formula?"
+  ],
+  "revisit": ["perf-0-map/_overview", "perf-0-map/stack", "perf-1-foundations/roofline-intuition", "perf-2-scaling-book-inference/step-time"],
+  "prereq": []
+}

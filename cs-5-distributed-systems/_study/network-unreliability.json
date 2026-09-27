@@ -1,0 +1,118 @@
+{
+  "prime": {
+    "problem": "In a shared-nothing system the network is the only way machines talk, and it promises nothing. A request that gets no reply might never have arrived, might be stuck in a queue, might have crashed the worker, or might have worked with the reply lost. Code that treats silence as one thing either loses work or does it twice.",
+    "fits": "First card of the network part. The partial-failure card listed three faults behind a timeout; this one lists the source's six, shows how often they happen in real data centres, and introduces the 2d + r timeout that the delay card derives properly.",
+    "expect": [
+      "six ways to go silent",
+      "\"did the resize run?\" per case",
+      "timeout = 2d + r, a guess",
+      "real fault rates: ~12 a month, CENIC's >500 partitions",
+      "FLP and why systems still lean on timeouts"
+    ],
+    "goal": "Trace the six silent cases for one resize call, count in which ones the work ran anyway, and explain why the only sound plan is: pick a timeout, make retries idempotent, and test under injected faults."
+  },
+  "attend": [
+    "Of the six silent cases, which ones mean the resize never ran, and which ran anyway?",
+    "Why does a short timeout turn a GC pause into a false \"dead\" verdict, and what can that cascade into?",
+    "What makes a timeout a guess rather than a fact on an asynchronous network?",
+    "The CENIC hardware partitions have a median of 32 min but a p95 of 3.7 days. What does that spread mean for planning?",
+    "Why does FLP not stop ZooKeeper and Raft from working in practice?"
+  ],
+  "core": {
+    "must": [
+      "Request lost, request queued, worker crashed, worker paused, reply lost, reply delayed → all six look like the same silence at the caller → the caller can't tell whether the work ran",
+      "In 4 of 6 cases the work ran (or will run) anyway → a blind retry does it twice (and bills it twice) → in 2 of 6 it never ran → giving up loses it → only an idempotent retry is right in both",
+      "The network has no delay bound → a timeout is a guess → too short declares a paused but alive worker dead and moves its load (cascade) → too long leaves real failures unnoticed",
+      "Faults are routine (≈ 12 a month in a midsize data centre; >500 WAN partitions in 5 years) → \"assume it works\" means untested recovery paths → decide what users see, then inject faults on purpose to check recovery"
+    ],
+    "elevated": [
+      "FLP: no consensus is guaranteed on a fully asynchronous network if one process can fail → real systems add timeouts, betting that silence usually means a crash → correct when the bet is right, only delayed (not unsafe) when it's wrong, as Raft shows"
+    ],
+    "reference": [
+      "the incident list (Pakistan/YouTube BGP 2008, Juniper routers, sharks and Kevlar)",
+      "the CENIC durations (2.7 min, 32 min, 3.7 days = 5,328 min)",
+      "Deutsch's fallacies by name",
+      "the illustrative delays in the six-case timeline (2 ms, 400 ms queue, 1 s pause, 300 ms late reply)"
+    ]
+  },
+  "compress": {
+    "prompt": "Without looking, list the six cases and mark each \"ran\" or \"didn't run\", then write the one-line conclusion that follows for retries and the one that follows for timeouts.",
+    "checklist": [
+      "didn't run: request lost, worker crashed",
+      "ran: request queued, worker paused, reply lost, reply delayed",
+      "all six look identical to the caller",
+      "retries must be idempotent (4 of 6 ran)",
+      "a timeout is a guess: too short = false deaths, too long = slow detection",
+      "faults are frequent enough that recovery must be tested"
+    ]
+  },
+  "retrieve": [
+    {
+      "q": "Explain why \"silence means it failed, so retry\" and \"silence means it's dead, so fail over fast\" are both wrong, using one case against each.",
+      "kind": "concept",
+      "answer": [
+        "retry: in the reply-lost case the resize already ran, so the retry does it twice",
+        "fail over fast: in the GC-pause case the worker is alive; its load moves and can cascade",
+        "silence carries no information about which case you're in"
+      ]
+    },
+    {
+      "q": "Walk through the timeline arithmetic for the queued-request and paused-worker cases with the 110 ms timeout: when does the work finish, and what does the caller see?",
+      "kind": "mechanism",
+      "answer": [
+        "timeout = 2d + r = 2 × 5 + 100 = 110 ms",
+        "queued: 400 ms in the queue + 100 ms work = done at 500 ms, reply at 502 > 110 → timeout, but it ran",
+        "paused: 2 + 1,000 + 100 = done at 1,102 ms → timeout long before; it ran after the caller gave up"
+      ]
+    },
+    {
+      "q": "The source says tolerating partitions isn't mandatory. When is showing users an error during a partition an acceptable design, and what remains non-negotiable?",
+      "kind": "tradeoff",
+      "answer": [
+        "when the network is normally reliable and an error is acceptable to users for the rare partition",
+        "you still must know how the software reacts to each fault",
+        "and it must recover correctly afterwards (no permanent outage, no deleted data, as in the GitHub incident)"
+      ]
+    }
+  ],
+  "compare": [
+    {
+      "with": "cs-5-distributed-systems/delay-timeouts-congestion",
+      "q": "This card uses 2d + r with a made-up d = 5 ms; the delay card derives d from QJUMP's bound. What does a real bound buy, what does it cost, and why does the internet not have one?",
+      "answer": [
+        "a real d makes the timeout a fact: silence past 2d + r really means failure (877.2 µs in the card's QJUMP example)",
+        "it costs throughput: every host rate-limited to about 5 Mb/s at f = 1",
+        "the internet has no global rate limiting, so d is only a percentile you pick"
+      ]
+    },
+    {
+      "with": "cs-5-distributed-systems/idempotency-retries",
+      "q": "This card concludes \"retries need to be idempotent\"; the retries card builds it. Which of the six cases does an idempotency key fix, and which cases does no retry scheme help at all?",
+      "answer": [
+        "the key fixes the ran-anyway cases (queued, paused, reply lost or delayed): the second copy replays the stored reply",
+        "for request lost and worker crashed, the retry is what gets the work done",
+        "no retry helps a worker that stays down with a poison input, or a partition that outlasts every retry"
+      ]
+    }
+  ],
+  "predict": {
+    "q": "You raise the timeout from 110 ms to 1,200 ms. Which of the six silent cases still time out, and in how many of those did the work run? Commit, then check by changing <code>TIMEOUT</code> in the code.",
+    "answer": "Only three still time out: request lost, worker crashed and reply lost. The queued request (reply at 502 ms), the paused worker (1,104 ms) and the delayed reply (402 ms) now return. Of the three silent cases, the work ran in one (reply lost). A longer timeout converts slow cases into answers, but it can never tell a lost reply from a crash, and every real failure now waits 1.2 s to be noticed."
+  },
+  "apply": {
+    "task": "Modify <code>code/network-unreliability.py</code> so the caller retries once after a timeout, and the worker counts how many times it actually resized. Keep <code>TIMEOUT = 110</code>. For each of the seven rows, print the caller's final outcome and the number of resizes. Then add an idempotency key: the worker skips work for a key it has already done and replays the result.",
+    "done": "Without the key, the four ran-anyway cases show 2 resizes after the retry (assuming the retry itself gets through normally); with the key, every case shows at most 1, and the two never-ran cases show exactly 1 thanks to the retry.",
+    "hint": "Model the retry as a healthy call (2, 0, 2) with the same key. The worker's <code>done</code> set is what turns \"ran twice\" into \"ran once, replied twice\"."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: how many cases a longer timeout rescues?",
+    "Could you list the six cases from memory in 30 seconds?",
+    "Which relationship is still fuzzy: silence → unknown outcome, or timeout length → false deaths vs slow detection?",
+    "Has a system you know ever treated a GC pause as a crash?",
+    "What will you reopen before the end-to-end card?"
+  ],
+  "revisit": [
+    "cs-5-distributed-systems/partial-failure-cap"
+  ],
+  "prereq": []
+}

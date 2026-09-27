@@ -1,0 +1,120 @@
+{
+  "prime": {
+    "problem": "Resize jobs pile up in a broker, and several workers must share them. If the broker hands out whole partitions, one huge image blocks every job behind it and idle workers can't help. If it hands out single jobs to whoever is free, the load evens out but the order is gone. Picking the wrong model shows up as idle workers next to a growing backlog.",
+    "fits": "Builds on the sizing card (10 conversions/s per core, 1 tick = 0.1 s) and the backpressure card's queues. It's the messaging half of \"load balancing\"; the partition idea returns in sharding and hot keys.",
+    "expect": [
+      "competing consumers (AMQP/JMS)",
+      "partition assignment: consumers ≤ partitions",
+      "range assignment: 6 over 4 → 2, 2, 1, 1",
+      "head-of-line blocking",
+      "the greedy bound <code>T<sub>P</sub> ≤ T<sub>1</sub>/P + T<sub>∞</sub></code>"
+    ],
+    "goal": "Simulate both models on a backlog with one slow job, explain the finish times from the mechanisms, and choose the model from what the work needs: independence or per-key order."
+  },
+  "attend": [
+    "Why do jobs 10, 16 and 22 wait 9 ticks, and why does no job wait behind job 4 with competing consumers?",
+    "Even with every job taking 1 tick, partitions finish at tick 8 but competing consumers at tick 6. Where do the 2 ticks go?",
+    "What happens when you add a 7th and 8th consumer to a 6-partition topic?",
+    "Why does the competing-consumers queue stay within the greedy bound while the partition schedule can break it?",
+    "What do partitions give you that competing consumers throw away?"
+  ],
+  "core": {
+    "must": [
+      "Competing consumers: each message goes to whichever consumer is free → no consumer idles while work waits (a greedy schedule) → load evens out and a slow job blocks only its own consumer → but messages finish out of order (10, 16, 22 before 4)",
+      "Partitions: each consumer owns whole partitions and reads them in order → per-partition order is kept, and the log allows replay and fan-out → but one slow message blocks everything behind it (head-of-line blocking: 3 jobs stuck)",
+      "Assignment is by whole partitions → 6 over 4 splits 2, 2, 1, 1 → two consumers idle while two still have work (8 ticks vs 6 even with no slow job) → and consumers past the partition count get nothing",
+      "A greedy scheduler never idles while work waits → finishes within T<sub>1</sub>/P + T<sub>∞</sub> (33/4 + 10 = 18.25; got 11) → a non-greedy partition schedule can exceed it (8 > 7 with all 1-tick jobs)"
+    ],
+    "elevated": [
+      "Choose the partition count as a multiple of the consumer count (12 over 4 → 3 each) and key by something fine-grained → evens the split and dilutes a slow key → softens both partition costs without losing per-key order"
+    ],
+    "reference": [
+      "Kafka's RangeAssignor algorithm details",
+      "AMQP/JMS naming (shared subscription)",
+      "CLRS Theorem 27.1 numbering",
+      "the simulation's tick costs (1 tick, 10 ticks for job 4)"
+    ]
+  },
+  "compress": {
+    "prompt": "Draw two tiny timelines from memory, one per model, with a slow job in each, and label where the waiting happens. Under them, write one line: \"use competing consumers when…, partitions when…\".",
+    "checklist": [
+      "competing: free consumer takes the next job; greedy; order lost",
+      "partitions: owned whole, read in order; order and replay kept",
+      "head-of-line blocking behind a slow message",
+      "uneven split (2, 2, 1, 1) and consumers ≤ partitions",
+      "resize jobs are independent and expensive → competing consumers",
+      "per-account usage events need order → partitions"
+    ]
+  },
+  "retrieve": [
+    {
+      "q": "Explain why competing consumers finished the backlog at tick 11 while partitions took until tick 13, naming the two separate causes of the partition delay.",
+      "kind": "concept",
+      "answer": [
+        "head-of-line blocking: jobs 10, 16, 22 waited behind job 4 in partition 4",
+        "the 2, 2, 1, 1 split: C2 and C3 idled while C0 and C1 still had jobs",
+        "competing consumers avoid both: any free consumer takes the next job"
+      ]
+    },
+    {
+      "q": "Walk through <code>range_assign(6, 4)</code> and then how C2 processes its partition: which jobs it gets and when each finishes.",
+      "kind": "mechanism",
+      "answer": [
+        "divmod(6, 4) = (1, 2): everyone gets 1, the first 2 get one extra",
+        "C0 p0,1 · C1 p2,3 · C2 p4 · C3 p5",
+        "C2 gets jobs 4, 10, 16, 22 in order",
+        "job 4 takes 10 ticks, then 10, 16, 22 finish at 11, 12, 13"
+      ]
+    },
+    {
+      "q": "The billing team wants usage events per account in order, and replayable. The resize team wants throughput. Pick a model for each and say what each team gives up.",
+      "kind": "tradeoff",
+      "answer": [
+        "billing: partitions keyed by account; keeps per-account order and replay, accepts head-of-line blocking",
+        "resize: competing consumers; gets even load, gives up order (and the message is gone once acked)",
+        "a slow billing event stalls only its partition, so key finely"
+      ]
+    }
+  ],
+  "compare": [
+    {
+      "with": "cs-5-distributed-systems/sharding-hot-keys",
+      "q": "A partition here and a shard there both split keys over workers by a fixed rule. What problem does each card's slow or hot key cause, and why can neither be fixed by adding workers?",
+      "answer": [
+        "here, one slow message blocks its partition; there, one hot key overloads its shard",
+        "a key lives in exactly one partition or shard, so more workers don't split it",
+        "fixes: move expensive order-free work to a separate queue here; salt the hot key there"
+      ]
+    },
+    {
+      "with": "cs-6-data-systems/gpu-fair-share",
+      "q": "A GPU cluster scheduler and a message broker both hand work to workers online. Which scheduling property from this card (greedy, never idle while work waits) does a fair-share scheduler deliberately give up, and why?",
+      "answer": [
+        "fair share may hold capacity for a user below their share instead of giving it to whoever is next",
+        "it trades some utilisation or makespan for fairness between users",
+        "a broker's competing consumers optimise throughput only, with no notion of whose job it is"
+      ]
+    }
+  ],
+  "predict": {
+    "q": "Drop to 3 consumers on the same 6 partitions and the same 24 jobs. What is the assignment, when does each model finish, and how many normal jobs finish after tick 10 under partitions? Commit first, then run the simulation with C = 3.",
+    "answer": "range_assign gives 2, 2, 2: C0 p0,1 · C1 p2,3 · C2 p4,5. Competing consumers still finish at tick 11 (mean of the 23 normal jobs 5.78). Partitions finish at tick 17: C2 reads jobs 4, 5, 10, 11, 16, 17, 22, 23 one at a time, so all 7 of its normal jobs finish after job 4's 10 ticks (mean 7.39). An even split fixed the idle consumers but made the head-of-line blocking worse, because the slow partition now shares its consumer."
+  },
+  "apply": {
+    "task": "Change <code>code/load-balancing-consumers.py</code> to 12 partitions and 4 consumers (so each gets 3), keeping 24 jobs with job i in partition i mod 12 and job 4 slow. Before running, predict the partition model's finish tick and which jobs wait behind job 4. Then run both models and compare with the card's 6-partition numbers (13 ticks, 3 stuck).",
+    "done": "You predicted, then confirmed, that partitions now finish at tick 15 with 4 normal jobs (5, 15, 16, 17) finishing after job 4, while competing consumers still finish at 11; and that with all 1-tick jobs both models now take 6 ticks. So the even split fixed the idle consumers, and the blocking got worse.",
+    "hint": "With 12 partitions, range assignment gives C1 partitions 3, 4, 5, so it reads jobs 3, 4, 5, 15, 16, 17 in order. Only jobs after 4 on that consumer wait; count them."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: that an even 2, 2, 2 split made blocking worse?",
+    "Could you explain the greedy bound in one sentence without the formula?",
+    "Which relationship is still fuzzy: per-partition order → head-of-line blocking, or whole-partition assignment → idle consumers?",
+    "Which queue in a system you know should really be a log, or the other way round?",
+    "What will you reopen before the sharding card?"
+  ],
+  "revisit": [
+    "cs-5-distributed-systems/image-resize-sizing",
+    "cs-5-distributed-systems/backpressure-metrics"
+  ],
+  "prereq": []
+}

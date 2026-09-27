@@ -1,0 +1,121 @@
+{
+  "prime": {
+    "problem": "Coordinating every write costs a round trip and refuses during partitions; coordinating none breaks rules like unique ids and non-negative balances. You need a test that says, rule by rule, whether replicas can commit on their own and still be valid after the merge.",
+    "fits": "Builds on the eventual-consistency card's broken merge and its four target properties. This card gives the exact test (invariant confluence) and Theorem 1, which says the test is also the limit. The money-transfer card then designs around the rules that fail it.",
+    "expect": [
+      "<code>I(D<sub>i</sub>) ∧ I(D<sub>j</sub>) ⇒ I(D<sub>i</sub> ⊔ D<sub>j</sub>)</code>",
+      "merge ⊔: commutative, associative, idempotent",
+      "one counterexample settles \"No\"",
+      "the invariant table: ids, balances, bookings, foreign keys",
+      "Theorem 1: confluent ⇔ coordination-free"
+    ],
+    "goal": "Apply the I-confluence test to a (rule, operation) pair by finding a two-replica counterexample or arguing none exists, and explain why Theorem 1 means there's no third option."
+  },
+  "attend": [
+    "Why does the source's Alice 10–11 / Bob 11–12 example prove nothing about whether bookings are safe?",
+    "What changes between \"balance ≥ 0 with deposits only\" and \"with withdrawals\" that flips the verdict?",
+    "Why is a foreign-key insert confluent but a delete not, and what makes a cascading delete confluent again?",
+    "In the \"only if\" half of Theorem 1, which of the four properties forces each step of the partition argument?",
+    "What does passing the test <i>not</i> guarantee about the application?"
+  ],
+  "core": {
+    "must": [
+      "Replicas commit locally, checking the rule on their own state → later merge by union → if every merge of two locally valid states is valid, the rule needs no coordination → one failing pair (100 − 60 − 70 = −30) is enough to say No",
+      "Operations that only add (deposits, FK inserts, system-chosen ids) → union never removes a row or double-spends a quantity → merges stay valid → I-confluent",
+      "Operations that consume or claim something shared (withdrawals, user-chosen ids, deletes, overlapping bookings) → two replicas can each take the same thing → the merge over-commits → not I-confluent → these pairs must coordinate",
+      "Theorem 1: cut the network, availability forces each side to commit, convergence forces the merge → a non-confluent pair yields an invalid merged state → you can't have validity, availability, convergence and coordination-freedom together for it"
+    ],
+    "elevated": [
+      "The verdict depends on the merge → with set union deletes need tombstones and cascades to stay safe → with last-writer-wins, two withdrawals can collapse into one (a lost update), so the whole table changes"
+    ],
+    "reference": [
+      "the paper's Definition 6 and Table 2 claim numbers",
+      "the source's mis-labelled proof direction and footnote",
+      "the 25× TPC-C New-Order result on 200 servers",
+      "minutes 600–720 encoding of the booking times"
+    ]
+  },
+  "compress": {
+    "prompt": "Write the test as one implication from memory, then sort the card's nine rows into two columns (\"adds only\" → Yes, \"claims or consumes\" → No) with one counterexample for each No. End with Theorem 1 in one sentence.",
+    "checklist": [
+      "I(D<sub>i</sub>) ∧ I(D<sub>j</sub>) ⇒ I(D<sub>i</sub> ⊔ D<sub>j</sub>) for all pairs from a common ancestor",
+      "one counterexample is enough for No; one passing merge proves nothing",
+      "Yes: deposits, FK inserts, cascading deletes, system-chosen ids",
+      "No: withdrawals, chosen ids, deletes, overlapping bookings",
+      "Theorem 1: confluent ⇔ can be coordination-free, available, convergent and valid",
+      "the verdict assumes a specific merge (set union)"
+    ]
+  },
+  "retrieve": [
+    {
+      "q": "Explain why \"every replica checked the invariant before committing\" doesn't make the system safe, using the balance example.",
+      "kind": "concept",
+      "answer": [
+        "each replica saw 100 and a withdrawal of 60 or 70: both valid locally",
+        "neither saw the other's withdrawal",
+        "the merge applies both: 100 − 60 − 70 = −30, so the check was against the wrong state"
+      ]
+    },
+    {
+      "q": "Walk through the foreign-key delete counterexample and then the cascading version: what does each replica commit, and what does the merge contain?",
+      "kind": "mechanism",
+      "answer": [
+        "start {bob}; replica i deletes bob; replica j inserts order o3 → bob",
+        "merge: bob's tombstone and o3 → o3 points at nothing (invalid)",
+        "cascading: the merge also drops orders of deleted users, so o3 goes and the state is valid"
+      ]
+    },
+    {
+      "q": "A ticketing site sells 100 seats per concert across 4 replicas. \"Seats sold ≤ 100\" fails the test. Give two designs: one that coordinates and one that reshapes the rule to pass, with the cost of each.",
+      "kind": "tradeoff",
+      "answer": [
+        "coordinate: route each concert's sales through one owner or consensus group; every sale pays a round trip and stalls in a partition",
+        "reshape: split the budget, 25 seats per replica; each replica sells locally within its share",
+        "the split can refuse a sale while another replica has seats left, until shares are rebalanced (with coordination, rarely)"
+      ]
+    }
+  ],
+  "compare": [
+    {
+      "with": "cs-5-distributed-systems/eventual-consistency-limits",
+      "q": "That card showed one broken merge (sam); this card turns it into a test. What does the test add beyond \"it broke once\", and how does it classify the previous card's four impossible guarantees?",
+      "answer": [
+        "the test says exactly which (rule, operation) pairs can ever break, and Theorem 1 says the rest can be coordination-free",
+        "key uniqueness with chosen values: not confluent",
+        "check-and-set and all-or-nothing concern ordering and atomicity, which a union merge can't express; read-your-write is a session property, patched by routing"
+      ]
+    },
+    {
+      "with": "cs-5-distributed-systems/exactly-once-transfer",
+      "q": "Withdrawals fail the test, yet the transfer design moves money without a distributed transaction. Which part of that design is the \"coordination\" the theorem demands, and which part is coordination-free?",
+      "answer": [
+        "every debit to an account goes through that account's single partition in log order: the one-owner coordination",
+        "credits only add, which is confluent, so they need no ordering against other partitions",
+        "the theorem isn't dodged; the coordination is confined to one partition per account"
+      ]
+    }
+  ],
+  "predict": {
+    "q": "A prepaid plan caps an account at 1,000 credits: \"balance ≤ 1,000\", with deposits only. Is that I-confluent? Try it from 900 with two replicas depositing 80 and 70. Commit first.",
+    "answer": "No. Each replica is valid locally: 980 and 970. The merge applies both deposits: 900 + 80 + 70 = 1,050 > 1,000. Deposits were safe for \"≥ 0\" because they move away from that bound; here they move toward it. Confluence belongs to the (invariant, operation) pair, never to the operation alone."
+  },
+  "apply": {
+    "task": "Add two cases to <code>code/i-confluence.py</code>: (1) the predict's cap, <code>balance ≤ 1000</code> with deposits from 900 (+80 on one replica, +70 on the other), and (2) a split budget: balance 100 shared as 50 per replica, where each replica rejects any withdrawal larger than its remaining share. Run replica i withdrawing 60 then 40, and replica j withdrawing 30, then merge and check <code>balance ≥ 0</code>.",
+    "done": "Case 1 prints FAIL with a merged balance of 1,050; case 2 shows replica i rejecting the 60 and accepting the 40, j accepting 30, and a merged balance of 100 − 40 − 30 = 30 that passes, and you can say what the split cost (the rejected 60, though 100 was available in total).",
+    "hint": "Store the per-replica share alongside the state; the check each replica makes is \"withdrawal ≤ my remaining share\", which is a local rule whose merges can't go negative."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: that deposits can break an upper bound?",
+    "Can you explain the \"only if\" half of Theorem 1 with a partition story, without symbols?",
+    "Which relationship is still fuzzy: adds-only → confluent, or claims/consumes → not confluent?",
+    "Which invariant in a system you know would you now test, and what's your counterexample?",
+    "What will you reopen before the money-transfer card?"
+  ],
+  "revisit": [
+    "cs-5-distributed-systems/eventual-consistency-limits",
+    "cs-7-operating-systems/locks"
+  ],
+  "prereq": [
+    "cs-5-distributed-systems/eventual-consistency-limits"
+  ]
+}

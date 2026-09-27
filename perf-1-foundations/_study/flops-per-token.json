@@ -1,0 +1,59 @@
+{
+  "prime": {
+    "problem": "Before you can say how long a model step takes, you need to know how much work it is. Without a quick count you can't budget a training run, compare a dense model with an MoE, or notice that a chip with more FLOPs won't help decode.",
+    "fits": "Turns the forward-pass card's parameter count into work, and adds the attention card's context-dependent term. The machine half of the course then asks how long that work takes, and whether math is even the bottleneck.",
+    "expect": ["2mkn for a matmul", "2N per token to serve", "6ND for a training run", "attention: 4·S·D per layer", "FLOPs vs FLOP/s"],
+    "goal": "Estimate FLOPs per token and a training run's total from a parameter count, say when the estimate goes wrong, and explain why a FLOP count alone can't predict decode speed."
+  },
+  "attend": [
+    "Why does one token through a matrix cost exactly twice that matrix's parameter count?",
+    "The matmul count comes to 93.5% of 2N. Which parameters are in N but do no multiplications?",
+    "Why does the backward pass cost about twice the forward, and what raises 6N to 8N?",
+    "Attention's q·Kᵀ and scores·V are matmuls too. Why doesn't 2N count them, and at what context do they matter?",
+    "At batch 1 the H100 finishes the math 295× sooner than the weights arrive. Why is that ratio a property of the chip rather than the model?"
+  ],
+  "core": {
+    "must": [
+      "Every multiply is paired with an add → an (m×k)·(k×n) matmul costs 2mkn → one token (m = 1) through a matrix costs 2 × its parameters → a forward pass ≈ 2N FLOPs per token (16.06 GFLOP for Llama-3.1-8B)",
+      "Backward needs gradients for activations and for weights → about 2× the forward → training ≈ 6N per token and 6ND per run (7.23e23 for 8B on ~15T tokens) → recomputing activations adds one more forward → ≈ 8N",
+      "Attention multiplies activations (cached K, V), not parameters → its 4·S·D per layer per token is invisible to 2N → it grows with context: +27% at 8k, 4.3× at 128k, break-even near 8D = 32,768 tokens",
+      "FLOPs are a count, not a time → FLOPs ÷ FLOP/s is only the math floor → at batch 1 reading 16.06 GB takes 295× longer than 16.06 GFLOP of math → the FLOP count says almost nothing about decode speed"
+    ],
+    "elevated": [
+      "For MoE, N means active parameters → DeepSeek-V3 serves at 2 × 37B = 74 GFLOP per token, not 1,342 → but memory must still hold all 671B",
+      "The embedding lookup is a table read → its 525M parameters count in N but cost no FLOPs → why the exact count is 93.5% of 2N"
+    ],
+    "reference": ["the per-matrix FLOP table", "the 40% MFU assumption and the 0.51M H100-hour estimate", "Meta's 1.46M GPU-hours and the 405B check (3.79e25 vs 3.8e25)", "the T/(8D) shortcut's assumptions (F = 4D, plain MHA)"]
+  },
+  "compress": {
+    "prompt": "Close the card and write the napkin in four lines: FLOPs per token to serve, per token to train, per training run, and the correction for long context. Then one sentence on why the count can't give you decode latency.",
+    "checklist": [
+      "2 FLOPs per parameter per token (multiply + add)",
+      "6 per token to train (backward ≈ 2× forward), 8 with full recompute; 6ND per run",
+      "attention adds 4·S·D per layer per token, growing with context",
+      "for MoE use active parameters for FLOPs, total for memory",
+      "FLOPs ÷ FLOP/s is a floor that ignores the bytes, which dominate decode"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why one token through W_gate costs exactly 117.44 MFLOP, and how that one fact becomes the 2N rule for a whole model.", "kind": "concept", "answer": ["W_gate has 4,096 × 14,336 = 58.72M parameters", "each is multiplied once and added once for a one-row input: 2 × 58.72M", "every matrix in the model works the same way, so a forward pass costs about 2 × (all parameters that do matmuls)"]},
+    {"q": "Walk through the estimate of Llama 3.1 8B's pretraining compute and the H100-hours it implies at 40% MFU. What does the gap to Meta's 1.46M hours suggest?", "kind": "mechanism", "answer": ["6 × 8.03e9 × 15e12 ≈ 7.23e23 FLOPs", "÷ (0.40 × 989e12) ÷ 3,600 ≈ 0.51M H100-hours", "if all 1.46M hours were this one run, MFU would be only 13.9%", "the card's unverified guess: the hours cover more than one clean pass, and small models reach lower MFU"]},
+    {"q": "At what context length would you stop trusting 2N for Llama-3.1-8B, and what do you add instead?", "kind": "tradeoff", "answer": ["at 1k it's off by about 3%, at 8k by 27%", "attention equals the matmuls near 8D = 32,768 tokens", "add 32 × 4·S·4096 FLOPs per token (4.29 GFLOP at 8k); in a causal prefill, use about half of that"]},
+    {"q": "DeepSeek-V3 has 671B parameters. What do you budget for FLOPs per token and for memory, and why are they different numbers?", "kind": "tradeoff", "answer": ["FLOPs: 2 × 37B active = 74 GFLOP per token", "memory: all 671B, since any token may route to any expert", "each token uses 8 of 256 routed experts plus 1 shared, so work follows active and storage follows total"]}
+  ],
+  "compare": [
+    {"with": "perf-1-foundations/roofline-intuition", "q": "FLOP counting vs the roofline: what does the roofline add, which design choice in it fixes the FLOPs-only estimate, and where does each one fail?", "answer": ["FLOP counting measures work; the roofline also counts bytes and takes the max of the two times", "comparing intensity with the chip's ridge tells you which resource is the limit", "FLOPs-only says a decode step takes 0.016 ms; the floor is 4.79 ms (about 300× off)", "the roofline still ignores caches, launch overhead and imperfect overlap"]},
+    {"with": "perf-2-scaling-book-inference/step-time", "q": "2N per token vs the step-time formula: when is FLOPs ÷ FLOP/s a good estimate of a decode step, and when is it useless?", "answer": ["step ≈ KV reads + max(weight reads, 2·B·N ÷ C)", "the FLOP term only wins once the batch passes the critical batch size (≈ 295 on an H100 in BF16), or in prefill", "at small batch the weight-read term wins and the FLOP count is irrelevant to latency"]}
+  ],
+  "predict": {"q": "Prefill one 131,072-token prompt through Llama-3.1-8B. Before computing: is the average compute per prompt token closer to 2N, to 5.3× 2N (the card's 128k row), or somewhere between?", "answer": "In between, about 3.1× 2N. With the causal mask, token t only attends to t earlier tokens, so the prompt averages half the context: attention adds 68.72 ÷ 2 = 34.36 GFLOP per token on top of 16.06, giving about 50.4 GFLOP (computed). The 128k row is the cost of one decode token at the end of that context."},
+  "apply": {"task": "By hand, fill a table for Llama-3.1-8B at contexts 1,024, 8,192, 32,768 and 131,072: attention FLOPs per token (32 × 4·S·4,096), total per token with 2N = 16.06 GFLOP, and attention's share of the total. Then set CONTEXT = 131072 in labs/flops-per-token.py to check your last row.", "done": "Attention 0.54 / 4.29 / 17.18 / 68.72 GFLOP; totals 16.60 / 20.36 / 33.24 / 84.78 GFLOP; attention's share of the total 3.2% / 21.1% / 51.7% / 81.1% (computed).", "hint": "Share of the total isn't the card's 'relative to 2N' column: divide attention by (2N + attention), not by 2N."},
+  "reflect": [
+    "Which prediction did you get wrong: the causal halving, or where the 128k row applies?",
+    "Could you explain why the backward pass costs twice the forward without just quoting 6N?",
+    "Which relationship is still fuzzy: context → attention FLOPs, or FLOPs → time?",
+    "Did you mix up 'relative to 2N' and 'share of the total' in the table? That's the same slip a benchmark report can make.",
+    "What will you reopen before the GPU card: the 2mkn rule, or the 'same FLOPs, different hardware' table?"
+  ],
+  "revisit": ["perf-1-foundations/transformer-forward", "perf-1-foundations/attention"],
+  "prereq": ["perf-1-foundations/transformer-forward"]
+}

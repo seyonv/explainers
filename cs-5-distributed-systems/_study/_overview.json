@@ -1,0 +1,130 @@
+{
+  "prime": {
+    "problem": "The image-resize service needs about 1K cores, so it can't live on one machine. Once it spans machines, parts fail on their own, the network answers with silence, and replicas disagree. Twenty cards each handle one piece of that; without a map they read as twenty separate rules.",
+    "fits": "This is the course map. It builds on cs-4's requirements and SLO arithmetic (the 99.9% target and the 500 ms p99 budget) and ties the four parts (the reality, the network, consistency, scaling data) with one question: where must replicas coordinate, and what does each coordinated write cost?",
+    "expect": [
+      "<code>P(all down) = c + (1 − c)·p<sup>N</sup></code>",
+      "a coordinated write waits ≥ one majority round trip",
+      "a timeout is a guess, so retries must be idempotent",
+      "coordinate only the rules a merge can break",
+      "p99 and yield, not mean and uptime"
+    ],
+    "goal": "Draw the whole course as one causal map, from \"machines fail in parts\" to \"coordinate only where a merge can break a rule\", and say which card settles which design decision and with which number."
+  },
+  "attend": [
+    "In <code>c + (1 − c)·p<sup>N</sup></code>, which term does adding replicas shrink, and which term sets the floor that no N gets under?",
+    "Why does a five-node Raft group in East US wait 69 ms per commit, when its fastest follower is only 8 ms away?",
+    "The decision table pairs each question with one number. Which rows are about <i>failure</i>, which about <i>waiting</i>, and which about <i>moving data</i>?",
+    "Which rules does the overview say need coordination (withdrawals, chosen usernames, deletes), and what makes deposits and foreign-key inserts safe without it?",
+    "Where does the overview say this whole course stops applying?"
+  ],
+  "core": {
+    "must": [
+      "Work too big for one box → spread over machines → parts fail independently of each other and the network drops or delays messages → a caller's timeout can't tell lost request, crash, pause or lost reply apart → every retry must be safe to repeat",
+      "Replicas share power, code and config → a shared event c takes them all out at once → replication shrinks only the p<sup>N</sup> term → past two or three replicas, the next dollar goes to shrinking c (canaries, separate zones)",
+      "A write that other replicas must see → waits at least one round trip to a majority → 8 ms nearby, 69–162 ms across continents, and refuses during a partition → coordinate only the (rule, operation) pairs whose merge can break the rule (the I-confluence test)",
+      "Latency has a long tail and fan-out multiplies it → the mean hides the slow 1% that fan-out makes everyone's problem → judge a service by p99 and yield, and shed load early with backpressure instead of letting queues grow"
+    ],
+    "elevated": [
+      "Majority quorums of ⌊n/2⌋ + 1 → any two majorities share a server → that one overlap is what makes Raft elections, ZooKeeper and w + r > n reads safe, and why an even n buys nothing"
+    ],
+    "reference": [
+      "the Azure RTT table (8, 69, 83, 162 ms) and the chart's log-scale bar rule",
+      "the per-card headline numbers in the decision table (40 boxes, 592 ms, 19.35%, 64 attempts…)",
+      "the reading list: DDIA chapters 5, 6, 8, 9, 11–12, the Raft paper, Bailis et al."
+    ]
+  },
+  "compress": {
+    "prompt": "Close the page and draw the course's causal map from memory: start at \"too big for one box\", branch into <i>what fails</i> (parts, network, shared causes), <i>what a replica may decide alone</i> (merges that keep every rule) and <i>what agreement costs</i> (a majority round trip, refusal in a partition). Hang all 20 cards on it, with one number on each branch.",
+    "checklist": [
+      "partial failure and silent networks make every timeout a guess → retries must be idempotent",
+      "replication shrinks only the independent term; the shared cause c is the floor",
+      "a coordinated write pays at least one majority round trip and refuses in a partition",
+      "I-confluence decides which rules need coordination; everything else stays local",
+      "majorities overlap, which is why quorums and Raft are safe",
+      "p99, yield and backpressure, not mean, uptime and unbounded queues"
+    ]
+  },
+  "retrieve": [
+    {
+      "q": "Explain, as the overview does in one breath, why \"replicate for availability, coordinate only where a merge can break a rule\" is the course's whole design stance. What does each half buy and cost?",
+      "kind": "concept",
+      "answer": [
+        "replication buys availability down to the floor c, not below it",
+        "coordination buys correctness at ≥ 1 majority round trip per write, and refusal during a partition",
+        "so coordinate only the rules a merge can break (withdrawals, chosen names, deletes); deposits, counters and FK inserts stay local"
+      ]
+    },
+    {
+      "q": "Walk a single usage-billing write from the client to durable storage, naming at each step which card's mechanism protects it: the request's path, the timeout, the retry, the dedup and where it is finally stored.",
+      "kind": "mechanism",
+      "answer": [
+        "DNS name → load balancer → one of the API servers (path of a request)",
+        "timeout 2d + r; silence could be any of six cases (unreliable network, delay and timeouts)",
+        "retry with an idempotency key and jittered backoff at one layer (idempotency and retries)",
+        "aggregated locally, batched to an eventually consistent store, since usage counts merge safely (consistency per subsystem, I-confluence)"
+      ]
+    },
+    {
+      "q": "A team wants to put its 5-replica group across East US, West US, West Europe and Japan \"for safety\". Using the overview's two formulas, what does it gain and what does every write pay?",
+      "kind": "tradeoff",
+      "answer": [
+        "gain: separate regions shrink the shared cause c (power, zone), which is the term that actually limits P(all down)",
+        "cost: a commit waits for the 2nd-fastest follower's RTT, 69 ms from East US, 13.8% of the 500 ms p99 budget",
+        "a group inside one region pays under 10 ms but shares more (a smaller drop in c)"
+      ]
+    },
+    {
+      "q": "The overview's \"what the wrong choice costs\" chart puts a FIN crash signal (≈ 17,000×) and a Raft election (≈ 3,300×) at the top. What do those two swaps have in common?",
+      "kind": "concept",
+      "answer": [
+        "both replace waiting on a guess (a 20 s timeout, a human paged for 15 min) with a positive signal or an automatic majority decision",
+        "that shrinks MTTR, which is what availability budgets are spent on",
+        "replicas added past the third don't appear at all: with a 1% shared event they buy 1.0×"
+      ]
+    }
+  ],
+  "compare": [
+    {
+      "with": "cs-4-design-foundations/_overview",
+      "q": "cs-4's map sizes a design with Little's law and multiplied availabilities on one machine's worth of reasoning; this map adds partial failure and coordination. What does going distributed add to cs-4's arithmetic, and which cs-4 assumption breaks first?",
+      "answer": [
+        "cs-4 multiplies availabilities assuming independent failures; this course shows the shared term c dominating",
+        "cs-4's latency is service time plus queueing; here every coordinated write adds a network round trip that distance fixes",
+        "new failure mode: a caller can't tell whether a remote call happened, so retries and idempotency become design requirements"
+      ]
+    },
+    {
+      "with": "cs-6-data-systems/_overview",
+      "q": "cs-6 is about touching less data on one node; this course is about agreeing across nodes. Where do the two meet in the image service, and which course's rule decides each piece?",
+      "answer": [
+        "usage records: batched and aggregated (cs-6's MapReduce and log-structured storage) into an eventually consistent store (cs-5's per-subsystem choice)",
+        "compaction and tombstones appear in both: cs-6 explains the LSM mechanism, cs-5 its cost for deletion and erasure",
+        "cs-5 decides <i>where</i> data lives and who may write it; cs-6 decides how fast one node can read and write it"
+      ]
+    }
+  ],
+  "predict": {
+    "q": "A startup runs the image service on one 64-core machine for its first 500 requests/s. Which of this course's mechanisms does it still need on day one, and which can it skip? Commit before revealing.",
+    "answer": "It still needs timeouts and idempotent retries: its clients talk to it over a network, so the six silent cases and the lost-reply double charge still happen. It can skip almost everything else: no replicas to coordinate, no quorums, no Raft, no consistent hashing, and a local ACID transaction instead of a request log. The overview says so directly: if the work fits on one machine, most of this course doesn't apply. The price is that one box down is 100% down, which is fine only while the availability target allows it."
+  },
+  "apply": {
+    "task": "Design review: the image service adds <i>user handles</i> (chosen by users), a <i>likes counter</i> per image and a <i>prepaid credit balance</i> that resizes spend. For each of the three, decide coordinate or not using the I-confluence test, name the mechanism (local merge, single owner or consensus group, log + dedup) and give the per-write cost. Assume the coordinating group is 3 nodes with the leader in East US and followers at 8 ms and 69 ms.",
+    "done": "You have three rows (rule, operation, I-confluent?, mechanism, cost per write) and can say why the 3-node group commits in 8 ms while the course's 5-node example needs 69 ms.",
+    "hint": "Handles: user-chosen unique values fail the test → one owner or consensus per handle. Likes: increments merge by addition → local, 0 ms of coordination. Credit spend: decrements with balance ≥ 0 fail → route each account's debits through one owner (log + request id). A 3-node majority is 2, so the leader needs one ack: the fastest follower, 8 ms. Five nodes need two acks, so the 2nd-fastest RTT, 69 ms."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: which mechanisms a one-machine service still needs?",
+    "Can you explain, without the formula in front of you, why a 4th and 5th replica buy almost nothing when c = 1%?",
+    "Which relationship is still fuzzy: timeout → retry → idempotency, or merge → invariant → coordination?",
+    "Which card's number in the decision table could you not reconstruct from its mechanism?",
+    "Which part of the map will you reopen first when you meet a real design question?"
+  ],
+  "revisit": [
+    "cs-4-design-foundations/slo-arithmetic",
+    "cs-4-design-foundations/back-of-envelope"
+  ],
+  "prereq": [
+    "cs-4-design-foundations/slo-arithmetic"
+  ]
+}

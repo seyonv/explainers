@@ -1,0 +1,58 @@
+{
+  "prime": {
+    "problem": "The grammar decides which tokens are allowed; the sampling settings decide which allowed token is picked. Leave the chat defaults on and a top-p cut can remove the only valid token, a repetition penalty can fight keys that must repeat, and temperature can turn a right total into a wrong one.",
+    "fits": "Second card of part 4. Token masking gave the mask formula; this card puts the other knobs into the same formula and asks which runs first. It builds on top-p from the nucleus-sampling card.",
+    "expect": ["<code>p′ ∝ m · k · exp((z − π·s)/T)</code>", "filter-before-mask vs mask-before-filter", "temperature for extraction", "presence/repetition penalties vs repeated keys", "best-of-N with a validator"],
+    "goal": "Choose sampling settings for a constrained extraction, and predict what each setting does when it runs before or after the mask."
+  },
+  "attend": [
+    "Multiplication is order-free, so why does it matter whether top-p runs before or after the mask?",
+    "Why is min-p safer than top-p when the model is confident, and in the <code>}</code> example why does min-p 0.05 still cut it?",
+    "What does llama.cpp do when its sampler chain picks a token the grammar rejects?",
+    "Why did turning the presence penalty off make the same answer 61 tokens instead of 38?",
+    "When is temperature 0 the wrong choice even for structured output?"
+  ],
+  "core": {
+    "must": [
+      "Top-p/top-k/min-p keep tokens by probability; the mask keeps them by validity → if the filter runs first it can drop the only valid token (<code>}</code> at 2%) → nothing valid is left → a stall or error → mask first, or check and resample (llama.cpp)",
+      "Temperature reshapes the choice among allowed tokens → the grammar keeps every total valid, but T decides how often a wrong one is sampled (60 goes from 25% at T = 1 to 18.3% at 0.7 to 0.6% at 0.2) → use T = 0 for extraction",
+      "A penalty scores down tokens already written → JSON must repeat keys, braces and quotes → without a grammar that pushes toward wrong keys; with one, it only moves what the grammar leaves open (whitespace, values) → turn penalties off for structured output",
+      "Best-of-N with a validator samples several answers and keeps one that passes a real check → the only setting that can catch 60 ≠ 54 → but it costs N calls and needs a checker you can write"
+    ],
+    "elevated": [
+      "qwen3.5:4b ships presence_penalty 1.5 → it discourages repeated newline and space tokens → the course's constrained answers came out compact (38 tokens) partly because of the penalty → part of the \"2× faster\" story is a sampling default"
+    ],
+    "reference": ["llama.cpp's default sampler order (penalties → top-k → typical → top-p → min-p → temperature)", "llama.cpp defaults (top_k 40, top_p 0.95, min_p 0.05, penalty window 64)", "qwen3.5:4b's Modelfile defaults", "the penalty formula's exact code"]
+  },
+  "compress": {
+    "prompt": "From memory, write the one-line formula with m, k, the penalty and T, and under each symbol one sentence on what goes wrong if it's set badly for extraction.",
+    "checklist": [
+      "m: the grammar mask decides validity",
+      "k: top-p/top-k/min-p decide by probability, and can remove the only valid token if applied first",
+      "the penalty fights keys that must repeat; turn it off",
+      "T: temperature decides how often a valid-but-wrong value is picked; 0 for extraction",
+      "the order of operations is engine-specific: mask first, or check and resample",
+      "best-of-N plus a validator is the only knob that catches wrong values, at N× the cost"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why the grammar and the sampler are separate knobs, and what each one can and can't guarantee.", "kind": "concept", "answer": ["the grammar sets m(t): which tokens are allowed; it guarantees validity", "the sampler picks among what survives, by probability; it decides values", "neither guarantees correctness; only a check against the truth does"]},
+    {"q": "Walk through the <code>}</code> example with top-p 0.9 applied before the mask, then with the mask applied first.", "kind": "mechanism", "answer": ["top-p first: running total 50 → 78 → 88 → 94 ≥ 90, so 4 tokens are kept and <code>}</code> (2%) is cut", "then the mask removes all 4, leaving nothing valid", "mask first: only <code>}</code> survives with 2%, rescaled to 100%, and it survives any cut after"]},
+    {"q": "Set up sampling for two fields in one schema: an order extraction and a free-text gift note. What do you pick for each, and what do you give up?", "kind": "tradeoff", "answer": ["extraction: T = 0, penalties off, top-p/top-k off (or min-p); you give up variety, and a systematically wrong top guess is wrong every time", "gift note: T 0.2–0.7 for variety, min-p over top-p", "one request has one temperature in most APIs, so split into two calls or accept a compromise"]}
+  ],
+  "compare": [
+    {"with": "nucleus-sampling/nucleus-sampling", "q": "Top-p was designed to cut a junk tail from free text. What changes about that design when a grammar sits next to it, and when is top-p still the right tool?", "answer": ["in free text the tail is junk; under a grammar the tail can hold the only valid token", "top-p's cut adapts to confidence, which is why it removes a 2% token when the top one is 50%", "it's still right for prose fields sampled for variety, applied after the mask"]},
+    {"with": "structured-outputs/valid-not-correct", "q": "The valid-not-correct card fixed wrong totals by computing them in code. This card offers temperature 0 and best-of-N. Which fix fits which situation?", "answer": ["compute in code when a rule exists: deterministic, free, 30/30", "temperature 0 when the model's top guess is right on your inputs (3/3 here), and it's free, but a wrong top guess is wrong every time", "best-of-N with a validator when there's a check but no rule to compute from; it costs N calls"]}
+  ],
+  "predict": {"q": "qwen3.5:4b ships top_k 20 and top_p 0.95. On an engine that applies these <i>before</i> the mask and does not retry, would the card's <code>}</code> example (<code>,</code> 50%, <code>,\"</code> 28%, <code>,\\n</code> 10%, <code>},</code> 6%, <code>]</code> 4%, <code>}</code> 2%) stall? Commit before revealing.", "answer": "Yes. top_k 20 keeps all six tokens, but top-p 0.95 stops at <code>]</code> (running total 98%) and cuts <code>}</code>, the only valid token. Such an engine stalls or errors. llama.cpp doesn't, because it checks its pick against the grammar and resamples with the mask first, and Ollama's MLX runner masks before truncating. That's why the cookbook's advice for other engines is to turn top-p/top-k off with strict schemas."},
+  "apply": {"task": "Use the card's illustrative distribution at the <code>}</code> step. For each setting (top-k 4, top-k 6, top-p 0.95, top-p 0.99, min-p 0.03, min-p 0.05) applied before the mask, decide whether <code>}</code> survives. Then compute the chance of each total (54, 60, 66 at 70/25/5%) at T = 0.5, and the chance that best-of-3 at T = 0.7 includes at least one correct total, using the course's 22/30.", "done": "You have six survive/cut verdicts, three percentages that sum to 100 at T = 0.5, and one best-of-3 probability, each with the line of arithmetic, written before you open the check.", "hint": "Check, only after trying: top-k 4 cut, top-k 6 kept, top-p 0.95 cut, top-p 0.99 kept, min-p 0.03 kept (threshold 1.5%), min-p 0.05 cut (threshold 2.5%). T = 0.5 squares the probabilities: 0.49, 0.0625, 0.0025, which normalise to 88.3%, 11.3%, 0.5%. Best-of-3: 1 − (8/30)³ ≈ 98.1%, assuming independent runs."},
+  "reflect": [
+    "Which prediction did you get wrong: whether the model's own defaults strand the only valid token?",
+    "What couldn't you explain cleanly: why the order of filters matters when the formula is a product?",
+    "Which relationship is still fuzzy: temperature → wrong-but-valid values, or penalty → layout and length?",
+    "Which sampling defaults are on in the stack you use today, and have you checked them under a grammar?",
+    "What will you look for in the coverage card: whether an engine that accepts your schema actually enforces it?"
+  ],
+  "revisit": ["structured-outputs/token-masking", "structured-outputs/valid-not-correct", "nucleus-sampling/nucleus-sampling"],
+  "prereq": ["structured-outputs/token-masking"]
+}

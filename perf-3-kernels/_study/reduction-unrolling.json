@@ -1,0 +1,62 @@
+{
+  "prime": {
+    "problem": "After fixing divergence and bank conflicts, the reduction still uses only 11% of the G80's bandwidth. Half the threads never add anything, most tree steps are nearly empty, and the loop's bookkeeping costs more than the adds. Unless the algorithm changes shape, polishing the code only makes an idle tree cheaper.",
+    "fits": "Part II of Harris's reduction. Part I fixed which thread adds which pair; this card changes how much each thread does. It reuses occupancy's lesson (more independent work per thread hides latency) and the first kernel's grid-stride loop, and ends with the modern warp-shuffle rewrite.",
+    "expect": ["first add during load", "instruction-bound diagnosis", "warp unrolling and template unrolling", "Brent's theorem and algorithm cascading", "<code>__shfl_down_sync</code> vs the <code>volatile</code> trick"],
+    "goal": "Explain why cascading beats unrolling, compute Brent's cost for a given thread count, and write the last warp of a reduction safely on Volta and later."
+  },
+  "attend": [
+    "At 17 GB/s kernel 4 is far below the 86.4 GB/s peak, yet the slides call it instruction-bound. What evidence supports that, and what does it rule out?",
+    "Why does unrolling the last warp save work in <i>every</i> warp, not only the last one?",
+    "What does \"cost = processors × time\" count that plain time doesn't, and why does P = N make the tree cost-inefficient?",
+    "In kernel 7, how does <code>i += gridSize</code> keep a warp's loads coalesced while each thread sums hundreds of elements?",
+    "Why is the slides' <code>volatile</code> warp reduction unsafe on a T4 or H100, and what replaces it?"
+  ],
+  "core": {
+    "must": [
+      "Tree over N with one thread per element → log2 N steps but cost N·log2 N (22 N for 2^22) → Brent: use ~N/log2 N threads, each summing ~log2 N elements first → cost falls toward 2N → same sum, about 11× less machine time",
+      "Each thread first sums many elements serially (cascading) → the tree becomes a short tail on a mostly busy kernel → more independent loads per thread hide latency (Volkov) and fewer blocks shrink the recursive launches → kernel 7 reaches 72.5% of peak",
+      "Once memory is not saturated and intensity is tiny, the bottleneck is instructions (address math, loop counters, barriers) → unrolling removes them (1.8 × 1.41 = 2.54×) → but it only makes an idle tree cheaper, which is why the algorithmic changes gave 11.84× and should come first",
+      "Since Volta, warp lanes are not guaranteed to run in lock-step → lanes communicating through shared memory without sync can read stale values → use <code>__shfl_down_sync</code> (register exchange) or put <code>__syncwarp()</code> between every read and write"
+    ],
+    "elevated": [
+      "Block size as a template parameter → every <code>if (blockSize &gt;= …)</code> is resolved at compile time → the unrolled tree has no runtime branches → libraries still template on block size for the same reason"
+    ],
+    "reference": [
+      "the kernel-by-kernel times and GB/s (0.965, 0.536, 0.381, 0.268 ms)",
+      "the <code>switch</code> over 10 block sizes that picks a template instantiation",
+      "the slides' best G80 configuration (64–256 blocks of 128 threads)",
+      "source quirks: reduce5/reduce6 naming, <code>warpReduce</code> without the template argument, the 512-thread G80 limit"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, write the reduction ladder as two columns, \"algorithmic\" and \"code\", with each kernel's change in one line and the product of each column. Then add one line on why the algorithmic column should be done first.",
+    "checklist": [
+      "algorithmic: addressing (kernels 2, 3), first add during load (4), cascading (7): 11.84×",
+      "code: unroll last warp (5), full template unroll (6): 2.54×",
+      "algorithm decides how much work and idleness there is; unrolling only cheapens each step",
+      "Brent: O(N / log N) threads doing O(log N) serial adds keeps cost O(N)",
+      "on Volta+, the last warp uses shuffles or <code>__syncwarp</code>, not <code>volatile</code>"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why Brent's theorem says to use fewer threads than elements, when fewer threads means each one takes longer.", "kind": "concept", "answer": ["with P = N the tree has most processors idle in most steps, so machine time (cost) is N·log N", "fewer threads doing serial adds first keep every processor busy", "total time barely grows (22 → 44 steps in the model) but cost drops from 22 N to 2 N"]},
+    {"q": "Walk through kernel 7 for one block: what each thread does in the <code>while</code> loop, why the loop stride is <code>blockSize·2·gridDim.x</code>, and what happens after it.", "kind": "mechanism", "answer": ["each thread adds <code>g_idata[i] + g_idata[i + blockSize]</code> into a register-backed partial sum, then jumps a whole grid ahead", "the stride keeps neighbouring threads on neighbouring addresses every iteration, so loads stay coalesced", "then one barrier and kernel 6's unrolled tree, ending in the warp reduction", "at 2^22 ints and 64 blocks, 512 serial adds per thread before a 7-step tree"]},
+    {"q": "Your RMSNorm kernel reduces 4,096 values per token. Compare 4,096 threads with a pure tree against 128 threads that each sum 32 values first: work, steps and Brent cost.", "kind": "tradeoff", "answer": ["4,096 threads: 12 tree steps, cost 4,096 × 12 = 49,152 = 12 N", "128 threads: 31 serial adds + 7 tree steps = 38 steps, cost 128 × 38 = 4,864 ≈ 1.19 N", "the cascaded version is ~10× cheaper in machine time and uses one block, but its latency is longer in steps; on a GPU the idle threads in the first version would be wasted slots other rows could use"]}
+  ],
+  "compare": [
+    {"with": "perf-3-kernels/occupancy", "q": "Kernel 7 and Volkov's matmul both win by giving each thread more work. What does \"more work per thread\" hide or save in each case, and what limits how far you can push it?", "answer": ["reduction: many independent loads in flight per thread hide DRAM latency, and fewer blocks cut launch levels", "matmul: register reuse cuts shared-memory reads per FMA", "limits: reduction needs enough threads to cover ~100 KB in flight and every SM busy; matmul runs out of registers (255 per thread) and occupancy"]},
+    {"with": "perf-3-kernels/fusion-cuda-graphs", "q": "Harris uses kernel launches as the global sync; the fusion card treats launches as overhead to remove. When is a multi-launch reduction the right design, and when would you fuse the reduction into a neighbouring kernel instead?", "answer": ["multi-launch fits one huge array: the launch is the only grid-wide barrier, and cascading keeps the number of levels small", "fusion fits many small rows (RMSNorm, softmax): each row fits in one block, so no global sync is needed", "on an H100 a 16.8 MB sum takes ~5 µs of DRAM time, so a few µs per launch is a large share"]}
+  ],
+  "predict": {"q": "You rewrite kernel 5's last warp with <code>__shfl_down_sync</code> but skip cascading (each thread still adds just two elements). Commit: on a modern GPU, do you expect a speed-up near kernel 7's, near kernel 5's, or somewhere else, and why?", "answer": "Near kernel 5's, not kernel 7's. Shuffles make the last 5 steps correct and a little cheaper (registers instead of shared memory), but they touch only the tail of each block. The dominant waste, a mostly idle tree after only two elements per thread and many blocks and launches, is untouched. Only cascading (kernel 7's grid-stride loop) removes that, which is why the slides' algorithmic column (11.84×) dwarfs the code column (2.54×)."},
+  "apply": {"task": "Run <code>labs/reduction-cost.py</code> and reproduce Brent's table for 2^22. Then add N = 4,096 (one RMSNorm row) with P = 4,096, 1,024, 128 and 32, computing serial adds, tree steps, total steps and cost ÷ N for each. Finally, in <code>labs/reduction.ipynb</code> on a T4, compare the slides' kernel 5 (rewritten with <code>__syncwarp</code>) with the shuffle kernel and <code>cub::DeviceReduce::Sum</code>.", "done": "Your table shows P = 4,096 costing 12 N and P = 128 costing about 1.19 N (38 steps), you've picked the P you'd use for a 4,096-wide row and said why, and you have the T4's GB/s for the three kernels.", "hint": "Steps = (N/P − 1) serial adds + ceil(log2 P) tree steps; cost = P × steps. P = 32 gives 127 + 5 = 132 steps, cost ≈ 1.03 N, but only one warp works on the row."},
+  "reflect": [
+    "Which prediction did you get wrong: how much shuffles alone would buy?",
+    "Could you explain why unrolling is \"polish\" without quoting 11.84× vs 2.54×?",
+    "Which relationship is still fuzzy: serial work per thread → cost, or serial work per thread → latency hiding?",
+    "Would you have spotted the <code>volatile</code> trick as unsafe if the card hadn't flagged it?",
+    "What will you revisit before the matmul cards: the instruction-bound diagnosis?"
+  ],
+  "revisit": ["perf-3-kernels/reduction-divergence", "perf-3-kernels/occupancy", "perf-3-kernels/first-kernel"],
+  "prereq": ["perf-3-kernels/reduction-divergence"]
+}

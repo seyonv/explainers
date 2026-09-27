@@ -1,0 +1,113 @@
+{
+  "prime": {
+    "problem": "At batch 1 an H100 does 0.12 µs of math in a 35 µs step on one Llama MLP matrix: 0.3% of the chip you're paying for. You need to know how many tokens a step must carry before the linear layers stop waiting on memory, and what changes that number.",
+    "fits": "Fourth card. It applies the roofline's matmul intensity ≈ B to every linear layer of a Transformer, names the threshold B<sub>crit</sub>, and adds the precision factor β. The attention card and the step-time card both lean on it.",
+    "expect": ["B<sub>crit</sub> = C / W<sub>hbm</sub>", "β: bits per weight ÷ bits per activation", "batch means tokens per step, per replica", "prefill vs decode against B<sub>crit</sub>", "MoE multiplies it by E/k"],
+    "goal": "Derive B<sub>crit</sub> from the matmul bytes, compute it for a chip and a precision, and explain why decode rarely reaches it even though prefill always does."
+  },
+  "attend": [
+    "Which term of 2BD + 2DF + 2BF dominates in decode, and why does that make intensity equal to B?",
+    "Why is <i>batch</i> counted in tokens per replica rather than in sequences, and what does that mean for prefill?",
+    "Why do int8 weights with bf16 math halve B<sub>crit</sub>, while int8 × int8 leaves it unchanged?",
+    "Why doesn't a bigger GPU (H100 → B200) fix batch-1 utilisation?",
+    "If B<sub>crit</sub> is only about 300, what stops a decode server from simply running 300 users?"
+  ],
+  "core": {
+    "must": [
+      "Each weight matrix is read once per step whatever B is → bytes ≈ 2DF while FLOPs = 2BDF → intensity ≈ B → the layer is compute-bound iff B > C/W<sub>hbm</sub> = B<sub>crit</sub> (240 v5e, 295 H100)",
+      "Below B<sub>crit</sub> extra tokens ride on the same weight read → step time barely moves (35.1 → 38.6 µs from B = 1 to 325 on one Llama MLP matrix) → throughput rises almost free; past it each token costs its own FLOPs → throughput stops improving while latency rises",
+      "Narrower weights with the same math precision cut bytes but not FLOPs → B<sub>crit</sub> scales by β (int8/fp8 weights + bf16 math → ½: 120 v5e, ≈ 148 H100) → faster narrow math alone doubles the ridge (591) → doing both cancels",
+      "Prefill puts every prompt token in one step → a 1,000-token prompt is B = 1,000 > 295 → always compute-bound; decode gets one token per sequence → needs ~300 concurrent sequences → each needs its own KV cache → HBM usually runs out first"
+    ],
+    "elevated": [
+      "MoE reads E experts' weights but each token only does k experts' FLOPs → B<sub>crit</sub> × E/k → 1,920 tokens for E = 16, k = 2 on v5e"
+    ],
+    "reference": [
+      "the Llama MLP utilisation table (0.3% at B = 1 … 100% at 512)",
+      "exact crossings 325.4 (H100) and 259.8 (v5e) with full bytes",
+      "B200 281 and the fp8 590/562 ridges",
+      "the book's two H100 figures, about 280 and 295"
+    ]
+  },
+  "compress": {
+    "prompt": "Derive B<sub>crit</sub> from scratch in four lines: FLOPs, bytes, the approximation, the inequality. Then write one line each for how int8 weights, fp8 × fp8 and MoE change it, and one line on why decode struggles to reach it.",
+    "checklist": [
+      "FLOPs 2BDF, bytes 2BD + 2DF + 2BF ≈ 2DF when B ≪ D, F",
+      "intensity ≈ B, so compute-bound iff B > C/W",
+      "weight-only int8/fp8 halves it; narrow math on narrow weights leaves it",
+      "MoE multiplies it by E/k",
+      "decode needs ~300 sequences, each with a KV cache, so memory caps the batch first"
+    ]
+  },
+  "retrieve": [
+    {
+      "q": "Explain why B<sub>crit</sub> depends only on the chip and the precision, not on the model's width D or F (to first order).",
+      "kind": "concept",
+      "answer": [
+        "D and F appear in both FLOPs (2BDF) and bytes (≈ 2DF), so they cancel",
+        "what's left is B against the chip's FLOPs per byte",
+        "they come back only in the exact-bytes correction, which pushes the crossover up for small matrices (≈ 697 at D = F = 1024 on H100)"
+      ]
+    },
+    {
+      "q": "Walk the B = 1 row for bf16[1, 4096] × bf16[4096, 14336] on an H100: bytes, FLOPs, both times and the utilisation.",
+      "kind": "mechanism",
+      "answer": [
+        "FLOPs 2·4096·14336 = 1.174e8; bytes ≈ 1.175e8, 99.97% of it weights",
+        "T<sub>math</sub> = 0.12 µs; T<sub>comms</sub> = 35.07 µs",
+        "utilisation = 0.12 / 35.07 ≈ 0.3%, about 1/295"
+      ]
+    },
+    {
+      "q": "A team switches from bf16 to fp8 matmuls on H100 with bf16 weights still in memory, expecting the decode step to speed up. What happens to B<sub>crit</sub> and to the batch-1 step, and what should they have done?",
+      "kind": "tradeoff",
+      "answer": [
+        "faster math on the same bytes doubles the ridge to ≈ 591",
+        "batch-1 decode is bound by reading the weights, so the step doesn't change",
+        "quantize the weights too (fp8 × fp8): bytes halve, the step halves, and B<sub>crit</sub> returns to ≈ 295; weight-only fp8 lowers it to ≈ 148"
+      ]
+    }
+  ],
+  "compare": [
+    {
+      "with": "perf-2-scaling-book-inference/attention-intensity",
+      "q": "Linear layers have a B<sub>crit</sub>; decode attention has none. What is fundamentally different, and what lever works on attention instead?",
+      "answer": [
+        "linear layers share one weight matrix across all tokens in the step; attention reads a separate KV cache per sequence",
+        "so batching raises linear intensity toward B<sub>crit</sub> but leaves attention near 1 (or G with GQA)",
+        "for attention the lever is fewer KV bytes (GQA, FP8 KV, paging), not a bigger batch"
+      ]
+    },
+    {
+      "with": "perf-6-scaling-out/moe-basics",
+      "q": "For a mixture of experts, B<sub>crit</sub> multiplies by E/k. Which design choice of MoE causes that, and what does it mean for how many users an MoE server needs before its FLOPs stop idling?",
+      "answer": [
+        "each token uses only k of E experts, so FLOPs scale with k while weight bytes read at large batch scale with E",
+        "the reuse per weight byte drops by E/k, so the batch must grow by E/k (1,920 on v5e for E = 16, k = 2; 3,840 for DeepSeek's 256/8 with int8 weights)",
+        "an MoE server needs far more concurrent tokens, which is why expert parallelism and large deployments go with MoE"
+      ]
+    }
+  ],
+  "predict": {
+    "q": "Move Llama-3.1-8B to an H200 (141 GB, 4.8 TB/s, 9.9e14 bf16 FLOP/s) at 2k context. Commit: what is B<sub>crit</sub> for bf16, how many 2k sequences fit, and does decode finally reach compute-bound on the MLP?",
+    "answer": "B<sub>crit</sub> = 9.9e14 / 4.8e12 ≈ 206, lower than H100's 295 because bandwidth grew and FLOPs didn't. Free HBM 141 − 16.06 = 124.9 GB fits ⌊124.9 / 0.268⌋ = 465 sequences of 2k. 465 > 206, so yes: the step-time card shows the MLP math (7.55 ms) overtaking the weight read (3.35 ms) at that batch."
+  },
+  "apply": {
+    "task": "Recompute the card's worked matrix (bf16[B, 4096] × bf16[4096, 14336]) for an H200 at B = 64 using exact bytes: FLOPs, bytes, T<sub>math</sub>, T<sub>comms</sub> and utilisation. Then fill the β table's first two rows for the H200 (bf16 × bf16, and int8/fp8 weights with bf16 math).",
+    "done": "You get T<sub>math</sub> ≈ 7.6 µs, T<sub>comms</sub> ≈ 25.0 µs, utilisation ≈ 30% (memory-bound), and B<sub>crit</sub> ≈ 206 and ≈ 103 for the two rows.",
+    "hint": "FLOPs = 2·64·4096·14336 = 7.516e9; bytes = 2(64·4096 + 4096·14336 + 64·14336) = 1.198e8. Divide by 9.9e14 and 4.8e12."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: the H200's B<sub>crit</sub>, or whether it reaches it?",
+    "Can you explain why more bandwidth lowers B<sub>crit</sub>, without saying <i>the ratio changed</i>?",
+    "Which relationship is still fuzzy: weight precision → β, or batch in tokens → prefill always compute-bound?",
+    "Could you say why decode's limit is memory capacity rather than B<sub>crit</sub> on one H100?",
+    "What will you check on the attention card: why attention gets no B<sub>crit</sub> at all?"
+  ],
+  "revisit": [
+    "perf-2-scaling-book-inference/roofline"
+  ],
+  "prereq": [
+    "perf-2-scaling-book-inference/roofline"
+  ]
+}

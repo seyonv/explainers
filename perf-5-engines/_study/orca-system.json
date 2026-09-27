@@ -1,0 +1,121 @@
+{
+  "prime": {
+    "problem": "Iteration-level scheduling means the scheduler and the GPUs talk every iteration, and requests grow their KV memory one token at a time. Without care, the per-iteration messages stall the CPU on the GPU, and a naive scheduler can deadlock with every running request waiting for memory nobody frees.",
+    "fits": "Second Orca card. Orca I gave the scheduling idea; this one is the engine that runs it across GPUs, the admission rule (Algorithm 1) and the evaluation behind 36.9×. It sets up the scheduler card, where paging replaces Orca's reservation.",
+    "expect": [
+      "control plane (gRPC) vs data plane (NCCL)",
+      "iteration-level FCFS",
+      "reserving max_tokens KV slots per request",
+      "pipelining whole batches without microbatches",
+      "where 36.9× comes from"
+    ],
+    "goal": "Explain why Orca reserves max_tokens up front and what it wastes, compute how many requests that admits, and say what part of 36.9× is scheduling rather than kernels."
+  },
+  "attend": [
+    "Why did sending control messages over NCCL force a CPU–GPU sync every iteration, and why does gRPC avoid it?",
+    "What exact deadlock does reserving max_tokens prevent, and what does the reservation hold that is never used?",
+    "In Algorithm 1, why does a new request that doesn't fit stop the scan instead of letting a younger request try?",
+    "Why can Orca keep n_workers whole batches in the pipeline while FasterTransformer must cut microbatches?",
+    "If §6.1 shows the engines equally fast, where in §6.2's setup does the 36.9× come from?"
+  ],
+  "core": {
+    "must": [
+      "A request's KV grows every token and stays until it finishes → if all running requests need one more slot and none is free, nobody can finish → deadlock → Orca reserves max_tokens (input + max output) at admission → guaranteed completion, but most of the reservation sits empty (24.4% used for an average ShareGPT request at 2,048)",
+      "Control info (request ids, token indices) is needed by the CPU to launch kernels → sent over NCCL it forces a CPU–GPU sync per iteration → Orca sends it over gRPC and keeps NCCL for tensors → the CPU runs ahead (up to 47% faster on 175B)",
+      "§6.1: same fixed batch → the engines tie (kernels aren't the win) → §6.2: random arrivals and lengths → FasterTransformer keeps finished requests, pads and preallocates 2,048 tokens → tiny batches → Orca's batches stay full → 6.81 vs 0.185 req/s at 190 ms/token"
+    ],
+    "elevated": [
+      "Iteration-level FCFS plus a break on the first request that can't reserve → no younger request jumps an older one → fairness, at the cost of head-of-line blocking by one big request"
+    ],
+    "reference": [
+      "Table 1's model shapes (13B–341B) and parallel splits",
+      "the Azure ND96asr A100 v4 setup",
+      "Algorithm 1's paper line numbers",
+      "the 4,608 KiB per-token slot for the 175B model"
+    ]
+  },
+  "compress": {
+    "prompt": "In three or four sentences from memory: how Orca spreads one iteration across workers, what its admission rule is and why, and why its famous number is about scheduling. Then write the B_max formula and fill it in for the running example.",
+    "checklist": [
+      "master sends tokens + control to Worker1; controllers forward control without waiting; only the last worker waits for its GPUs",
+      "control on gRPC (CPU), tensors on NCCL (GPU)",
+      "reserve max_tokens at first schedule; stop the scan if it doesn't fit (FCFS)",
+      "B_max = ⌊n_slots ÷ max_tokens⌋ = ⌊487,823 ÷ 2,048⌋ = 238 on the H100",
+      "36.9× is at one latency point against a request-level baseline, not a kernel speedup"
+    ]
+  },
+  "retrieve": [
+    {
+      "q": "Explain why Orca's max_tokens reservation both makes the scheduler safe and makes it wasteful, with the running example's numbers.",
+      "kind": "concept",
+      "answer": [
+        "safe: every admitted request already owns every slot it could ever need, so it always finishes",
+        "wasteful: an average ShareGPT request uses 499 of its 2,048 slots (24.4%)",
+        "so Orca admits 238 requests where paged allocation fits about 952"
+      ]
+    },
+    {
+      "q": "Walk through one iteration on the Fig 6/7 split (2 workers × 3 GPUs): who sends what to whom, who waits, and what happens to the output tokens.",
+      "kind": "mechanism",
+      "answer": [
+        "the engine master sends Worker1 the tokens plus request ids, token indices and input lengths",
+        "Worker1's GPU threads launch kernels; its controller forwards the control message to Worker2 without waiting",
+        "activations move GPU to GPU over NCCL",
+        "only Worker2 waits for its GPUs, then returns each request's output token to the master"
+      ]
+    },
+    {
+      "q": "A service sets max_tokens = 4,096 to allow long answers, on the H100 example. How many requests can Orca admit, how does that compare to the critical batch of ≈ 295, and what would you change?",
+      "kind": "tradeoff",
+      "answer": [
+        "⌊487,823 ÷ 4,096⌋ = 119 requests",
+        "well below ≈ 295, so decode steps stay memory-bound and throughput is left unused",
+        "allocate KV as tokens arrive (paging) and handle overflow with preemption, as vLLM does"
+      ]
+    }
+  ],
+  "compare": [
+    {
+      "with": "perf-5-engines/scheduler",
+      "q": "Orca reserves the worst case; vLLM V1 admits greedily and preempts. What is fundamentally different about how each handles running out of KV, which choice causes each one's cost, and when would you still prefer reservation?",
+      "answer": [
+        "Orca prevents the shortage at admission; vLLM lets it happen and evicts the latest request, which later recomputes",
+        "reservation costs idle memory (fewer requests admitted); preemption costs recompute and a stalled victim",
+        "reservation is fine when max_tokens is tight and known (in the burst, a 3,072 cap matched vLLM)",
+        "vLLM fails by thrashing when knobs are wrong; Orca fails by admitting too few"
+      ]
+    },
+    {
+      "with": "perf-4-attention-kv/paged-memory",
+      "q": "PagedAttention measured Orca-style systems keeping only 20.4–38.2% of KV memory filled with real tokens. Which part of Orca's design produces exactly that waste, and which PagedAttention mechanism removes it?",
+      "answer": [
+        "the per-request contiguous reservation for max_tokens",
+        "blocks allocated on demand as tokens are generated, mapped through a block table",
+        "waste drops to the last partial block (16 tokens at most per request)"
+      ]
+    }
+  ],
+  "predict": {
+    "q": "Orca's evaluation used synthetic traces where the model never emits &lt;eos&gt;, so every request runs exactly to max_gen_tokens. If real requests stopped early at random, would Orca's reservation waste more or less memory, and would FasterTransformer's disadvantage grow? Commit first.",
+    "answer": "Orca would waste more: it still reserves for the maximum, but real requests use less of it, so a larger share of every reservation stays empty. FasterTransformer's disadvantage grows too, because early finishers keep being computed until the whole batch ends. In the synthetic trace nobody finishes early inside a request's own budget, so the traces flatter the reservation scheme."
+  },
+  "apply": {
+    "task": "Fill in B_max = ⌊n_slots ÷ max_tokens⌋ for Llama-3.1-8B on the H100 (n_slots = 487,823) at max_tokens = 640 (Orca's trace maximum), 1,024 and 4,096. For each, say whether the batch is above or below the critical batch of ≈ 295 and what that means for decode throughput. Then compute the FasterTransformer-style out-of-memory point for the 13B model on a 40 GB A100 yourself from the card's inputs (800 KiB/token, 2,048 tokens, 25.2 GB of weights).",
+    "done": "Three B_max values with an above/below verdict each, plus the 13B requests-before-activations number, all written before checking.",
+    "hint": "Check after trying: 762, 476 and 119 requests; only the 4,096 case is below ≈ 295; at 762 and 476 the steps would already be compute-bound, so admissions past ≈ 295 add less throughput than their count (and max_bs may bind first). 13B: 800 KiB × 2,048 = 1.68 GB per request; (40 − 25.2) GB ÷ 1.68 GB ≈ 8.8 requests before activations, matching the OOM at batch 8."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: the direction of the reservation waste, or FasterTransformer's disadvantage?",
+    "Could you say in one sentence why §6.1 and §6.2 together prove the win is scheduling, not kernels?",
+    "Which relationship is still fuzzy: reservation → no deadlock, or reservation → fewer admitted requests → lower throughput?",
+    "Did the control-plane split make sense to you as a CPU-overhead fix? You'll meet the same idea on the anatomy card.",
+    "What will you revisit before the scheduler card: how paging changes the admission rule?"
+  ],
+  "revisit": [
+    "perf-5-engines/orca-iteration-scheduling",
+    "perf-2-scaling-book-inference/critical-batch-size"
+  ],
+  "prereq": [
+    "perf-5-engines/orca-iteration-scheduling"
+  ]
+}

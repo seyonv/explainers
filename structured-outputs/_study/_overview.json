@@ -1,0 +1,58 @@
+{
+  "prime": {
+    "problem": "A model writes one likely token at a time and has no idea a parser will read the result. So \"reply in JSON\" sometimes fails, and even when it parses, the values can be wrong. Without a map you end up tuning the wrong thing: a faster engine when the real cost was retries, or a stricter grammar when the real error was arithmetic.",
+    "fits": "This is the map for the whole course. It assumes only what the latency course taught you: time ≈ prefill + output tokens × time per token. Everything here adds two new terms to that law: a one-off compile cost and a pass rate.",
+    "expect": ["<code>E[T] ≈ (GCT/k + prefill + n·TPOT) ÷ p</code>", "check-and-retry vs constrained decoding", "the mask inside the decoding loop", "valid vs correct"],
+    "goal": "Place every later card on one causal map, and say which term of the formula (p, n, TPOT or GCT) a given change attacks."
+  },
+  "attend": [
+    "Which single box in the diagram is the only difference between prompt-only and constrained decoding, and what does prompt-only do instead?",
+    "Why does p sit in the <i>denominator</i> of the whole formula rather than being added like the other costs?",
+    "The constrained runs were about 2× faster on the M3. Which term of the formula explains most of that, and which one doesn't?",
+    "Why does the value of p change when you change what your checker checks, even though the model and engine stay the same?",
+    "Why does engine choice appear under three different levers in the ranking table?"
+  ],
+  "core": {
+    "must": [
+      "Model samples the likely next token → the parser isn't in that choice → prompt-only output fails some of the time → you either retry (pay 1 ÷ p attempts) or mask invalid tokens before sampling (p for syntax → 1)",
+      "Each attempt costs compile ÷ reuses + prefill + tokens × time per token → divide by the chance an attempt passes → so raising p, shrinking n, cutting TPOT and amortising GCT are four separate levers",
+      "A grammar fixes the shape, not the facts → schema-valid numbers like a wrong total still pass → the errors that remain after constraining are value errors → check or compute values in code",
+      "Coverage decides whether the engine can build the mask for your schema at all → over- or under-constrained means it builds the wrong mask → so engine choice moves p, TPOT and GCT at once"
+    ],
+    "elevated": [
+      "Constrained answers were shorter (38 vs 80 tokens: no fences, compact JSON) → most of the M3's 2× speedup came from a smaller n, not a faster TPOT"
+    ],
+    "reference": ["the exact median timings (5.53 s, 2.72 s) and the 301-token prompt", "the ranking table's per-row sources and log-scale bar widths", "the list of doc links for Ollama, vLLM, SGLang and the hosted APIs"]
+  },
+  "compress": {
+    "prompt": "Close the card and draw the whole course as one causal map: schema → compile → mask → sample → validate → retry, with the formula's four terms attached to the boxes they come from. Then write two sentences on where the remaining errors live once decoding is constrained.",
+    "checklist": [
+      "the compile step (GCT, shared over k reuses) happens before the first token",
+      "the mask sits between the model's scores and the sampler, every token",
+      "validation and value checks sit after the answer, and failures loop back (the 1 ÷ p)",
+      "p depends on what your checker checks: parse, schema, or values",
+      "constraining moves syntax failures to zero but leaves value errors, so values need their own check"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why the formula divides by p instead of adding a retry cost, and what assumption that makes about the attempts.", "kind": "concept", "answer": ["with pass probability p the expected number of attempts is 1 ÷ p (geometric)", "each attempt costs the whole numerator again", "it assumes attempts are independent and about equally long"]},
+    {"q": "Walk one constrained request through the map: what happens before the first token, at every token, and after the answer?", "kind": "mechanism", "answer": ["before: the schema is compiled into a grammar (GCT, cacheable)", "every token: the model scores all tokens, the mask zeroes the invalid ones, one is sampled, the grammar state advances", "after: validate the output and check the values; a failure means a new attempt"]},
+    {"q": "Your constrained extraction is valid 30/30 but only right 22/30. Which lever from the ranking table do you pull, what does it change in the formula, and what does it cost?", "kind": "tradeoff", "answer": ["compute the derived field (the total) in code", "it raises p for \"values right\" from 22/30 to 30/30, taking expected time from 3.71 s to 2.72 s", "it costs a small lookup in your code, and only works where a rule exists to compute the value"]},
+    {"q": "Rank the four levers for a team whose schema changes on every request and whose answers are long. Which term dominates, and which lever do you pull first?", "kind": "tradeoff", "answer": ["k = 1, so GCT is paid on every call: pick an engine with near-zero compile", "long answers make n × TPOT large: compact output and a low-TPOT engine matter next", "then raise p for values with checks in code"]}
+  ],
+  "compare": [
+    {"with": "structured-outputs/_overview-choosing", "q": "This card is a formula; the choosing card is a decision tree. What does each one answer that the other can't, and when would the formula mislead you into the wrong tool?", "answer": ["the formula compares cost and pass rate once you have candidates; the tree narrows candidates by constraints (logits access, schema changes, hard features)", "the formula can't tell you that a closed API rejects your schema or that a backend can't do recursion", "trusting the formula alone could pick a fast engine that doesn't cover your schema, so p collapses"]},
+    {"with": "llm-latency/output-length", "q": "The latency course said output length is the biggest lever you control. How does this course's formula extend that law, and which new term can outweigh n?", "answer": ["same core: prefill + n × time per token", "adds GCT ÷ k (compile, shared) and ÷ p (retries)", "a low p (7/30 raw parse gives 23.7 s expected) or a fresh multi-second compile can outweigh anything n saves"]}
+  ],
+  "predict": {"q": "Suppose the prompt-only setup kept its 5.53 s per try, but you switched its checker from \"values right\" (15/30) to \"raw json.loads works\" (7/30). Before computing: does expected time go up or down, and by roughly how much?", "answer": "Up. Expected time = 5.53 ÷ p. With p = 15/30 it is 11.06 s; with p = 7/30 it is 23.7 s, a bit over 2× worse. A stricter-looking check isn't always the costly one: the raw-parse check fails every fenced answer, which the value check never saw because cleaning ran first."},
+  "apply": {"task": "Cost the running example at 10,000 orders a day. Use the card's per-try times and pass rates to compute the machine-hours per day for (a) prompt-only with values checked, (b) constrained with values checked, (c) constrained with the total computed in code. Then name the one term of the formula that each step from (a) to (b) to (c) changed.", "done": "You get about 30.7 h, 10.3 h and 7.6 h (11.06 s, 3.71 s and 2.72 s × 10,000 ÷ 3,600), and you can say that (a)→(b) changed both n (shorter answers) and p, while (b)→(c) changed only p.", "hint": "Expected time per usable object = time per try ÷ p. 5.53 ÷ (15/30) = 11.06 s."},
+  "reflect": [
+    "Which prediction did you get wrong: the 2× speedup's cause, or the effect of a stricter checker on expected time?",
+    "What couldn't you explain cleanly: why p divides, or why a grammar can't raise p for values?",
+    "Which relationship is still fuzzy: engine choice → coverage → p, or engine choice → TPOT?",
+    "Which box on the map do you understand least? That's the card to read first.",
+    "What will you check first on your own system: parse rate, schema rate or value rate?"
+  ],
+  "revisit": ["llm-latency/output-length", "llm-latency/ttft"],
+  "prereq": []
+}

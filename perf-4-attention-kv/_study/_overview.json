@@ -1,0 +1,122 @@
+{
+  "prime": {
+    "problem": "Once the weights are loaded, GPU memory left over is a pool of KV cache, and decode reads every byte of it every step. Without a map of which technique attacks which part of that budget, the course's 18 cards look like 18 unrelated tricks.",
+    "fits": "The map for course 4. It builds on perf-2's picture of decode as memory-bound (params vs KV, step time) and sorts every later card by the one term it shrinks.",
+    "expect": [
+      "users that fit = (HBM − weights) × share used ÷ (KV bytes per token × tokens)",
+      "fewer bytes per token (GQA, MLA, quantization, windows)",
+      "stop wasting the pool (paging)",
+      "store shared bytes once (copy-on-write, radix tree, KV store)",
+      "never write N×N (online softmax → FlashAttention)"
+    ],
+    "goal": "Place any KV or attention technique on the capacity formula, say whether it moves prefill or decode, and explain why the levers don't simply multiply."
+  },
+  "attend": [
+    "Which term of the capacity formula does each family of techniques shrink, and which family is the odd one out because it doesn't touch the formula at all?",
+    "Why does halving KV bytes per token roughly double decode throughput, and at what batch size does that stop being true?",
+    "Why does FlashAttention barely change a decode step even though it is the most famous attention kernel?",
+    "Paging and prefix caching don't change bytes per token. What do they change, and why do they stack with GQA or FP8?",
+    "Where does the whole KV-centric view not apply: which workload makes the weights, not the KV, dominate each step?"
+  ],
+  "core": {
+    "must": [
+      "Weights are a fixed cost → what's left of HBM is a KV pool → users that fit = pool × share used ÷ (KV bytes per token × context) → every decode step reads all of it → at 8k context KV is 80% of the bytes (18.9 of 23.7 ms for Llama-3.1-8B, 59 users)",
+      "Fewer KV bytes per token (GQA, MLA, FP8/KIVI, windows) → more users fit and each step reads the same ~full pool → throughput rises almost in proportion → until 2·P·B/C exceeds the weight read and the step turns compute-bound (MQA's 32× buys 28.9×)",
+      "Paging raises the share of the pool holding real tokens (20–38% → 96%) and sharing stores repeated prefixes once → both change what fits, not bytes per token → so they multiply with the first group",
+      "Standard attention writes S and P (N×N) to HBM → FlashAttention tiles with online softmax so they never leave SRAM → prefill gets faster and long context becomes possible → decode still reads the whole cache, so FlashAttention doesn't move it"
+    ],
+    "elevated": [
+      "Decode attention runs at ≈ 4 FLOPs/byte with GQA-4 against the H100's 295 ridge → no attention kernel can make decode compute-bound → only fewer or shared bytes help decode"
+    ],
+    "reference": [
+      "each lever's exact multiplier in the ranked table",
+      "the paper-vs-recomputation labels on each row",
+      "the paper list under \"Where to look it up\"",
+      "the source quirks (1.7× vs 1.8×, FAST'25 vs arXiv Mooncake)"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw the whole course's causal map: the capacity formula in the middle, one arrow from each of the four technique families to the term it shrinks, and one arrow from the formula to decode step time. Mark which families move prefill and which move decode.",
+    "checklist": [
+      "pool = HBM − weights; users = pool × u ÷ (bytes/token × tokens)",
+      "GQA, MLA, quantization, windows shrink bytes per token",
+      "paging raises u; copy-on-write, radix tree and KV store stop repeated tokens being stored twice",
+      "FlashAttention is separate: it removes N×N traffic, so it moves prefill and max context, not decode",
+      "decode step ≈ KV bytes read + weights ÷ bandwidth, until the batch passes Bcrit"
+    ]
+  },
+  "retrieve": [
+    {
+      "q": "Explain why \"KV memory is the currency of serving\": what exactly is being spent, and on what?",
+      "kind": "concept",
+      "answer": [
+        "HBM after the weights is a fixed pool",
+        "each user spends bytes per token × context from it",
+        "in decode every held byte is also read every step, so the pool sets both how many users fit and how long a step takes"
+      ]
+    },
+    {
+      "q": "Walk through the decode step for Llama-3.1-8B on one H100 at 8k context with the pool full: how many users, how many bytes read, how long, how many tokens/s?",
+      "kind": "mechanism",
+      "answer": [
+        "63.9 GB ÷ 1.07 GB per user = 59 users",
+        "reads 59 × 1.07 GB of KV plus 16.06 GB of weights",
+        "18.9 + 4.79 = 23.7 ms per step, 2,489 tokens/s",
+        "KV is 80% of the bytes"
+      ]
+    },
+    {
+      "q": "You can only apply two levers to a Llama-3.1-8B deployment this month: one from \"fewer bytes per token\" and one from \"stop wasting / share\". Which pair do you pick for a chatbot with a long shared system prompt, and why don't the two gains simply multiply forever?",
+      "kind": "tradeoff",
+      "answer": [
+        "FP8 KV (a serving flag; GQA and MLA are fixed at training) plus radix-tree prefix caching",
+        "they attack different terms, so they compound while decode stays memory-bound",
+        "past the compute edge (Bcrit) more users stop raising throughput, and prefix caching only helps if prefixes repeat"
+      ]
+    }
+  ],
+  "compare": [
+    {
+      "with": "perf-2-scaling-book-inference/kv-tricks",
+      "q": "perf-2 listed tricks that shrink the KV cache as a menu. This course walks the papers behind them. What does the capacity formula add that the menu lacked, and which lever does perf-2 not have at all?",
+      "answer": [
+        "the formula shows each trick shrinks a different term, so you can reason about stacking",
+        "paging (the share-used term u) and cross-request sharing aren't bytes-per-token tricks",
+        "FlashAttention is not a KV trick; it is about the N×N intermediate"
+      ]
+    },
+    {
+      "with": "perf-5-engines/_overview",
+      "q": "Course 5's overview is a throughput–latency frontier; this one is a memory budget. How does fitting more users here show up as a move on course 5's frontier, and when does it stop helping?",
+      "answer": [
+        "more users per step raises throughput at roughly the same step time while memory-bound",
+        "each user then waits about the same per token, so it pushes the frontier out",
+        "once the step turns compute-bound, extra users raise latency per token without raising throughput"
+      ]
+    }
+  ],
+  "predict": {
+    "q": "A team serves Llama-3.1-8B at 32k context with FP8 KV and paging that holds real tokens in 50% of the pool (a buggy allocator). Roughly how many sequences fit on one H100, and which single fix gains more: fixing the allocator or moving to KIVI-2? Commit first.",
+    "answer": "FP8 at 32k is 64 KiB × 32,768 = 2.15 GB per sequence, so a perfect pool holds 63.9 ÷ 2.15 ≈ 29.8 → 29 sequences, and u = 0.5 gives about 14. Fixing the allocator doubles it (u → ~1). KIVI-2 at 32k is 0.82 GB per sequence including its 128-token BF16 window (our arithmetic), 2.6× smaller than FP8: 78 sequences with a perfect pool. Both are big; they multiply, and neither is near the compute edge at these batch sizes."
+  },
+  "apply": {
+    "task": "Use the formula as a design tool. For Llama-3.1-8B on one H100, fill in users-that-fit for: (a) BF16 GQA-8 at 8k, each user reserving the full 8,192 slots; (b) the same but paged, when real requests average ~560 tokens held (paged I's ShareGPT-like simulation); (c) FP8 KV with full 8k sequences; (d) FP8 with full 8k sequences whose first 2,000 tokens are one system prompt shared by every user. For each, name the card whose mechanism you used.",
+    "done": "You have four numbers with one line of arithmetic each and a card name per row, and you can say which change moved u, which moved bytes per token, and which moved tokens per user.",
+    "hint": "(a) 63.9 GB ÷ 1.07 GB = 59 (u is tiny when real lengths are short: 6.3% in paged I's run). (b) paged I's simulation: 851 requests, 14.5×. (c) 64 KiB × 8,192 = 0.54 GB → 119 (kv-quantization). (d) the prefix is stored once (131 MB); each user holds 6,192 private tokens × 64 KiB = 406 MB → (63.94 GB − 0.13 GB) ÷ 0.406 GB ≈ 157 users (our arithmetic; radixattention or paged II)."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: how many users fit, or which fix gains more?",
+    "What couldn't you explain cleanly: why FlashAttention matters for prefill but not decode?",
+    "Which relationship is still fuzzy: bytes per token → users that fit, or users that fit → throughput?",
+    "Which lever did you keep putting in the wrong column?",
+    "Which card will you read first, knowing what you know now?"
+  ],
+  "revisit": [
+    "perf-2-scaling-book-inference/params-vs-kv",
+    "perf-2-scaling-book-inference/step-time",
+    "perf-2-scaling-book-inference/attention-intensity"
+  ],
+  "prereq": [
+    "perf-2-scaling-book-inference/params-vs-kv"
+  ]
+}

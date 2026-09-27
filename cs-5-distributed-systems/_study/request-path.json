@@ -1,0 +1,118 @@
+{
+  "prime": {
+    "problem": "Between a client typing a URL and your resize code running, four systems decide where the request goes: a resolver, routers, a firewall and a load balancer. Each can send it to the wrong place, cache a stale answer or add round trips. Debugging latency or a misrouted request means knowing what each one decides and on what information.",
+    "fits": "Builds on the delay card's round trips and TCP windows: a fresh connection pays several RTTs before any work. The next card, service discovery, replaces DNS for the inside of a data centre; the load-balancing choices here come back in consistent hashing.",
+    "expect": [
+      "DNS: walk the tree once, cache for the TTL",
+      "longest-prefix match (and BGP between networks)",
+      "stateless vs stateful firewall",
+      "L4 vs L7 load balancing: round robin, least outstanding, hash",
+      "fresh vs reused connection: 286.6 ms vs 83.6 ms"
+    ],
+    "goal": "Trace one request through name lookup, routing, filtering and load balancing, say what each step decides and what it caches, and explain why reusing connections and picking by load matter."
+  },
+  "attend": [
+    "Where did the 203 extra milliseconds of the fresh connection go, and which parts would a reused connection skip?",
+    "Why is a DNS change not instant, and what does the TTL trade off?",
+    "How did longest-prefix match turn Pakistan Telecom's /24 into a worldwide YouTube outage, and how did two /25s undo it?",
+    "Why can a stateless filter not tell a reply from a forged one, and what does a stateful one remember?",
+    "In the load-balancer table, why did round robin produce a 1,700 ms latency, and why did hashing still queue a.jpg behind big.jpg?"
+  ],
+  "core": {
+    "must": [
+      "A fresh HTTPS connection → TCP handshake + TLS handshake before the request (≈ 1 RTT each) → plus TCP slow start (10 segments, doubling) for the body → 286.6 ms vs 83.6 ms reused → clients reuse connections",
+      "DNS answers are cached for the TTL → one walk of the tree serves every client of a resolver until it expires → a changed address reaches clients only after the TTL → DNS says what could be at an address, not what is up",
+      "Routers forward to the most specific matching prefix → a more specific announcement wins everywhere → BGP hijacks work by being more specific, and so does the fix",
+      "A load balancer picks among identical servers → round robin ignores queues (huge.jpg waits 700 ms behind big.jpg) → least outstanding looks at load (worst 1,000 ms) → hashing keeps a key on one server for cache locality but ignores load"
+    ],
+    "elevated": [
+      "Slow start: a new connection's window starts at 10 segments and doubles each RTT → 275 KB (189 segments) needs 4 extra RTTs → ≈ 157 ms, close to the 160.4 ms transfer measured → a warmed connection skips this"
+    ],
+    "reference": [
+      "the dig +trace hop times per run (root, .com, authoritative)",
+      "RFC 5737 documentation addresses and the 3-route table",
+      "AWS security group vs network ACL wording",
+      "the curl -w timer names and the 5-run median choice"
+    ]
+  },
+  "compress": {
+    "prompt": "Draw the four boxes from memory (resolver → routers → firewall → load balancer) and write under each: what it decides, what it caches or remembers, and one way it goes wrong. Then one line on why reused connections are 3.4× faster.",
+    "checklist": [
+      "resolver: name → address, cached for the TTL; stale for up to a TTL after a move",
+      "routers: longest prefix wins; a more specific wrong route wins too",
+      "firewall: stateless rules can't tell replies from forgeries; stateful tracks connections",
+      "load balancer: picks by rotation, load or key; trade balance vs cache locality",
+      "fresh connection pays TCP + TLS round trips and slow start; reuse skips them"
+    ]
+  },
+  "retrieve": [
+    {
+      "q": "Explain why \"DNS round robin over all 40 servers\" is weaker than \"one DNS name → a load balancer\", in terms of what each knows about server health.",
+      "kind": "concept",
+      "answer": [
+        "DNS answers are cached for the TTL, so a dead server keeps getting traffic",
+        "DNS says what could be at an address, not what's up",
+        "the load balancer health-checks servers, drops dead ones at once and can pick by load"
+      ]
+    },
+    {
+      "q": "Walk the three packets through the stateless and the stateful firewall: which rule matches each, and where do the two filters disagree?",
+      "kind": "mechanism",
+      "answer": [
+        "client request to :443 → both allow (r1); the stateful one now tracks the connection",
+        "reply from 192.0.2.10:443 to our call out → stateless allows via r2; stateful allows as tracked",
+        "unsolicited packet from 192.0.2.66:443 → stateless allows via r2 (hole); stateful denies: it matches no tracked connection"
+      ]
+    },
+    {
+      "q": "For the image service, choose between least outstanding requests and hashing by image name. What does each buy, and what workload would flip your choice?",
+      "kind": "tradeoff",
+      "answer": [
+        "least outstanding: best latency when image costs vary (1,000 ms worst vs 1,700 ms round robin)",
+        "hashing: the same image always hits the same server, so its cache stays warm, but it ignores queues",
+        "if many requests repeat the same images and caching saves more than queueing costs, hash; otherwise least outstanding"
+      ]
+    }
+  ],
+  "compare": [
+    {
+      "with": "cs-5-distributed-systems/service-discovery",
+      "q": "Both DNS and a ZooKeeper registry map a service name to addresses. What is fundamentally different about how each learns that a server died, and what does that cost at 250 requests/s per server?",
+      "answer": [
+        "DNS never notices a crash; a record changes only when someone edits it, and caches hold it for the TTL",
+        "the registry's ephemeral node vanishes when the session's heartbeats stop, and watchers are told",
+        "at 250 req/s: 5,000 requests to a dead server with a 20 s session timeout vs 75,000 with a 300 s TTL (if the record is removed at all)"
+      ]
+    },
+    {
+      "with": "cs-5-distributed-systems/consistent-hashing",
+      "q": "The load balancer here used rendezvous hashing to keep a.jpg on s3. What problem does consistent hashing solve that this table never faced, and when would the balancer need it?",
+      "answer": [
+        "this table's server set never changed",
+        "when servers join or leave, hash mod N remaps almost every key (80% from 4 to 5), wiping every cache",
+        "rendezvous and ring hashing both move only about 1/(N+1) of keys, so caches survive a scale-up"
+      ]
+    }
+  ],
+  "predict": {
+    "q": "Add a fourth route, <code>203.0.113.192/26 → canary pool</code>. Where do packets to 203.0.113.200 and 203.0.113.130 now go? Commit first.",
+    "answer": "A /26 fixes the first 26 bits: it covers .192–.255. So 203.0.113.200 matches /0, /24, /25 and /26; the longest, /26, wins → canary pool. 203.0.113.130 is in .128–.255 (/25) but not .192–.255, so /25 still wins → LB pool. One more specific route silently steals traffic from a broader one, which is exactly how the YouTube hijack worked."
+  },
+  "apply": {
+    "task": "Using the slow-start reasoning on the card (initial window 10 segments of 1,460 B, doubling each RTT), work out how many flights, and so how many round trips, a fresh connection needs to deliver a 1 MB response. At the card's 39.3 ms RTT, what is the transfer time lower bound, and how does it compare with the 275 KB page's measured 160.4 ms?",
+    "done": "You have 685 segments, 7 flights (10, 20, 40, 80, 160, 320, 640 cumulative 1,270 ≥ 685), so 6 extra round trips after the first ≈ 236 ms, and you can say why the reused connection's already-grown window skips most of that.",
+    "hint": "⌈10<sup>6</sup> / 1,460⌉ = 685. Cumulative after each flight: 10, 30, 70, 150, 310, 630, 1,270. 6 × 39.3 = 235.8 ms."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: whether the /26 steals .200 but not .130?",
+    "Could you explain why the fresh request took 4× longer to transfer the same bytes?",
+    "Which relationship is still fuzzy: TTL → staleness, or LB policy → tail latency?",
+    "Which of the four boxes have you debugged in real life, and which would you now check first?",
+    "What will you reopen before the service-discovery card?"
+  ],
+  "revisit": [
+    "cs-5-distributed-systems/delay-timeouts-congestion",
+    "cs-5-distributed-systems/image-resize-sizing"
+  ],
+  "prereq": []
+}

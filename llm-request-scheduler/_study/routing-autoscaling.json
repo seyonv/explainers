@@ -1,0 +1,67 @@
+{
+  "prime": {
+    "problem": "One replica holds about 40 req/s of the course workload, so production runs many. An ordinary load balancer spreads requests evenly and splits every prefix cache N ways; a naive cache-affinity router sends every popular prompt to one melting replica; and an autoscaler watching GPU busy % can't tell a full healthy batch from an overloaded one.",
+    "fits": "First card of group 5, the layer above one engine. It applies the prefix cache (group 3) and admission control (the preemption and concurrency cards) across many replicas: a gateway that sheds load, a router that trades affinity against balance, and an autoscaler on leading signals.",
+    "expect": [
+      "gateway (may it enter?) vs router (where does it go?)",
+      "round robin, least-loaded, power of two, sticky, prefix-hash, scored",
+      "<code>score = w_hit·hit − w_load·load ÷ max load</code>",
+      "per-key token buckets and 429 with Retry-After",
+      "scale on queue depth and KV use, not GPU busy %"
+    ],
+    "goal": "Pick a routing policy for a workload from how its prefixes compare with one replica's cache, compute a scored router's choice, design token-based admission, and choose autoscaling signals that lead rather than lag."
+  },
+  "attend": [
+    "In workload A round robin is fine; in workload B it is 188× worse on TTFT p50. What property of B makes the difference?",
+    "Why does prefix consistent hashing leave one replica empty and another with 302 requests in workload A?",
+    "With the card's weights, at what load does a warm replica lose its cached request to a cold idle one?",
+    "Why should rate limits count tokens rather than requests?",
+    "Why is GPU utilisation a misleading autoscaling signal for LLM serving?"
+  ],
+  "core": {
+    "must": [
+      "Each replica has its own prefix cache → pure balance (round robin, least-loaded) spreads every prefix over every replica → when prefixes overflow one cache, LRU evicts what the next request needs (B: 45.6% hits, 2.7 s TTFT p50)",
+      "Pure affinity (prefix hashing) keeps hits high → but load follows the hash, not capacity → a few hot prompts pile onto one replica (302 vs 0 requests, 10,459 tok/s)",
+      "A scored router adds both terms with weights → it takes the cache hit unless that replica is much busier → best or tied in both workloads (A: 13,076 tok/s; B: 84.5% hits, 73.2 ms p99)",
+      "Past capacity a replica's queue makes every request late → the gateway should reject excess early (token buckets, 429 + Retry-After) → autoscale on leading signals (queue depth, KV use) because a new replica takes seconds to load weights"
+    ],
+    "elevated": [
+      "Normalising load by the busiest replica puts both terms on a 0–1 scale → the weights become an exchange rate (\"a hit is worth this much queue\") → GKE raised the queue weight from 3 to 5 to steer around hot nodes"
+    ],
+    "reference": [
+      "vLLM's DP router score (4 × waiting + running)",
+      "GKE's 3:3:2 and 3:5:2 weights and the llm-d 57× figure",
+      "HPA and KEDA as Kubernetes autoscalers"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw the gateway, router, replicas and autoscaler with what each reads and decides. Write the scored-router formula and one line on when round robin is enough and when affinity is everything.",
+    "checklist": [
+      "gateway: auth, token-based rate limits, 429 + Retry-After",
+      "router: score = w_hit·hit − w_load·normalised load",
+      "prefixes fit every replica's cache → routing barely matters (workload A)",
+      "prefixes overflow one cache → affinity is everything (workload B)",
+      "autoscale on queue depth and KV use; weights take seconds to load"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why the same round-robin router is fine in workload A and disastrous in workload B.", "kind": "concept", "answer": ["A: 4 prompts fit easily in every replica's cache, so each replica warms once and hits after that (89.6%)", "B: 64 prompts need 8,192 blocks but each replica has 4,000; spreading them everywhere makes each replica evict what the next request needs (45.6%)", "the lost hits turn a comfortable load into an overload: TTFT p50 2,690 ms vs 14.3 ms"]},
+    {"q": "Walk through the scored router's decision for a warm replica (hit 0.94) at the maximum load versus a cold idle replica, and again with the warm one at half the maximum load.", "kind": "mechanism", "answer": ["busiest warm: 3 × 0.94 − 3 × 1 = −0.18; cold idle: 0 → the cold one wins", "warm at half load: 3 × 0.94 − 1.5 = 1.32 → the warm one keeps the request", "the weights decide how much queue one cache hit is worth"]},
+    {"q": "Traffic spikes and one replica takes about 8 s to load its weights. Which signals do you scale on, and what absorbs the burst meanwhile?", "kind": "tradeoff", "answer": ["scale on queue depth and KV use: they rise before TTFT does", "at 80 req/s about 642 requests arrive before the new replica serves one", "meanwhile the gateway sheds with 429s and headroom on the existing replicas absorbs the rest"]}
+  ],
+  "compare": [
+    {"with": "llm-request-scheduler/policies", "q": "Cache-aware LPM ordering on one replica and prefix-aware routing across replicas both chase hits. What does each control, and what fairness risk does each carry?", "answer": ["LPM orders the queue inside one replica so warm requests run first", "routing decides which replica a request goes to so its prefix is already there", "LPM can starve cold-prefix requests; affinity routing can overload the replica with the hot prefix"]},
+    {"with": "llm-latency/model-routing", "q": "The latency course's model routing picks which model answers; this card's router picks which replica. How do the two layers stack, and what does each optimise?", "answer": ["model routing sits above: it chooses a model tier per request (cost vs quality)", "replica routing sits below: it chooses a copy of that model (cache hits vs load)", "both can run together: tier first, then the replica holding the prefix"]}
+  ],
+  "predict": {"q": "Replace prefix-hash with a bounded-load variant: hash as before, but if that replica's load exceeds 1.25 × the mean + 1, try the next replica in the ring. Before running: does it fix workload A's imbalance, and what does it do to workload B's hit rate?", "answer": "It fixes A's imbalance (requests per replica become 166 / 184 / 109 / 141, throughput 10,459 → 12,266 tok/s, TTFT p99 45.8 → 40.4 ms). In B it costs hits: spilled requests land on replicas without their prefix, so the hit rate falls from 84.5% to 80.6% and TTFT p99 rises from 117.6 to 298.0 ms. Moving load blindly breaks affinity; the scored router moves load only when a replica is much busier, and keeps 84.5% with a 73.2 ms p99 (our run of labs/routing_sim.py with the same seeds)."},
+  "apply": {"task": "Three small calculations. (a) With 8 system prompts hashed onto 4 replicas, what is the expected number of replicas that get no prompt, and the probability that all 4 get at least one? (b) At 70 req/s, how many requests arrive during one replica's 8.0 s weight load? (c) Using the card's weights, what does a warm replica (hit 0.5) score at maximum load, and does it beat a cold idle replica?", "done": "(a) 4 × (3/4)⁸ ≈ 0.40 empty replicas expected; P(all 4 used) ≈ 62.3% (by enumeration). (b) 70 × 8.0 = 560 requests. (c) 3 × 0.5 − 3 × 1 = −1.5 < 0, so the cold idle replica (score 0) wins.", "hint": "For (a), each replica misses a given prompt with probability 3/4, independently for 8 prompts."},
+  "reflect": [
+    "Which prediction did you get wrong: whether bounded load fixes A, or what it costs in B?",
+    "Could you explain when round robin is enough in one sentence, with the condition on cache size?",
+    "Which relationship is still fuzzy: prefixes vs cache size → affinity, or affinity → hot replicas?",
+    "Which autoscaling signal would you alert on first in your own deployment?",
+    "What will you revisit before the full-system card: where the gateway, router and engine loop each sit on one request's path?"
+  ],
+  "revisit": ["llm-request-scheduler/prefix-caching", "llm-request-scheduler/concurrency", "llm-request-scheduler/admission-preemption", "llm-request-scheduler/policies"],
+  "prereq": ["llm-request-scheduler/prefix-caching"]
+}

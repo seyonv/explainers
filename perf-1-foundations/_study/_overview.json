@@ -1,0 +1,59 @@
+{
+  "prime": {
+    "problem": "Inference performance advice is a pile of tricks: batch more, quantize, use GQA, buy a bigger GPU. Without one formula to hang them on, you can't tell which trick helps your case, and many help nothing at all.",
+    "fits": "The map for course 1, read first as a map or last as a recap. It assumes only the series map. Every card after it fills in one symbol of T_step ≈ max(2·N·T ÷ C, (N·b + Σ S·k) ÷ W).",
+    "expect": ["<code>T_step ≈ max(math, memory)</code>", "prefill math-bound, decode memory-bound", "the chip's ops:byte (295)", "the levers, ranked", "TTFT, TPOT, goodput"],
+    "goal": "Place every card of the course on one formula, and say for any proposed change which side of the max() it acts on and whether it will help."
+  },
+  "attend": [
+    "Which symbols in the formula come from the model, and which from the chip?",
+    "A 1,000-token prefill is math-bound and one decode token is memory-bound. Which single symbol changed between the two?",
+    "Why does batching have the biggest bar in the levers table, and what eventually stops it?",
+    "Why do more FLOPs help prefill but not batch-1 decode?",
+    "Where does the one-formula picture break: MoE, long context, or tiny operations?"
+  ],
+  "core": {
+    "must": [
+      "Each token needs ≈ 2N FLOPs and each step reads all N·b weight bytes plus the KV cache → step time ≈ max(math, memory) → which side wins depends on tokens per weight read vs the chip's ops:byte (295 on an H100)",
+      "Prefill: 1,000 tokens share one weight read → math 16.2 ms beats memory 4.8 ms → compute-bound, sets TTFT; decode: 1 token per read → 16.2 µs of math vs 4.79 ms of reading → memory-bound, sets TPOT",
+      "Decode is memory-bound → the levers that help cut bytes (FP8 2×, GQA 4× on KV), share each read (batching: 207 → 16,870 tok/s total) or add bandwidth (M3 → H100, 33.5×) → more FLOPs change nothing until the batch passes ≈ 295",
+      "KV bytes grow with context × batch → HBM fills (≈ 59 sequences of 8k) before the math side wins; attention FLOPs also grow with context (+27% at 8k) → the simple 2N picture needs its context terms"
+    ],
+    "elevated": [
+      "MoE: N means active parameters in the math and per-token bytes, but total parameters for memory capacity",
+      "Real systems reach only part of peak (about 80–85% of spec FLOPs on H100s) → every number on this card is a floor, not a prediction"
+    ],
+    "reference": ["the log-scale bar widths in the levers table", "the exact list of sources", "the symbol table's example values"]
+  },
+  "compress": {
+    "prompt": "Course level: close all the cards and draw the whole course's causal map: model config → parameters N and KV bytes k (forward pass, attention) → FLOPs 2N (FLOPs card) and bytes N·b + Σ S·k → the chip's C and W (GPU card) → max() and the ridge (roofline) → prefill = TTFT, decode = TPOT (your Mac) → batching, SLOs and goodput (serving). Put one real number on each arrow.",
+    "checklist": [
+      "N = 8.03B → 16.06 GB in BF16; k = 128 KiB per token thanks to GQA",
+      "2N = 16.06 GFLOP per token, more at long context",
+      "C = 989 TF/s, W = 3.35 TB/s, ridge ≈ 295",
+      "prefill ≈ 16.2 ms (compute) → TTFT; decode ≈ 4.79 ms (memory) → TPOT, ≈ 209 tok/s ceiling",
+      "batching raises tokens per read until the SLO, the KV memory or the ridge stops it",
+      "the M3 shows the same split (188 vs 14 tok/s) at 1/33 of the bandwidth"
+    ]
+  },
+  "retrieve": [
+    {"q": "Using the formula, explain in two sentences why buying a GPU with more FLOPs is the wrong fix for slow single-user decode.", "kind": "concept", "answer": ["at batch 1 the memory term (4.79 ms) is about 295× the math term (16.2 µs)", "raising C shrinks only the term that was already tiny, so the max doesn't move", "the fix must shrink N·b, the KV bytes, or raise W"]},
+    {"q": "Fill in the formula for one decode token and for a 1,000-token prefill of Llama-3.1-8B BF16 on an H100. Which side wins in each?", "kind": "mechanism", "answer": ["decode: max(2 × 8.03e9 ÷ 989e12, 16.06e9 ÷ 3.35e12) = max(16.2 µs, 4.79 ms): memory", "prefill: max(2 × 8.03e9 × 1,000 ÷ 989e12, 16.06e9 ÷ 3.35e12) = max(16.2 ms, 4.8 ms): math"]},
+    {"q": "Rank four levers for a batch-1 decode service: FP8 weights, GQA instead of MHA, moving to an H200, faster tensor cores. Name the symbol each acts on, and say which does nothing.", "kind": "tradeoff", "answer": ["FP8 halves b: 4.79 → 2.40 ms", "an H200 raises W: 4.79 → 3.35 ms", "GQA shrinks k: small at short context, large at long context (512 → 128 KiB per token)", "faster tensor cores raise C: no change to batch-1 decode"]}
+  ],
+  "compare": [
+    {"with": "perf-1-foundations/roofline-intuition", "q": "The overview's formula is the roofline applied to a whole model step. What does the model-step version add, and what does the roofline card show that this one-liner hides?", "answer": ["it adds the model: T tokens per step, N·b weight bytes, and the per-sequence KV term", "the roofline card shows intensity vs ridge for any operation, and how batching moves a point", "it also lists the limits: caches, CUDA-core work (ridge ≈ 20), launch overhead, imperfect overlap"]},
+    {"with": "perf-2-scaling-book-inference/_overview", "q": "This course puts the KV bytes inside the max() with the weights; the next course's overview adds them outside it. Why is that the more accurate form, and what changes in your predictions?", "answer": ["KV reads are per sequence and never shared by batching, so attention stays memory-bound at any batch", "only the weight side chooses between reading and math", "so step time keeps growing with batch × context even past the ridge, and KV memory usually caps the batch first"]}
+  ],
+  "predict": {"q": "A team moves from Llama-3.1-8B to an MoE with 37B active of 671B total parameters (ignore that it needs several GPUs). Before reading on: which symbols in the formula change, and is batch-1 decode still memory-bound?", "answer": "N in the math term becomes 37B active (74 GFLOP per token), and at batch 1 the bytes read per token also follow the active experts, while memory capacity must hold all 671B. Both sides grow about 4.6× from the dense 8B, so batch-1 decode is still memory-bound. The formula still works once you use active parameters for work and bytes per token, and total parameters for capacity."},
+  "apply": {"task": "Pick four rows of the levers table and recompute each from the formula yourself: the FP8 decode floor, how many 8k sequences fit on an H100 with MHA vs GQA-8, the M3 vs H100 batch-1 decode ceilings, and a 1,000-token prefill on CUDA cores (66 TF/s) vs tensor cores (990).", "done": "You get 4.79 → 2.40 ms; 14 vs 59 sequences; 6.2 vs 209 tok/s; 243 vs 16.2 ms, all matching the table's before → after column.", "hint": "Free HBM is 80 − 16.06 = 63.9 GB; an 8k sequence is 8,192 × 512 KiB (MHA) or × 128 KiB (GQA-8)."},
+  "reflect": [
+    "Which prediction did you get wrong: which symbols MoE changes, or whether it stays memory-bound?",
+    "Can you say which side of the max() your own workload sits on, and why?",
+    "Which relationship is still fuzzy: tokens per weight read → which side wins, or KV growth → batch cap?",
+    "Which card's number on your causal map did you have to look up? Start there.",
+    "What will you check first on the next course's overview: where the KV term moved?"
+  ],
+  "revisit": ["perf-0-map/_overview"],
+  "prereq": []
+}

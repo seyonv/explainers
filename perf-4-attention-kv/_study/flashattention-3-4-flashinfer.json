@@ -1,0 +1,123 @@
+{
+  "prime": {
+    "problem": "FA2 run unchanged on an H100 reaches only 35% of peak, and FA3 doesn't run at all on a B200. Each GPU generation makes matmul much faster while the exp unit and shared memory stay put, so the same algorithm needs a new kernel. Serving engines also need kernels FA never provided (paged KV, decode, shared prefixes).",
+    "fits": "Last card of the attention-computation part. The algorithm is fixed since FA2 (cards I–II and FA2 I–II); this skim card asks what Hopper and Blackwell forced into the kernel, and what FlashInfer packages for engines.",
+    "expect": [
+      "tensor ops per exp: 16× → 256× → 512×",
+      "warp specialization and pingpong (FA3)",
+      "FP8 with block quantization and Hadamard rotation",
+      "software exp and conditional rescaling (FA4)",
+      "FlashInfer: paged/ragged KV, decode, cascade, deterministic scheduler"
+    ],
+    "goal": "Explain why the exponential became the attention bottleneck, name the overlap trick each generation uses, and say what FlashInfer adds for serving."
+  },
+  "attend": [
+    "At d = 128 a score costs 512 matmul FLOPs and one exp. Why does that one exp take 50% of the matmul time on an H100 and 100% on a B200?",
+    "What does a producer warpgroup do in FA3, and why does it give its registers away?",
+    "In pingpong scheduling, what runs on the exp unit while the other warpgroup holds the tensor cores?",
+    "Why does FA3's incoherent processing (random signs × Hadamard) leave QKᵀ unchanged but cut FP8 error?",
+    "Which three things does a serving engine need that a training-shaped FA kernel doesn't give it?"
+  ],
+  "core": {
+    "must": [
+      "Each generation doubles or triples tensor-core throughput → the exp unit stays at 16 ops/clk/SM → tensor ops per exp go 256× (H100) → 512× (B200) → at d = 128 exp time equals matmul time on B200 → run in series the kernel could never pass 50% of peak → FA3/FA4 are about overlap, not new math",
+      "Hopper made loads (TMA) and matmul (WGMMA) asynchronous → FA3 specializes warpgroups (a producer only loads; consumers only compute) and pingpongs two consumers so one's softmax hides under the other's GEMMs → 570 → 620–640 TF, 740 TF (75%) full",
+      "Blackwell doubled matmul and nothing else → FA4 moves some exps to FMA units as polynomials, rescales only when the max jumps by more than 8, and moves rescaling to its own warpgroup via TMEM → 1,613 TF (71%) on B200",
+      "Serving mixes prefills and decodes of different lengths over paged, partly shared KV inside CUDA graphs → FA kernels alone don't cover that → FlashInfer wraps FA2/FA3/cuDNN/CUTLASS kernels with paged/ragged KV, decode, MLA, cascade and a deterministic CPU-planned scheduler"
+    ],
+    "elevated": [
+      "The exp cost per score is fixed while matmul per score is 4d → larger head dims dilute the exp problem → it is worst at d = 64–128"
+    ],
+    "reference": [
+      "setmaxnreg and the s-stage circular buffer",
+      "the FA3 Table 2 ablation timings",
+      "FA3 FP8 RMSE numbers",
+      "FA4's degree-3 polynomial and Cody–Waite range reduction",
+      "compile times (55 s → 2.5 s)",
+      "FlashInfer's backend list and adopters"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, write one line per generation: GPU → what the hardware changed → what the kernel does about it (A100/FA2, H100/FA3, B200/FA4), then one line for FlashInfer.",
+    "checklist": [
+      "A100: non-matmul 16× slower → FA2 cuts non-matmul ops",
+      "H100: async TMA + WGMMA, exp 256× slower → FA3 warp specialization, pingpong, FP8",
+      "B200: matmul doubled, exp and SMEM unchanged → FA4 software exp, conditional rescale, TMEM pipeline",
+      "the algorithm (tiles, online softmax) is unchanged throughout",
+      "FlashInfer: serving-shaped kernels (paged, decode, cascade) behind one API"
+    ]
+  },
+  "retrieve": [
+    {
+      "q": "Explain why \"the exponential\" became the bottleneck of attention kernels, even though there is only one per score.",
+      "kind": "concept",
+      "answer": [
+        "each score needs 4d = 512 matmul FLOPs and one exp at d = 128",
+        "tensor-core throughput grew each generation; the exp unit stayed at 16 ops/clk/SM",
+        "so exp takes 50% of matmul time on H100 BF16 and 100% on B200 or H100 FP8"
+      ]
+    },
+    {
+      "q": "Walk through FA3's pingpong schedule with two consumer warpgroups: what does each one do in turn, and what keeps them in step?",
+      "kind": "mechanism",
+      "answer": [
+        "barriers make warpgroup 1's two GEMMs run before warpgroup 2's",
+        "while WG2 does its GEMMs on the tensor cores, WG1 does its softmax on the exp unit, and then they swap",
+        "a producer warpgroup keeps K, V tiles arriving by TMA so neither waits on loads"
+      ]
+    },
+    {
+      "q": "Your engine runs on a mix of A100s and H100s and serves paged, prefix-shared KV with CUDA graphs. Why call FlashInfer rather than FA3 directly, and what might you give up?",
+      "kind": "tradeoff",
+      "answer": [
+        "FA3 is Hopper-only and training-shaped: no paged decode, no shared-prefix cascade, no CUDA-graph-stable scheduler",
+        "FlashInfer picks the kernel per GPU and adds those serving features",
+        "you give up direct control and may trail the newest standalone kernel on a given chip"
+      ]
+    }
+  ],
+  "compare": [
+    {
+      "with": "perf-4-attention-kv/flashattention-2-parallelism",
+      "q": "FA2 on H100 reached 335 TF (35%); FA3 reached 740 TF on the same chip. The algorithm didn't change. What did, and why couldn't FA2's code get there?",
+      "answer": [
+        "FA2 uses Ampere-style synchronous loads and matmuls, so loading, GEMM and softmax take turns",
+        "FA3 uses TMA and WGMMA asynchronously with warp specialization and pingpong, so they overlap",
+        "FA2's gains were in partitioning work; FA3's are in overlapping units"
+      ]
+    },
+    {
+      "with": "perf-4-attention-kv/paged-memory",
+      "q": "FlashInfer's paged KV kernels exist because of PagedAttention. What does a paged layout force on the attention kernel that a contiguous FA kernel never handles, and what did vLLM's own kernel pay for it?",
+      "answer": [
+        "the kernel must fetch each K, V block through a block table instead of from one contiguous buffer",
+        "with different sequence lengths in one batch",
+        "vLLM's first paged kernel was 20–26% slower than FasterTransformer's; FlashInfer's job is to make that layout fast"
+      ]
+    }
+  ],
+  "predict": {
+    "q": "A model uses head dim 64 instead of 128. On an H100 in BF16, is the exp unit's time now below, equal to, or above the matmul time per score? And on a B200? Commit first.",
+    "answer": "At d = 64 a score has 4d = 256 matmul FLOPs, half as many, while the exp cost is unchanged. So on the H100 exp time rises to about 100% of matmul time (from 50%), and on the B200 to about 200%. Smaller heads make the exp problem worse; that is why the card says it is worst at d = 64–128 (our arithmetic: 1 / (16 × 132 × 1.83 GHz) vs 256 / 989 TF)."
+  },
+  "apply": {
+    "task": "Recompute the card's matmul-vs-exp comparison per score, then vary the head dimension: with 4d matmul FLOPs and one exp per score, give exp time as a percentage of matmul time for H100 BF16 and B200 BF16 at d = 64, 128 and 256.",
+    "done": "You have a 2 × 3 table of percentages with the formula you used, and it reproduces the card's 50% (H100) and 100% (B200) at d = 128.",
+    "hint": "exp rate: H100 16 × 132 × 1.83 GHz = 3.87 T/s; B200 16 × 148 × 1.85 GHz = 4.38 T/s. Ratio = (1 / exp rate) ÷ (4d / matmul rate). H100: 100%, 50%, 25%; B200: 201%, 100%, 50% (our arithmetic)."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: the direction head dim moves the exp problem?",
+    "Could you explain pingpong to someone as two cooks sharing one stove and one oven?",
+    "Which relationship is still fuzzy: asymmetric hardware scaling → exp bottleneck, or exp bottleneck → overlap tricks?",
+    "Why does even a perfect attention kernel speed up our 8k prefill by at most about 12%?",
+    "What will you look for in the KV-size cards: which of these kernels matter in decode at all?"
+  ],
+  "revisit": [
+    "perf-4-attention-kv/flashattention-2-algorithm",
+    "perf-4-attention-kv/flashattention-2-parallelism",
+    "perf-3-kernels/tensor-cores-low-precision"
+  ],
+  "prereq": [
+    "perf-4-attention-kv/flashattention-2-algorithm"
+  ]
+}

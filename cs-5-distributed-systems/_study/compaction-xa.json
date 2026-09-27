@@ -1,0 +1,121 @@
+{
+  "prime": {
+    "problem": "Append-only storage makes writes fast and snapshots cheap, but an update or a delete is just one more record: old bytes stay on disk, and deleted data stays readable until every file, replica and backup is rewritten. And when one change must commit in two different systems, XA's two-phase commit can leave both holding locks while its coordinator is down.",
+    "fits": "Builds on the money-transfer card, which avoided distributed transactions with a log, and on the correlated-failure card's multiplied availabilities. This card shows the two costs that design sidesteps: compaction and deletion in immutable stores, and blocking in 2PC.",
+    "expect": [
+      "compaction: newest record per key, then delete old files",
+      "tombstones must outlive every older copy",
+      "2PC: PREPARE, vote, COMMIT/ABORT, ACK: <code>M = 4n</code>",
+      "the in-doubt window",
+      "<code>A<sub>txn</sub> = a<sup>n+1</sup></code>"
+    ],
+    "goal": "Explain why a delete in an append-only store is a write that must be compacted (and why erasure is harder still), and trace 2PC through a coordinator crash to show why prepared participants block and how much that costs."
+  },
+  "attend": [
+    "In the two-segment example, why can't compaction of seg2 alone drop u1's tombstone?",
+    "Why does a GDPR erasure request need more than a tombstone?",
+    "After voting YES, why may a participant neither commit nor abort on its own?",
+    "Why does the in-doubt window normally last one round trip, and what stretches it to the whole outage?",
+    "Why does adding participants multiply downtime, and which assumption makes that estimate optimistic?"
+  ],
+  "core": {
+    "must": [
+      "Append-only → an update or delete is a new record (a tombstone) → old records stay until compaction rewrites files keeping the newest per key → disk holds 3× the live data before compacting here, and compaction work must be tuned",
+      "A tombstone hides older copies → drop it while an older segment still holds the key and the old value reappears → it must outlive every older copy → and true deletion must reach every file, replica and backup",
+      "2PC: PREPARE → every participant durably promises (YES) and keeps its locks → the coordinator logs COMMIT → tells everyone → a YES voter can't decide alone, because only the coordinator's log knows the outcome",
+      "Coordinator crashes after the votes → every participant stays in doubt, holding locks for the whole outage (30 s = 3,750× the normal 8 ms hold) → and every participant plus the coordinator must be up: 0.999<sup>3</sup> → 129.5 min/month down vs 43.2 for one part"
+    ],
+    "elevated": [
+      "Messages grow as 4n but latency stays two round trips, because each phase goes to all participants in parallel → the cost of adding a participant is availability and failure amplification, not latency"
+    ],
+    "reference": [
+      "Datomic excision, CouchDB's append-only B-tree, RethinkDB's young blocks",
+      "Cassandra's <code>gc_grace_seconds</code>",
+      "the source's four XA complaints by name",
+      "three-phase commit's assumptions; Spanner's Paxos-replicated 2PC"
+    ]
+  },
+  "compress": {
+    "prompt": "In two short chains from memory: (1) delete → tombstone → compaction → when the tombstone may go → erasure; (2) PREPARE → YES → coordinator logs → crash → in doubt → locks held. Add the downtime formula with n = 2.",
+    "checklist": [
+      "deletes and updates are appended; compaction reclaims space",
+      "tombstones must outlive every older copy of the key",
+      "erasure means every file, replica and backup",
+      "a YES voter is bound to the coordinator's decision",
+      "coordinator down after the votes → locks held for the outage",
+      "1 − 0.999<sup>n+1</sup>: n = 2 → 129.5 min/month; one log instead avoids it"
+    ]
+  },
+  "retrieve": [
+    {
+      "q": "Explain why an append-only store gets high write throughput and cheap snapshots, and what it pays for them.",
+      "kind": "concept",
+      "answer": [
+        "writes only append, never seek and overwrite; old data is never changed, so a snapshot is just a position",
+        "the price: extra disk for dead records, and background compaction work to reclaim it",
+        "and deletion becomes a write whose effect is only complete after compaction everywhere"
+      ]
+    },
+    {
+      "q": "Walk through 2PC for the order service (database + queue) with the coordinator crashing after logging COMMIT: message by message, and the state of each participant.",
+      "kind": "mechanism",
+      "answer": [
+        "PREPARE × 2 → each writes YES durably, keeps locks, replies YES × 2 (4 messages)",
+        "coordinator logs COMMIT (the commit point) and crashes",
+        "db and queue are prepared and in doubt, holding locks",
+        "on restart the coordinator reads its log and sends COMMIT; only then do they commit and release"
+      ]
+    },
+    {
+      "q": "A team wants XA across the orders database, a payments database and a queue (n = 3). What do you tell them about availability, and what do you propose instead?",
+      "kind": "tradeoff",
+      "answer": [
+        "12 messages, and every part plus the coordinator must be up: 0.999<sup>4</sup> = 99.60%, about 172.5 min down a month vs 43.2",
+        "a coordinator crash blocks all three while holding locks",
+        "instead: commit once to one log and let each system consume it with request-id dedup; a slow consumer lags instead of blocking"
+      ]
+    }
+  ],
+  "compare": [
+    {
+      "with": "cs-6-data-systems/lsm-trees",
+      "q": "The LSM-tree card compacts sorted runs for read speed; this card compacts for space and deletion. What drives compaction in each view, and what goes wrong if it falls behind?",
+      "answer": [
+        "LSM view: reads must check more runs until they merge, so read amplification grows",
+        "this card's view: dead records waste disk and deleted data stays readable",
+        "falling behind: slow reads and full disks; dropping tombstones too early: resurrected data"
+      ]
+    },
+    {
+      "with": "cs-5-distributed-systems/consensus-raft",
+      "q": "2PC blocks when its coordinator dies; Raft elects a new leader in under a second. Why can't 2PC's participants just elect a new coordinator, and how does Spanner combine the two?",
+      "answer": [
+        "2PC needs <i>every</i> participant to agree (atomic commit); consensus needs only a majority to agree on a value",
+        "the decision lives only in the coordinator's log, so a new coordinator can't know it",
+        "Spanner replicates each participant and the coordinator with Paxos, so the decision survives and a crashed coordinator is replaced instead of waited for"
+      ]
+    }
+  ],
+  "predict": {
+    "q": "Move the XA transaction's participants across a continent: the normal lock hold becomes one 69 ms round trip instead of 8 ms. At 1,000 transactions/s, how many transactions are in doubt when the coordinator crashes, and how many times the normal hold does a 30 s restart cost? Commit first.",
+    "answer": "In doubt at the crash = 1,000 × 0.069 = 69 transactions (vs 8). A 30 s outage is 30 / 0.069 ≈ 435× the normal hold (vs 3,750×). The ratio looks milder only because the normal hold itself is 8.6× longer; every transaction now holds its locks 69 ms even when nothing fails, and more of them are caught in doubt."
+  },
+  "apply": {
+    "task": "Extend <code>two_phase_commit</code> in <code>code/compaction-xa.py</code>: make one participant vote NO and check that both end aborted with 8 messages for n = 2. Then add a <code>recover(coordinator_log)</code> step that, after <code>crash_after_votes=True</code>, reads the logged decision and finishes phase 2. Finally, add a timeout in <code>prepare</code>: a participant that hasn't voted yet may abort alone. Show it can't do the same once it has voted.",
+    "done": "The NO run prints ABORT with both participants aborted; the crash run leaves both prepared until <code>recover</code> commits them; and your timeout code aborts an unvoted participant but refuses to touch a prepared one, with a one-line comment saying why.",
+    "hint": "The coordinator must log the decision <i>before</i> sending phase 2; <code>recover</code> is just phase 2 replayed from that log."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: the in-doubt count or the ratio?",
+    "Could you explain why a YES voter is stuck, as a two-sentence story?",
+    "Which relationship is still fuzzy: tombstone → compaction → when it's safe to drop, or PREPARE → promise → blocking?",
+    "Where does a system you know hide an XA-style transaction (for example, a DB write plus a message send)?",
+    "What will you reopen before the Raft card?"
+  ],
+  "revisit": [
+    "cs-5-distributed-systems/exactly-once-transfer",
+    "cs-5-distributed-systems/correlated-failure",
+    "cs-6-data-systems/lsm-trees"
+  ],
+  "prereq": []
+}

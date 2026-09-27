@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Checkpoint 2: memory decides the batch</title>
+<style>
+:root{
+  --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
+  --text:#1c1f23; --muted:#6b7068; --faint:#b9b9b3;
+  --accent:#4a9d77; --accent-bg:#dcefdf; --accent-border:#8cc79c;
+  --red:#c0492b; --red-bg:#fbeceb;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#15171a; --surface:#1d2024; --surface2:#24282d; --border:#32373d;
+    --text:#e6e8ea; --muted:#9aa1a9; --faint:#4a5057;
+    --accent:#5fb37f; --accent-bg:#1c2b22; --accent-border:#3f7a55;
+    --red:#e57368; --red-bg:#2e1f1e;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text)}
+.card{max-width:820px;margin:0 auto;padding:28px 32px;font-family:-apple-system,"Inter",system-ui,sans-serif;line-height:1.45}
+h1{font-size:26px;font-weight:600;margin:0 0 6px;letter-spacing:-0.01em}
+.sub{font-size:15px;color:var(--muted);margin:0 0 20px}
+h2{font-size:17px;font-weight:600;margin:26px 0 10px}
+p{font-size:15px;margin:0 0 10px}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+
+/* Tables and formulas */
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border)}
+th{font-size:12px;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:none}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+.formula{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin:10px 0;white-space:pre;overflow-x:auto;line-height:1.55}
+
+.foot{margin-top:22px;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+.foot p{font-size:13px}
+a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+
+/* Checkpoint */
+.how{border:1px solid var(--border);border-radius:10px;padding:10px 16px;background:var(--surface);margin:0 0 8px}
+.how p{font-size:14px;margin:4px 0}
+ol.qs{padding-left:24px;margin:6px 0}
+ol.qs>li{margin:0 0 16px;font-size:15px}
+.tag{display:inline-block;font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:var(--accent);border:1px solid var(--accent-border);border-radius:4px;padding:0 5px;margin-right:6px;vertical-align:1px}
+details.chk{margin:6px 0 0;padding:4px 12px;border-left:3px solid var(--accent-border);background:var(--surface2);border-radius:0 6px 6px 0;font-size:14px}
+details.chk>summary{cursor:pointer;color:var(--accent);font-size:13px;font-weight:600}
+details.chk ul,details.chk ol{margin:6px 0;padding-left:20px}
+details.chk li{margin:3px 0}
+.re{font-size:13px;color:var(--muted);margin:4px 0 6px}
+.tw{overflow-x:auto;margin:8px 0}
+table.cmp{min-width:680px;font-size:13.5px;table-layout:fixed}
+table.cmp th,table.cmp td{vertical-align:top}
+table.cmp td:first-child{font-weight:600;width:19%}
+table.cmp td.blank{height:64px;background:var(--surface);border:1px dashed var(--border)}
+table.fix td{vertical-align:top}
+.proj{border:1px solid var(--accent-border);border-radius:10px;padding:12px 18px;margin:8px 0}
+.proj h3{font-size:15px;margin:12px 0 4px}
+.proj p,.proj li{font-size:14px}
+.proj ol,.proj ul{padding-left:20px;margin:4px 0}
+.proj li{margin:5px 0}
+.card>ul{font-size:15px;padding-left:22px}
+.card>ul li{margin:3px 0}
+.done{background:var(--accent-bg);border:1px solid var(--accent-border);border-radius:8px;padding:8px 12px;font-size:14px;margin:10px 0}
+@media (max-width:560px){.card{padding:22px 16px}}
+</style>
+</head>
+<body>
+<article class="card">
+<h1>Checkpoint 2: memory decides the batch</h1>
+<p class="sub">Ties together <a href="params-vs-kv.html">parameters vs the KV cache</a>, <a href="modeling-13b.html">modelling LLaMA 2-13B</a> and <a href="kv-tricks.html">tricks that shrink the KV cache</a>, with <a href="attention-intensity.html">attention's intensity</a> and <a href="step-time.html">the step-time formula</a> behind them: why KV bytes per sequence, not FLOPs, set how many users fit and how many tokens per second a chip can sell.</p>
+
+<div class="how">
+<p><b>How to use this page.</b> Close the five cards. Answer each question in writing, in full sentences, <i>before</i> opening its Check. A wrong or shaky answer isn't a failure; it tells you exactly which section to reopen. The questions are mixed on purpose, so you have to work out which idea applies before you can answer.</p>
+</div>
+
+<h2>1 · Mixed retrieval</h2>
+<ol class="qs">
+<li><span class="tag">which concept?</span>A product serving Llama-3.1-8B on one H100 at 8k context fits 59 users. Product wants 128k context for the same GPU. What happens to the user count, and which bytes now dominate a decode step?
+<details class="chk"><summary>Check</summary><ul>
+<li>one 128k sequence holds 17.2 GB of KV, more than the 16.06 GB of weights</li>
+<li>only 3 sequences fit in the 63.9 GB left</li>
+<li>KV bytes dominate every step: KV per sequence, not the weights or the math, now caps both users and speed</li>
+</ul><p class="re">Missed it? Reopen <a href="params-vs-kv.html">parameters vs the KV cache</a>, "Is KV always the bigger problem?" and its try-this.</p></details></li>
+
+<li>Rebuild the book's 6.7 GB: LLaMA 2-13B (L = 40, K = 40, H = 128), one 8,192-token sequence in bf16. How many such caches outweigh its 26 GB of weights?
+<details class="chk"><summary>Check</summary><ul>
+<li>2 × 2 bytes × 128 × 40 × 40 × 8,192 = 6,710,886,400 B ≈ 6.71 GB (800 KiB per token)</li>
+<li>26.03 / 6.71 = 3.88, so four caches (26.8 GB) outweigh the model</li>
+</ul><p class="re">Missed it? Reopen <a href="params-vs-kv.html">parameters vs the KV cache</a>, step 3.</p></details></li>
+
+<li>In the book's MHA table, batch 16 → 240 (15× the sequences) buys only 1.22× the throughput. What sets the ceiling, what is its value, and what is the only lever that raises it?
+<details class="chk"><summary>Check</summary><ul>
+<li>throughput = B·W / (B·KV + P) → W / KV<sub>seq</sub> as B grows</li>
+<li>6.56e12 / 6.7e9 ≈ 979 tok/s on the 8 chips; batch 16 already gives 788</li>
+<li>only fewer KV bytes per sequence raise it: 5× smaller KV → ceiling 4,896</li>
+</ul><p class="re">Missed it? Reopen <a href="modeling-13b.html">modelling LLaMA 2-13B</a>, "What the tables teach", point 1.</p></details></li>
+
+<li><span class="tag">which concept?</span>In the H100 ladder, a model that shares each KV cache between adjacent layers stores half as many bytes, yet one variant gets 28.0× the MHA throughput and another only 15.6×. Which idea separates them, and which one would you ask the kernel team to build?
+<details class="chk"><summary>Check</summary><ul>
+<li>storage vs reads: both variants store 18.5 KiB per token, so both fit 412 sequences</li>
+<li>if every layer re-reads the shared cache, bytes read per step don't halve: 144 GB per step, 43.0 ms, 9,589 tok/s</li>
+<li>build the kernel that reads each shared cache once: ≈ 23.9 ms and 17,253 tok/s</li>
+</ul><p class="re">Missed it? Reopen <a href="kv-tricks.html">tricks that shrink the KV cache</a>, the ladder's re-read row and "Cross-layer sharing".</p></details></li>
+
+<li>With HBM full, why does the H100 step stay near 23.9 ms whether the KV is 128 KiB or 18.5 KiB per token, and what does that make throughput proportional to?
+<details class="chk"><summary>Check</summary><ul>
+<li>the batch grows until weights plus KV fill ≈ 80 GB, so each step reads ≈ 80 GB</li>
+<li>80 GB ÷ 3.35 TB/s ≈ 23.9 ms, whatever the trick</li>
+<li>throughput = sequences that fit ÷ 23.9 ms, which is ∝ 1 / KV bytes per token (while decode stays memory-bound)</li>
+</ul><p class="re">Missed it? Reopen <a href="kv-tricks.html">tricks that shrink the KV cache</a>, "Why KV bytes per token set the throughput".</p></details></li>
+
+<li><span class="tag">which concept?</span>A finance lead proposes serving LLaMA 2-13B (MHA) on 64 chips instead of 8 to cut cost per token. Which idea predicts the result, and what number backs it?
+<details class="chk"><summary>Check</summary><ul>
+<li>cost per token ∝ 1 / tokens per second per chip</li>
+<li>more chips add HBM and cut latency, but per-chip throughput hits a wall of 0.82e12 / 6.7e9 ≈ 122 tok/s</li>
+<li>the card's check: 8 → 64 chips moves MHA from 97 to only 119 tok/s per chip, so cost barely falls</li>
+</ul><p class="re">Missed it? Reopen <a href="modeling-13b.html">modelling LLaMA 2-13B</a>, "Just add chips" and the per-chip paragraph.</p></details></li>
+
+<li>Training LLaMA 2-13B needs roughly 100 GB for parameters plus optimizer state and several TB of checkpointed activations. Serving it needs 26 GB plus KV. Name each thing that disappears, and the one thing that appears.
+<details class="chk"><summary>Check</summary><ul>
+<li>gone: fp32 optimizer state (Adam moments), gradients, and activations kept for a backward pass (≈ 80 MB remain for an 8k prefill)</li>
+<li>appears: the KV cache, one per sequence, growing with every token</li>
+</ul><p class="re">Missed it? Reopen <a href="params-vs-kv.html">parameters vs the KV cache</a>, step 2.</p></details></li>
+
+<li>A 4k sliding window saves little on Llama-shaped layers at 8k context but a lot at 128k. Why, and who would have to make that change?
+<details class="chk"><summary>Check</summary><ul>
+<li>a local layer keeps only the last W tokens; at 8k it keeps half, at 128k about 3%</li>
+<li>the local-layer rung is 13.8× smaller KV than MHA at 8k but 43.8× at 128k</li>
+<li>it's an architecture choice made at training time; a server can't add it to an existing model</li>
+</ul><p class="re">Missed it? Reopen <a href="kv-tricks.html">tricks that shrink the KV cache</a>, the ladder and "Can a serving team just turn all of these on?".</p></details></li>
+</ol>
+
+<h2>2 · Compare the KV-shrinking tricks</h2>
+<p>Fill this in on paper first. Rows are the ways to fit more sequences into the same HBM; columns ask what each one does, which design choice causes its gain, when you'd pick it, and how it fails.</p>
+<div class="tw"><table class="cmp">
+<tr><th>Approach</th><th>Core mechanism</th><th>Design choice that causes the difference</th><th>When to choose it</th><th>How it fails</th></tr>
+<tr><td>GQA / MQA</td><td class="blank"></td><td class="blank"></td><td class="blank"></td><td class="blank"></td></tr>
+<tr><td>KV quantization (fp8 / int8)</td><td class="blank"></td><td class="blank"></td><td class="blank"></td><td class="blank"></td></tr>
+<tr><td>Local (sliding-window) layers</td><td class="blank"></td><td class="blank"></td><td class="blank"></td><td class="blank"></td></tr>
+<tr><td>Cross-layer KV sharing</td><td class="blank"></td><td class="blank"></td><td class="blank"></td><td class="blank"></td></tr>
+<tr><td>Ragged reads and paging</td><td class="blank"></td><td class="blank"></td><td class="blank"></td><td class="blank"></td></tr>
+</table></div>
+<details class="chk"><summary>Check: the filled-in table</summary>
+<div class="tw"><table class="cmp">
+<tr><th>Approach</th><th>Core mechanism</th><th>Design choice that causes the difference</th><th>When to choose it</th><th>How it fails</th></tr>
+<tr><td>GQA / MQA</td><td>several query heads share one K/V head</td><td>fewer KV heads stored: KV ÷ the Q:KV ratio, and decode intensity rises to ≈ G</td><td>when training a model meant for long-context, high-batch serving</td><td>training-time only; too few heads can cost quality; with MQA the cache can't be head-sharded</td></tr>
+<tr><td>KV quantization</td><td>store each K, V number in 1 byte instead of 2</td><td>fewer bits per number, applied after training</td><td>serving an existing model that is KV-bound (2,489 → 4,986 tok/s at 8k on H100)</td><td>accuracy loss that must be checked per model; no help when weights dominate</td></tr>
+<tr><td>Local layers</td><td>some layers attend only to the last W tokens</td><td>each local layer's cache stops growing at W</td><td>very long contexts (43.8× smaller KV at 128k vs 13.8× at 8k)</td><td>training-time only; no gain below the window; long-range recall depends on the remaining global layers</td></tr>
+<tr><td>Cross-layer sharing</td><td>adjacent layers reuse one KV cache</td><td>halves storage; halves reads only if the kernel reads it once</td><td>models trained with it (Character.ai reports 2–3×)</td><td>training-time only; if re-read, 28.0× becomes 15.6× in the ladder</td></tr>
+<tr><td>Ragged reads, paging</td><td>read only real tokens; store them in small pages</td><td>removes padding rather than shrinking tokens</td><td>always, for mixed request lengths (42.3% of reads skipped, 20 tokens wasted instead of 13,876)</td><td>gives nothing when every request fills its context</td></tr>
+</table></div>
+<p class="re">Shaky rows? All rows: <a href="kv-tricks.html">tricks that shrink the KV cache</a>, "What each trick does". GQA's effect on throughput: <a href="modeling-13b.html">modelling LLaMA 2-13B</a>. Its effect on intensity: <a href="attention-intensity.html">attention's intensity</a>.</p>
+</details>
+
+<h2>3 · Project: an HBM budget for a mixed workload</h2>
+<div class="proj">
+<p><b>What it reinforces:</b> the fit count (<a href="params-vs-kv.html">parameters vs KV</a>), the throughput ceiling and why the step stays fixed when HBM is full (<a href="modeling-13b.html">modelling 13B</a>, <a href="kv-tricks.html">KV tricks</a>), the per-sequence KV read (<a href="attention-intensity.html">attention's intensity</a>) and the step formula (<a href="step-time.html">step time</a>).</p>
+<p>Llama-3.1-8B in bf16 on one H100 (80 GB, 3.35 TB/s, 63.94 GB free after weights, 131,072 B of KV per token). Requests come in a repeating mix of four lengths: 1,200, 3,000, 6,500 and 8,192 tokens of context (the illustrative mix from the KV tricks card). Write a short script that, for each configuration below, prints KV per request, the number of requests that fit, the step time (weights + KV actually read) and tokens/s:</p>
+<ol>
+<li><b>Padded 8k slots, bf16 KV.</b> Every request reserves and reads 8,192 tokens.</li>
+<li><b>Padded slots with ragged reads.</b> Same reservation, but each step reads only real tokens.</li>
+<li><b>Paged, bf16 KV.</b> Each request stores only its real tokens (use the mix's average length).</li>
+<li><b>Paged, fp8 KV.</b> As 3, with half the bytes per token.</li>
+<li><b>Check the bound.</b> For the largest batch, compare 2·B·N/C with the weight read. Is decode still memory-bound?</li>
+<li><b>Decide.</b> Which of these can a serving team switch on today for this model, and which gain came from changing <i>reads</i> rather than <i>fits</i>?</li>
+</ol>
+<div class="done"><b>Done when:</b> you have four rows (requests, step, tokens/s), a memory-bound check for the largest batch, and one sentence each on what ragged reads fix that paging doesn't, and vice versa. Then compare with the check.</div>
+<details class="chk"><summary>Check: the numbers (computed with the cards' formulas)</summary>
+<ul>
+<li>Average request: (1,200 + 3,000 + 6,500 + 8,192) / 4 = 4,723 tokens.</li>
+<li>Padded, bf16: 1.07 GB per slot → 59 requests, step 23.7 ms, ≈ 2,489 tok/s.</li>
+<li>Padded + ragged reads: still 59 requests (the memory stays reserved), but each step reads only 59 × 0.62 GB + 16.06 GB → 15.7 ms, ≈ 3,759 tok/s. Reads fell; fits didn't.</li>
+<li>Paged, bf16: 0.62 GB per request → 103 requests, step 23.8 ms, ≈ 4,323 tok/s. Fits rose.</li>
+<li>Paged, fp8: 0.31 GB per request → 206 requests, step 23.8 ms, ≈ 8,645 tok/s. Math at B = 206 is 3.35 ms, under the 4.79 ms weight read: still memory-bound.</li>
+<li>All four are serving-side choices; GQA is already built into this model, and local layers or sharing would need retraining.</li>
+</ul></details>
+</div>
+
+<h2>4 · Reflect</h2>
+<ul>
+<li>Which link between these cards is still fuzzy: <i>KV per token → sequences that fit</i>, <i>sequences that fit → throughput</i>, or <i>bytes read → step time</i>?</li>
+<li>Can you explain why adding chips doesn't lower cost per token for an MHA model, in one sentence?</li>
+<li>Which question did you answer with the wrong concept? That confusion is the comparison to redo.</li>
+<li>In the project, did you expect ragged reads to raise the user count? What does that tell you about <i>storage</i> vs <i>reads</i>?</li>
+</ul>
+<table class="fix">
+<tr><th>If this is fuzzy</th><th>Reopen</th></tr>
+<tr><td>counting KV bytes and how many sequences fit</td><td><a href="params-vs-kv.html">parameters vs the KV cache</a>, step 3 and "How many sequences fit"</td></tr>
+<tr><td>why throughput has a ceiling of W / KV</td><td><a href="modeling-13b.html">modelling LLaMA 2-13B</a>, the formula and "What the tables teach"</td></tr>
+<tr><td>which tricks a server controls</td><td><a href="kv-tricks.html">KV tricks</a>, "Can a serving team just turn all of these on?"</td></tr>
+<tr><td>why KV reads are never shared across the batch</td><td><a href="attention-intensity.html">attention's intensity</a>, "What gets read"</td></tr>
+<tr><td>which term of the step to attack</td><td><a href="step-time.html">the step-time formula</a>, the H100 table</td></tr>
+</table>
+
+<p class="foot">Related: <a href="_overview.html">overview</a> · <a href="checkpoint-1.html">checkpoint 1</a> · <a href="params-vs-kv.html">params-vs-kv</a> · <a href="modeling-13b.html">modeling-13b</a> · <a href="kv-tricks.html">kv-tricks</a> · <a href="attention-intensity.html">attention-intensity</a> · <a href="step-time.html">step-time</a> · <a href="../learning-principles/learning-principles.html">learning principles</a><br>
+Sources: the five cards above (Scaling Book Part 7, and the course's recomputations for Llama-3.1-8B on one H100). The project's request mix is the KV tricks card's illustrative one; its four rows were computed with the cards' own formulas, treating the mix as repeating.</p>
+</article>
+</body>
+</html>

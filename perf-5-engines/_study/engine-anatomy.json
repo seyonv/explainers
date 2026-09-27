@@ -1,0 +1,61 @@
+{
+  "prime": {
+    "problem": "A small model on a fast GPU finishes a decode step in about 5 ms. Everything else the engine does per step (HTTP, tokenizing, scheduling, building tensors, detokenizing, streaming) is Python on a CPU, and if it runs between GPU steps the GPU sits idle. An engine that ignores this can spend a large share of its time on CPU overhead.",
+    "fits": "After the scheduling cards, this one shows where the scheduler actually runs and what surrounds it. It reuses course 3's CUDA graphs and course 2's step times, and sets up the structured-outputs card, whose mask is one more CPU job in this loop.",
+    "expect": ["API server, EngineCore busy loop, GPU worker processes", "ZMQ between processes", "persistent batch (diffs) and CUDA graphs", "serial vs overlapped CPU work", "SGLang's overlap scheduler"],
+    "goal": "Follow one request through vLLM V1's processes, compute what a given CPU cost per step does to throughput at small and large batch, and explain which fix hides which part of the overhead."
+  },
+  "attend": [
+    "Which jobs did vLLM V1 move out of the busy loop, and which ones are still between one GPU step and the next?",
+    "Why is the same 1 ms of CPU a fifth of the step at batch 1 but a few percent at batch 238?",
+    "What does a persistent batch send to the worker each step instead of rebuilding tensors?",
+    "How can SGLang prepare batch n+1 before batch n has sampled its tokens?",
+    "Why is detokenization a performance topic at all, and why does it need per-request state?"
+  ],
+  "core": {
+    "must": [
+      "GPU step ≈ 5 ms at batch 1 → any CPU work run serially between steps adds directly to the step (1 ms → +20.5%, 205 → 170 tok/s) → at batch 238 the same 1 ms is +4.2% → CPU overhead bites small models, small batches and fast GPUs",
+      "Front-end jobs (HTTP, tokenize, detokenize, stream) moved to a separate process connected by ZMQ → they overlap with the loop → plus diffs instead of rebuilds and CUDA graphs → less CPU per step (up to 1.7× vs V0) → but scheduling and input prep still sit between GPU steps",
+      "Overlap scheduling prepares batch n+1 while the GPU runs batch n → step = max(GPU, CPU) instead of the sum → CPU cost disappears while it's shorter than the GPU step → at the price of planning with 'future tokens' not yet sampled"
+    ],
+    "elevated": [
+      "CUDA graphs replace hundreds of kernel launches inside a step with one replay → big win at batch 1 → but only inside the step, and each graph is fixed to a captured batch size (FULL for uniform decode, PIECEWISE for mixed)"
+    ],
+    "reference": [
+      "process-count formula (A + DP + N, + 1 coordinator)",
+      "cudagraph_mode names and backend support",
+      "flag names: --async-scheduling, --disable-overlap-schedule, stream_interval",
+      "SGLang's TokenizerManager/DetokenizerManager naming"
+    ]
+  },
+  "compress": {
+    "prompt": "Draw vLLM V1 from memory as boxes (processes) and arrows (ZMQ), numbering the eight steps a request takes. Then write the two formulas, serial and overlapped, and one line on which fix attacks which part.",
+    "checklist": [
+      "API server: HTTP, tokenize; later OutputProcessor detokenizes and streams",
+      "EngineCore busy loop: schedule → executor → update requests → next step",
+      "GPU worker: build tensors from diffs, replay CUDA graph, sample (with masks and penalties)",
+      "serial: t_GPU + t_CPU; overlapped: max(t_GPU, t_CPU)",
+      "isolation moves the front end off the loop; overlap hides the scheduling itself; graphs speed up the inside of a step"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why vLLM's team says CPU overhead matters most for 'smaller models like Llama-8B running on H100', using the step-time numbers.", "kind": "concept", "answer": ["the GPU step is only ~5 ms (4.87 ms at batch 1)", "per-step CPU work is roughly fixed, so its share is largest when the GPU step is shortest", "1 ms is 20.5% at batch 1 but 4.2% at batch 238 (23.86 ms steps)"]},
+    {"q": "Walk one chat request through vLLM V1 from HTTP to the streamed text: which process does each job, and what crosses ZMQ?", "kind": "mechanism", "answer": ["API server: HTTP and tokenization; the token ids go over ZMQ to EngineCore", "EngineCore: scheduler emits {req_id: num_tokens}; executor sends the step to the GPU worker", "worker: apply diffs to the persistent batch, replay a CUDA graph, sample (masks, penalties)", "EngineCore appends token ids, frees finished blocks; ids go back over ZMQ", "OutputProcessor in the front end detokenizes incrementally and streams"]},
+    {"q": "Your 64-user service shows GPU gaps between steps. You can enable overlap/async scheduling, capture more CUDA graph sizes, or raise stream_interval. Which gap does each one close, and what does each cost?", "kind": "tradeoff", "answer": ["overlap/async scheduling hides scheduling and input prep behind the GPU step; harder to build, plans before tokens exist", "CUDA graphs cut launch overhead inside a step; fixed batch sizes, capture memory", "stream_interval batches streamed tokens to cut host overhead; choppier streaming"]}
+  ],
+  "compare": [
+    {"with": "perf-3-kernels/fusion-cuda-graphs", "q": "Kernel fusion, CUDA graphs and overlap scheduling all attack 'the GPU waiting on the CPU'. At which level does each work, and which one would help a step whose kernels are already fused and graphed but whose scheduler takes 1 ms?", "answer": ["fusion: fewer kernels (and less memory traffic) inside one op sequence", "CUDA graphs: one launch for a whole recorded step", "overlap: CPU work for the next step runs during this step", "only overlap hides a 1 ms scheduler; the other two don't touch work between steps"]},
+    {"with": "perf-5-engines/orca-system", "q": "Orca split control messages onto gRPC so the CPU stayed ahead of the GPU; vLLM V1 isolated a busy loop and SGLang overlaps scheduling. What is the shared idea, and what specific stall does each remove?", "answer": ["shared: keep the CPU's per-iteration decisions off the GPU's critical path", "Orca: a CPU–GPU sync per iteration caused by control data travelling over NCCL", "vLLM V1: front-end work (tokenize, detokenize, stream) running in the loop's process", "SGLang: scheduling and metadata prep for the next batch"]}
+  ],
+  "predict": {"q": "You move the same engine to a GPU whose decode step is twice as fast (2.4 ms at batch 1), with the same CPU and the same 1 ms of serial scheduling per step. What happens to the throughput loss at batch 1, and what does that say about CPU work as GPUs get faster? Commit first.", "answer": "The loss roughly doubles: 1 ms on a 2.4 ms step is about +42% time (≈ 29% fewer tokens), against +20.5% on 4.87 ms. As GPUs get faster and the CPU doesn't, the fixed CPU work per step grows as a share, so overlap and moving work off the loop become more important, not less. The structured-outputs card makes the same point for grammar masks."},
+  "apply": {"task": "Extend the card's CPU-cost table to batch 64 at 2k context, where course 2's model gives a 9.92 ms step (6,450 tok/s). For 0.5, 1 and 2 ms of serial CPU per step, compute the added time in % and the resulting tok/s, then the overlapped result. Also count the processes for vllm serve -tp=8 and for -tp=2 -dp=2.", "done": "A three-row table for batch 64 (added %, serial tok/s, overlapped tok/s) and two process counts, before checking.", "hint": "Check after trying (our recomputation): 0.5 ms → +5.0%, 6,141 tok/s; 1 ms → +10.1%, 5,860; 2 ms → +20.2%, 5,368. Overlapped, all three stay at 6,450 because each CPU cost is under 9.92 ms. Processes: 1 + 1 + 8 = 10; 2 + 2 + 4 + 1 = 9."},
+  "reflect": [
+    "Which prediction did you get wrong: how much faster GPUs raise the CPU share?",
+    "Could you explain the difference between CUDA graphs and overlap scheduling in one sentence each, without mixing them up?",
+    "Which relationship is still fuzzy: GPU step length → CPU share, or overlap → max instead of sum?",
+    "Why does SGLang give detokenization its own process while vLLM keeps it in the front end? Could you argue either side?",
+    "What will you look for on the structured-outputs card: where the grammar mask sits in this loop?"
+  ],
+  "revisit": ["perf-5-engines/scheduler", "perf-3-kernels/fusion-cuda-graphs", "perf-2-scaling-book-inference/step-time"],
+  "prereq": ["perf-5-engines/scheduler"]
+}

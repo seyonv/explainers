@@ -1,0 +1,68 @@
+{
+  "prime": {
+    "problem": "Every decode step needs the keys and values of every earlier token. Rebuild them each step and generating n tokens costs O(n²) token-passes: 276× slower at a full batch in our model. Keep them and you pay in memory, 128 KiB per token, and that memory ends up deciding how many requests can share a step.",
+    "fits": "Second card. The token loop showed that decode reads something besides the weights; this card says what it is, how big it is, and why it, not compute, caps the batch. The block manager, admission and prefix-caching cards all manage this one resource.",
+    "expect": [
+      "K and V per token, per layer, per KV head",
+      "<code>b_tok = 2 · L · K · H · s</code> = 128 KiB",
+      "O(n) with a cache vs O(n²) without",
+      "capacity (238 at 2k) and the per-step KV read (80% of a full step)",
+      "levers: GQA, FP8, MLA, paging, prefix sharing"
+    ],
+    "goal": "Compute a model's KV size per token and how many sequences fit, explain why the cache both enables fast decode and caps the batch, and pick a lever to shrink it."
+  },
+  "attend": [
+    "Why can token 5's key be computed once and kept, even though token 500 arrives later?",
+    "The query is never cached. What makes it different from K and V?",
+    "Which two numbers in the size formula does GQA shrink, and which does FP8 shrink?",
+    "The no-cache penalty is 3.5× for one request but 276× at a full batch. What was the single request's step hiding the recompute under?",
+    "The cache costs memory and it costs time. Where in the step formula does each cost appear?"
+  ],
+  "core": {
+    "must": [
+      "Causal attention → earlier tokens never see later ones → a token's K and V never change → compute them once, keep them → each decode step processes one new token: O(n) instead of O(n²)",
+      "Each token stores 2 × 32 layers × 8 KV heads × 128 dims × 2 bytes = 128 KiB → 63.9 GB of free HBM holds 487,504 tokens → 238 sequences at 2k, 59 at 8k → KV capacity, not compute, caps the batch below the 295 critical batch size",
+      "Every decode step reads every scheduled request's whole context → the KV read grows with batch × context → at B = 238 it is 19.07 of 23.86 ms (80%) → every byte cut per token buys both more sequences and a faster step"
+    ],
+    "elevated": [
+      "GQA shares one KV head among 4 query heads → 8 KV heads instead of 32 → 4× less cache than plain MHA for Llama-3.1-8B (128 vs 512 KiB per token)",
+      "Recompute vs keep vs offload is a bytes-vs-FLOPs trade → offload pays only when moving the bytes back beats rebuilding them → vLLM V1 recomputes a preempted request by default"
+    ],
+    "reference": [
+      "the MLA and MQA per-token sizes for a hypothetical Llama-3.1-8B (36 KiB, 16 KiB)",
+      "DeepSeek-V3's 68.6 KiB and the 56.3% on-disk hit rate",
+      "the illustrative 50 GB/s host link and its 5.4 ms reload"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, write the size formula for one token's KV and fill it in for Llama-3.1-8B. Then draw two arrows out of \"KV cache\": one to \"batch cap\" and one to \"step time\", each labelled with its number.",
+    "checklist": [
+      "K and V per token, per layer, per KV head; the query is not cached",
+      "2 · 32 · 8 · 128 · 2 B = 131,072 B = 128 KiB per token",
+      "63.9 GB free → 487,504 tokens → 238 sequences at 2k, 59 at 8k",
+      "every decode step reads all of it: 80% of a full-batch step",
+      "without it, generation is O(n²) token-passes"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why the KV cache turns generation from O(n²) into O(n) work, and why that is only safe because of causal attention.", "kind": "concept", "answer": ["without it, step t re-runs all t tokens to rebuild their K and V: 1 + 2 + … + n passes", "with it, step t runs one new token and reads the stored K and V", "stored K and V stay valid because causal attention never lets an earlier token see a later one"]},
+    {"q": "Walk through what one decode step at t = 500 reads and writes in one attention layer of one KV head.", "kind": "mechanism", "answer": ["compute the new token's q, k and v", "write the new k and v into the cache (append)", "score q against all 500 cached keys, softmax, and mix all 500 values", "throw q away; the cache now holds 500 K/V pairs for that head"]},
+    {"q": "Your server runs 8k contexts and you can pick one: FP8 KV, or doubling max_num_seqs. Which raises throughput, and why does the other do nothing?", "kind": "tradeoff", "answer": ["at 8k only 59 sequences fit, so a higher seat cap changes nothing: memory binds first", "FP8 KV halves bytes per token (64 KiB): about 119 sequences fit and each step's KV read halves", "the cost of FP8 is a small accuracy risk and a kernel that reads FP8"]},
+    {"q": "Why is the no-cache penalty only 3.5× for one request generating 2,048 tokens but 276× for 238 requests?", "kind": "mechanism", "answer": ["batch-1 decode is paying mostly for the 4.8 ms weight read", "recomputing up to about 295 tokens hides under that read", "a full batch has no idle compute to hide the recompute in, so the full O(n²) cost shows"]}
+  ],
+  "compare": [
+    {"with": "llm-request-scheduler/prefix-caching", "q": "The KV cache and prefix caching both keep K and V. What is fundamentally different about their lifetime and keying, and when is each one optional?", "answer": ["the KV cache lives inside one request: built in prefill, grows each step, freed at the end", "prefix caching keeps some blocks after a request ends, keyed by the exact tokens they came from", "every generating engine needs the first; the second only helps when prompts share an opening"]},
+    {"with": "perf-2-scaling-book-inference/params-vs-kv", "q": "Course 2 compares parameter memory with KV memory. At what point in this card's example does KV overtake the weights in bytes, and why does that change what limits a server?", "answer": ["weights are 16.06 GB; the KV pool is 63.9 GB at full batch, four times larger", "once KV dominates memory, each extra sequence costs KV, not weights", "so batch size, and with it throughput, is set by KV capacity"]}
+  ],
+  "predict": {"q": "Keep Llama-3.1-8B but switch the KV cache to FP8 and the contexts to 4k. Before computing: will more, fewer or the same number of sequences fit than the 238 at 2k in BF16?", "answer": "The same: FP8 halves bytes per token (64 KiB) and 4k doubles tokens per sequence, so bytes per sequence are unchanged. 487,504 × 2 ÷ 4,096 ≈ 238. The per-step KV read per sequence is also unchanged, so the full-batch step barely moves."},
+  "apply": {"task": "Llama-3.1-70B keeps the same 8 KV heads and head dimension 128 but has 80 layers. (a) Compute its KV bytes per token in BF16. (b) How many tokens of no-cache recompute does generating 1,024 tokens cost, and how many times more than with the cache? (c) Explain in one sentence which lever from the card's table you'd reach for first if a 70B server ran out of KV at 8k context.", "done": "(a) 2 × 80 × 8 × 128 × 2 B = 327,680 B = 320 KiB per token, 2.5× the 8B model. (b) 1,024 × 1,025 ÷ 2 = 524,800 token-passes, 512.5× the 1,024 with a cache. (c) FP8 KV (or paging if memory is fragmented), since GQA is already in the model.", "hint": "Only L changes in the size formula; K, H and s stay the same."},
+  "reflect": [
+    "Which prediction did you get wrong: the FP8 at 4k count, or why the penalty differs by batch?",
+    "Could you explain why the query is never cached, in one sentence?",
+    "Which relationship is still fuzzy: KV size → batch cap, or batch × context → KV read time?",
+    "Can you say why \"memory, not compute\" caps the batch using the numbers 238 and 295?",
+    "What will you revisit before the bottlenecks card: where the KV read sits in the step formula?"
+  ],
+  "revisit": ["llm-request-scheduler/token-loop", "perf-1-foundations/attention"],
+  "prereq": ["llm-request-scheduler/token-loop"]
+}

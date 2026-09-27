@@ -1,0 +1,115 @@
+{
+  "prime": {
+    "problem": "A formula is only convincing once it reproduces real tables. The book feeds LLaMA 2-13B's shapes into the step-time formula on 8 TPU v5e chips and finds a wall: full multi-head attention runs out of memory at batch 16, and more batch or more chips barely help. You need to see why a smaller KV cache is the only lever that moves that wall.",
+    "fits": "Eighth card. It puts the step-time formula and the memory card's fit count together on one real model, twice: once with MHA and once with a 5× smaller KV cache. It motivates every trick on the next card.",
+    "expect": ["the book's two batch–throughput tables", "the ceiling W<sub>hbm</sub> ÷ KV<sub>seq</sub>", "diminishing returns in batch", "per-chip throughput as cost", "recomputing the book (GB vs GiB)"],
+    "goal": "Reproduce any row of the book's tables, explain the throughput ceiling and why only shrinking KV raises it, and translate per-chip throughput into cost."
+  },
+  "attend": [
+    "Each MHA sequence adds a fixed amount to the step. What is it, and what does it mean for how throughput grows with batch?",
+    "Where does the ceiling W<sub>hbm</sub>/KV<sub>seq</sub> come from, and why can no batch size pass it?",
+    "Why does adding chips improve latency but barely move per-chip throughput?",
+    "How can a smaller KV cache lower latency at batch 1, where KV is only a small share of the bytes?",
+    "Why is per-chip throughput, not total throughput, the number that sets cost per token?"
+  ],
+  "core": {
+    "must": [
+      "Step = B·KV<sub>seq</sub>/W + weight read (3.96 ms) → each MHA sequence adds 6.7 GB / 6.56 TB/s = 1.02 ms → throughput B·W/(B·KV + P) approaches W/KV<sub>seq</sub> = 979 tok/s → already halfway at B = P/KV = 3.9 sequences → diminishing returns fast",
+      "Memory stops MHA at batch 16 (≈ 788 tok/s) → 240 would need 1,634 GB and only reach 1.22× more → the wall is set by KV bytes per sequence, not by the batch or the chip count",
+      "Shrinking KV 5× (1:5 GQA) → each sequence costs 0.20 ms and 1.34 GB → the ceiling rises 5× (4,896) and batch 64 fits → 3,757 tok/s, 4.77× from the same chips, and lower latency at every batch",
+      "Chips are rented by the hour → $/token ∝ 1 / tokens per second per chip → more chips add HBM and cut latency but leave the per-chip wall at ≈ 122 tok/s for MHA (0.82e12 / 6.7e9) → only fewer KV bytes per sequence cuts cost"
+    ],
+    "elevated": [
+      "The book computed in decimal units and printed GiB and TiB/s → reading the labels literally shifts every row by about 1.4% → it only matters for whether batch 16 fits in 128 GiB (yes) vs 128 GB (no, max 15)"
+    ],
+    "reference": [
+      "the full rows of both tables",
+      "the three recomputations (A) book inputs, (B) exact bytes, (C) literal units",
+      "the more-chips check (97 → 119 tok/s per chip, 8 → 64 chips)",
+      "the Llama-3.1-8B-on-H100 panel (615.6 vs 2,489 tok/s)"
+    ]
+  },
+  "compress": {
+    "prompt": "Sketch both throughput-vs-batch curves from memory on one set of axes: mark each curve's ceiling, the halfway point, and where each runs out of memory. Then write three sentences on what the tables teach about batch, KV size and latency.",
+    "checklist": [
+      "throughput = B·W/(B·KV + P) → ceiling W/KV",
+      "MHA: ceiling 979, halfway at 3.9 sequences, OOM beyond 16",
+      "5× smaller KV: ceiling 4,896, halfway at 19.4, batch 64 fits",
+      "latency improves at every batch, most at large batch (2.81× at batch 16)",
+      "more chips don't lift the per-chip wall; smaller KV does"
+    ]
+  },
+  "retrieve": [
+    {
+      "q": "Explain why the MHA table shows diminishing returns: why does 16 → 240 (15× the batch) give only 1.22× the throughput?",
+      "kind": "concept",
+      "answer": [
+        "each sequence adds its own KV read (1.02 ms), so the step grows almost linearly with B once KV dominates",
+        "throughput approaches the ceiling W/KV = 979 tok/s and can't pass it",
+        "at batch 16 it's already at 788, about 80% of the ceiling"
+      ]
+    },
+    {
+      "q": "Recompute the book's MHA batch-8 row from its inputs: step time and throughput.",
+      "kind": "mechanism",
+      "answer": [
+        "attention: 8 × 6.7e9 / 6.56e12 = 8.17 ms",
+        "params: max(2·8·13e9 / 1.6e15 = 0.13 ms, 26e9 / 6.56e12 = 3.96 ms) = 3.96 ms",
+        "step ≈ 12.13 ms; throughput 8 / 0.01213 ≈ 659.3 tok/s"
+      ]
+    },
+    {
+      "q": "You can either double the chip count or switch the model to 1:5 GQA. Which improves cost per token, which improves latency, and why?",
+      "kind": "tradeoff",
+      "answer": [
+        "doubling chips: more HBM fits more sequences and cuts latency, but per-chip throughput stays near the 122 tok/s wall, so cost per token barely falls",
+        "GQA: the per-chip ceiling rises 5×, batch 64 fits, 98.5 → 469.6 tok/s per chip, and latency drops at every batch",
+        "GQA improves both; chips mainly buy latency"
+      ]
+    }
+  ],
+  "compare": [
+    {
+      "with": "perf-2-scaling-book-inference/kv-tricks",
+      "q": "This card magically shrinks KV 5× with the parameters fixed; the tricks card shows real ways to do it. Which of those ways could a serving team apply to an already-trained LLaMA 2-13B, and which would need retraining?",
+      "answer": [
+        "retraining (architecture): GQA/MQA, local attention layers, cross-layer sharing",
+        "post-hoc (serving): KV quantization (int8/fp8 halves bytes) and ragged/paged reads",
+        "so the book's 5× GQA gain isn't available to a server for this model; an int8 KV cache is (about 2×)"
+      ]
+    },
+    {
+      "with": "perf-4-attention-kv/gqa",
+      "q": "The book's table 2 is a what-if; LLaMA-3 actually shipped with 8 KV heads. What does the what-if isolate that a real GQA model would blur?",
+      "answer": [
+        "it keeps parameters and everything else fixed, so the whole gain is the KV cache shrinking",
+        "a real GQA model also changes attention parameter count and may change quality",
+        "the what-if shows the serving effect alone: ceiling ×5, batch 16 → 64, 4.77× throughput"
+      ]
+    }
+  ],
+  "predict": {
+    "q": "Keep MHA but store the KV cache in int8 (3.35 GB per 8k sequence). Commit first: with the book's decimal 128 GB, how many sequences fit, and does throughput at that batch land nearer 1,000 or 1,500 tokens/s?",
+    "answer": "(128 − 26) / 3.35 = 30.4 → 30 sequences. Step = 30 × 3.35e9 / 6.56e12 + 3.96 ms = 15.32 + 3.96 = 19.28 ms, so 30 / 0.01928 ≈ 1,556 tok/s, nearer 1,500. The ceiling doubles to 6.56e12 / 3.35e9 ≈ 1,958. Halving KV bytes does to MHA roughly what the book's 5× GQA does, only 2× instead of 5×."
+  },
+  "apply": {
+    "task": "Add an <i>MHA with int8 KV</i> table to <code>labs/modeling-13b.py</code>, using the book's inputs (26e9 B of weights, 6.56e12 B/s, 1.6e15 FLOP/s) and 3.35e9 B of KV per 8k sequence. Compute rows for batch 16 and for the largest batch that fits in 128 GB, then the new ceiling. Compare with the bf16 MHA batch-16 row.",
+    "done": "Batch 16: step ≈ 12.13 ms, ≈ 1,319 tok/s (vs 787.99 in bf16); largest batch 30: step ≈ 19.28 ms, ≈ 1,556 tok/s; ceiling ≈ 1,958 tok/s. You can say why batch 16 is now 1.67× faster at the same batch.",
+    "hint": "Batch 16 int8 KV: 16 × 3.35e9 / 6.56e12 = 8.17 ms, plus 3.96 ms. It equals bf16's batch-8 step, because both read 53.6 GB of KV."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: how many int8 sequences fit, or the throughput they buy?",
+    "Could you explain the per-chip wall to a finance person in one sentence?",
+    "Which relationship is still fuzzy: KV per sequence → ceiling, or KV per sequence → batch that fits?",
+    "Did you believe <i>add chips</i> would lower cost before reading this card? What changed?",
+    "Which trick on the next card do you expect to be available to a server, and which only to the model's trainers?"
+  ],
+  "revisit": [
+    "perf-2-scaling-book-inference/step-time",
+    "perf-2-scaling-book-inference/params-vs-kv"
+  ],
+  "prereq": [
+    "perf-2-scaling-book-inference/step-time",
+    "perf-2-scaling-book-inference/params-vs-kv"
+  ]
+}

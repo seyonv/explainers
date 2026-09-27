@@ -1,0 +1,68 @@
+{
+  "prime": {
+    "problem": "A classic database treats disk as home and memory as a cache, so every access pays for buffer-pool machinery and every transaction can stall on a disk read. For OLTP data that mostly fits in RAM, that design wastes most of its time.",
+    "fits": "Third memory card. It builds on the previous card (disk-era overhead is where the time goes) and on the caching card (two copies to keep in sync); the next card, log-structured memory, is another way to run a store entirely in DRAM.",
+    "expect": ["four durability strategies", "H-Store: shared-nothing, one thread per partition, stored procedures", "anti-caching: evict cold tuples in blocks", "pre-pass, abort, fetch, restart", "doubly linked LRU chain"],
+    "goal": "Trace a transaction that touches evicted tuples, explain why H-Store never waits on disk, and judge when anti-caching beats a buffer pool or a cache in front."
+  },
+  "attend": [
+    "If RAM is volatile, what does each of the four durability strategies actually keep across a crash?",
+    "Why does one thread per partition remove locks and latches, and what kind of transaction does that design make expensive?",
+    "Why does a transaction that touches an evicted tuple abort instead of waiting for the disk, and what does the pre-pass buy?",
+    "Why must the LRU chain be doubly linked when the touched tuples are hot and sit near the tail?",
+    "Why do bigger eviction blocks cost nothing extra on writes but hurt on reads?"
+  ],
+  "core": {
+    "must": [
+      "OLTP databases are mostly under 1 TB → the whole working set fits in RAM → disk is used only for recovery (log, snapshots, replicas) → no query waits on a disk read",
+      "Each core owns a partition and runs its transactions one at a time through stored procedures → no locks, latches or client round trips → the overhead the previous card measured disappears (82× TPC-C in 2007)",
+      "Data outgrows RAM → evict the coldest tuples in blocks, recorded in an Evicted Table → a tuple lives in exactly one place (RAM or disk), so no sync problem",
+      "A transaction meets evicted tuples → a pre-pass records all of them without changing anything → abort, fetch the blocks in the background, merge just those tuples, restart → the single thread never sits on the disk"
+    ],
+    "elevated": [
+      "The LRU chain is updated on each touch → unlinking needs the predecessor → doubly linked makes it 1 hop instead of ~n from the cold head → sampling only 1% of transactions (aLRU) keeps the cost at 2–7% of throughput",
+      "Fetching one tuple brings back its whole block → 1 MB blocks fetch 4× the bytes of 256 KB for one 1,000 B tuple → larger blocks hurt most under high skew"
+    ],
+    "reference": [
+      "Redis AOF and RDB settings, VoltDB command logging",
+      "tuple-merge vs block-merge naming",
+      "the 50% hole threshold for compacting blocks",
+      "4-byte offsets in the tuple header"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw the life of T2 from the card: in-memory index lookup, pre-pass, abort, fetch, merge, restart, commit, evict. Then in three sentences say why this beats waiting for the disk and what workload breaks it.",
+    "checklist": [
+      "memory is home; disk holds only cold, evicted tuples",
+      "one copy of each tuple, tracked by the Evicted Table",
+      "the pre-pass finds every evicted tuple before any change, then aborts",
+      "fetch runs in the background while other transactions proceed; only needed tuples are merged",
+      "low skew or full-table scans defeat it"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain the phrase ‘the buffer pool turned inside out’: what is home and what is overflow in each design?", "kind": "concept", "answer": ["buffer pool: disk is home, memory holds copies of hot pages", "anti-caching: memory is home, disk holds evicted cold tuples", "so a tuple has exactly one location, and hot data never pays disk-format costs"]},
+    {"q": "Walk through step 5 to step 7 of the card's hand trace: what the pre-pass finds, which blocks are fetched, and what gets evicted at the end.", "kind": "mechanism", "answer": ["T2 reads 3, 1, 4: 3 is in memory and is touched; 1 (block 0) and 4 (block 1) are evicted", "abort, fetch blocks 0 and 1, merge only tuples 1 and 4", "restart and commit [30, 10, 40]; memory now holds 5 tuples, so evict the head [6, 7] as block 2"]},
+    {"q": "Compare anti-caching with MySQL and with MySQL + Memcached on the paper's YCSB runs. Which costs does each alternative pay that anti-caching avoids?", "kind": "tradeoff", "answer": ["MySQL: disk/memory format conversion and heavyweight locking; anti-caching 9×/18×/10× faster", "MySQL + Memcached: two copies to sync and two round trips per miss; 2×/4×/9×, worst on writes", "all three slow down as skew drops"]},
+    {"q": "Why can't anti-caching serve a full-table scan well, and where would you run that query instead?", "kind": "tradeoff", "answer": ["a scan needs every tuple in memory at once", "it would fetch every evicted block and abort repeatedly", "analytics belong in a column store or a replica built for scans"]}
+  ],
+  "compare": [
+    {"with": "cs-6-data-systems/cache-patterns", "q": "Cache-aside in front of a database and anti-caching both keep hot data in RAM. What is fundamentally different about where the truth lives, and how does each one fail?", "answer": ["cache-aside: the DB is the truth, the cache holds copies", "anti-caching: one copy, in RAM or in an evicted block", "cache-aside fails with stale sets and herds; anti-caching fails with aborts under low skew and with scans"]},
+    {"with": "cs-6-data-systems/log-structured-memory", "q": "H-Store with anti-caching and RAMCloud both keep data in DRAM. What does each do when memory runs short, and what is the price of that choice?", "answer": ["H-Store evicts cold tuples to disk and aborts transactions that need them", "RAMCloud keeps everything in memory and cleans segments to reclaim dead space", "anti-caching pays in aborts and fetches; RAMCloud pays u/(1−u) copying and needs headroom"]}
+  ],
+  "predict": {"q": "Skew drops to uniform: every tuple is equally likely, and the data is 2× RAM, so about half the tuples are evicted. A transaction reads 5 random tuples. Commit first: roughly what fraction of transactions touch no evicted tuple and run without aborting?", "answer": "Each tuple is in memory with probability about 1/2, so all five are with probability (1/2)<sup>5</sup> ≈ 3.1%. About 97% of transactions abort at least once to fetch blocks, and each fetched block brings in mostly unwanted tuples. That's why the paper finds all systems slow down as skew falls: anti-caching depends on a small hot set."},
+  "apply": {
+    "task": "Continue the card's trace. After T2 the chain is [3, 1, 4] and the Evicted Table is {2: block 0, 5: block 1, 6: block 2, 7: block 2}. Run T3, which reads 2 and 6. Write the pre-pass result, the blocks fetched, the commit value and the eviction that follows (cap 4, block size 2). Then say which block is now 100% holes. Check with <code>AntiCache</code> in <code>code/in-memory-db-anticaching.py</code>.",
+    "done": "Pre-pass finds 2 (block 0) and 6 (block 2), aborts and fetches blocks [0, 2]; T3 commits [20, 60]; memory has 5 tuples, so the head [3, 1] is evicted as block 3; the chain is [4, 2, 6]. Block 0's two tuples (1 and 2) have both been merged back, so it is all holes and due for compaction.",
+    "hint": "Tuple-merge moves only the needed tuples into memory; their old copies stay in the block as holes."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: the no-abort fraction under uniform access?",
+    "What couldn't you explain cleanly: why aborting is cheaper than waiting when there is one thread per partition?",
+    "Which relationship is still fuzzy: skew → hot set in RAM, or block size → wasted fetch bytes?",
+    "Could you list what each of the four durability strategies loses in a power cut?",
+    "What will you look for in the log-structured memory card: how a store stays all-in-DRAM without evicting?"
+  ],
+  "revisit": ["cs-6-data-systems/cache-conscious-structures", "cs-6-data-systems/cache-patterns"],
+  "prereq": ["cs-6-data-systems/cache-conscious-structures"]
+}

@@ -1,0 +1,62 @@
+{
+  "prime": {
+    "problem": "Thousands of customers each want their own fine-tune of the same base model, but each gets too little traffic to fill a GPU. Merging each fine-tune into its own model copy splits every batch by customer and multiplies memory; serving them one at a time serialises the traffic.",
+    "fits": "A serving feature that leans on the scheduler (iteration-level batching) and course 4's paging. It asks how one batch can serve many different adapters without losing the shared weight read that makes batching pay.",
+    "expect": ["LoRA as x·A·B beside the shared x·W", "merging vs batching across adapters", "SGMV shrink and expand (Punica)", "unified paging of adapters and KV (S-LoRA)", "adapter bytes as extra per-step reads"],
+    "goal": "Compute an adapter's size and per-step cost on the running example, and explain why unmerged adapters plus a gather kernel keep batching intact."
+  },
+  "attend": [
+    "Why does merging W′ = W + AB, perfect for one adapter, break continuous batching across many?",
+    "What does SGMV do with a batch whose rows use three different adapters, and how many launches does it take?",
+    "Why can adapters and KV cache share one paged pool in S-LoRA?",
+    "When 64 requests use 64 different adapters, what extra bytes does each step read, and why does grouping by adapter help?",
+    "Why is the tensor-parallel communication for LoRA so small compared with the base model's?"
+  ],
+  "core": {
+    "must": [
+      "Continuous batching pays because every request multiplies the same W → one weight read serves the whole batch → merged adapters give each request its own W′ → batches split by adapter (baselines ran at batch 1–3) → keep W shared and add each request's small x·A·B instead",
+      "Sort the batch into segments by adapter → one GEMM for x·W → one SGMV shrink and one expand launch cover every adapter (adapter index on blockIdx.y) → mixed-adapter batches run at about base speed (1,044 vs 1,140 tok/s on 7B)",
+      "Each distinct adapter adds its own A and B reads per step → 27.26 MB at r = 16 → 64 distinct adapters add 1.74 GB, +10.9% of the base read → requests that share an adapter share its read → adapter clustering trades fairness for fewer bytes",
+      "An adapter of rank R and a KV cache of S tokens are both rows of width H → one pre-allocated pool holds both in pages → loading adapters of mixed ranks doesn't fragment memory → thousands of adapters live in host RAM and only active ones are paged in (2,000 at 7.61 req/s)"
+    ],
+    "elevated": [
+      "Computing (x·A)·B costs 2·r·(d_in + d_out) FLOPs per token, never the d_in·d_out of forming AB → 0.17% of the base FLOPs at r = 16"
+    ],
+    "reference": [
+      "vLLM flags and defaults (--enable-lora, max_loras = 1, max_lora_rank = 16, max_cpu_loras)",
+      "S-LoRA's MBGMM/MBGMV kernel names",
+      "Table 3 per-configuration throughputs",
+      "the 5(N−1)Br/N communication formula"
+    ]
+  },
+  "compress": {
+    "prompt": "Draw the Fig 3-style batch from memory: four rows, three adapters, one shared GEMM and the two SGMV launches. Beside it, write the adapter-size formula for Llama-3.1-8B on q/k/v/o and one line on what unified paging adds.",
+    "checklist": [
+      "y = x·W (shared, batched) + (x·A_i)·B_i (per segment)",
+      "params = r × 26,624 × 32 layers; r = 16 → 13.6M params, 27.26 MB",
+      "one shrink and one expand launch for all adapters in the batch",
+      "distinct adapters cost reads; shared ones don't",
+      "adapters and KV in one paged pool; the catalog in host RAM, with prefetch"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why keeping adapters unmerged is what lets requests for different fine-tunes share a batch.", "kind": "concept", "answer": ["unmerged, every request multiplies the same base W, so one weight read serves all", "the adapter part is a small extra computation per request", "merged, each adapter is a different full weight matrix, so requests can't share a GEMM"]},
+    {"q": "Walk through q_proj for a 4-request batch using adapters A, B, A, C: sorting, the base GEMM, shrink, expand, and the bytes read.", "kind": "mechanism", "answer": ["sort rows so both A requests are adjacent: segments A, B, C", "one GEMM with W (33.6 MB read once)", "SGMV shrink: each segment × its own A_i (4096 → 16), one launch", "SGMV expand: × B_i (16 → 4096), added to the base output, one launch", "adapter reads: three adapters at 0.26 MB each (+2.3%)"]},
+    {"q": "A product has one popular fine-tune with steady heavy traffic plus 500 rarely used ones. How would you serve each group, and why not the same way?", "kind": "tradeoff", "answer": ["the popular one: merge it and serve as a plain model at zero overhead", "the long tail: shared base with unmerged adapters, S-LoRA-style paging from host RAM", "multi-LoRA pays when each adapter alone can't fill a GPU; costs are extra kernels, distinct-adapter reads and cold loads"]}
+  ],
+  "compare": [
+    {"with": "perf-4-attention-kv/paged-memory", "q": "PagedAttention pages the KV cache; S-LoRA pages adapters in the same pool. What property of the two data types makes one pool possible, and what goes wrong if adapters sit in a separate contiguous region?", "answer": ["both are rows of width H: S rows for S tokens of KV, R rows for a rank-R adapter", "one pool with fixed-size pages serves both, with no fragmentation between them", "a separate region would fragment as adapters of different ranks come and go, and memory can't flow between KV and adapters as load shifts"]},
+    {"with": "perf-5-engines/structured-outputs", "q": "Per-request adapters and per-request grammar masks both add work that grows with the batch. Where does each cost land (GPU bytes or CPU time), and which trick hides each?", "answer": ["adapters: extra GPU reads and small kernels per distinct adapter; grouping by adapter and a shared pool reduce them", "masks: CPU time per request per step; precomputation plus overlap with the forward pass hide them", "both grow with B, so both matter most at large batch"]}
+  ],
+  "predict": {"q": "Raise the rank from 16 to 32 with 64 distinct adapters in every step. Does the per-step overhead double, and does the adapter share of FLOPs matter? Commit first.", "answer": "Yes, the bytes double: each adapter is 54.5 MB, 64 of them 3.49 GB, about 1.04 ms or +21.7% on the 4.79 ms weight read (our recomputation), and r = 64 gives +43%. The FLOPs stay tiny (0.34% at r = 32), so at decode it's the bytes of distinct adapters that cost you, not their math."},
+  "apply": {"task": "Run labs/lora-cost.py, then use its formula by hand for r = 32 on q/k/v/o: adapter size, how many fit in the 63.9 GB of free HBM at r = 16, the extra read for 64 distinct r = 32 adapters per step, and the S-LoRA tensor-parallel communication ratio 5r ÷ 2h at r = 64 with h = 4,096.", "done": "An adapter size, a fit count, a per-step overhead in ms and %, and a TP ratio, before checking.", "hint": "Check after trying (our recomputation): r = 32 → 54.53 MB; r = 16 fits ≈ 2,343 adapters in 63.9 GB (leaving no KV); 64 distinct r = 32 adapters → 3.49 GB → 1.04 ms, +21.7%; TP ratio 320 ÷ 8,192 ≈ 3.9% more traffic."},
+  "reflect": [
+    "Which prediction did you get wrong: whether bytes or FLOPs dominate the adapter overhead?",
+    "Could you explain SGMV to someone as 'one launch, many adapters' and say why that matters?",
+    "Which relationship is still fuzzy: merged weights → split batches, or distinct adapters → extra reads per step?",
+    "When would LoRA-aware routing across replicas matter more than anything inside one engine?",
+    "Before benchmarking: how would you build a load test that exercises many distinct adapters honestly?"
+  ],
+  "revisit": ["perf-5-engines/scheduler", "perf-4-attention-kv/paged-memory", "perf-5-engines/orca-iteration-scheduling"],
+  "prereq": ["perf-4-attention-kv/paged-memory"]
+}

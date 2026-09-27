@@ -1,0 +1,121 @@
+{
+  "prime": {
+    "problem": "Masking adds work to every token, so you'd expect constrained decoding to be slower. The paper found one engine 59% faster per token than no grammar at all. If you can't say where that speed comes from, you'll expect it from engines that don't do it and from schemas where there's nothing to gain.",
+    "fits": "Second card of part 3. The compile card showed TPOT differs by engine; this card explains the one engine whose TPOT beats no-grammar. It reuses the FSM card's observation that many token paths spell the same forced text.",
+    "expect": [
+      "forced vs chosen text",
+      "fast-forward (jump-forward, guidance acceleration)",
+      "<code>TPOT_ff / t_step ≈ (n − n_forced + n_jumps) / n</code>",
+      "why TPOT flatters skipping"
+    ],
+    "goal": "Estimate how much of an answer an engine can skip, predict when fast-forwarding helps and when it can't, and tell it apart from the M3's 2× that came from shorter answers."
+  },
+  "attend": [
+    "Once the model has written <code>\"sku\":\"BW-C</code>, why is <code>ITRUS\",\"qty\":</code> not a choice at all?",
+    "A forced span still has to enter the model's context. Why is appending it in one go cheaper than generating it token by token?",
+    "Why does Guidance gain 59.6% on Snowplow but only 38.2% on Kubernetes?",
+    "The constrained M3 runs were 2× faster end to end. Why is that <i>not</i> fast-forwarding?",
+    "Why is TPOT a misleading yardstick for comparing an engine that skips with one that doesn't?"
+  ],
+  "core": {
+    "must": [
+      "The schema allows exactly one continuation at many points (keys, quotes, colons, the rest of an unambiguous enum) → 74 of 88 characters of our answer are forced → the model is only needed at the 14 chosen characters",
+      "The engine appends a forced span in one batched pass instead of one pass per token → steps shrink from n to (n − n_forced + n_jumps) → about 16/35 = 0.46 of the steps for our answer, close to the paper's measured 0.41 (6.37 vs 15.40 ms)",
+      "Free text has almost nothing forced (a 200-word summary field) → nothing to skip → the gain shrinks toward zero as prose fields grow",
+      "An engine that masks but doesn't skip adds mask work without saving steps → llama.cpp's grammar is 1.95× slower per token than no grammar → the speedup belongs to specific engines, not to constraining in general"
+    ],
+    "elevated": [
+      "TPOT divides total writing time by output tokens → skipped tokens count in the denominator but cost almost nothing → TPOT drops even though each chosen token costs the same → compare end-to-end time for your real schema"
+    ],
+    "reference": [
+      "the names for it: guidance acceleration, jump-forward decoding (SGLang), coalescence (dottxt)",
+      "the per-dataset Guidance TPOTs (6.37–9.47 ms)",
+      "Ollama's <code>eval_count</code> counter used in the light check"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, colour our order answer in your head: which characters are forced and which are chosen? Then write the step-count formula and one sentence on when it gives no gain.",
+    "checklist": [
+      "forced = exactly one next character allowed; chosen = more than one",
+      "keys, quotes, colons and the tail of an unambiguous SKU are forced",
+      "a fast-forwarding engine appends each forced span in one pass",
+      "steps ≈ n − n_forced + n_jumps",
+      "prose-heavy fields have little forced text, so little gain",
+      "only engines that skip get it; masking alone makes steps slower"
+    ]
+  },
+  "retrieve": [
+    {
+      "q": "Explain how constrained decoding can end up <i>faster</i> per token than no grammar, even though it adds a mask to every step.",
+      "kind": "concept",
+      "answer": [
+        "much of a JSON answer is forced by the schema",
+        "an engine that notices appends forced spans without sampling them one by one",
+        "fewer model passes for the same answer outweigh the mask cost: Guidance 6.37 ms vs 15.40 ms per token"
+      ]
+    },
+    {
+      "q": "Walk through our correct order with the step formula: how many tokens, how many forced, how many jumps, and what ratio does that give?",
+      "kind": "mechanism",
+      "answer": [
+        "35 Qwen tokens, about 26 inside forced spans",
+        "7 forced spans, each one batched pass",
+        "(35 − 26 + 7) / 35 = 16/35 ≈ 0.46, about 54% less time per token",
+        "a back-of-envelope estimate that ignores mask time and treats a batched pass as one step"
+      ]
+    },
+    {
+      "q": "Your schema is <code>{\"summary\": string}</code> holding 200 words. A vendor promises a 2× speedup from constrained decoding. What do you ask, and what do you expect?",
+      "kind": "tradeoff",
+      "answer": [
+        "ask whether the engine actually skips forced tokens (llama.cpp's grammar and Ollama showed no sign of it)",
+        "expect little: only the key and the quotes are forced; the prose is all chosen",
+        "for prose, the levers are shorter output and speculative decoding, and you should compare end-to-end time, not TPOT"
+      ]
+    }
+  ],
+  "compare": [
+    {
+      "with": "speculative-decoding/speculative-decoding",
+      "q": "Fast-forwarding and speculative decoding both produce several tokens per big-model pass. What is fundamentally different about where the extra tokens come from, and how does each fail?",
+      "answer": [
+        "fast-forward: the grammar <i>knows</i> the next tokens, so nothing can be rejected",
+        "speculative: a draft model <i>guesses</i> them and the big model verifies; wrong guesses are thrown away",
+        "fast-forward fails on free text (nothing forced); speculative decoding fails when acceptance is low (creative text, high temperature) and needs a second model",
+        "they stack: skip forced spans, speculate on chosen ones"
+      ]
+    },
+    {
+      "with": "structured-outputs/compact-formats",
+      "q": "The M3's 2× end-to-end speedup came from 80 → 38 tokens, not from skipping. How do shortening the answer and skipping forced tokens differ, and which one works with every engine?",
+      "answer": [
+        "compact output removes tokens entirely, so the model writes fewer",
+        "fast-forward keeps the tokens but stops sampling the forced ones",
+        "shorter output works on any engine and hosted API; skipping only on engines that implement it"
+      ]
+    }
+  ],
+  "predict": {
+    "q": "Two orders go through the same fast-forwarding engine: our 2-item order, and a 1-item order <code>{\"items\":[{\"sku\":\"MIST-ROSE\",\"qty\":2}],\"total_usd\":48}</code>. Which has the higher share of forced characters, and why? Commit before revealing.",
+    "answer": "The 1-item order, but only just: 47 of 54 characters forced (87.0%) against 74 of 88 (84.1%). Item count isn't the main reason. MIST-ROSE is settled by its first letter (no other SKU starts with M), while BW-CITRUS needs three chosen letters (B, W, C) and CANDLE-LAVENDER two (C, L). The forced share depends on how soon each value becomes unambiguous under the schema, so enums with distinct prefixes skip more. Computed with the same try-every-character script the card describes."
+  },
+  "apply": {
+    "task": "Mark forced and chosen characters by hand for <code>{\"items\":[{\"sku\":\"SOAP-OATMEAL\",\"qty\":2},{\"sku\":\"BALM-PEPPER\",\"qty\":1}],\"total_usd\":26}</code>, with keys in schema order and no whitespace (the card's rule: forced means exactly one next character is allowed). Use the 10 SKUs from the running example. Count forced and chosen characters, list the chosen ones in order, and give the forced share.",
+    "done": "Your chosen list includes every SKU letter where two or more SKUs were still possible, every digit, and every \"end the number here?\" or \"another item?\" decision. Check the counts against the hint.",
+    "hint": "After <code>\"sku\":\"</code> six first letters are possible (B, C, L, S, D, M); after <code>S</code>, two (SOAP or SCRUB); after <code>B</code>, two (BW- or BALM). A closing <code>}</code> after a number is a choice, because more digits were allowed. Check: 87 characters, 74 forced, 13 chosen (<code>S O 2 } , B A 1 } ] 2 6 }</code>), 85.1% forced."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: which order has the higher forced share?",
+    "What couldn't you explain cleanly: why TPOT flatters an engine that skips?",
+    "Which relationship is still fuzzy: forced text → skipped steps, or skipped steps → end-to-end time?",
+    "Does your own engine fast-forward? How would you check from its counters?",
+    "What will you look for in the quality card: whether skipping and masking change what the model writes, not just how fast?"
+  ],
+  "revisit": [
+    "structured-outputs/regex-fsm",
+    "structured-outputs/compile-vs-per-token"
+  ],
+  "prereq": [
+    "structured-outputs/compile-vs-per-token"
+  ]
+}

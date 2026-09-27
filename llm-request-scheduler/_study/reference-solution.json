@@ -1,0 +1,124 @@
+{
+  "prime": {
+    "problem": "You can understand every piece of a scheduler and still fail to assemble them: a missing guard doubles the preemptions, a block freed mid-step corrupts another request, a prompt larger than the pool deadlocks the queue. The pieces only prove themselves as one runnable file checked against a known trace.",
+    "fits": "Last card of group 3, where the build pays off. It assembles the request record, step(), the block allocator, preemption and cancel from the previous cards into 176 lines, built in the problem-spec's v1 → v2 → v3 order, and checks it step for step against the fuller labs/scheduler.py.",
+    "expect": [
+      "three containers and one rule",
+      "v1 (budget) → v2 (blocks, reserve) → v3 (lazy, preempt, cancel)",
+      "a check() of invariants after every step",
+      "the test checklist and edge cases",
+      "O(R + A + k) per step, independent of W"
+    ],
+    "goal": "Rebuild the minimal scheduler from memory in three passes, write the invariant checks and edge-case tests, and say what each follow-up (priority, prefix sharing, streaming, many GPUs, metrics) changes in the code."
+  },
+  "attend": [
+    "For each of v1, v2 and v3, what is the failure you can see on the toy trace that motivates the next pass?",
+    "Why does cancel() only set a flag for a running request, and when are its blocks actually freed?",
+    "What happens without preemption when two requests each hold one block and each need a second?",
+    "Why does add() reject a request whose worst case exceeds the whole pool?",
+    "The 1,000-request burst on the H100 config has 0 preemptions but a 9.9 s median TTFT. What does that say is the limit?"
+  ],
+  "core": {
+    "must": [
+      "Running first (1 decode or the next chunk), then admit from the head while budget, seats and free blocks allow → the whole vLLM V1 loop shape in about 120 lines → 21 steps and 3 preemptions on the toy trace, identical to the reference",
+      "v1 has no memory model (17 of 12 blocks) → v2 reserves the worst case (safe, 22 steps) → v3 allocates lazily and preempts the newest (21 steps, 3 preemptions) → each pass fixes a visible failure of the last",
+      "Blocks are freed only in _reap, between steps → a cancelled request's blocks can't be reused while the GPU may still write them → the ABA bug can't happen",
+      "Without preemption, requests that each hold part of what they need can wait on each other forever → preempting the newest frees memory and guarantees progress (a 2-block pool deadlocks without it and finishes in 5 steps with it)"
+    ],
+    "elevated": [
+      "check() after every step (tokens ≤ budget, seats, held + free = total, no id in two containers, every scheduled token has a slot) → a double free or a request in two queues fails at its cause, not 50 steps later as a wrong TTFT"
+    ],
+    "reference": [
+      "the exact 176-line file layout and the show() log format",
+      "the 200-random-trace equivalence check",
+      "nano-vllm and vLLM equivalents in the complexity table"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, write the v3 step() and on_step_done() (about 25 lines together) and the five assertions of check(). Then list the three things deliberately missing from this solution and what each would add.",
+    "checklist": [
+      "step(): _reap, running first with preempt-newest, admit FCFS if nothing was preempted",
+      "on_step_done(): advance num_computed, emit on catch-up, mark finished, _reap",
+      "check(): budget, seats, held + free = total, disjoint containers, a slot for every token",
+      "cancel is a flag; blocks freed only between steps",
+      "missing: swap, a real model with EOS, CUDA graphs, overlap, speculative decoding"
+    ]
+  },
+  "retrieve": [
+    {
+      "q": "Explain why preemption is needed for correctness, not just for throughput, when blocks are allocated lazily.",
+      "kind": "concept",
+      "answer": [
+        "lazily allocated requests can each hold part of what they need",
+        "if none can grow and none is evicted, no one finishes: a deadlock",
+        "evicting the newest frees blocks so the others can finish, guaranteeing progress"
+      ]
+    },
+    {
+      "q": "Walk through what happens when a running request is cancelled in the middle of a step in the mini file.",
+      "kind": "mechanism",
+      "answer": [
+        "cancel() pops it from live and sets state to cancelled",
+        "the GPU step in flight still runs; on_step_done skips it (state isn't running)",
+        "_reap then releases its blocks and drops it from running",
+        "so blocks are freed exactly once, after the step that used them"
+      ]
+    },
+    {
+      "q": "A 1,000-request burst arrives at once. Compare the toy pool with the H100 config and say what each result tells you to fix.",
+      "kind": "tradeoff",
+      "answer": [
+        "toy pool: 3,300 steps vs a 1,239 lower bound and 707 preemptions: memory is too small, fix admission (thrashing)",
+        "H100: 1,793 steps, 0 preemptions, TTFT median 9.9 s: memory is fine, the queue is the problem",
+        "fix for the H100 case: more replicas or 429s, not memory tuning"
+      ]
+    }
+  ],
+  "compare": [
+    {
+      "with": "llm-request-scheduler/step-algorithm",
+      "q": "The mini file drops the watermark, pluggable WaitQueue and prefix caching from labs/scheduler.py and adds cancel(). Why does it still reproduce the same 21 steps, and which dropped feature would first change the trace if turned on?",
+      "answer": [
+        "the toy config sets the watermark to 0 and uses FCFS with no shared prompts, so those features are inactive",
+        "a non-zero watermark would change admission first (fewer preemptions, later finish)",
+        "prefix caching would change nothing here because no two toy prompts share tokens"
+      ]
+    },
+    {
+      "with": "perf-5-engines/scheduler",
+      "q": "Course 5 describes a production scheduler's KV budget and preemption. What does the production version handle that this 120-line file deliberately doesn't, and which of those changes the step() logic itself?",
+      "answer": [
+        "EOS and stop strings (unknown lengths at run time), speculative tokens, swap, async overlap, CUDA graphs",
+        "speculative decoding and overlap change step(): 1 + k tokens per decode, and planning before the last outputs exist",
+        "EOS only changes when a request finishes, not the loop"
+      ]
+    }
+  ],
+  "predict": {
+    "q": "Swap the FCFS deque in the mini file for a heap keyed on (prompt_len + output_len, arrival), i.e. SJF with an oracle. Before running the toy trace: does request 4 (prompt 30) finish earlier or later, and do preemptions go up or down?",
+    "answer": "Request 4 finishes later: as the largest request it keeps losing to smaller ones in the queue. Preemptions go down, because the big request that thrashed is no longer admitted while memory is tight. Running the fuller labs/scheduler.py with policy=\"sjf\" on the toy config shows it: request 4 finishes at 91.1 ms instead of 62.3 ms, preemptions fall from 3 to 1, the run takes 19 steps instead of 21, and request 2 (prompt 20) waits too (TTFT 67.1 vs 14.4 ms). One code change to remember: a preempted request can't go to the front with appendleft; it goes back into the heap with its original key."
+  },
+  "apply": {
+    "task": "Extend labs/mini_scheduler.py in two small ways and check each on the toy trace. (1) Admission: require the whole remaining prompt to fit (can_fit(r, r.remaining)) while still computing only min(remaining, budget) this step. Report steps, preemptions, last finish and mean E2E. (2) Edge case: with 12 blocks of 4, submit a request with prompt 46 and output 4, and one with prompt 45 and output 4, and say which add() accepts and why.",
+    "done": "(1) 22 steps, 1 preemption, last finish ≈ 105.5 ms, mean E2E ≈ 59.5 ms (vs 21 steps, 3 preemptions, 100.7 ms for the original). (2) 46 + 4 − 1 = 49 tokens → 13 blocks > 12 → ValueError; 45 + 4 − 1 = 48 tokens = exactly 12 blocks → accepted.",
+    "hint": "Keep check() running after every step; if an assertion fires, your change freed or counted a block wrongly."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: request 4's finish, or the preemption count under SJF?",
+    "Could you rewrite _reap and explain why it runs both at the start of step() and the end of on_step_done()?",
+    "Which relationship is still fuzzy: lazy allocation → deadlock risk → preemption, or cancel flag → deferred free → no ABA?",
+    "Which part of the build would take you longest from a blank file, and why?",
+    "What will you revisit before the throughput card: which of this file's knobs raise tok/s and which only move latency?"
+  ],
+  "revisit": [
+    "llm-request-scheduler/problem-spec",
+    "llm-request-scheduler/step-algorithm",
+    "llm-request-scheduler/block-manager",
+    "llm-request-scheduler/admission-preemption",
+    "llm-request-scheduler/concurrency"
+  ],
+  "prereq": [
+    "llm-request-scheduler/step-algorithm",
+    "llm-request-scheduler/block-manager"
+  ]
+}

@@ -1,0 +1,115 @@
+{
+  "prime": {
+    "problem": "The inference chapter has fifteen cards of formulas, tables and quirks. Read them as separate facts and you can recite 240 and 128 KiB without being able to say which lever to pull when a server is slow or expensive. You need one equation that every card attacks a different term of.",
+    "fits": "The map of course 2. It builds on perf-1's roofline intuition and serving metrics, and it compresses the whole chapter into one step-time formula plus a ranked list of levers. Read it first as a map and again last as a recap.",
+    "expect": ["T<sub>step</sub> ≈ B·S<sub>KV</sub>/W + max(2·B·N/C, N·b/W)", "B<sub>crit</sub> = C/W (240 on v5e, 295 on H100)", "the KV cache as the thing that caps the batch", "levers grouped by the term they shrink", "prefill vs decode scheduling"],
+    "goal": "Draw the chapter's causal map from memory: which term of the step-time formula each card attacks, which lever shrinks it, and when that lever stops helping."
+  },
+  "attend": [
+    "Which of the three terms in the step formula is shared by the whole batch, and which grows with every sequence you add?",
+    "Why does the overview say you usually run out of KV memory before the step ever turns compute-bound?",
+    "The levers table groups tricks by the term they shrink. Which group does tensor parallelism belong to, and why does it lower latency but not cost?",
+    "Why don't the multipliers in the levers table simply multiply together?",
+    "Where does prefill fit, given that the formula only describes a decode step?"
+  ],
+  "core": {
+    "must": [
+      "Every decode step reads all weights once (shared by the batch) → batching spreads that fixed read over more tokens → throughput rises almost for free until the MLP math (2·B·N/C) overtakes the weight read at B<sub>crit</sub> = C/W",
+      "Each sequence brings its own KV cache → the KV term grows with B × context and is always memory-bound → HBM fills before B reaches B<sub>crit</sub> at long context (59 sequences at 8k on one H100) → most of the chapter is about fitting more sequences: shrink, shard or page the KV",
+      "Levers act on different terms → shrinking KV bytes raises how many sequences fit and cuts the KV read; quantizing weights cuts the weight read; tensor parallelism divides the weight read across chips → each lever only helps while its term dominates, so their gains don't multiply",
+      "Prefill is one big compute-bound batch (2·N·T/C) and decode is many small memory-bound steps → running them in lockstep makes one stall the other → engines schedule them apart (continuous batching, disaggregation)"
+    ],
+    "elevated": [
+      "Speculative sampling spends the idle FLOPs of a memory-bound step on verifying guesses → it competes with batching for the same idle math → a 2.2× win at batch 1 turns into a slowdown at batch 256"
+    ],
+    "reference": [
+      "the exact lever multipliers (48.6×, 12.7×, 4.0×, 28×, 160× TTFT)",
+      "the list of book quirks (GB vs GiB, 240 vs 480, β 8 vs 9.1, the Part 8 index bug)",
+      "the pointer list to the Scaling Book, ESTI, kipply and Leviathan"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw the step-time formula as three boxes (KV read, weight read, MLP math). Draw an arrow from each card of the course to the box it attacks, and a separate arrow for the prefill-vs-decode scheduling cards. Then write, in 3–5 sentences, the order in which you would pull levers on a slow, expensive decode server.",
+    "checklist": [
+      "weight read: fixed per step, shared by the batch, cut by quantization and tensor parallelism",
+      "KV read: per sequence, always memory-bound, cut by GQA, FP8 KV, local layers, sharing and paging",
+      "MLP math: only matters past B<sub>crit</sub> = C/W, which HBM usually prevents you from reaching",
+      "throughput = B / T<sub>step</sub>, so fitting more sequences is the main lever until B<sub>crit</sub>",
+      "prefill is compute-bound and scheduled separately so it doesn't freeze decode",
+      "all of it is a roofline: real systems reach about half"
+    ]
+  },
+  "retrieve": [
+    {
+      "q": "Explain why one extra decoding user costs almost nothing at batch 1 but costs a full KV read at batch 59 on the same H100.",
+      "kind": "concept",
+      "answer": [
+        "at batch 1 the 4.79 ms weight read dominates; one more sequence adds only its KV read (0.32 ms at 8k) and shares the weights",
+        "at batch 59 the KV term is already 80% of the step (18.9 of 23.7 ms); each new sequence adds its own 1.07 GB read and HBM is full, so it can't even be added",
+        "the weight read is amortised; the KV read never is"
+      ]
+    },
+    {
+      "q": "Walk the overview's filled-in example: Llama-3.1-8B, one H100, 8k context, B = 59. Which three numbers go into the step, and which term would you attack first?",
+      "kind": "mechanism",
+      "answer": [
+        "KV read 59 × 1.07 GB ÷ 3.35 TB/s = 18.9 ms",
+        "max(math 0.96 ms, weight read 4.79 ms) = 4.79 ms",
+        "step 23.7 ms → 2,489 tokens/s; the KV term is 80%, so shrink KV (FP8 KV doubles to 4,986) before touching the weights"
+      ]
+    },
+    {
+      "q": "A team wants the lowest per-user latency for one edge user, another wants the lowest cost per token for an offline eval. Which levers from the table does each pick, and which lever helps one and hurts the other?",
+      "kind": "tradeoff",
+      "answer": [
+        "edge / batch 1: weight-read-bound, so quantize weights and use speculative sampling; batching is irrelevant",
+        "offline: fill HBM with sequences up to B<sub>crit</sub>, shrink KV so more fit",
+        "speculation helps the first and hurts the second: at batch 256 it is a 0.70× slowdown because verify tokens push past B<sub>crit</sub>"
+      ]
+    }
+  ],
+  "compare": [
+    {
+      "with": "perf-1-foundations/_overview",
+      "q": "perf-1 ends with <i>decode is memory-bound</i>; this overview ends with a three-term formula. What does the formula add that the one-line rule can't predict, and where would the one-line rule mislead you?",
+      "answer": [
+        "the rule treats decode as one bandwidth division (bytes of weights ÷ bandwidth)",
+        "the formula splits bytes into a shared weight read and a per-sequence KV read, and adds the math term that wins past B<sub>crit</sub>",
+        "it predicts where throughput flattens (toward W ÷ S<sub>KV</sub>) and which lever to pull",
+        "the rule misleads at long context and large batch, where the KV read, not the weights, is most of the step"
+      ]
+    },
+    {
+      "with": "perf-5-engines/_overview",
+      "q": "This course derives serving limits from rooflines; the engines course builds the schedulers that run against them. Which limits from here does a real engine's scheduler have to respect, and what does it add that the formula ignores?",
+      "answer": [
+        "respect: HBM capacity for KV (admission), the batch at which math takes over, and the prefill stall on decode",
+        "adds: queueing, preemption and chunking decisions, kernel overheads and real (not peak) bandwidth",
+        "the formula says what is possible; the engine decides who runs each step"
+      ]
+    }
+  ],
+  "predict": {
+    "q": "Same model and GPU, but context drops from 8k to 4k tokens. Commit first: how many sequences fit, what is the step time, and does the KV share of the step go up, down or stay about the same?",
+    "answer": "KV per sequence halves to 0.537 GB, so B = ⌊63.94 / 0.537⌋ = 119. KV read 19.07 ms, weight read 4.79 ms (math 1.93 ms is still below it), step 23.86 ms, 4,986 tokens/s. The KV share stays about 80%: when HBM is full, the step always reads roughly the whole 80 GB, so halving context doubles the batch instead of shortening the step."
+  },
+  "apply": {
+    "task": "Fill the overview's formula for Llama-3.1-8B on one H100 at 4k context with the batch HBM allows (63.94 GB free, 131,072 B of KV per token, 16.06 GB of weights, 3.35 TB/s, 989 TFLOPS). Write B, the three terms, the step and tokens/s. Then switch the KV cache to FP8 (half the bytes) and redo it. Finally, name the next lever you would pull and which term it attacks.",
+    "done": "You have both rows: BF16 KV gives B = 119, step ≈ 23.9 ms, ≈ 4,986 tok/s; FP8 KV gives B = 238, step ≈ 23.9 ms, ≈ 9,973 tok/s, and you can explain why the step barely moved.",
+    "hint": "FP8 KV at 4k: B = 238, KV read still 19.07 ms, math 3.86 ms is still under the 4.79 ms weight read. The step stays ≈ 23.9 ms because HBM is still full; only the number of users in it doubled. Next lever: FP8 weights would shrink the 4.79 ms term, but the 19 ms KV term dominates, so a smaller KV per token (local layers, sharing) matters more."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: the batch size at 4k, or the KV share of the step?",
+    "Could you place every card of the course on one term of the formula, or did some cards (engine design, sharding) not fit cleanly?",
+    "Which relationship is still fuzzy: more sequences fit → throughput rises, or HBM full → step time stays fixed?",
+    "Can you explain why speculation and batching compete for the same resource?",
+    "Which card will you reopen first: the one behind the term you couldn't explain?"
+  ],
+  "revisit": [
+    "perf-1-foundations/roofline-intuition",
+    "perf-1-foundations/serving-metrics"
+  ],
+  "prereq": [
+    "perf-1-foundations/_overview"
+  ]
+}

@@ -1,0 +1,59 @@
+{
+  "prime": {
+    "problem": "A finite state machine can't count open brackets. Recursive or deeply nested output (trees, link chains, expression ASTs) is either out of reach or needs one regex per depth, and that regex doubles in size at every level. Constrained decoding needs a machine that remembers what is still open and can still produce a mask at every token.",
+    "fits": "Third card of part 2. The FSM card's state was only \"how far along the pattern am I\". This card adds a stack to that state, the smallest change that buys unbounded nesting. The next card, computing masks fast, is about paying for that stack cheaply.",
+    "expect": ["terminals, non-terminals, rules, root", "PDA = FSM + stack (push on open, pop on close)", "masks that depend on the stack", "regex size per depth: <code>L_d = 44·2^(d−1) − 27</code>", "runaway nesting and <code>max_tokens</code>"],
+    "goal": "Hand-trace a PDA's state, stack and mask over a short nested output, say exactly what information the stack adds, and say when a flat regex is still the better choice. Watch the same four things as in the FSM card: grammar expressiveness → state representation → token masking → runtime performance."
+  },
+  "attend": [
+    "Steps 2 and 5 of the <code>(3+(5*2))</code> trace allow exactly the same tokens. What distinguishes those two moments, and where is that difference stored?",
+    "Why does the cookbook's depth-by-depth regex <i>double</i> at every level instead of growing by a fixed amount?",
+    "At step 8, why is <code>)</code> the only legal token, and which part of the machine makes that decision?",
+    "Our order schema isn't recursive. Why can Outlines serve it with one regex, and what would change if an item could contain items?",
+    "The grammar guarantees every bracket can be closed. Why didn't that stop the model opening <code>\"left\": {</code> about 20 times?"
+  ],
+  "core": {
+    "must": [
+      "A rule that uses its own name (<code>expr ::= … expr …</code>) → output can nest to any depth → the machine must remember how many brackets are open → a stack: push on open, pop on close → one small PDA handles every depth",
+      "Grammar position + stack contents → allowed next tokens → mask → the same position can have different masks at different depths (<code>)</code> is legal only while something is open) → part of the mask can't be precomputed from the position alone",
+      "No stack → a regex/FSM must spell out each depth separately → each level pastes the previous pattern in twice → <code>L_d = 44·2^(d−1) − 27</code> characters (22,501 at depth 10) → and depth d + 1 is still rejected",
+      "A grammar allows unbounded depth but never makes the model stop → a model can keep opening objects → output runs to the token cap → set <code>max_tokens</code>/<code>num_predict</code>, or bound the depth in the schema"
+    ],
+    "elevated": [
+      "JSON in general is recursive, but a non-recursive schema only nests a fixed number of levels → it can be flattened to one regex (Outlines' JSON-Schema-to-regex step) → \"needs a PDA\" is a property of <i>your schema</i>, not of JSON",
+      "Only tokens whose legality depends on the stack need a runtime check (closing brackets, end-of-text) → an engine can precompute the rest per position (XGrammar: over 99%) → the stack's per-token cost stays small, which the next card measures"
+    ],
+    "reference": ["GBNF vs EBNF vs Lark syntax", "the cookbook's exact calculator grammar lines", "per-engine compile times (Outlines 3.48 s, llama.cpp 0.05 s, XGrammar 0.12 s, Guidance 0.00 s)", "the 44,751-character regex for all depths 1–10"]
+  },
+  "compress": {
+    "prompt": "From memory, draw the PDA as an FSM box with a stack beside it, and annotate one push and one pop from the <code>(3+(5*2))</code> trace. Then write one line on what the stack adds and one on what it costs.",
+    "checklist": [
+      "a grammar is rules that expand into rules; a self-referencing rule gives nesting",
+      "the PDA's state is a grammar position plus a stack of what is still open",
+      "push on an opening bracket, pop on a closing one; end-of-text only when the stack is empty and the root is complete",
+      "the same position can allow different tokens at different depths, so some of the mask needs the stack",
+      "without a stack a regex needs one pattern per depth, doubling each level, and still has a next level",
+      "the grammar permits unbounded nesting; a token cap or a depth limit stops runaway output"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why a 4-line grammar accepts <code>(1+(2+(3+(4*5))))</code> while the depth 1–3 regex rejects it, in terms of what each machine remembers.", "kind": "concept", "answer": ["the regex/FSM remembers only a position in a fixed pattern, with branches for the depths it was built for", "depth 4 was never spelled out, so no state exists for it", "the PDA's stack grows with the input: each <code>(</code> pushes, each <code>)</code> pops, so any depth has a representation", "the grammar stays 4 lines because recursion reuses <code>expr</code> at every level"]},
+    {"q": "Walk through steps 7 to 9 of the <code>(3+(5*2))</code> trace: what is emitted, what the stack holds, what's allowed, and why.", "kind": "mechanism", "answer": ["step 7: <code>2</code> emitted, stack <code>((</code>, allowed: more digits or <code>)</code> (the inner pair is complete)", "step 8: <code>)</code> pops to <code>(</code>; one bracket is still owed, so <code>)</code> is the only legal token", "step 9: <code>)</code> pops to empty; the root is complete, so only end-of-text is legal"]},
+    {"q": "Your fixed-depth order schema (no recursion) is reused a million times. A colleague insists on a CFG engine \"because JSON is context-free\". What do you answer, and when would they be right?", "kind": "tradeoff", "answer": ["this schema nests a fixed number of levels, so it flattens into one regex that can be precomputed (what Outlines does)", "a precomputed FSM makes every step a lookup, and a million reuses amortise its compile", "they're right if the schema gains a recursive <code>$ref</code>, gets deep enough that the regex explodes, or changes per request (compile per new schema: 3.48 s Outlines vs 0.05 s llama.cpp in the paper)"]}
+  ],
+  "compare": [
+    {"with": "structured-outputs/regex-fsm", "q": "Look at FSM vs PDA from the PDA's side. What exactly does the stack add to the state, which part of the FSM's speed does that cost, when does the FSM still win, and how does each fail on bracket-nested input?", "answer": ["FSM state: one position in a fixed pattern. PDA state: a position plus the stack contents, which can grow without bound", "because of the stack, some tokens' legality depends on run-time data, so not every mask can be precomputed per state", "the FSM still wins for flat, fixed, reused schemas: lookups only, with the compile amortised", "the FSM fails at depth D + 1, or by blowing up (the regex doubles per level). The PDA fails by letting the model nest until the token cap, and it pays a per-token stack check"]},
+    {"with": "structured-outputs/json-schema", "q": "A recursive <code>$ref</code> in JSON Schema and a recursive rule in a CFG express the same nesting. Why do engines translate one into the other, and which schema keywords stay hard even with a stack?", "answer": ["the schema describes allowed data; the grammar describes how to write it out token by token, which is what a mask needs", "a recursive <code>$ref</code> becomes a rule that uses its own name", "a stack handles nesting, not whole-value checks: number ranges, <code>format</code> and <code>uniqueItems</code> still need a check after decoding"]}
+  ],
+  "predict": {"q": "OpenAI's strict mode caps schemas at 10 levels of nesting (see where it runs). With that cap, recursive JSON becomes a finite language. Can a pure FSM now serve it, and is that a good idea? Commit before revealing.", "answer": "It <i>can</i>: with bounded depth there are finitely many situations, so a finite machine exists. The cap removes the expressiveness limit. It's usually not a good idea, though, because the limit turns into a cost limit: each extra level adds states (21·D − 7 for the link chain in the FSM card), and the calculator's regex doubles per level (22,501 characters at depth 10). A PDA serves every depth with the same small machine. The same reasoning explains why a depth cap is a practical fix for runaway nesting: it makes the language finite and forces the model to close."},
+  "apply": {"task": "Hand-trace the toy grammar <code>v ::= \"0\" | \"[\" v \"]\"</code> (its outputs are <code>0</code>, <code>[0]</code>, <code>[[0]]</code>, …) with the vocabulary <code>[</code> <code>[[</code> <code>[0</code> <code>0</code> <code>0]</code> <code>]</code> <code>]]</code> <code>{</code> plus EOS: 9 options per step. Write <code>[[0]]</code> as the tokens <code>[[</code> <code>0]</code> <code>]</code>. Before each token, write the phase (still opening, or closing), the stack, and which of the 9 options are legal and which are masked. Then redo it as <code>[</code> <code>[0</code> <code>]]</code>. Next, label every token: is its legality decided by the phase alone, or does it need the stack? Finally, break the FSM: how many states does a minimal FSM need to accept this language up to depth D, and what happens at depth D + 1?", "done": "You have two 4-step traces, each ending with only EOS legal, a phase-or-stack label for each of the 9 options, and a formula in D for the FSM's states, all written before you open the check.", "hint": "Check, only after trying. Tokens <code>[[</code> <code>0]</code> <code>]</code>: at the start (opening, empty stack) <code>[</code> <code>[[</code> <code>[0</code> <code>0</code> are legal (4 of 9). After <code>[[</code> (stack <code>[[</code>), the same 4 plus <code>0]</code> (5). After <code>[[0]</code> (closing, stack <code>[</code>), only <code>]</code>. After <code>[[0]]</code> (empty stack), only EOS. Second spelling: after <code>[[0</code> (stack <code>[[</code>), <code>]</code> and <code>]]</code> are legal. Needs the stack: <code>0]</code>, <code>]</code>, <code>]]</code> and EOS (4 of 9). Phase alone: <code>[</code>, <code>[[</code>, <code>[0</code>, <code>0</code>, and <code>{</code> (never legal). Minimal FSM: 2D + 2 states (4, 6, 8, … 22 at D = 10), and any depth-(D + 1) input is rejected. Computed with a short Python simulation."},
+  "reflect": [
+    "Which prediction did you get wrong: whether a depth cap lets an FSM in, or what it costs?",
+    "Can you say in one sentence what information the stack holds that no FSM state can?",
+    "Which relationship is still fuzzy: stack → stack-dependent tokens, or stack-dependent tokens → mask cost?",
+    "In your trace, the same text spelled two ways gave different masks. What does that say about masking tokens rather than characters?",
+    "Before the fast-masks card: which of your 9 options could an engine precompute, and which must it check at run time?"
+  ],
+  "revisit": ["structured-outputs/regex-fsm", "structured-outputs/token-masking", "structured-outputs/json-schema"],
+  "prereq": ["structured-outputs/regex-fsm"]
+}

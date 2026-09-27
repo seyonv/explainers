@@ -1,0 +1,121 @@
+{
+  "prime": {
+    "problem": "Often a thread must wait not for a lock but for the shared state to change: the buffer is no longer full, all workers have arrived. Spinning on the state burns a core and holds the GIL the other thread needs; polling with sleep trades CPU for latency by hand; semaphores fit only when the condition is a count.",
+    "fits": "Last Synchronization card. It combines the lock (locks, mutexes) with a place to sleep until a predicate holds, the general tool that semaphores approximate with counters. <code>queue.Queue</code> is one, ready-made.",
+    "expect": [
+      "monitor = lock + shared state + condition variables",
+      "<code>wait()</code> releases the lock and sleeps in one step",
+      "<code>notify()</code> is a hint, not a handoff",
+      "Mesa vs Hoare: why <code>while</code>, not <code>if</code>",
+      "<code>queue.Queue</code> as a ready-made monitor"
+    ],
+    "goal": "Write a correct producer/consumer with Condition, explain every <code>while</code> it needs, and know when <code>queue.Queue</code> or <code>Event</code> makes writing one unnecessary."
+  },
+  "attend": [
+    "Why must <code>wait()</code> release the lock and go to sleep as one atomic step, and what would go wrong if those were two separate calls?",
+    "In the capacity-2 log, why is the producer the one that keeps waiting, and what would flip that?",
+    "Under Mesa semantics, who holds the lock right after <code>notify()</code>, and what can happen before the sleeper runs?",
+    "Why does one shared condition with <code>notify()</code> risk every thread ending up asleep?",
+    "How does <code>queue.Queue</code> implement three conditions with one lock?"
+  ],
+  "core": {
+    "must": [
+      "A thread must wait for the state, not the lock → it checks under the lock and, if not ready, <code>wait()</code> releases the lock and sleeps atomically → others can get in and change the state → no busy CPU (vs 671,169 spin checks in 0.1 s)",
+      "Mesa: <code>notify()</code> only makes a sleeper runnable, and the notifier keeps the lock → anyone can change the state before the sleeper runs → the sleeper's earlier check is stale → re-check in a <code>while</code> (the <code>if</code> version raised IndexError)",
+      "Different waiters wait for different predicates → give each its own condition (not_full, not_empty) or use <code>notify_all</code> → otherwise a consumer can wake another consumer and everyone sleeps",
+      "Slow consumer (50 ms per item), capacity 2 → the buffer fills → the producer waits once per item beyond capacity → 3 waits for 5 items"
+    ],
+    "elevated": [
+      "Two Conditions can share one Lock (<code>Condition(lock)</code>) → both predicates are checked under the same mutual exclusion → this is exactly how <code>queue.Queue</code> is built (one mutex, three conditions)"
+    ],
+    "reference": [
+      "Hoare 1974 and Lampson &amp; Redell 1980 as the sources of the two semantics",
+      "<code>cv.wait_for(pred)</code>, <code>wait(timeout)</code> returning False",
+      "Java's <code>synchronized</code>/<code>wait</code>/<code>notify</code> as the origin of the term",
+      "<code>q.not_full._lock is q.mutex</code> (a CPython internal)"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, write <code>put</code> and <code>get</code> for a capacity-2 buffer with one lock and two conditions, then explain in three sentences why each <code>wait</code> sits inside a <code>while</code> and why the lock is released while sleeping.",
+    "checklist": [
+      "check the predicate while holding the lock",
+      "<code>wait()</code> releases the lock and sleeps as one step, and re-acquires before returning",
+      "<code>notify()</code> after changing state; the sleeper still has to win the lock",
+      "Mesa: the state can change before the sleeper runs, so loop and re-check (also covers spurious wake-ups)",
+      "one condition per kind of waiter, or notify_all",
+      "in practice use queue.Queue, Event or asyncio.Queue"
+    ]
+  },
+  "retrieve": [
+    {
+      "q": "Explain what a monitor is and why its condition variables are always used together with its lock.",
+      "kind": "concept",
+      "answer": [
+        "shared state plus the only procedures allowed to touch it, all under one lock, plus condition variables to sleep on",
+        "the predicate is about shared state, so it must be checked under the lock to be meaningful",
+        "wait releases that same lock atomically so the state can change, then re-takes it"
+      ]
+    },
+    {
+      "q": "Walk through steps 3–5 of the capacity-2 log: what the producer does when the buffer is full, what the consumer does, and how the producer ends up putting 3.",
+      "kind": "mechanism",
+      "answer": [
+        "P holds the lock, sees len(buf) == 2, calls not_full.wait(): releases the lock and sleeps",
+        "C wakes from its 50 ms sleep, takes the lock, pops 1, calls not_full.notify(), releases",
+        "P becomes runnable, re-acquires the lock, re-checks (len 1 &lt; 2), appends 3, notifies not_empty"
+      ]
+    },
+    {
+      "q": "Choose between spinning on <code>while not buf: pass</code>, polling with <code>sleep(0.001)</code>, and a Condition for a consumer that waits 0.1 s. Give each one's cost from the card.",
+      "kind": "tradeoff",
+      "answer": [
+        "spin: 671,169 checks, 0.069 s of CPU, and it holds the GIL the producer needs",
+        "poll: 70 checks, but up to 1 ms late on each wake-up, and you tune CPU vs latency by hand",
+        "Condition: no CPU while asleep, wakes once per notify"
+      ]
+    }
+  ],
+  "compare": [
+    {
+      "with": "cs-7-operating-systems/semaphores",
+      "q": "Semaphore P vs Condition wait: both put a thread to sleep until something changes. What does each remember when no one is waiting, and how does that change what a missed signal costs?",
+      "answer": [
+        "a semaphore remembers: a V with no sleeper raises the count, so a later P goes straight through",
+        "a condition remembers nothing: a notify with no waiter is lost",
+        "that's why a waiter must check the predicate before waiting, under the lock, and loop; the state, not the notify, is the source of truth"
+      ]
+    },
+    {
+      "with": "cs-7-operating-systems/context-switch-initiation",
+      "q": "A thread in <code>wait()</code> vs a thread spinning on the state: how does each show up in the voluntary and involuntary switch counters, and why?",
+      "answer": [
+        "wait() blocks in the kernel, a voluntary switch per sleep, and uses no CPU while asleep",
+        "a spinner never blocks, so no voluntary switch; it burns its slice and is preempted: involuntary switches",
+        "blocking is the cheap way to wait; busy-waiting just converts waiting into preemptions"
+      ]
+    }
+  ],
+  "predict": {
+    "q": "Same log as the card (producer puts 1–5, consumer takes one every 50 ms), but capacity 3 instead of 2. How many times does the producer wait? What about capacity 5? Commit before revealing.",
+    "answer": "Capacity 3: 2 waits. The producer fills the buffer without waiting, then waits once before each remaining item: 5 − 3 = 2. Capacity 5: 0 waits, since all five fit. That matches the card's capacity 2: 5 − 2 = 3 waits. It holds because the consumer is much slower than the producer; with a fast consumer the consumer would do the waiting instead."
+  },
+  "apply": {
+    "task": "Build a one-shot barrier with a Condition: <code>arrive()</code> increments a count under the lock, and every caller waits until the count reaches N, then all proceed. Run it with N = 4 threads that sleep 0, 0.1, 0.2 and 0.3 s before arriving, and log when each passes. Then break it twice: use <code>if</code> instead of <code>while</code> and wake with <code>notify()</code> instead of <code>notify_all()</code>, and describe what each change breaks or only risks.",
+    "done": "All four pass at about 0.3 s in the correct version. The <code>notify()</code> version leaves at least two threads asleep forever (use <code>wait(timeout=1)</code> to see it). The <code>if</code> version usually still works here; you can say why it is unsafe anyway, and why <code>notify_all</code> is right here: every waiter is waiting for the same predicate.",
+    "hint": "The predicate is <code>count &gt;= N</code>. Only the last arriver makes it true, so only it needs to notify, and it must wake everyone. <code>threading.Barrier</code> is the ready-made version; compare yours with it."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: the wait count at capacity 3, or who does the waiting?",
+    "Can you explain why <code>while</code> is needed without saying \"spurious wake-ups\"?",
+    "Which relationship is still fuzzy: wait releases the lock → others can change state, or notify is a hint → re-check?",
+    "Would you write a Condition by hand next time, or reach for Queue, Event or Barrier? Which one, for what?",
+    "What will you look for in the deadlock card: what happens when a thread waits while holding a second lock?"
+  ],
+  "revisit": [
+    "cs-7-operating-systems/semaphores",
+    "cs-7-operating-systems/mutexes"
+  ],
+  "prereq": [
+    "cs-7-operating-systems/locks"
+  ]
+}

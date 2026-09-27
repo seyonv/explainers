@@ -1,0 +1,120 @@
+{
+  "prime": {
+    "problem": "An eventually consistent store lets every replica accept writes alone, which keeps it fast and up through partitions. But any rule that depends on what another replica just did (\"no two users share a name\") can be broken before the copies meet, and both users were already told \"ok\".",
+    "fits": "First card of the consistency part. The CAP card showed the AP choice returning stale reads; this card shows the worse case, where each replica is valid but the merge isn't, and names the four properties the next card's I-confluence test decides between.",
+    "expect": [
+      "four guarantees it can't give: uniqueness, check-and-set, all-or-nothing, read-your-write",
+      "merge as union: <code>A ⊔ B</code>",
+      "global validity, transactional availability, convergence, coordination-freedom",
+      "system-chosen vs user-chosen unique values"
+    ],
+    "goal": "Trace how two locally valid replicas merge into an invalid state, name the four guarantees an eventually consistent store can't give, and decide which step of a feature needs coordination."
+  },
+  "attend": [
+    "Each replica checked \"is sam free?\" honestly. What exactly could it not see?",
+    "Which of the four target properties did the username trace keep, and which one did it lose?",
+    "Why doesn't last-writer-wins fix the uniqueness problem, even though it converges to one owner?",
+    "Why is uniqueness mergeable when the system picks the id but not when the user does?",
+    "Which of the four limits can a session guarantee patch without full coordination?"
+  ],
+  "core": {
+    "must": [
+      "Each replica accepts writes checking only its own copy → a concurrent write on another replica is invisible during the lag → both commit → the merge (union) holds both → a cross-replica rule like uniqueness breaks, after both users were told ok",
+      "Converging isn't being valid → A = B after the merge, yet sam has two owners → eventual consistency promises agreement, not that invariants hold",
+      "Fixing it at merge time (last writer wins) → converges but silently drops an acknowledged write, and clock skew can drop the later one → a lost update, not a fix",
+      "Coordinate only the non-mergeable step (claim a name at its one owner) → everything whose merge keeps the rules (carts, counters, likes, generated ids) stays local and coordination-free"
+    ],
+    "elevated": [
+      "Uniqueness of a <i>system-chosen</i> value (replica id + counter) → each replica owns its own prefix → merges can't collide → so key accounts by a generated id and coordinate only the human-readable handle"
+    ],
+    "reference": [
+      "the BASE / Dynamo-style naming",
+      "the illustrative write quorum of 2 of 3 in the all-or-nothing demo",
+      "Terry et al.'s session guarantees paper",
+      "the <code>Replica</code> class's register/merge code"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw the two-replica \"sam\" timeline in four rows and write the one-line lesson under it. Then list the four guarantees it can't give and the four properties we'd like, pairing each property with \"kept\" or \"lost\" in the trace.",
+    "checklist": [
+      "local check + lag + union merge → two owners",
+      "each replica valid, merged state invalid",
+      "can't give: uniqueness, check-and-set, all-or-nothing, read-your-write",
+      "kept: transactional availability, convergence, coordination-freedom; lost: global validity",
+      "LWW converges by losing an acknowledged write",
+      "coordinate only the step a merge can break"
+    ]
+  },
+  "retrieve": [
+    {
+      "q": "Explain why \"both replicas were valid and they converged\" is not enough for the username rule.",
+      "kind": "concept",
+      "answer": [
+        "validity was checked per replica, against a copy missing the other's write",
+        "convergence only says the replicas end up equal",
+        "the merged state they converge to can violate a rule that spans both (global validity)"
+      ]
+    },
+    {
+      "q": "Walk through the check-and-set demo: two writers, two storage nodes. Why do the nodes end up disagreeing, and what would make them agree?",
+      "kind": "mechanism",
+      "answer": [
+        "ann's and bo's writes reach node 1 in one order and node 2 in the other",
+        "each node keeps the last write it saw: node 1 bo, node 2 ann",
+        "a deterministic merge rule (or one ordering authority) makes them agree, but then one writer's acknowledged set is lost"
+      ]
+    },
+    {
+      "q": "A social app wants user handles, profile edits, likes and follower counts on an eventually consistent store. Which of these need coordination, and what's the cheapest mechanism for the one that does?",
+      "kind": "tradeoff",
+      "answer": [
+        "handles (user-chosen, unique) need it",
+        "profile edits, likes and counters merge safely, so they stay local",
+        "cheapest: send only \"claim handle\" to one owner or a consensus group, and key everything else by a generated id"
+      ]
+    }
+  ],
+  "compare": [
+    {
+      "with": "cs-5-distributed-systems/partial-failure-cap",
+      "q": "The CAP card's AP replica returned a stale plan; this card's replicas both accepted sam. Both are AP behaviour. Why is the second one worse, and what does each cost to fix?",
+      "answer": [
+        "a stale read heals by itself after the partition: the replicas converge to pro",
+        "a broken invariant survives convergence: two owners stay two owners",
+        "stale reads can be patched with session guarantees; the invariant needs coordination on that one step"
+      ]
+    },
+    {
+      "with": "cs-7-operating-systems/locks",
+      "q": "Two threads doing read-then-write on a counter lose updates; two replicas doing check-then-register create duplicates. What is the shared pattern, and why is the distributed fix so much more expensive than a lock?",
+      "answer": [
+        "both are check-then-act on state someone else can change in between",
+        "a lock serialises the two actors on one machine in nanoseconds",
+        "across replicas, serialising means a network round trip, and refusing during a partition"
+      ]
+    }
+  ],
+  "predict": {
+    "q": "The same store holds a shopping cart as a set of items with union merge. Ann adds a book on replica A while, on replica B, she removes the pen that was already in the cart. After the merge, which items are in the cart? Commit first.",
+    "answer": "With plain union, the book is added and the pen comes back: B's copy lost the pen, but A's still has it, and union keeps anything either side has. Adds are never lost, but deletes can resurface, which is exactly what the Dynamo paper reports for its carts. To make removes stick, the merge needs tombstones (a record of the delete) so union can tell \"removed\" from \"never seen\"."
+  },
+  "apply": {
+    "task": "Change <code>Replica.register</code> in <code>code/eventual-consistency-limits.py</code> so the system assigns the account id as <code>f\"{replica}-{counter}\"</code> and the user's chosen name is kept separately. Rerun the Ann/Bo trace: both register \"sam\" as a display name on different replicas. Check which invariant still holds after the merge (\"one account per id\") and which doesn't (\"one account per display name\"), then add a tiny <code>claim_handle</code> that goes to a single owner dict and returns taken for the second claim.",
+    "done": "After the merge the ids A-1 and B-1 are distinct (unique-id invariant holds with no coordination), the display name sam has two accounts, and only the <code>claim_handle</code> call needed a single owner: Bo gets taken.",
+    "hint": "Each replica owns its id prefix, so no merge can produce a duplicate id. The single owner is the stand-in for \"send only the name claim to one place\"."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: whether the removed pen comes back?",
+    "Could you explain why convergence and validity are different promises?",
+    "Which relationship is still fuzzy: local check → lag → broken invariant, or chosen value → collision vs generated value → none?",
+    "Which rule in a product you know is really a uniqueness rule in disguise?",
+    "What will you reopen before the I-confluence card?"
+  ],
+  "revisit": [
+    "cs-5-distributed-systems/partial-failure-cap",
+    "cs-7-operating-systems/locks"
+  ],
+  "prereq": [
+    "cs-5-distributed-systems/partial-failure-cap"
+  ]
+}

@@ -1,0 +1,120 @@
+{
+  "prime": {
+    "problem": "Every client must compute which server owns a key, with no lookup table. <code>hash(key) mod N</code> does that perfectly evenly, until N changes: going from 4 to 5 servers reassigns 80% of keys, which for a cache is a near-total miss storm and for a database means copying 4 of every 5 records.",
+    "fits": "Builds on the request-path card's hash-based load balancing, which never had to handle a server joining. It's the placement half of scaling data; the next card, sharding and hot keys, covers what hashing can't fix.",
+    "expect": [
+      "hash mod N vs a hash ring",
+      "owner = first server clockwise",
+      "moved share: <code>N/(N+1)</code> vs <code>1/(N+1)</code>",
+      "virtual nodes (tokens)",
+      "Dynamo and Chord in one line each"
+    ],
+    "goal": "Compute how many keys move when a server joins under mod N and under a ring, explain why virtual nodes even out the load, and say when a ring is the wrong placement scheme."
+  },
+  "attend": [
+    "Why does a key stay put under mod N only when h mod N = h mod (N + 1), and why is that just 1 in N + 1 keys?",
+    "Why does a newcomer on a ring take keys only from the arc just behind it?",
+    "With one point per server, why did C get 39.99% of the keys and B only 1.42%?",
+    "Why does going from 1 to 100 virtual nodes cut the spread by about 10×?",
+    "What does hashing destroy that range partitioning keeps?"
+  ],
+  "core": {
+    "must": [
+      "Owner = h mod N → changing N changes almost every key's owner → only 1/(N + 1) stay → 80.01% of keys moved from 4 to 5 servers",
+      "Put servers and keys on one circle; owner = first server clockwise → a new server takes over only the arc just behind it → about 1/(N + 1) of keys move, the minimum possible (19.35% with virtual nodes)",
+      "One random point per server → arcs are very uneven (39.99% vs 1.42%) and a newcomer relieves only one neighbour → give each server many points (virtual nodes) → each server's share averages over many arcs → spread falls about √v (std dev 16.56% → 1.69% at v = 100)",
+      "Clients compute the owner from the server list with a binary search → no per-key table on the request path → the server list is the only shared state"
+    ],
+    "elevated": [
+      "Hashing destroys key order → range scans (all images uploaded today) must hit every server → systems needing scans split by key range instead, or hash the first part of a compound key and sort by the second"
+    ],
+    "reference": [
+      "md5's first 4 bytes as the 32-bit position",
+      "jump consistent hash and fixed-partition schemes",
+      "Chord's O(log N) finger table; Dynamo's N − 1 clockwise replicas",
+      "the per-server shares in the 1-point and 100-vnode table"
+    ]
+  },
+  "compress": {
+    "prompt": "Draw a ring from memory with four servers, add a fifth and shade what moves. Beside it, write the two moved-share formulas and one line each for why virtual nodes help and when not to use a ring.",
+    "checklist": [
+      "mod N: N/(N + 1) move (80% for 4 → 5)",
+      "ring: only the newcomer's arc moves, ≈ 1/(N + 1)",
+      "one point per server → uneven arcs; virtual nodes average them out (√v)",
+      "with vnodes the newcomer takes a slice from every server",
+      "owner computed by binary search over sorted positions",
+      "no range scans; can't fix a hot key"
+    ]
+  },
+  "retrieve": [
+    {
+      "q": "Explain why mod N is \"perfectly even and needs no state\" yet unusable for a cache fleet that grows.",
+      "kind": "concept",
+      "answer": [
+        "even: a good hash spreads keys uniformly over N buckets; no table needed",
+        "but the owner depends on N itself, so adding one server moves N/(N + 1) of keys",
+        "for a cache that's a near-total miss storm at exactly the moment you added capacity"
+      ]
+    },
+    {
+      "q": "Walk through img-4 (h = 490555030) under mod N and under the ring, before and after E joins.",
+      "kind": "mechanism",
+      "answer": [
+        "angle = h × 360 / 2<sup>32</sup> = 41.1°",
+        "mod 4 = 2 → C; mod 5 = 0 → A: moved",
+        "ring before: first server clockwise from 41.1° is D at 189.1°",
+        "E at 51.6° lands between them, so img-4 now goes to E: moved, and only because it's in E's arc"
+      ]
+    },
+    {
+      "q": "Your server count never changes. Ring with virtual nodes, or plain mod N? And what if you expect to double the fleet twice a year?",
+      "kind": "tradeoff",
+      "answer": [
+        "fixed count: mod N is simpler, stateless and perfectly even",
+        "frequent growth: the ring (or many fixed partitions moved whole) keeps each change to ≈ 1/(N + 1) of keys",
+        "the ring costs a sorted list of N·v positions and a binary search per lookup"
+      ]
+    }
+  ],
+  "compare": [
+    {
+      "with": "cs-5-distributed-systems/sharding-hot-keys",
+      "q": "Consistent hashing evens out <i>keys</i> across servers; the sharding card shows load still uneven. What is the difference between spreading keys and spreading load, and which tool handles each?",
+      "answer": [
+        "virtual nodes make each server own about the same number of keys",
+        "but traffic per key is skewed (Zipf): one key can carry 13.47% of requests",
+        "a key can't be split by any placement scheme; salting (or replication for reads) handles the hot key"
+      ]
+    },
+    {
+      "with": "cs-1-data-structures/hash-buckets",
+      "q": "A hash table resizing its bucket array also changes \"mod N\". Why is that fine in memory and a disaster for a fleet?",
+      "answer": [
+        "in memory, rehashing every key is a fast local pass, amortised by doubling",
+        "in a fleet, a moved key means copying data over the network or a cache miss hitting the database",
+        "so distributed placement minimises movement; in-memory tables minimise probe cost"
+      ]
+    }
+  ],
+  "predict": {
+    "q": "The fleet grows from 5 to 6 servers. Under mod N, what share of keys moves? With 100 virtual nodes per server, roughly what share, and from which servers? Commit, then check with the card's code on the same 100,000 keys.",
+    "answer": "mod N: 5/6 = 83.3% should move (measured 83.26%). Ring: the ideal is 1/6 = 16.7% (measured 17.13% with 100 virtual nodes), and it comes from every one of the five old servers, because the newcomer's 100 points are scattered around the circle. The moved share under mod N gets <i>worse</i> as the fleet grows; the ring's gets better."
+  },
+  "apply": {
+    "task": "In <code>code/consistent-hashing.py</code>, measure the moved share for 5 → 6 servers with <code>moved(a.owner, b.owner, keys)</code> for 1, 10 and 100 virtual nodes, and with <code>mod_owner</code>. Then use <code>spread()</code> to get the std dev of load at 6 servers for v = 1, 10, 100, and check the √v rule: does the spread shrink roughly √10 ≈ 3.2× per step?",
+    "done": "You have mod N at 83.26%; the ring moving 8.28%, 14.02% and 17.13% for v = 1, 10, 100 (only the last is close to the fair 16.7%); std devs of 14.19%, 4.61% and 1.52%, which shrink 3.1× and 3.0× per step; and a sentence on why √v is only approximate with random points.",
+    "hint": "Build <code>Ring(\"ABCDE\", v)</code> and <code>Ring(\"ABCDEF\", v)</code>; <code>mod_owner</code> takes the node list, so pass <code>list(\"ABCDE\")</code>."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: that mod N moves more keys as the fleet grows?",
+    "Could you derive the 1/(N + 1) \"stay\" share for mod N without the Chinese remainder argument, by trying N = 2?",
+    "Which relationship is still fuzzy: ring arc → moved keys, or virtual nodes → even load?",
+    "Where would you use a ring, and where fixed partitions moved whole?",
+    "What will you reopen before the sharding card?"
+  ],
+  "revisit": [
+    "cs-5-distributed-systems/request-path",
+    "cs-1-data-structures/hash-buckets"
+  ],
+  "prereq": []
+}

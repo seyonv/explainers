@@ -1,0 +1,68 @@
+{
+  "prime": {
+    "problem": "Without an index, finding one order among 10 million means reading every page of the table: 250,000 of them. Every lookup pays for the whole table.",
+    "fits": "First card of the storage part. It builds on hashing from cs-1 and on back-of-envelope sizing from cs-4; the LSM and Bigtable cards that follow are alternatives to, and extensions of, the B-tree you meet here.",
+    "expect": ["fan-out and tree height", "primary (clustered) vs secondary index", "B-tree vs hash index", "range and prefix queries", "bitmap indexes"],
+    "goal": "Size a B-tree for a table by hand, explain why a lookup costs one disk read, and choose between B-tree, hash, bitmap and no index for a given query."
+  },
+  "attend": [
+    "Why does a fan-out of 256 instead of 2 turn 10⁷ keys into a tree only 3 levels deep, and which number sets the fan-out?",
+    "Which levels of the <code>created_at</code> tree stay in memory, and why is that exactly what makes a B-tree lookup cost the same one I/O as a hash index?",
+    "What can a B-tree answer that a hash index can't, and what property of its layout causes that?",
+    "Why does a composite index on (lastname, firstname) help <code>WHERE lastname = …</code> but not <code>WHERE firstname = …</code>?",
+    "When does a secondary index lose to a full scan, even for a read?"
+  ],
+  "core": {
+    "must": [
+      "Page size ÷ entry size = fan-out (4,096 ÷ 16 = 256) → each page read cuts the search space 256× → ⌈log₂₅₆ 10⁷⌉ = 3 levels → the top two levels (154 pages ≈ 616 KB) stay cached → 1 disk read per lookup",
+      "Keys stored sorted in linked leaves → a range is one descent plus a walk of adjacent leaves → one hour of orders costs 2 + 15 = 17 page reads vs 250,000 for a scan → a hash index, being unordered, can't do this at all",
+      "Every index is another sorted copy to maintain → each insert, update and delete touches every index → index only the columns real queries filter, join or sort on",
+      "A secondary index returns pointers, not rows → each hit costs a second read into the table → a query matching a large share of rows is cheaper as a scan, which is why optimizers use statistics"
+    ],
+    "elevated": [
+      "Prefix compression and short separators put more keys in each branch page → bigger fan-out → a shallower tree for the same data",
+      "Bulk loading sorts first and builds bottom-up → no splits and full pages → orders of magnitude faster than row-at-a-time inserts, and a denser tree"
+    ],
+    "reference": [
+      "the exact page numbers in the trace (branch #116, leaf #29,899, slot 177)",
+      "the merged-index and B-tree-on-hashes tricks",
+      "index chores: partition drop, defragmentation, fence keys, metadata-only drops",
+      "the source's missing footnote [^14]"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw the <code>created_at</code> B-tree for 10⁷ orders: the three levels with page counts, which ones are cached, and the path for one key. Then write two sentences: why a range query is cheap, and what every index costs on a write.",
+    "checklist": [
+      "fan-out 256 from 4 KB pages of 16-byte entries",
+      "1 root, 153 branches, 39,063 leaves: 3 levels",
+      "top two levels cached, so one disk read per lookup",
+      "sorted leaves make a range a descent plus a leaf walk (17 reads for one hour)",
+      "every insert, update and delete must also update each index"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why a B-tree and a hash index both cost about one disk read for an exact match on 10⁷ rows, yet only one of them can serve <code>price BETWEEN 100 AND 200</code>.", "kind": "concept", "answer": ["B-tree: 3 levels, top two cached → 1 disk read", "hash: one bucket → often 1 read", "only the B-tree keeps keys in order, so a range is a leaf walk; a hash scatters neighbouring keys"]},
+    {"q": "Walk through the lookup of <code>created_at = 7,654,321</code>: which page is read at each level, how the next page is chosen, and which read touches disk.", "kind": "mechanism", "answer": ["root (cached): binary search picks slot 116 → branch #116", "branch (cached): slot 203 → leaf 116 × 256 + 203 = #29,899", "leaf (disk): offset 177 → the row pointer; one disk read in total"]},
+    {"q": "Someone proposes indexing all 12 columns of <code>orders</code> ‘to be safe’. Argue the cost and name two cases where an index would not even help the reads.", "kind": "tradeoff", "answer": ["every write now updates 12 extra B-trees", "a query that matches a large share of rows is faster as a scan (second read per hit)", "a non-prefix predicate on a composite key, or a low-cardinality column better served by a bitmap"]},
+    {"q": "Bitmap indexes suit <code>region</code> (3 values) but not <code>customer</code> (10⁶ values). Show the arithmetic behind that.", "kind": "tradeoff", "answer": ["one bit per row per distinct value: 10⁷ bits = 1.25 MB per bitmap", "region: 3 × 1.25 MB, and AND/OR answer combined filters before touching rows", "customer: 10⁶ × 1.25 MB = 1.25 TB uncompressed"]}
+  ],
+  "compare": [
+    {"with": "cs-6-data-systems/lsm-trees", "q": "B-tree vs LSM tree for the same orders table: what does each do on a write, which design choice causes the difference, and which workload makes each one fail?", "answer": ["B-tree updates a page in place: random writes, up to ~41× for a 100 B row", "LSM buffers, flushes sorted runs and compacts: sequential writes, ~20× at T = 10, L = 2", "B-tree reads are one path; LSM reads may check several runs (Bloom filters help)", "B-tree strains under heavy ingest on flash; LSM strains when compaction falls behind or reads dominate"]},
+    {"with": "cs-1-data-structures/hash-buckets", "q": "An in-memory hash table vs an on-disk B-tree index: what unit of cost does each minimise, and why does the B-tree choose a fan-out of hundreds rather than a binary tree?", "answer": ["hash buckets minimise comparisons/probes in RAM; order is given up", "a B-tree minimises page reads, because a disk read costs far more than a comparison", "hundreds of keys per page means one page read makes hundreds of decisions"]}
+  ],
+  "predict": {"q": "The <code>id</code> primary key grows by one per order, while a second index is on a random UUID. Commit first: where in each B-tree does a new insert land, and which index will cause more random disk writes and page splits?", "answer": "Increasing ids always land in the rightmost leaf, which stays hot in memory and splits in order, so writes are sequential and pages end up nearly full. Random UUIDs land in a random leaf among tens of thousands, so almost every insert dirties a different page (a random write, often a cache miss) and splits leave pages about half full. Same fan-out and height on paper, very different write cost: the key's order decides where the write lands."},
+  "apply": {
+    "task": "Re-size the index with 32-byte entries (a 24-byte key plus an 8-byte pointer) for the same 10⁷ rows and 4 KB pages. Compute the fan-out, the pages per level, the total cached size of the non-leaf levels, and the page reads for the one-hour range (3,600 keys). Then change <code>fanout</code> in <code>code/database-indexes.py</code> to check your level counts.",
+    "done": "You get fan-out 128 and levels 78,125 → 611 → 5 → 1 (4 levels), 617 cached pages ≈ 2.4 MB, still 1 disk read per lookup, and ⌈3,600 ÷ 128⌉ = 29 leaves for the range: 29 leaf reads after a descent through 3 cached levels, against 17 in total on the card.",
+    "hint": "Divide by the fan-out and round up at each level until you reach 1. Only the leaves are on disk if the rest fits in memory."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: where UUID inserts land, or why they cost more?",
+    "What couldn't you explain cleanly: why caching the top two levels makes a B-tree as cheap as a hash index for a point lookup?",
+    "Which relationship is still fuzzy: entry size → fan-out, or fan-out → height?",
+    "Could you say, for a query you've written recently, which index it would use and whether a scan would be cheaper?",
+    "What will you look for in the LSM card: where the B-tree's write cost comes from and what replaces it?"
+  ],
+  "revisit": ["cs-1-data-structures/hash-buckets", "cs-4-design-foundations/back-of-envelope"],
+  "prereq": []
+}

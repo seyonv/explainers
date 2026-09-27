@@ -1,0 +1,57 @@
+{
+  "prime": {
+    "problem": "At fleet scale GPUs fail every few hours, and every speed trick (quantization, a new draft model, a new kernel) can quietly change the answers. Without a design for both, a training run spends its time restarting and a serving fleet ships a faster model that is subtly worse.",
+    "fits": "Builds on course 6's sizing card (blast radius by TP group size) and on the cold starts of the autoscaling card. It closes the loop on every speed lever in the series: each one needs a quality check before it ships.",
+    "expect": ["Llama 3's 419 unexpected interruptions in 54 days", "checkpoint interval and effective training time", "Kiely's ~1 failure per 50,000 GPU-hours", "spares, cordoning, active-active vs active-passive", "blue-green vs canary vs shadow; eval recovery"],
+    "goal": "Turn a failure rate into expected failures, a checkpoint interval and an availability figure, and lay out a rollout that catches a quality regression before users do."
+  },
+  "attend": [
+    "Why does one GPU failure stop a whole training job but only one group of a serving fleet?",
+    "What two times does Meta have to shrink to get above 90% effective training time, and why those two?",
+    "Why can TP4 × 4 end up holding fewer users than TP8 × 2 after a failure?",
+    "Why does a canary barely cost extra GPUs when blue-green doubles them?",
+    "Why does a raw \"did the outputs change?\" diff always show changes, even for a harmless change?"
+  ],
+  "core": {
+    "must": [
+      "Failures arrive at a steady rate per GPU-hour → a 16,384-GPU job fails every ~3.1 hours → training is synchronous, so each failure costs the work since the last checkpoint plus a full restart → checkpoint every τ* ≈ √(2CM) and cut C and R (Llama 3 > 90% effective)",
+      "Serving replicas are independent → a failure removes only the group in lockstep with the dead GPU → smaller groups lose fewer users, but GPU health is node-level (cordon the node) → spares, not layout, decide availability (TP8 × 2: 99.825% → 99.998% with one spare node)",
+      "Every speed trick changes arithmetic or token choice → quantization and Medusa-style typical acceptance can change answers; verified speculative decoding can't (in distribution) → evals on general + matched tasks, a greedy diff against a baseline-vs-baseline noise floor, then a canary",
+      "A canary shifts a growing share of live traffic to the new version while autoscaling shrinks the old → only a few extra replicas (+4 GPUs of 100) vs blue-green's full second fleet (+100) → but it only catches what its traffic volume can measure"
+    ],
+    "elevated": [
+      "Floating-point addition isn't associative → batch size and kernel choice change reduction order → temperature-0 outputs vary run to run (80 unique completions of 1,000) → measure the baseline against itself before judging a candidate"
+    ],
+    "reference": ["Llama 3 Table 5 rows and the 30.1% vs 35.3% misprint", "Red Hat's recovery figures (≥ 96%, HumanEval 99.9% / 98.9%)", "the lm_eval command line", "Kiely's \"five milliseconds per time zone\"", "Young's approximation for the checkpoint interval"]
+  },
+  "compress": {
+    "prompt": "From memory, write two chains side by side: failure rate → what it costs a training job → the fix, and failure rate → what it costs a serving fleet → the fix. Then list the steps of shipping a speed change in order.",
+    "checklist": [
+      "~1 failure per 50,000 GPU-hours; 16k GPUs → every ~3 hours",
+      "training: lost work since checkpoint + restart; fix: short C and R, τ* = √(2CM)",
+      "serving: one group down; fix: small groups, cordon the node, warm spares",
+      "speed change: evals (general + matched), greedy diff vs noise floor, latency check, canary 1% → 100%",
+      "exact-by-construction changes (verified speculative decoding) need mainly a latency check"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why a benchmark score alone isn't enough to ship an FP8 version of a model.", "kind": "concept", "answer": ["an average can hide a broken slice", "Llama 3's uncapped FP8 kept strong benchmark scores but occasionally produced corrupted responses", "they checked a reward-model score distribution over 100,000 responses and long inputs with outliers instead"]},
+    {"q": "Walk through what happens to a synchronous training job from a GPU failure to training again, and what each piece costs.", "kind": "mechanism", "answer": ["the failure stops the whole job (all GPUs step together)", "work since the last checkpoint is lost: τ/2 on average", "restart all GPUs and reload the checkpoint: R", "plus the recurring cost of writing checkpoints: C per τ"]},
+    {"q": "You have 16 H100s for a 70B serving 500 users. Compare TP8 × 2 and TP4 × 4, with and without a spare node, and choose.", "kind": "tradeoff", "answer": ["TP4 × 4 loses fewer users per group failure (498 vs 386 left)", "but if the whole node is drained it keeps only 332 vs 386", "without spares: 99.825% (TP8 × 2) vs 99.742% (TP4 × 4, node down)", "a spare node lifts either to about 99.998%: buy the spare first, then pick the layout"]}
+  ],
+  "compare": [
+    {"with": "perf-6-scaling-out/sizing-deployment", "q": "Course 6 sized the fleet for throughput and noted blast radius; this card adds node-level failures and spares. Which conclusion from sizing changes once whole nodes are drained?", "answer": ["sizing: smaller TP groups lose fewer users per failure", "here: a failed GPU takes its node, so TP4 × 4 loses two replicas at once (332 users left) and falls below TP8 × 2", "and a warm spare matters more than group size for availability"]},
+    {"with": "perf-5-engines/spec-decoding-math", "q": "Why does a Leviathan-style speculative decoder need only a latency check before shipping, while Medusa's typical acceptance needs a quality check?", "answer": ["the min(1, p/q) accept rule with resampling reproduces the target distribution exactly", "typical acceptance accepts tokens that are \"plausible enough\" under a threshold, so with sampling the distribution changes", "a buggy implementation of either is still a reason to run evals"]}
+  ],
+  "predict": {"q": "Double the training fleet from 16,384 to 32,768 GPUs, same failure rate per GPU, C = 1 min and R = 5 min. Commit: does effective training time stay near 87%, and what happens to the best checkpoint interval?", "answer": "It drops to about 80%. The job's mean time between failures halves (186 → 93 min), so τ* = √(2 × 1 × 93) = 13.6 min (from 19.3), and the waste is 1 ÷ 14.6 + (6.8 + 5) ÷ 93 ≈ 19.6% before planned stops (our arithmetic with the card's model). Bigger fleets must shrink checkpoint and restart times just to stand still."},
+  "apply": {"task": "(1) A 64-GPU serving fleet at Kiely's rate: expected failures per year, and the chance of a failure-free year (Poisson, e^−λ). (2) A 4,096-GPU training job at the same rate: the job's mean time between failures in minutes, the best checkpoint interval for C = 1 min, and the effective training time for R = 5 and R = 15 min (ignore planned stops). (3) A canary at 5% on Kiely's 100 GPUs split into 25 TP4 replicas with a 2-replica floor: how many GPUs are in use?", "done": "(1) 64 × 8,760 ÷ 50,000 = 11.2 failures per year; e^−11.2 ≈ 0.001%, effectively 0. (2) M = 50,000 ÷ 4,096 h = 732 min; τ* = √(2 × 732) = 38.3 min; effective 94.2% (R = 5) and 92.8% (R = 15). (3) 24 old + 2 new replicas = 104 GPUs, +4.", "hint": "Waste ≈ C ÷ (τ + C) + (τ/2 + R) ÷ M, the card's form."},
+  "reflect": [
+    "Which prediction did you get wrong: how much a doubled fleet costs in effective training time?",
+    "What couldn't you explain cleanly: why node-level health can flip which layout is safer?",
+    "Which relationship is still fuzzy: fleet size → failure gap → checkpoint interval, or speed change → changed answers → which check?",
+    "Could you write a one-paragraph rollout plan for an FP8 switch without looking?",
+    "What will you revisit before the KernelBench card, where \"correct\" is also tested on random inputs?"
+  ],
+  "revisit": ["perf-6-scaling-out/sizing-deployment", "perf-7-training-economics/autoscaling-cold-starts", "perf-5-engines/quantization-serving", "perf-5-engines/benchmarking"],
+  "prereq": ["perf-6-scaling-out/sizing-deployment"]
+}

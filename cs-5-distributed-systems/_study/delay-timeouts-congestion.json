@@ -1,0 +1,122 @@
+{
+  "prime": {
+    "problem": "Packet delay is mostly time waiting in queues, and with no limit on senders there is no limit on the queue. So a timeout can only be a guess: too short and healthy nodes get declared dead, too long and failures sit unnoticed. Meanwhile, if every sender just sends as fast as it can, the queues overflow for everyone.",
+    "fits": "Builds on the unreliable-network card, which used 2d + r without saying where d comes from. This card derives a real worst-case d (QJUMP), shows its throughput price, and explains how TCP's AIMD keeps queues short when there is no bound.",
+    "expect": [
+      "<code>τ ≤ 2nP/R + ε</code>, a network epoch",
+      "QJUMP's f: trade the bound for throughput",
+      "timeout = 2d + r",
+      "AIMD: +1 per RTT, halve on loss",
+      "why AIMD converges to fairness and AIAD doesn't"
+    ],
+    "goal": "Compute a worst-case delay bound and the timeout it allows, explain what rate-limiting costs, and trace AIMD's sawtooth and why its halving makes flows converge to a fair share."
+  },
+  "attend": [
+    "Why is the worst case \"all n hosts send to one destination at once\", and why is the bound doubled for a mesochronous network?",
+    "What does QJUMP's f assume about how many hosts send at once, and what happens to the guarantee when that assumption fails?",
+    "Why does 2d + r need a real maximum d, and what do you use on the internet instead?",
+    "Why does AIMD keep the path only about 78% full on average in the 16-packet example?",
+    "Why does multiplicative decrease shrink the gap between two flows, while additive decrease never does?"
+  ],
+  "core": {
+    "must": [
+      "Delay is queueing → queues are unbounded unless every sender is rate-limited → with rate limits, the worst case is all n hosts sending to one place: τ ≤ 2nP/R + ε (413.6 µs for 1,000 hosts) → the bound holds only because everyone obeys it",
+      "A hard bound caps each host at ~R/2n (5 Mb/s at f = 1) → QJUMP assumes only n/f senders at once → bigger f = more throughput, weaker guarantee → per-priority f lets latency-critical traffic keep the bound",
+      "Timeout = 2d + r → needs a real maximum one-way delay d → only a bounded network gives one → otherwise d is a percentile you choose and the timeout stays a guess",
+      "No bound → senders must slow themselves → AIMD: +1 packet per loss-free RTT, halve on loss → a sawtooth that keeps queues from growing forever (8 → 17 → 8, mean 12.5 of 16) → halving cuts the bigger flow by more, so flows converge to fair shares"
+    ],
+    "elevated": [
+      "Loss-based AIMD reacts only after a queue overflows → it keeps queues full and adds delay → data-centre traffic uses early signals instead (ECN/DCTCP marks, BBR's path model)"
+    ],
+    "reference": [
+      "QJUMP's example values (256 B packets, 10 Gb/s, ε = 1–4 µs)",
+      "802.1Q priority levels 0–7 and the ~35-cycle rate limiter",
+      "Wang & Ng's EC2 loss numbers (< 0.5%, episodes in > 10% of intervals)",
+      "cwnd += 1/cwnd per ACK ≈ +1 per RTT (8 → 8.951)"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw two chains: (1) rate limits → bounded queue → bound τ → timeout 2d + r, with the throughput price; (2) no bound → AIMD sawtooth → short queues and fairness. One number on each.",
+    "checklist": [
+      "delay comes from queues",
+      "a bound needs every sender rate-limited: 413.6 µs for 1,000 hosts, 5 Mb/s each",
+      "f trades the guarantee for throughput",
+      "timeout 2d + r is a fact only with a real d",
+      "AIMD: +1 per RTT, ÷2 on loss, mean ≈ 78% of capacity here",
+      "multiplicative decrease is what makes flows fair"
+    ]
+  },
+  "retrieve": [
+    {
+      "q": "Explain why a timeout is a guess on the internet but can be a fact on a QJUMP network.",
+      "kind": "concept",
+      "answer": [
+        "on the internet no one bounds the queues, so delay has no maximum",
+        "QJUMP rate-limits every host so the worst case is computable (τ ≤ 2nP/R + ε)",
+        "with a true d, silence past 2d + r really means failure (877.2 µs in the card's example)"
+      ]
+    },
+    {
+      "q": "Walk through the AIMD trace from RTT 0 to the first drop and one full cycle after it: the window values, when the drop happens and why the cycle is 10 RTTs.",
+      "kind": "mechanism",
+      "answer": [
+        "cwnd starts at 1 and grows by 1 per RTT",
+        "at RTT 16, cwnd = 17 > 16 → drop → 17 // 2 = 8",
+        "then 8, 9, …, 17 again: 10 RTTs per cycle, drops at 16, 26, 36",
+        "mean window (8 + 17) / 2 = 12.5 = 78% of 16; 430 packets in 40 RTTs"
+      ]
+    },
+    {
+      "q": "You set the image service's resize timeout to 2d + r = 540 ms. What happens if you cut it to 150 ms to \"fail faster\", and what if you raise it to 5 s?",
+      "kind": "tradeoff",
+      "answer": [
+        "150 ms is below r for many real resizes and below GC pauses: healthy workers are declared dead, their load moves, more time out (cascade)",
+        "5 s: real failures wait 5 s to be noticed, eating the p99 budget ten times over",
+        "the timeout must sit above the real d and r percentiles; crash signals handle the fast case"
+      ]
+    }
+  ],
+  "compare": [
+    {
+      "with": "cs-5-distributed-systems/backpressure-metrics",
+      "q": "AIMD slows a sender when the network's queue overflows; backpressure slows a caller when a server's queue is full. What is the same mechanism underneath, and what signal does each use?",
+      "answer": [
+        "both keep a queue short by making the sender slow down",
+        "AIMD's signal is a lost packet (implicit); backpressure's is an explicit fast error or a blocked put",
+        "both need the sender to cooperate: rejected callers back off exponentially, TCP halves its window"
+      ]
+    },
+    {
+      "with": "cs-5-distributed-systems/idempotency-retries",
+      "q": "TCP halves its window on loss; the retries card doubles the wait between retries. Both are multiplicative responses to trouble. Why multiplicative in both cases, and what does jitter add that AIMD doesn't need?",
+      "answer": [
+        "multiplicative response backs off fast enough to relieve an overloaded resource (the one thing additive can't do quickly)",
+        "for retries, many clients fail at the same instant, so they'd return together; jitter spreads them",
+        "TCP flows lose packets at different times already, so their sawtooths desynchronise without explicit jitter"
+      ]
+    }
+  ],
+  "predict": {
+    "q": "Double the path capacity: AIMD with a drop whenever cwnd > 32, starting at 1, for 40 RTTs. When is the first drop, how many drops happen in 40 RTTs, and what is the steady-cycle mean as a share of capacity? Commit, then run <code>aimd(cap=32)</code>.",
+    "answer": "The first drop is at RTT 32 (cwnd 33 → 16), and it's the only one in 40 RTTs; 694 packets are sent. The steady cycle is 16, 17, …, 33: 18 RTTs, mean (16 + 33) / 2 = 24.5 = 76.6% of 32. Over 80 RTTs the drops land at 32, 50 and 68. A bigger pipe makes the sawtooth slower (18 RTTs per cycle instead of 10), which is why +1 per RTT is too timid for fast long-distance links."
+  },
+  "apply": {
+    "task": "Use <code>epoch_us</code> and <code>rate_per_host</code> from <code>code/delay-timeouts-congestion.py</code> for a smaller cluster: n = 500 hosts, 256 B packets, 10 Gb/s, ε = 4 µs. Compute the mesochronous epoch at f = 1, the per-host rate, and the 2d + r timeout with r = 50 µs. Then compare with the card's 1,000-host numbers.",
+    "done": "You get an epoch of 208.8 µs (half of 413.6 µs), about 10 Mb/s per host (twice the card's 5), and a timeout of 2 × 208.8 + 50 = 467.6 µs, and you can say why halving n halves the epoch but doesn't touch ε.",
+    "hint": "2 × 500 × 2,048 bits / 10<sup>10</sup> b/s = 204.8 µs, plus ε = 4 µs. The per-host rate is ≈ R / 2n = 10<sup>10</sup> / 1,000 = 10 Mb/s."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: where the first drop lands with a 32-packet path?",
+    "Could you explain why halving produces fairness without drawing the two-flow plot?",
+    "Which relationship is still fuzzy: rate limit → bound → timeout, or loss → halving → fair share?",
+    "What timeout values does a system you know use, and on what basis were they chosen?",
+    "What will you reopen before the request-path card's TCP slow start?"
+  ],
+  "revisit": [
+    "cs-5-distributed-systems/network-unreliability",
+    "cs-5-distributed-systems/end-to-end-argument"
+  ],
+  "prereq": [
+    "cs-5-distributed-systems/network-unreliability"
+  ]
+}

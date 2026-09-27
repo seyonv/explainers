@@ -1,0 +1,62 @@
+{
+  "prime": {
+    "problem": "cuBLAS is fast but closed: you can't fuse your own activation into its output, so a custom epilogue costs an extra kernel and a round trip of C through HBM. A block-level matmul you can edit needs to match cuBLAS without siboehm's ten kernels, and its speed turns out to depend on something the math never mentions: which tiles run at the same time.",
+    "fits": "It combines the Triton programming model with the matmul cards: the same block tiling siboehm wrote by hand, with the thread-level work left to the compiler. It adds L2-aware launch order and autotuning, and points to FlashAttention's Triton kernel in perf-4.",
+    "expect": ["one program per C tile, a K loop with <code>tl.dot</code>", "2-D blocks of pointers from strides", "grouped (super-grouped) launch order and L2 reuse", "<code>@triton.autotune</code> keyed on shape", "a fused epilogue in fp32"],
+    "goal": "Write the tutorial's matmul structure from memory, count the distinct blocks a set of concurrent programs touches under any grouping, and say when grouping and autotuning pay off."
+  },
+  "attend": [
+    "What does the program no longer write that siboehm's kernels spelled out by hand?",
+    "Why does the accumulator stay fp32 when the inputs are fp16, and where does the result get rounded?",
+    "Every tile of C is computed whatever the launch order. So how can order change speed?",
+    "Why does GROUP_SIZE_M = 8 do nothing for the tutorial's 9 concurrent programs, yet cut distinct blocks 2.62× for a T4-sized wave?",
+    "What does the autotuner re-run when the shape changes, and why does a T4 search a much smaller space than an A100?"
+  ],
+  "core": {
+    "must": [
+      "Each program owns one BM × BN tile of C and walks K, loading one block of A and one of B per step and accumulating with <code>tl.dot</code> in fp32 → the compiler picks warp and thread tiles, shared-memory staging, vector loads and the tensor-core instruction → 29 lines reach 99% of cuBLAS at 4096² on the tutorial's GPU",
+      "Only programs running at the same moment share L2 → row-major order makes a wave sweep a long row of C, pulling in every B strip → grouping GROUP_SIZE_M rows at a time makes the wave a compact block → distinct blocks fall (90 → 54 in the 9 × 9 example) → more L2 hits, fewer HBM reads",
+      "Distinct blocks = K_b × (rows + columns covered) → smallest when the wave's footprint is square (g ≈ √W) → grouping helps only when the wave spans enough tiles; with one row of tiles (decode) or a tiny wave, every order is the same",
+      "Tile shape trades reuse (BM·BN/(BM + BN) FLOP/B per tile) against parallelism and shared memory → the best config differs by shape and GPU → <code>@triton.autotune</code> times a config list the first time it sees each (M, N, K) and caches the winner"
+    ],
+    "elevated": [
+      "A single 128 × 256 tile streaming from HBM sits at 85 FLOP/B, far under the H100's 295 ridge → the GEMM is compute-bound only because concurrent programs reuse blocks through L2 → launch order is what sets that reuse (294 FLOP/B row-major vs 805 grouped in the Llama up-projection model)"
+    ],
+    "reference": [
+      "the grouped pid-mapping code (<code>num_pid_in_group</code>, <code>first_pid_m</code>, …)",
+      "the 16 tutorial configs and the fp8 note on BK = 128",
+      "unit-test tolerances (atol 1e-2, fp8 0.125) and the 31-size benchmark table",
+      "tutorial 06, 08, 09 and 10 titles and numbers"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, sketch the 9 × 9 grid of C tiles and shade the first 9 programs under row-major and under GROUP_SIZE_M = 3. Count the A and B strips each touches and write the block totals. Then add one line for what autotuning chooses and one for what it can't.",
+    "checklist": [
+      "row-major: 1 A strip + 9 B strips = 10 strips × 9 blocks = 90",
+      "grouped by 3: 3 A + 3 B = 6 strips × 9 = 54",
+      "the order doesn't change total work, only which blocks can be L2 hits",
+      "autotune picks block sizes, K width, stages and warps per shape, by timing",
+      "it can't pick what isn't in the config list, and configs that exceed the GPU's shared memory fail to compile and are skipped"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why launch order changes a matmul's speed even though every program does the same work in any order.", "kind": "concept", "answer": ["neighbouring tiles share input strips (same row of A, same column of B)", "L2 only helps if the programs needing a block run while it's still cached", "the order decides which programs run together, so it sets how many blocks come from L2 instead of HBM"]},
+    {"q": "Using the tutorial's mapping, count distinct blocks for the first 9 programs on a 9 × 9 grid (K_b = 9) with GROUP_SIZE_M = 1, 2, 3, 4 and 9.", "kind": "mechanism", "answer": ["g = 1: 1 row + 9 columns → 90", "g = 2: 2 rows + 5 columns → 63", "g = 3: 3 + 3 → 54 (the best: square footprint)", "g = 4: 4 + 3 → 63; g = 9: 9 rows + 1 column → 90"]},
+    {"q": "When is grouped ordering not worth the six lines, and what would you try instead where it does matter a lot?", "kind": "tradeoff", "answer": ["decode with ≤ 128 tokens and BM = 128: one row of tiles, every order identical", "small matrices whose A and B fit in L2 anyway (1024² fp16 on an H100)", "when L2 hit rate is already high (siboehm's ~80%, no gain)", "where it matters: persistent kernels that walk tiles in a chosen order, or Hilbert-curve ordering (Shankhdhar's H100 worklog)"]}
+  ],
+  "compare": [
+    {"with": "perf-3-kernels/matmul-warptiling", "q": "siboehm's thread swizzling gave nothing on an A6000; Triton's grouping gave 1.11× on an A100. Name the differences in setup that could explain it, and what the card says you can and can't conclude.", "answer": ["different GPU, matrix sizes, precision (FP32 vs fp16) and compute unit (CUDA cores vs tensor cores)", "siboehm's L2 hit rate was already ~80%", "neither source explains the gap, so the only honest conclusion is to measure on your shape and GPU"]},
+    {"with": "perf-4-attention-kv/flashattention-2-algorithm", "q": "Tutorial 06's fused attention uses the same program-per-tile pattern as this matmul. What does each program own and loop over in each kernel, and what extra state must the attention program carry across its loop?", "answer": ["matmul: one C tile, looping over K blocks of A and B", "attention: one block of queries, looping over K/V blocks", "attention also carries a running max and sum for the softmax, rescaling the accumulator as each block arrives"]}
+  ],
+  "predict": {"q": "Decode with 64 tokens through the Llama up-projection (M = 64, K = 4,096, N = 14,336) using the tutorial's first config (BM = 128, BN = 256). Commit: how many tiles, how many rows of tiles, and does GROUP_SIZE_M change anything?", "answer": "M = 64 fits in one 128-row tile (half of it masked), so there is one row of tiles: 14,336 ÷ 256 = 56 tiles in total. With one row, the grouped mapping gives exactly the row-major order, so GROUP_SIZE_M changes nothing. On an H100 those 56 programs don't even fill the 132 SMs; smaller tiles or split-K would, and the kernel is memory-bound on the weights anyway."},
+  "apply": {"task": "Run <code>labs/grouped-ordering.py</code> and reproduce 90 vs 54 and the W × g table. Then add a row for W = 64 concurrent programs on the 32 × 32 tile grid (K_b = 32): predict the best g from √W before running, and compare its block count with row-major. Finally, estimate shared memory per config as stages × (BM·BK + BK·BN) × 2 B for four of the tutorial's configs and mark which fit a T4's 64 KB.", "done": "You predicted the best g for W = 64 before running and can say whether g = 8 beat row-major and by how much; your shared-memory estimates give 144 KB for 128 × 256 × 64 × 3 stages and exactly 64 KB for 128 × 128 × 32 × 4.", "hint": "√64 = 8, so expect g = 8 to be near-best. Row-major with W = 64 on a 32-column grid covers 2 rows and all 32 columns."},
+  "reflect": [
+    "Which prediction did you get wrong: the decode tile count, or the best g for W = 64?",
+    "Could you explain L2 reuse from launch order to someone who only knows the matmul formula?",
+    "Which relationship is still fuzzy: wave footprint → distinct blocks, or distinct blocks → DRAM bytes per FLOP?",
+    "Where would you rather spend effort: autotuning configs or choosing the launch order? What decides it?",
+    "What will you revisit before the profiling card: how you'd confirm an L2 hit-rate change with a profiler?"
+  ],
+  "revisit": ["perf-3-kernels/triton-programming-model", "perf-3-kernels/matmul-warptiling", "perf-3-kernels/matmul-blocktiling"],
+  "prereq": ["perf-3-kernels/triton-programming-model", "perf-3-kernels/matmul-blocktiling"]
+}

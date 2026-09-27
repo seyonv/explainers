@@ -1,0 +1,128 @@
+{
+  "prime": {
+    "problem": "Several programs must share one machine without reading or corrupting each other's memory, and the OS must be able to stop any of them and resume it later exactly where it was. Without a unit that owns its memory and a record of where it stopped, neither isolation nor sharing the CPU is possible.",
+    "fits": "First card of the course, and the unit everything else is measured against. Threads (next) split a process into several lines of execution; the context-switch cards reuse this card's PCB.",
+    "expect": [
+      "address space: text, data, heap, stack",
+      "the process control block (PCB)",
+      "<code>fork</code> → <code>exec</code> → <code>wait</code>, zombies",
+      "copy-on-write",
+      "IPC: pipes, shared memory, sockets, signals"
+    ],
+    "goal": "Explain why a process is the unit of isolation, trace fork/exec/wait by hand, and say when 72 ms of start-up is worth paying for 3.78× on CPU-bound Python."
+  },
+  "attend": [
+    "After <code>fork()</code>, how does the same line of code know whether it is running in the parent or the child?",
+    "Why did the child's <code>x += 100</code> copy one page instead of the whole address space, and why does Python's reference counting undermine that saving?",
+    "What stays the same across <code>exec</code> (pid, open files) and what is replaced, and why does shell redirection depend on that split?",
+    "What is left of a zombie, and whose job is it to clear it?",
+    "Why did 4 processes reach 3.78× on fib(27) when 4 threads reached 1.00×?"
+  ],
+  "core": {
+    "must": [
+      "Each process gets its own address space + a PCB → the kernel can stop it, run others and resume it exactly → processes are isolated: a crash or stray write can't corrupt another",
+      "fork clones the caller → pages shared read-only → the first write traps and copies just that page (copy-on-write) → fork is cheap until someone writes → but CPython's refcount updates are writes, so shared objects get copied anyway",
+      "Each process has its own interpreter and its own GIL → 4 processes really run on 4 cores → 0.121 s → 0.032 s (3.78×) → but a fresh spawn costs 72 ms (60% of the serial job), so pools are created once and reused",
+      "No shared heap → data crosses by IPC (pipe, shared memory, socket, signal) → every argument is pickled and copied → processes suit big CPU chunks, not chatty shared state (13.6 µs per pipe round trip)"
+    ],
+    "elevated": [
+      "fork copies only the calling thread → a lock another thread held at that instant stays locked forever in the child → this is why macOS defaults to spawn (since 3.8) and 3.12 warns on forking a threaded process"
+    ],
+    "reference": [
+      "the pids in the trace (97311, 97312) and the exact output lines",
+      "<code>os.waitstatus_to_exitcode</code>, <code>os._exit</code> vs <code>sys.exit</code>, <code>flush=True</code>",
+      "start-method names and defaults per platform (fork, spawn, forkserver)",
+      "the ASLR and shared-library details of the layout diagram"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw one process's address space (four regions) with its PCB beside it, then draw fork → COW write → exec → exit → wait as a five-step timeline, marking what the kernel does at each step.",
+    "checklist": [
+      "text, data, heap, stack in a private virtual address space",
+      "the PCB holds saved registers, state, open files and the memory map",
+      "fork returns twice: the child's pid in the parent, 0 in the child",
+      "COW copies a page only on the first write to it",
+      "exec replaces the program but keeps pid and file descriptors",
+      "a zombie waits for its parent's wait; processes buy parallelism at 72 ms each"
+    ]
+  },
+  "retrieve": [
+    {
+      "q": "Explain why a process, and not a thread, is the unit the OS uses to isolate programs from each other.",
+      "kind": "concept",
+      "answer": [
+        "each process has its own page table, so the same virtual address maps to different physical memory",
+        "one process can't name another's memory, so a crash or bad write stays inside it",
+        "threads of one process share the heap, so they get no such protection"
+      ]
+    },
+    {
+      "q": "Walk through what happens, from the kernel's side, when the child in the trace runs <code>x += 100</code> and then <code>os._exit(7)</code>, until the parent's <code>waitpid</code> returns.",
+      "kind": "mechanism",
+      "answer": [
+        "the write hits a page shared read-only since fork → trap → kernel copies that one page for the child",
+        "the child's x is 101, the parent's stays 1",
+        "on exit the child becomes a zombie: its PCB keeps the exit code 7",
+        "the parent's waitpid collects 7 and the PCB is freed (reaped)"
+      ]
+    },
+    {
+      "q": "A job has 4 CPU-bound chunks of about 0.03 s each and runs once per request. Using the card's numbers, is a fresh <code>multiprocessing</code> pool per request worth it, and what would you do instead?",
+      "kind": "tradeoff",
+      "answer": [
+        "serial: 0.121 s; a warm pool: 0.032 s",
+        "a fresh spawn costs 72 ms, so a new pool per request pays more in start-up than it saves in compute",
+        "create the pool once at start-up and reuse it, or run serially if requests are rare"
+      ]
+    },
+    {
+      "q": "Why is Python's default start method on macOS <code>spawn</code>, even though <code>fork</code> is faster?",
+      "kind": "tradeoff",
+      "answer": [
+        "fork copies only the calling thread",
+        "a lock held by another thread (including inside system libraries) stays locked forever in the child",
+        "spawn starts a clean interpreter: slower (72 ms, re-imports your module) but safe"
+      ]
+    }
+  ],
+  "compare": [
+    {
+      "with": "cs-7-operating-systems/threads",
+      "q": "Process vs thread: what does each own, which design choice makes a thread cheaper to create and switch, and how does each fail?",
+      "answer": [
+        "a process owns an address space, files and a PCB; a thread owns only registers, a stack and a PC, sharing the rest",
+        "no new page table to build or switch makes threads cheaper",
+        "processes fail by start-up cost (72 ms) and copying data between them; threads fail by racing on the shared heap and, under the GIL, by not speeding up CPU work"
+      ]
+    },
+    {
+      "with": "cs-7-operating-systems/context-switch-how",
+      "q": "This card introduces the PCB; the switch card fills and empties it. What does each card need the PCB for, and what extra work does a process switch do that a thread switch skips?",
+      "answer": [
+        "here: the kernel's record of a process (state, files, memory map, saved registers) so it can pause and resume",
+        "there: switch() saves registers into the PCB and loads the next task's",
+        "a process switch also loads a new page-table base; threads of one process keep theirs"
+      ]
+    }
+  ],
+  "predict": {
+    "q": "Before forking, the parent builds a 100 MB list of Python ints and never modifies it. The child only reads it (sums it). Does copy-on-write keep memory near 100 MB in total? Commit before revealing.",
+    "answer": "Probably not. Reading a Python object bumps its reference count, which is a write to the page it lives on, so the child's reads trigger page copies across much of the list. The card calls this our reading and points to <code>gc.freeze</code>; COW saves memory for data the child truly never touches, like raw bytes in a numpy array or a <code>bytes</code> buffer, not for Python objects it iterates."
+  },
+  "apply": {
+    "task": "Extend <code>code/processes.py</code>: before forking, allocate <code>b = bytearray(1 &lt;&lt; 20)</code> (1 MiB). In the child, write one byte every 16 KiB (<code>b[i] = 1</code> for <code>i in range(0, len(b), 16384)</code>) and print <code>resource.getrusage(resource.RUSAGE_SELF).ru_minflt</code> before and after the loop. Predict the difference first, then run it. Then write only to <code>b[0]</code> and predict again.",
+    "done": "You predicted about 64 extra page faults (1 MiB ÷ 16 KiB pages) for the first loop and about 1 for the second, ran it, and can explain any gap between prediction and count.",
+    "hint": "The M3's page size is 16,384 B (the hardware card), so 1,048,576 ÷ 16,384 = 64 pages. Your counts may be a little higher: the interpreter itself writes to a few pages after fork (refcounts, the loop's own objects)."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: the page-fault count, or whether reading a Python list copies pages?",
+    "Can you explain, without the table, why fork returns two different values?",
+    "Which relationship is still fuzzy: own interpreter → own GIL → real parallelism, or fork → COW → cheap until written?",
+    "When would you now reach for a process over a thread, and with what number in mind?",
+    "What will you look for in the threads card: exactly what a thread gives up by not owning an address space?"
+  ],
+  "revisit": [
+    "cs-4-design-foundations/back-of-envelope"
+  ],
+  "prereq": []
+}

@@ -1,0 +1,121 @@
+{
+  "prime": {
+    "problem": "read4 hands over 4 characters whether you wanted them or not and can't rewind. A read(n) that keeps no state loses the extras for good: read(1) then read(6) returns \"efghij\" and \"bcd\" is gone. Keeping the extras in globals breaks as soon as there are two files.",
+    "fits": "A Coding and design card about state rather than a structure. The leftover buffer is a tiny queue (the deque cards), and the question of who owns it leads to cs-4's cards on encapsulation and API layers.",
+    "expect": [
+      "the leftover buffer and its two cursors (i, m)",
+      "short reads and end of file",
+      "stateless vs global vs object-owned state",
+      "why real Python's BufferedReader does this for you"
+    ],
+    "goal": "Implement read(n) on top of read4 so that any sequence of calls returns the file exactly once, and argue where the state must live."
+  },
+  "attend": [
+    "Why does any read that ends inside a read4 chunk force you to keep state?",
+    "What do i and m mean, and what does i == m signal?",
+    "Why is a return value smaller than n not an error?",
+    "Why does the global-buffer version return another file's characters?",
+    "What makes this Reader unsafe to share between threads?"
+  ],
+  "core": {
+    "must": [
+      "read4 fetches whole chunks and can't rewind → a read that stops mid-chunk leaves characters already fetched but not returned → they must survive until the next call → that leftover is state",
+      "Keep a 4-slot buffer with cursors i (next unread) and m (filled) → copy from the buffer first, refill only when i == m → each character copied once → O(n) per call, at most ⌈n/4⌉ + 1 read4 calls",
+      "read4 returning 0 means end of file → stop and return what you have → short reads are normal, not errors (os.read and pipes behave the same)",
+      "State in globals is shared by every reader → two files mix leftovers → put the buffer and cursors on the object → any number of readers, O(1) extra memory each, and a fresh object is a clean test"
+    ],
+    "elevated": [
+      "Two threads calling read on one object can copy the same slot before either advances i → a race → one Reader per thread or a lock around read"
+    ],
+    "reference": [
+      "io.DEFAULT_BUFFER_SIZE = 8192 under Python 3.10.20",
+      "<code>make_read4</code> in the code file",
+      "the source's C++ globals i, m, buf4",
+      "C's FILE * as the source's comparison",
+      "cursors and page tokens in web APIs"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw the file abcdefghij as read4 chunks above and read(1), read(6), read(5) below, shade what must be kept between calls, and write the three-line loop that uses i and m.",
+    "checklist": [
+      "chunks abcd | efgh | ij | (empty); reads a | bcdefg | hij",
+      "leftovers bcd after read(1) and h after read(6)",
+      "if i == m: refill with read4, and stop if it returns 0",
+      "copy min(n − j, m − i) characters and advance both j and i",
+      "the state belongs to the Reader object"
+    ]
+  },
+  "retrieve": [
+    {
+      "q": "Explain why the stateless version can't be fixed by being more careful inside one call.",
+      "kind": "concept",
+      "answer": [
+        "within one call you must request whole chunks from read4",
+        "if the caller asked for fewer, the extras are already consumed from the file",
+        "only something that outlives the call (a buffer) can hand them to the next call"
+      ]
+    },
+    {
+      "q": "Walk through read(6) when the buffer holds bcd (i = 1, m = 4).",
+      "kind": "mechanism",
+      "answer": [
+        "copy min(6, 3) = 3 chars: bcd; j = 3, i = 4",
+        "i == m: read4 returns efgh, m = 4, i = 0",
+        "copy min(3, 4) = 3 chars: efg; j = 6, i = 3",
+        "returns 6, leaving h in the buffer"
+      ]
+    },
+    {
+      "q": "Why do most web APIs hand the caller a cursor or page token instead of remembering the position on the server, and what does that cost?",
+      "kind": "tradeoff",
+      "answer": [
+        "stateless servers are easier to retry, cache, load-balance and share",
+        "the client carries the leftover-and-position pair instead",
+        "cost: tokens must be validated, and the client must store and resend them",
+        "the same state exists either way; the question is only who holds it"
+      ]
+    }
+  ],
+  "compare": [
+    {
+      "with": "cs-4-design-foundations/classes-encapsulation",
+      "q": "The Reader is a small case of encapsulation. What does bundling the buffer with the methods protect against here, and what would still need protecting?",
+      "answer": [
+        "no other reader can see or corrupt this one's leftovers",
+        "tests start clean with a new object instead of resetting globals",
+        "invariants (0 ≤ i ≤ m ≤ 4) are maintained by the class's own methods",
+        "concurrent access to one object still needs a lock"
+      ]
+    },
+    {
+      "with": "cs-1-data-structures/deque-rolling-dp",
+      "q": "The leftover buffer and the rolling DP window both keep a bounded amount of recent data between steps. What decides the size of each, and what happens to data that leaves?",
+      "answer": [
+        "read4 fixes the buffer at 4 slots; the recurrence's reach fixes the window at forget values",
+        "buffered characters leave by being returned to the caller, exactly once",
+        "DP values leave when they fall out of range and are never needed again",
+        "both keep O(1) state relative to the input size"
+      ]
+    }
+  ],
+  "predict": {
+    "q": "Same file, but the calls are read(4), read(4), read(4). Before tracing: how many read4 calls happen in total, and is anything ever left in the buffer between calls?",
+    "answer": "4 read4 calls, and the buffer is empty between every pair of calls. The first two reads each consume exactly one full chunk (abcd, efgh). The third gets ij from a short chunk, then calls read4 once more and receives 0, which is how it learns the file has ended; it returns 2."
+  },
+  "apply": {
+    "task": "Trace read(3) four times on abcdefghij: for each call, write the leftover before, the read4 calls made, what is copied and the leftover after. Then run the code file's <code>trace</code> with [3, 3, 3, 3] to check.",
+    "done": "The calls return abc, def, ghi and j, with leftovers d, gh, j and then empty. read4 is called 4 times in total: abcd, efgh, ij, and a final call that returns 0 during the last read, after j is copied.",
+    "hint": "Each read(3) after the first starts by draining the leftover."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: the number of read4 calls, or the empty buffer?",
+    "Could you explain to a colleague why globals were fine for one file and wrong for two?",
+    "Which relationship is still fuzzy: chunk boundary → leftover, or leftover → who owns it?",
+    "Where in your own code does state live in the wrong place?",
+    "Which cs-4 card on API layers will you read with this one?"
+  ],
+  "revisit": [
+    "cs-1-data-structures/deque-rolling-dp"
+  ],
+  "prereq": []
+}

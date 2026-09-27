@@ -1,0 +1,133 @@
+{
+  "prime": {
+    "problem": "An MoE model's experts starve when each replica routes its own small batch, and a 671B model doesn't fit one node anyway. Splitting every expert with tensor parallelism makes the matmuls tiny and the all-reduce grow with GPU count.",
+    "fits": "Second card of the MoE block. MoE basics showed that each expert needs thousands of tokens per step; the collectives card defined all-to-all. Expert parallelism combines them: whole experts on different GPUs, tokens shipped to them. DeepSeek-V3 II and MegaScale-Infer build on this layout.",
+    "expect": [
+      "dispatch and combine as two all-to-alls per MoE layer",
+      "node-limited routing and IB → NVLink forwarding",
+      "DeepEP's normal vs low-latency kernels and the receive hook",
+      "redundant experts and EPLB (hierarchical vs global)",
+      "EP vs TP bytes per token"
+    ],
+    "goal": "Explain why EP uses all-to-all rather than all-reduce, estimate an MoE layer's time as dispatch + busiest GPU + combine, and balance a skewed expert load with redundant copies."
+  },
+  "attend": [
+    "Why does a token's hidden vector go to specific GPUs under EP, and why does that make the pattern an all-to-all?",
+    "Why does the MoE layer wait for the busiest GPU rather than the average one, and what does that do to hot experts?",
+    "Why is dispatch sent in FP8 but combine in BF16, and how do the bytes per token follow?",
+    "How does the receive hook let communication overlap compute without spending SMs?",
+    "When does EPLB pack whole expert groups onto nodes, and when does it ignore groups?"
+  ],
+  "core": {
+    "must": [
+      "Whole experts live on different GPUs → each token must travel to the GPUs holding its k experts and back → a personalised exchange per (sender, receiver) pair = all-to-all, not all-reduce → only the token's home GPU needs the result, so nothing is broadcast",
+      "EP traffic per token is capped by top-k (8 copies out, 8 back, 168 KiB round trip for V3 with FP8 dispatch) → it doesn't grow with GPU count, while TP's all-reduce does (430 vs 161 kB per token at 16 GPUs) → EP scales across nodes where TP can't",
+      "Layer time ≈ dispatch + max over GPUs of expert work + combine → a hot expert makes its GPU the straggler for everyone → replicate hot experts and pack copies so every GPU's load is near the mean → EPLB takes the README example from 1.42× (no copies) to 1.21× hierarchical or 1.07× global",
+      "Decode all-to-alls are small and latency-bound (77–360 µs per call, 11–33 ms per step if serialised over 58 layers) → overlap one micro-batch's transfer with another's compute, via a hook that moves data in the background without SMs → without overlap communication would eat a large share of a ~45–50 ms token"
+    ],
+    "elevated": [
+      "H800 NVLink is only 3.2× InfiniBand → V3 sends a token across IB once per target node, then forwards over NVLink → capping a token at 4 nodes caps its IB copies at 4 → 3.2 experts per node ride NVLink for free, which is why the router scores nodes by their top-2 experts",
+      "Hierarchical EPLB keeps each expert group on one node (less IB traffic, but coarse groups may not split evenly: node 1 carries 57% in the README example); global ignores groups and balances better → prefill (smaller EP) uses hierarchical, decode (larger EP) global"
+    ],
+    "reference": [
+      "DeepEP's H800 bandwidth tables and V1/V2 history",
+      "low_latency_dispatch(..., return_recv_hook=True) API",
+      "the exact phy2log arrays",
+      "per-GPU expert counts in DeepSeek's prefill (9) and decode (1, or 2 + 1 in Day 6) units",
+      "the FP32-per-128 scale overhead in the dispatch bytes"
+    ]
+  },
+  "compress": {
+    "prompt": "Draw one MoE layer on 4 GPUs under EP: where attention runs, where the router runs, the dispatch arrows, the expert work and the combine arrows. Write the layer-time formula under it and one chain for why hot experts need copies.",
+    "checklist": [
+      "attention stays with each GPU's own requests; the small router is copied everywhere",
+      "dispatch sends each token to its k experts' GPUs; combine returns and gate-sums",
+      "T ≈ dispatch + busiest GPU + combine",
+      "traffic per token is capped by top-k, so EP crosses nodes",
+      "redundant copies + packing bring the busiest GPU near the mean",
+      "overlap micro-batches so small all-to-alls hide under compute"
+    ]
+  },
+  "retrieve": [
+    {
+      "q": "Explain why expert parallelism uses all-to-all while tensor parallelism uses all-reduce, in terms of what each GPU holds.",
+      "kind": "concept",
+      "answer": [
+        "TP: every GPU holds a slice of every expert, so each produces a partial sum for every token and all need the total",
+        "EP: each GPU holds whole experts, so a token only needs the GPUs its experts live on, and only its home GPU needs the result",
+        "different data for each (sender, receiver) pair is exactly an all-to-all"
+      ]
+    },
+    {
+      "q": "Compute the dispatch and combine bytes per token per MoE layer for DeepSeek-V3 (d = 7,168, top-8, FP8 dispatch, BF16 combine), and the IB-bound maximum under node-limited routing.",
+      "kind": "mechanism",
+      "answer": [
+        "dispatch 8 × 7,168 × 1 B = 57,344 B (56 KiB), plus small FP32 scales",
+        "combine 8 × 7,168 × 2 B = 114,688 B (112 KiB); round trip 168 KiB",
+        "over IB at most 4 nodes: ≤ 28,672 B out and ≤ 57,344 B back"
+      ]
+    },
+    {
+      "q": "In EPLB's README example, the hierarchical policy leaves node 1 carrying 587 of the 1,033 total load. Why can't it do better, and why is it still the policy for prefill?",
+      "kind": "tradeoff",
+      "answer": [
+        "hierarchical first packs whole expert groups onto nodes, and 4 coarse groups can't be split evenly across 2 nodes",
+        "within node 1 the GPUs are near that node's own mean (146.75), so the imbalance is between nodes",
+        "keeping each group on one node means tokens routed to a group don't cross IB, which matters at prefill's smaller EP; global balances better (1.07×) but spreads groups over nodes"
+      ]
+    },
+    {
+      "q": "Kiely says TP8PP2 gives lower latency per user and EP16 higher system throughput for an MoE across two nodes. Explain both halves.",
+      "kind": "tradeoff",
+      "answer": [
+        "TP8 splits every matmul so all GPUs work on each token; PP2 adds only a stage hop, so one user's step is short",
+        "EP16 keeps whole experts and pools tokens from many requests, so each expert GEMM is fuller and traffic stays capped by top-k",
+        "but EP pays all-to-all latency and straggler waits per layer, which a single user feels"
+      ]
+    }
+  ],
+  "compare": [
+    {
+      "with": "perf-6-scaling-out/megatron-mlp-attention",
+      "q": "Serving an MoE's experts with Megatron-style TP vs with EP: what is fundamentally different about each GPU's matmuls, and where does each approach break?",
+      "answer": [
+        "TP slices every expert, so each GPU's expert GEMMs get 1/n as wide and its all-reduce grows with n",
+        "EP keeps whole experts, so a GPU's GEMMs are full width and get bigger as more tokens are pooled",
+        "TP breaks on slow links and tiny GEMMs; EP breaks on load imbalance, all-to-all latency and multi-node bandwidth efficiency"
+      ]
+    },
+    {
+      "with": "perf-6-scaling-out/moe-basics",
+      "q": "MoE basics dropped overflow tokens to cope with imbalance. EP copies hot experts instead. What does each give up?",
+      "answer": [
+        "dropping: tokens skip their expert and ride the residual, which costs quality and makes output depend on batch neighbours",
+        "copying: extra memory and slots per GPU, plus a rebalancer that predicts load (DeepSeek refreshes about every 10 minutes)",
+        "copying keeps every token computed; a sudden traffic shift still unbalances until the next rebalance"
+      ]
+    }
+  ],
+  "predict": {
+    "q": "Scale EP from 32 to 256 GPUs with the same top-8 routing and 128 tokens per GPU. Using DeepEP's low-latency table, does the per-step all-to-all time grow, shrink or stay flat, and why? Commit first.",
+    "answer": "It grows, then flattens: dispatch goes from 155 µs at EP32 to 194 µs at EP256 and combine from 273 to 360 µs, with almost no change past EP128. Bytes per token are capped by top-k, but each GPU talks to more peers and more traffic leaves the node, so latency rises until the NIC side saturates. Over 58 layers that's 24.8 → 32.1 ms per step if nothing overlaps."
+  },
+  "apply": {
+    "task": "Run labs/eplb.py. Then on paper, pack the toy load [120, 60, 50, 40, 30, 30, 20, 10] onto 4 GPUs with 3 slots each using EPLB's greedy rules (replicate by highest load per copy, then place heaviest copy on the lightest GPU with room). Report each GPU's load and max/mean. Finally, with the lab's skewed 256-expert load, record EP32's max/mean with no copies and with 32 copies, and explain why global beats hierarchical there.",
+    "done": "Your hand packing gives a busiest GPU within 6% of ideal, and you have the lab's two EP32 values with a one-sentence explanation.",
+    "hint": "Copies: E0 × 3 (40), E1 × 2 (30), E2 × 2 (25), E3–E7 × 1. Packing: 95, 95, 90, 80 → 95/90 = 1.06×. The card's lab: EP32 1.80× with no copies, 1.016× hierarchical and 1.005× global with 32 copies; global can spread a group's copies across nodes, at the price of more IB traffic."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: whether EP's all-to-all time grows with GPU count?",
+    "Could you explain why the layer waits for the busiest GPU without a diagram?",
+    "Which relationship is still fuzzy: top-k → bytes capped, or hot expert → straggler → copies?",
+    "Can you say when hierarchical EPLB is the better choice, and what it costs?",
+    "What will you check on DeepSeek-V3 I: which architectural choices make EP cheaper?"
+  ],
+  "revisit": [
+    "perf-6-scaling-out/moe-basics",
+    "perf-6-scaling-out/collectives"
+  ],
+  "prereq": [
+    "perf-6-scaling-out/moe-basics",
+    "perf-6-scaling-out/collectives"
+  ]
+}

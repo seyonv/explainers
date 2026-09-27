@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Checkpoint 3: from one chip to a fleet</title>
+<style>
+:root{
+  --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
+  --text:#1c1f23; --muted:#6b7068; --faint:#b9b9b3;
+  --accent:#4a9d77; --accent-bg:#dcefdf; --accent-border:#8cc79c;
+  --red:#c0492b; --red-bg:#fbeceb;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#15171a; --surface:#1d2024; --surface2:#24282d; --border:#32373d;
+    --text:#e6e8ea; --muted:#9aa1a9; --faint:#4a5057;
+    --accent:#5fb37f; --accent-bg:#1c2b22; --accent-border:#3f7a55;
+    --red:#e57368; --red-bg:#2e1f1e;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text)}
+.card{max-width:820px;margin:0 auto;padding:28px 32px;font-family:-apple-system,"Inter",system-ui,sans-serif;line-height:1.45}
+h1{font-size:26px;font-weight:600;margin:0 0 6px;letter-spacing:-0.01em}
+.sub{font-size:15px;color:var(--muted);margin:0 0 20px}
+h2{font-size:17px;font-weight:600;margin:26px 0 10px}
+p{font-size:15px;margin:0 0 10px}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+
+/* Tables and formulas */
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border)}
+th{font-size:12px;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:none}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+.formula{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin:10px 0;white-space:pre;overflow-x:auto;line-height:1.55}
+
+.foot{margin-top:22px;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+.foot p{font-size:13px}
+a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+
+/* Checkpoint */
+.how{border:1px solid var(--border);border-radius:10px;padding:10px 16px;background:var(--surface);margin:0 0 8px}
+.how p{font-size:14px;margin:4px 0}
+ol.qs{padding-left:24px;margin:6px 0}
+ol.qs>li{margin:0 0 16px;font-size:15px}
+.tag{display:inline-block;font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:var(--accent);border:1px solid var(--accent-border);border-radius:4px;padding:0 5px;margin-right:6px;vertical-align:1px}
+details.chk{margin:6px 0 0;padding:4px 12px;border-left:3px solid var(--accent-border);background:var(--surface2);border-radius:0 6px 6px 0;font-size:14px}
+details.chk>summary{cursor:pointer;color:var(--accent);font-size:13px;font-weight:600}
+details.chk ul,details.chk ol{margin:6px 0;padding-left:20px}
+details.chk li{margin:3px 0}
+.re{font-size:13px;color:var(--muted);margin:4px 0 6px}
+.tw{overflow-x:auto;margin:8px 0}
+table.cmp{min-width:680px;font-size:13.5px;table-layout:fixed}
+table.cmp th,table.cmp td{vertical-align:top}
+table.cmp td:first-child{font-weight:600;width:19%}
+table.cmp td.blank{height:64px;background:var(--surface);border:1px dashed var(--border)}
+table.fix td{vertical-align:top}
+.proj{border:1px solid var(--accent-border);border-radius:10px;padding:12px 18px;margin:8px 0}
+.proj h3{font-size:15px;margin:12px 0 4px}
+.proj p,.proj li{font-size:14px}
+.proj ol,.proj ul{padding-left:20px;margin:4px 0}
+.proj li{margin:5px 0}
+.card>ul{font-size:15px;padding-left:22px}
+.card>ul li{margin:3px 0}
+.done{background:var(--accent-bg);border:1px solid var(--accent-border);border-radius:8px;padding:8px 12px;font-size:14px;margin:10px 0}
+@media (max-width:560px){.card{padding:22px 16px}}
+</style>
+</head>
+<body>
+<article class="card">
+<h1>Checkpoint 3: from one chip to a fleet</h1>
+<p class="sub">Ties together <a href="sharding-prefill-generation.html">sharding prefill vs generation</a>, <a href="sharding-kv-cache.html">sharding the KV cache</a>, <a href="inference-engine-design.html">designing an inference engine</a>, <a href="serving-llama-70b.html">serving LLaMA 3-70B</a> and <a href="speculative-sampling.html">speculative sampling</a>: what to split across chips, what to keep still, how to schedule prefill against decode, and how to read the cost off it all.</p>
+
+<div class="how">
+<p><b>How to use this page.</b> Close the five cards. Answer each question in writing, in full sentences, <i>before</i> opening its Check. A wrong or shaky answer isn't a failure; it tells you exactly which section to reopen. The questions are mixed on purpose, so you have to work out which idea applies before you can answer.</p>
+</div>
+
+<h2>1 · Mixed retrieval</h2>
+<ol class="qs">
+<li><span class="tag">which concept?</span>A model trained with FSDP is deployed with the same sharding config on an 8×H100 node, and decode is several times slower than on one GPU. Which idea explains it, and what does the card's arithmetic give for Llama-3.1-8B?
+<details class="chk"><summary>Check</summary><ul>
+<li>FSDP gathers each layer's weights from the other chips before running it: in decode that is nearly the whole model every step</li>
+<li>16.06 GB × 7/8 over 450 GB/s ≈ 31.2 ms per token, vs 4.8 ms reading it from one GPU's own HBM</li>
+<li>decode should move activations, not weights: use model (tensor) parallelism or separate replicas</li>
+</ul><p class="re">Missed it? Reopen <a href="sharding-prefill-generation.html">sharding prefill vs generation</a>, "Generation: three strategies are out".</p></details></li>
+
+<li>The book says generation can be model-sharded about 64 ways for F = 16,384 at batch 32 on v5e, far past training's 4–8. Derive the limit and say what it compares.
+<details class="chk"><summary>Check</summary><ul>
+<li>per chip: reading 1/Y of the weights takes 2DF/(Y·W<sub>hbm</sub>); moving activations takes 2BD/W<sub>ici</sub></li>
+<li>comms win once Y > F/(B·β), with β = W<sub>hbm</sub>/W<sub>ici</sub> ≈ 8: 16,384 / (32 · 8) = 64</li>
+<li>training compares comms with math; decode compares them with the (much larger) weight read</li>
+</ul><p class="re">Missed it? Reopen <a href="sharding-prefill-generation.html">sharding prefill vs generation</a>, "How far can generation shard?".</p></details></li>
+
+<li><span class="tag">which concept?</span>Decode at batch 16 is sharded 8 ways on v5e, and adding more chips cuts HBM time per chip but the collectives don't get any faster. Which idea explains it, and what is the test?
+<details class="chk"><summary>Check</summary><ul>
+<li>latency-bound collectives (Appendix C): each hop has a fixed ≈ 1 µs cost</li>
+<li>at B = 16, D = 8,192 int8 the activations are 131 kB, under the 360 kB (8 × 45 kB) needed to be bandwidth-bound</li>
+<li>rule: latency-bound once Y > BD/45,000 ≈ 2.9, and the ring's latency term grows with chip count</li>
+</ul><p class="re">Missed it? Reopen <a href="sharding-kv-cache.html">sharding the KV cache</a>, "Appendix C".</p></details></li>
+
+<li>A model with 8 KV heads is served on 64 chips. Where does the KV cache go, what extra communication does that cost per attention layer, and why is it worth it?
+<details class="chk"><summary>Check</summary><ul>
+<li>8 ways by heads (one head per chip on that axis) × 8 ways by batch: KV[2, B<sub>Z</sub>, S, K<sub>Y</sub>, H], no copies</li>
+<li>two AllToAlls: Q from head-sharded to batch-sharded, and the output back</li>
+<li>they move small activations (131 kB at B = 16 with Llama dims) instead of stationary KV (537 MB per layer): 4,096× less</li>
+</ul><p class="re">Missed it? Reopen <a href="sharding-kv-cache.html">sharding the KV cache</a>, "The price: two AllToAlls".</p></details></li>
+
+<li><span class="tag">which concept?</span>Chat users on an interleaved server complain that the stream freezes whenever someone uploads a long document. Which idea explains it, how long is the freeze for an 8k prompt on Llama-3.1-8B at batch 32 with 4k contexts, and name two fixes.
+<details class="chk"><summary>Check</summary><ul>
+<li>interleaving runs prefill on the decode GPU, and prefill is compute-bound: 133 ms for 8k tokens</li>
+<li>a decode step there is ≈ 9.9 ms, so every user freezes for ≈ 13.4 steps</li>
+<li>fixes: disaggregate prefill onto its own servers (the lab's P99 gap 63.8 → 6.8 ms), or chunk the prefill so it rides along with decode steps</li>
+</ul><p class="re">Missed it? Reopen <a href="inference-engine-design.html">designing an inference engine</a>, "Why the two phases fight".</p></details></li>
+
+<li>Why does the book's LLaMA 3-70B pipeline want about 3 prefill servers per generate server? Write the balance equation.
+<details class="chk"><summary>Check</summary><ul>
+<li>prefill rate P / T<sub>prefill</sub> must equal the generate side's completion rate B·G / (T<sub>step</sub> · n<sub>decode</sub>)</li>
+<li>P / 0.91 s = 32·G / (0.019 s · 512) → P ≈ 2.99 G</li>
+<li>long prompts (8k) and short answers (512) put most of the work in prefill</li>
+</ul><p class="re">Missed it? Reopen <a href="inference-engine-design.html">designing an inference engine</a>, "Sizing a disaggregated fleet", or <a href="serving-llama-70b.html">serving LLaMA 3-70B</a>, "Prefill and the end-to-end pipeline".</p></details></li>
+
+<li><span class="tag">which concept?</span>Speculative sampling gives 2.24× at batch 1 on Llama-3.1-8B with a 1B draft (α = 0.8, K = 4). The same setup at batch 256 is 0.70×. Which idea explains the flip, and at roughly what batch does the gain start to fade?
+<details class="chk"><summary>Check</summary><ul>
+<li>verifying multiplies tokens per step by K + 1 = 5; below B<sub>crit</sub> those extra tokens ride on the weight read for free</li>
+<li>once B · 5 passes B<sub>crit</sub> ≈ 295, the verify step is compute-bound and every drafted token costs FLOPs</li>
+<li>it starts fading around B ≈ 60 (2.12× at B = 64) and is a slowdown by 256</li>
+</ul><p class="re">Missed it? Reopen <a href="speculative-sampling.html">speculative sampling</a>, the batch-vs-speculation table.</p></details></li>
+
+<li>For LLaMA 3-70B on TPU v5e at 8k context, int4 on a 2x4 gives 1.80 QPS per chip and bf16 on its minimum 4x4 gives 0.27. Which two choices produce that 6.7×?
+<details class="chk"><summary>Check</summary><ul>
+<li>quantization: 4× fewer weight bytes means the model fits on 4× fewer chips with the same 43-sequence batch (0.27 → 1.11)</li>
+<li>a slice bigger than the minimum: the extra HBM holds KV, B rises 43 → 140 at the same ≈ 19 ms step (× 1.63)</li>
+<li>QPS per chip = B / (T<sub>step</sub> × 512 × chips) is cost per query</li>
+</ul><p class="re">Missed it? Reopen <a href="serving-llama-70b.html">serving LLaMA 3-70B</a>, "Latency and cost at that batch".</p></details></li>
+</ol>
+
+<h2>2 · Compare the ways to add hardware</h2>
+<p>Fill this in on paper first. Rows are the ways to put more hardware (or more of the same chip's idle math) behind a serving workload; columns ask what each one does, which design choice causes its effect, when you'd pick it, and how it fails.</p>
+<div class="tw"><table class="cmp">
+<tr><th>Approach</th><th>Core mechanism</th><th>Design choice that causes the difference</th><th>When to choose it</th><th>How it fails</th></tr>
+<tr><td>Tensor parallelism in decode</td><td class="blank"></td><td class="blank"></td><td class="blank"></td><td class="blank"></td></tr>
+<tr><td>Data-parallel replicas</td><td class="blank"></td><td class="blank"></td><td class="blank"></td><td class="blank"></td></tr>
+<tr><td>FSDP at inference</td><td class="blank"></td><td class="blank"></td><td class="blank"></td><td class="blank"></td></tr>
+<tr><td>Batch-sharded KV cache</td><td class="blank"></td><td class="blank"></td><td class="blank"></td><td class="blank"></td></tr>
+<tr><td>Disaggregated prefill and decode</td><td class="blank"></td><td class="blank"></td><td class="blank"></td><td class="blank"></td></tr>
+<tr><td>Speculative sampling</td><td class="blank"></td><td class="blank"></td><td class="blank"></td><td class="blank"></td></tr>
+</table></div>
+<details class="chk"><summary>Check: the filled-in table</summary>
+<div class="tw"><table class="cmp">
+<tr><th>Approach</th><th>Core mechanism</th><th>Design choice that causes the difference</th><th>When to choose it</th><th>How it fails</th></tr>
+<tr><td>Tensor parallelism</td><td>each chip holds 1/Y of every weight matrix and reads only that</td><td>move activations, keep weights still; two all-reduces per layer</td><td>per-token latency below one chip's weight-read floor, or a model that doesn't fit (70B+)</td><td>past F/(B·β) comms win; at small batch each collective pays fixed latency; beyond a node bandwidth drops</td></tr>
+<tr><td>Replicas</td><td>full copies serving different requests</td><td>nothing shared, no comms</td><td>throughput for a model that fits on one chip</td><td>each user still waits one full weight read per token</td></tr>
+<tr><td>FSDP</td><td>gather the weights from peers before each layer</td><td>moves weights over links far slower than HBM</td><td>training and prefill with big batches</td><td>decode: 31.2 ms vs 4.8 ms for Llama-3.1-8B on 8 H100s, an order-of-magnitude regression</td></tr>
+<tr><td>Batch-sharded KV</td><td>each chip holds whole sequences' caches</td><td>KV never moves; two AllToAlls move Q and the output</td><td>more chips than KV heads (GQA, MQA)</td><td>at small batch the AllToAlls are latency-bound; tiny batches or huge contexts need sequence sharding instead</td></tr>
+<tr><td>Disaggregation</td><td>separate prefill and decode servers, KV shipped between them</td><td>decode never runs a prefill; each fleet scales and shards on its own</td><td>high volume, long prompts, tight TPOT (the book's P ≈ 3G)</td><td>at small scale it halves per-GPU throughput (1,917 vs 959 tok/s in the lab) and pays for KV transfers</td></tr>
+<tr><td>Speculative sampling</td><td>a cheap draft guesses K tokens, one big pass verifies them</td><td>spends the idle FLOPs of a memory-bound step on one user's guesses</td><td>batch-limited, latency-first serving (2.24× at batch 1)</td><td>past B<sub>crit</sub> the verify tokens cost real FLOPs (0.70× at batch 256); low α wastes the draft</td></tr>
+</table></div>
+<p class="re">Shaky rows? Rows 1–3: <a href="sharding-prefill-generation.html">sharding prefill vs generation</a>. Row 4: <a href="sharding-kv-cache.html">sharding the KV cache</a>. Row 5: <a href="inference-engine-design.html">engine design</a>. Row 6: <a href="speculative-sampling.html">speculative sampling</a>.</p>
+</details>
+
+<h2>3 · Project: design a 70B chat deployment on H100s</h2>
+<div class="proj">
+<p><b>What it reinforces:</b> the generation sharding limit (<a href="sharding-prefill-generation.html">sharding prefill vs generation</a>), where the KV cache lives (<a href="sharding-kv-cache.html">sharding the KV cache</a>), the prefill : decode balance (<a href="inference-engine-design.html">engine design</a>), the sizing sheet and QPS per GPU (<a href="serving-llama-70b.html">serving LLaMA 3-70B</a>) and when speculation pays (<a href="speculative-sampling.html">speculative sampling</a>).</p>
+<p>Design, on paper or in a short script, a deployment of LLaMA 3-70B (F = 28,672, 8 KV heads, 80 layers) for 8k-token prompts and 512-token answers, starting from the serving card's H100 panel: FP8 weights and KV on one 8×H100 node, B = 424 sequences at 8k, 25.0 ms per step, 4.14 QPS per GPU. Use 989 TFLOPS bf16 and 1,979 TFLOPS fp8 per GPU, 3.35 TB/s and β = 3.35e12 / 450e9 = 7.44.</p>
+<ol>
+<li><b>Sharding check.</b> Is 8-way tensor parallelism inside the generation limit F/(B·β) at B = 424? At B = 67?</li>
+<li><b>KV layout.</b> With 8 KV heads on 8 GPUs, do you need batch sharding and its AllToAlls?</li>
+<li><b>Latency.</b> How long does one 512-token answer take at B = 424? What would a latency-first tier at small batch get per token?</li>
+<li><b>Prefill fleet.</b> Estimate one 8k prefill on a separate 8-GPU node at 40% MFU in bf16, and in fp8. How many prefill nodes per decode node keep the decode node full?</li>
+<li><b>Speculation.</b> Should the throughput tier use speculative sampling with K = 4? Should the latency tier?</li>
+<li><b>Honesty.</b> Which of your numbers are rooflines, and what does the book say to expect in practice?</li>
+</ol>
+<div class="done"><b>Done when:</b> you have a one-page design with the TP degree and its Y* check, the KV layout, the per-answer latency, a prefill-to-decode node ratio for both prefill precisions, a yes/no on speculation per tier with a reason, and a note on the real-world haircut. Then compare with the check.</div>
+<details class="chk"><summary>Check: the numbers (computed with the cards' formulas)</summary>
+<ul>
+<li>Y* = 28,672 / (424 × 7.44) ≈ 9.1, so 8-way sits just inside the limit at full batch; at B = 67, Y* ≈ 57, far inside.</li>
+<li>8 KV heads on 8 GPUs: one head each, figure (a) of the KV card: no batch sharding, no extra AllToAlls.</li>
+<li>512 steps × 25.0 ms ≈ 12.8 s per answer at B = 424. The panel's FP8 batch-1 floor on 8 GPUs is 2.6 ms per token.</li>
+<li>Prefill 8k: 2 × 70e9 × 8,192 / (8 × 989e12 × 0.4) ≈ 0.36 s in bf16, ≈ 0.18 s in fp8. The decode node finishes 424 / (0.025 × 512) ≈ 33 sequences per second, so it needs 0.36 × 33 ≈ 12 bf16 prefill nodes, or ≈ 6 in fp8. With a batch this large, prefill becomes the bigger fleet.</li>
+<li>Speculation: at B = 424, B × 5 = 2,120 ≫ 295, so the verify step is compute-bound: no. For a small-batch latency tier, yes, while B × (K + 1) stays under ≈ 295.</li>
+<li>All of it is roofline: the book says real QPS is about half, and it assumes perfect overlap and no activation memory.</li>
+</ul></details>
+</div>
+
+<h2>4 · Reflect</h2>
+<ul>
+<li>Which link between these cards is still fuzzy: <i>move activations, not weights</i>, <i>move activations, not KV</i>, or <i>schedule prefill apart from decode</i>?</li>
+<li>Can you say why the generation sharding limit allows more chips than training's, in one sentence?</li>
+<li>Which question did you answer with the wrong concept? That confusion is the comparison to redo.</li>
+<li>In the project, did the size of the prefill fleet surprise you? Which input drives it most?</li>
+</ul>
+<table class="fix">
+<tr><th>If this is fuzzy</th><th>Reopen</th></tr>
+<tr><td>why only model parallelism survives in decode</td><td><a href="sharding-prefill-generation.html">sharding prefill vs generation</a>, "Generation: three strategies are out"</td></tr>
+<tr><td>where the KV cache goes on many chips</td><td><a href="sharding-kv-cache.html">sharding the KV cache</a>, "Where the cache lives" and the 12-line algorithm</td></tr>
+<tr><td>why prefill stalls decode, and what to do</td><td><a href="inference-engine-design.html">designing an inference engine</a>, the three timelines</td></tr>
+<tr><td>turning a deployment into cost per query</td><td><a href="serving-llama-70b.html">serving LLaMA 3-70B</a>, the sizing sheet</td></tr>
+<tr><td>when speculation helps and when it hurts</td><td><a href="speculative-sampling.html">speculative sampling</a>, "Appendix A" and the batch table</td></tr>
+</table>
+
+<p class="foot">Related: <a href="_overview.html">overview</a> · <a href="checkpoint-2.html">checkpoint 2</a> · <a href="sharding-prefill-generation.html">sharding-prefill-generation</a> · <a href="sharding-kv-cache.html">sharding-kv-cache</a> · <a href="inference-engine-design.html">inference-engine-design</a> · <a href="serving-llama-70b.html">serving-llama-70b</a> · <a href="worked-problems.html">worked-problems</a> · <a href="speculative-sampling.html">speculative-sampling</a> · <a href="../learning-principles/learning-principles.html">learning principles</a><br>
+Sources: the five cards above (Scaling Book Parts 7, 8 and 12; Leviathan et al.; the course's recomputations). The project starts from the serving card's H100 panel; its sharding check, prefill times and node ratios were computed with the cards' own formulas (40% MFU is the book's prefill assumption).</p>
+</article>
+</body>
+</html>

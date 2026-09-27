@@ -1,0 +1,62 @@
+{
+  "prime": {
+    "problem": "Summing an array does one add per element, so the arithmetic is trivial, yet Harris's first reduction kernel reaches 2.4% of the G80's bandwidth. What decides the speed is which thread adds which pair: pick badly and every warp stays busy doing masked-off work, or reads shared memory in a way that serialises.",
+    "fits": "It combines the execution model's warp divergence with the shared-memory card's banks, on the first kernel where threads cooperate in a tree. Part II (the next card) takes the same kernel from 11% to 72.5% of peak.",
+    "expect": ["tree reduction in log2(n) steps", "a kernel launch as the global sync", "effective bandwidth as the metric", "divergence vs idle warps", "bank conflicts from strided indexing"],
+    "goal": "Explain why kernels 1 → 2 → 3 each get faster by changing only the thread-to-pair mapping, and count warp issues and bank conflicts for a given block size."
+  },
+  "attend": [
+    "Why does a multi-block reduction need several kernel launches, and why doesn't CUDA just provide a grid-wide barrier?",
+    "Why is the metric GB/s, not GFLOP/s, and what is the G80's peak it's judged against?",
+    "In kernel 1, why do all 4 warps keep issuing for 5 of the 7 steps even though most lanes do nothing?",
+    "Kernel 2 fixes divergence. What new problem does <code>index = 2·s·tid</code> create in shared memory?",
+    "Kernels 2 and 3 issue exactly the same number of warp instructions. So where does kernel 3's extra 2.01× come from?"
+  ],
+  "core": {
+    "must": [
+      "Each element gets one add → intensity 0.25 ops/byte, far below any ridge → the kernel is memory-bound → judge it by effective bandwidth against peak (2.083 of 86.4 GB/s for kernel 1)",
+      "A warp issues an instruction if any lane needs it → spreading active threads across every warp (<code>tid % (2s)</code>) keeps all warps issuing while most lanes are masked → packing active threads into the fewest warps lets whole warps skip → kernel 1 → 2 is 2.33×",
+      "Strided shared-memory indexing (<code>2·s·tid</code>) puts several lanes of a warp on the same bank → the access splits into 2–4 passes on 32 banks (up to 8 on the G80's 16) → sequential addressing (<code>tid</code> and <code>tid + s</code>) reads consecutive words → conflict-free → kernel 2 → 3 is 2.01×",
+      "Blocks can't sync inside a kernel → reduce each block to one partial sum → launch again on the partials → the launch boundary is the global barrier (32,768 → 256 → 2 → 1 for 2^22 ints)"
+    ],
+    "elevated": [
+      "Divergence inside the last warp is harmless → kernel 3 still has 16, 8, 4, 2, 1 active lanes at the tail → what matters is whole warps kept busy for nothing, which is why kernel 1's waste scales with block size"
+    ],
+    "reference": [
+      "the G80's 384-bit bus at 1,800 M transfers/s",
+      "the exact slide numbers and per-kernel times (8.054, 3.456, 1.722 ms)",
+      "the G80's half-warp, 16-bank shared memory",
+      "<code>cub::DeviceReduce::Sum</code> and <code>torch.sum</code> as the library route"
+    ]
+  },
+  "compress": {
+    "prompt": "Draw the three loops side by side from memory (just the index and the condition), and under each write the one thing it fixes and the one thing it leaves broken.",
+    "checklist": [
+      "kernel 1: <code>tid % (2s) == 0</code>; active lanes spread over every warp, plus a slow modulo",
+      "kernel 2: <code>index = 2·s·tid</code>; active threads packed into few warps, but strided shared-memory reads conflict",
+      "kernel 3: <code>tid &lt; s</code> with s halving; packed and conflict-free",
+      "kernel 3 still leaves half its threads idle in step 1 and pays loop overhead (part II)",
+      "metric: GB/s vs 86.4 GB/s peak; 2.4% → 5.6% → 11.3%"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why idle threads cost time in kernel 1 but not in kernel 3, in terms of how a warp issues instructions.", "kind": "concept", "answer": ["a warp issues each instruction for all 32 lanes and masks the inactive ones", "in kernel 1 every warp has at least one active lane for 5 of 7 steps, so every warp issues", "in kernel 3 the active threads are contiguous, so whole warps have none and skip the instruction"]},
+    {"q": "For a 256-thread block (8 warps), count the warp issues in the loop body for kernel 1 and for kernel 3, and the share of lane slots doing useful adds.", "kind": "mechanism", "answer": ["kernel 1: 8, 8, 8, 8, 8, 4, 2, 1 = 47 issues; 255 adds ÷ (47 × 32) ≈ 17%", "kernel 3: 4, 2, 1, 1, 1, 1, 1, 1 = 12 issues; 255 ÷ (12 × 32) ≈ 66%", "the gap grows with block size because kernel 1 keeps every warp busy for more steps"]},
+    {"q": "You need a sum inside your own kernel. Compare writing Harris's kernel 3, calling <code>cub::DeviceReduce::Sum</code>, and fusing the tree into the kernel that produced the values. When is each the right call?", "kind": "tradeoff", "answer": ["kernel 3: only for learning; it reaches 11.3% of the G80's peak", "CUB or <code>torch.sum</code>: one line, tuned per GPU, correct for any size; right for a standalone sum", "fused tree: right when the sum is part of something else (RMSNorm, softmax) and a separate pass over memory would dominate"]}
+  ],
+  "compare": [
+    {"with": "perf-3-kernels/execution-model", "q": "The execution-model card's divergence example (<code>tid % 2</code> vs <code>(tid / 32) % 2</code>) and reduction kernel 1 vs 2 are the same lesson. What is the shared rule, and why is the reduction case worse than a single branch?", "answer": ["cost depends on whether both paths occur inside a warp, not how many threads take each", "in the reduction the condition changes every step, and kernel 1 keeps every warp partly active for most of log2(n) steps", "so the waste compounds over the whole tree, not one branch"]},
+    {"with": "perf-4-attention-kv/online-softmax", "q": "Softmax needs two reductions per row (max and sum). Compare the one-row-per-block tree on this card with the running max and sum of online softmax: what does each keep on-chip, and when does the tree stop working?", "answer": ["tree: loads the whole row into shared memory, then reduces it in log2 steps", "online softmax: streams the row in chunks, keeping only a running max and sum", "the tree fails when a row doesn't fit on-chip (a 128,256-wide vocab row); online softmax has no size limit"]}
+  ],
+  "predict": {"q": "Kernel 2 on today's 32-bank GPUs has conflicts of 2, 4, 4, 4, 4, 2 and 1 ways across the steps of a 128-thread block. Commit: if you ran kernel 2 with doubles instead of ints, would the conflicts get better, worse, or stay the same, and why?", "answer": "Worse. A double covers two 4-byte words, so <code>index = 2·s·tid</code> becomes a stride of 4s words and the same banks come round twice as often. Counting the worst bank per warp (our recomputation, same 128-thread block): 4, 8, 8, 8, 4, 2, 1 passes instead of 2, 4, 4, 4, 4, 2, 1, where the conflict-free minimum is 2 passes while a full warp of doubles (256 B) is active. Sequential addressing (kernel 3) stays at that minimum for doubles: 2, 2, then 1 pass per step."},
+  "apply": {"task": "Extend the card's warp-issue count to block sizes 128, 256 and 512 for kernels 1 and 3 (a 10-line Python loop over steps: which threads are active, how many distinct warps they fall in). Then run <code>labs/reduction.ipynb</code> on a T4 and record kernels 1–3's GB/s and % of 320 GB/s next to the G80's 2.4%, 5.6% and 11.3%.", "done": "Your count gives kernel 1 = 23, 47, 95 issues and kernel 3 = 8, 12, 20 issues for 128, 256 and 512 threads, and you have your T4's three bandwidths with a sentence on whether the step ratios (2.33×, 2.01×) held.", "hint": "Kernel 1 at step s activates threads with <code>tid % (2s) == 0</code>; a warp issues if any of its 32 threads is active. Kernel 3 activates <code>tid &lt; s</code>, starting at s = blockDim/2."},
+  "reflect": [
+    "Which prediction did you get wrong: the doubles case, or how the issue counts scale with block size?",
+    "Could you explain why kernel 2 → 3 helped even though both issue the same warps?",
+    "Which relationship is still fuzzy: thread-to-pair mapping → warps issuing, or index stride → bank conflicts?",
+    "Did the \"kernel launch as a global sync\" feel like a hack or a rule? What does it cost on an H100?",
+    "What will you revisit before part II: which threads are idle in kernel 3's first step?"
+  ],
+  "revisit": ["perf-3-kernels/shared-memory-transpose", "perf-3-kernels/execution-model"],
+  "prereq": ["perf-3-kernels/shared-memory-transpose"]
+}

@@ -1,0 +1,124 @@
+{
+  "prime": {
+    "problem": "To say whether an operation is slow because of math or because of data movement, you need more than a FLOP count. A FLOP-only estimate says a batch-1 matmul on an H100 takes 0.03 µs; it really takes about 10 µs because of the bytes. Every <i>is it memory-bound?</i> answer in the chapter rests on the roofline.",
+    "fits": "Third card. perf-1's roofline intuition gave you the picture; this card gives the book's algebra (T<sub>math</sub>, T<sub>comms</sub>, the lower and upper bounds, arithmetic intensity) that the next three cards apply to linear layers, attention and the whole step.",
+    "expect": ["T<sub>math</sub> and T<sub>comms</sub>", "max ≤ T ≤ sum (a 2× bracket)", "arithmetic intensity vs hardware intensity", "matmul intensity ≈ B", "network rooflines, where the threshold moves to D"],
+    "goal": "Compute an operation's intensity, compare it with a chip's ridge, bracket its run time, and explain why a matmul's intensity grows with batch while a dot product's never does."
+  },
+  "attend": [
+    "Why is max(T<sub>math</sub>, T<sub>comms</sub>) a lower bound and their sum an upper bound, and what physical assumption separates them?",
+    "What does dividing both sides of T<sub>math</sub> > T<sub>comms</sub> by bytes buy you?",
+    "Why does a dot product's intensity approach ½ however long the vectors get, while a matmul's grows with B?",
+    "Why doesn't sharding one matmul across more chips move its critical batch, and what does move it?",
+    "When two chips split a matmul along D and swap partial sums, why does B cancel and D become the threshold?"
+  ],
+  "core": {
+    "must": [
+      "Every op needs time for its math (FLOPs ÷ peak) and for its bytes (bytes ÷ bandwidth) → with perfect overlap it takes the max, with none the sum → one comparison, intensity(op) vs peak ÷ bandwidth, says which bound applies",
+      "A matmul X[B,D]·Y[D,F] loads the weights DF once however many rows B pass through → FLOPs grow with B, bytes barely do → intensity ≈ B when B ≪ D, F → above ≈ 240 (v5e) or 295 (H100) it turns compute-bound",
+      "A dot product does ~2N FLOPs on ~4N bytes with nothing reused → intensity is stuck near ½ at any N → no amount of size makes it compute-bound on these chips",
+      "Across chips the bandwidth is the link, not HBM → splitting a matmul along D makes both FLOPs and bytes sent grow with B → B cancels, and the threshold becomes D > 2 × C/W<sub>ici</sub> (8,755 on v5e ICI)"
+    ],
+    "elevated": [
+      "The B > 240 rule is the B ≪ D, F approximation → at D = F = 4096 the exact crossover is ≈ 272 on v5e and ≈ 345 on H100 → small matrices need a bigger batch than the headline number",
+      "NVIDIA headline tensor FLOPs assume 2:4 sparsity → dense bf16 is half (9.89e14) → using the sparse number would double the H100 ridge by mistake"
+    ],
+    "reference": [
+      "the hardware-intensity table (v5e int8 480, ICI 4,378, H100 fp8 591, H200 206)",
+      "the Q3 FLOP/s-vs-B table from the book's plotting code",
+      "80–85% achievable peak on GPUs vs ~95% on TPUs",
+      "tile intensity b<sub>m</sub>·b<sub>n</sub>/(b<sub>m</sub>+b<sub>n</sub>)"
+    ]
+  },
+  "compress": {
+    "prompt": "Without looking, write the two time formulas, the two bounds and the one inequality that decides the regime. Then sketch the roofline plot (log intensity on x, achievable FLOP/s on y), mark the ridge for H100, and place a dot product and a B = 1,024 matmul on it.",
+    "checklist": [
+      "T<sub>math</sub> = FLOPs / peak; T<sub>comms</sub> = bytes / bandwidth",
+      "max is the lower bound (full overlap), sum the upper bound (none), at most 2× apart",
+      "compute-bound iff FLOPs/byte > peak/bandwidth (240 v5e, 295 H100)",
+      "matmul intensity ≈ B because weights load once; dot product ≈ ½",
+      "achievable FLOP/s = min(peak, intensity × bandwidth)"
+    ]
+  },
+  "retrieve": [
+    {
+      "q": "Explain in terms of reuse why batching raises a matmul's intensity but can't raise a dot product's.",
+      "kind": "concept",
+      "answer": [
+        "in a matmul every weight byte is used by all B rows, so FLOPs scale with B while the weight bytes don't",
+        "in a dot product every byte is used exactly once; there is nothing shared to amortise",
+        "intensity rises only when loaded bytes are reused by more work"
+      ]
+    },
+    {
+      "q": "Walk through the B = 1,024, D = F = 4096 matmul on v5e: FLOPs, bytes, both times, both bounds, and the verdict.",
+      "kind": "mechanism",
+      "answer": [
+        "FLOPs 2·1024·4096·4096 = 3.436e10; bytes 2(BD + DF + BF) = 5.033e7",
+        "T<sub>math</sub> = 3.436e10 / 1.97e14 = 174.4 µs; T<sub>comms</sub> = 5.033e7 / 8.2e11 = 61.4 µs",
+        "lower bound 174.4 µs, upper 235.8 µs",
+        "compute-bound; intensity 682.7 > 240"
+      ]
+    },
+    {
+      "q": "You can buy either twice the bandwidth or twice the peak FLOPs. For a batch-1 decode matmul and for a B = 1,024 prefill matmul, which purchase helps, and why?",
+      "kind": "tradeoff",
+      "answer": [
+        "batch-1 decode is far left of the ridge (intensity ≈ 1): only bandwidth helps; more FLOPs just idle",
+        "B = 1,024 is right of the ridge: only more FLOPs help",
+        "more bandwidth also lowers the ridge (H100 295 → H200 206), so more ops become compute-bound"
+      ]
+    },
+    {
+      "q": "In the book's Q4 every batch element has its own weight matrix. What happens to intensity as B grows, and what real serving situation has the same shape?",
+      "kind": "mechanism",
+      "answer": [
+        "bytes become BD + BDF + BF, so the weight bytes grow with B too",
+        "intensity stays ≈ 2 whatever B is: always comms-bound",
+        "decode attention has this shape: each sequence reads its own KV cache, so batching adds bytes as fast as FLOPs"
+      ]
+    }
+  ],
+  "compare": [
+    {
+      "with": "perf-1-foundations/roofline-intuition",
+      "q": "perf-1 introduced the roofline as a picture. What does this card's max/sum bracket and exact-bytes crossover let you do that the picture alone couldn't?",
+      "answer": [
+        "predict a time, not just a regime: the true time lies between max and sum",
+        "find the exact crossover including the BD and BF terms (≈ 345 on H100 at D = F = 4096, not 295)",
+        "apply the same algebra to chip-to-chip links (network rooflines), where the threshold moves to D"
+      ]
+    },
+    {
+      "with": "perf-2-scaling-book-inference/attention-intensity",
+      "q": "Matmul intensity ≈ B; decode attention intensity ≈ 1. Using this card's language, what is the one design fact that makes the difference?",
+      "answer": [
+        "a linear layer's weights are shared across the batch, so more rows reuse the same bytes",
+        "attention's <i>weights</i> are each sequence's own KV cache, so more sequences add their own bytes",
+        "reuse per loaded byte, not model size, sets intensity"
+      ]
+    }
+  ],
+  "predict": {
+    "q": "Take a bigger square matmul, D = F = 8,192, on an H100. Commit first: is the exact crossover batch above or below 295, and by roughly how much compared with the D = F = 4096 case (≈ 345)?",
+    "answer": "Above 295, but closer to it: solving BDF / (BD + DF + BF) = 295 gives B ≈ 318, versus ≈ 345 at 4096. Bigger matrices make the BD and BF terms relatively smaller, so the exact value approaches the B ≪ D, F approximation of 295 from above."
+  },
+  "apply": {
+    "task": "Extend <code>labs/roofline.py</code> (or do it by hand) for an H100 bf16 matmul with D = F = 8,192 at B = 64: compute FLOPs, exact bytes, intensity, T<sub>math</sub>, T<sub>comms</sub> and the bound. Then solve for the exact crossover batch. Finally, name one change to the op that would make B = 64 compute-bound without changing the chip.",
+    "done": "You get intensity ≈ 63.0, T<sub>math</sub> ≈ 8.7 µs vs T<sub>comms</sub> ≈ 40.7 µs (memory-bound) and a crossover of ≈ 318, and your change raises reuse per byte (for example, int8 weights with bf16 math halves the batch needed).",
+    "hint": "FLOPs = 2·64·8192² = 8.59e9; bytes = 2(64·8192 + 8192² + 64·8192) = 1.363e8. Crossover: B = 295·DF / (DF − 295(D + F))."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: the side of 295 the crossover lands on, or how far?",
+    "Could you explain why sharding a matmul over more chips doesn't move its critical batch?",
+    "Which relationship is still fuzzy: reuse → intensity, or intensity vs ridge → which knob to turn?",
+    "Did you mix up the chip ridge (hardware intensity) with the op's intensity at any point?",
+    "What will you carry into the next card: why the weight term, not the activations, dominates a linear layer's bytes?"
+  ],
+  "revisit": [
+    "perf-1-foundations/roofline-intuition"
+  ],
+  "prereq": [
+    "perf-1-foundations/roofline-intuition"
+  ]
+}

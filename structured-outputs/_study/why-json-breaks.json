@@ -1,0 +1,57 @@
+{
+  "prime": {
+    "problem": "Your code calls <code>json.loads</code> on the model's reply and it throws. The prompt said \"Output only the valid JSON\", so why didn't the model obey? Until you see why instructions can't guarantee format, every fix you try (louder prompts, bigger models, regex cleanup) looks like it should work.",
+    "fits": "First card of part 1. It starts from the one mechanism you already know from the latency course, that a model picks the next token from a probability distribution, and shows why that alone can't promise a parseable answer.",
+    "expect": ["next-token sampling <code>t ~ p(t | prompt, so far)</code>", "preamble, fences, wrong shape", "cleaning (<code>clean_text</code>)", "JSON mode vs a schema"],
+    "goal": "Explain why a prompt can lower the failure rate but never remove it, and predict which failures cleaning hides and which it can't fix."
+  },
+  "attend": [
+    "Where in the sampling equation does the word \"JSON\" appear, and where does the parser appear?",
+    "Why did this model fail by fencing its answers rather than by writing \"Sure!\", and what does that say about where the habit comes from?",
+    "What exactly does cleaning fix, and what did run 8's bare array show it can't fix?",
+    "Why does the LM-only baseline fall from 0.90 to 0.13 as schemas get harder?",
+    "What does JSON mode guarantee that prompt-only doesn't, and what does it still leave open?"
+  ],
+  "core": {
+    "must": [
+      "The sampler picks from the model's probabilities → chat training made <code>Sure</code> and <code>```</code> likely → the prompt only shifts those probabilities, never to zero → some replies still break <code>json.loads</code>",
+      "Cleaning strips wrappers → raw 7/30 becomes 30/30 parsed → but it can't invent missing keys or reshape a bare array → and it hides the 77% raw failure rate from your logs",
+      "Harder schemas (nesting, enums, many required fields) → more places for a free-running model to drift → prompt-only coverage falls from 0.90 on easy sets to 0.13 on hard ones",
+      "JSON mode forces some JSON → syntax holds, but the shape only holds if the prompt describes it → only a schema-constrained mask guarantees the shape"
+    ],
+    "elevated": [
+      "In the cookbook's step 1 only 15% of the probability starts a JSON object and 70% goes to chatty openers → a mask that removes the 70% is the idea the next part of the course builds"
+    ],
+    "reference": ["the per-seed chip layout of the 30 runs", "the cookbook's 20% production failure figure", "OpenAI's exact wording on JSON mode vs Structured Outputs"]
+  },
+  "compress": {
+    "prompt": "In 3–4 sentences, from memory: why can't an instruction guarantee parseable JSON, and why is \"we clean the output\" not the same as \"the output is fine\"?",
+    "checklist": [
+      "the model samples likely tokens; the parser plays no part in that choice",
+      "instructions shift probabilities but can't set any to zero",
+      "cleaning fixes wrappers (fences, preambles) but not the wrong shape",
+      "cleaning hides the raw failure rate, so problems surface later",
+      "the failure rate grows with schema difficulty"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain, using the sampling equation, why adding \"Output only the valid JSON\" to the prompt can't make failure impossible.", "kind": "concept", "answer": ["the prompt is only a condition on p(t | prompt, …)", "it changes how likely <code>```</code> or <code>Sure</code> are, but they keep nonzero probability", "at temperature 0.7 those tokens still get sampled: 23 of 30 replies were fenced"]},
+    {"q": "Trace what the cookbook's cleaning step does to a fenced reply and to run 8's reply, and say which one ends up schema-valid.", "kind": "mechanism", "answer": ["fenced: strip the fences, keep first <code>{</code> to last <code>}</code>, parses and validates", "run 8: a bare array; cleaning cuts it to the objects inside, which still lack <code>total_usd</code> and carry extra keys", "result: 29 of 30 valid after cleaning, run 8 is not"]},
+    {"q": "A teammate says cleaning got you to 30/30 parsed, so constrained decoding isn't needed. What's the strongest reply, and when is the teammate right?", "kind": "tradeoff", "answer": ["cleaning can't repair a wrong shape, and it hides how often raw replies fail", "harder schemas push prompt-only coverage down (0.13 on GitHub-Hard)", "the teammate is right for easy schemas, hosted APIs without schema support, or when a parse-and-retry library already wraps the call"]}
+  ],
+  "compare": [
+    {"with": "structured-outputs/token-masking", "q": "Prompt-only and token masking use the same model and the same prompt. What is the one fundamental difference in the sampling step, and how does each one fail?", "answer": ["prompt-only samples from the full distribution; masking zeroes invalid tokens first", "prompt-only fails by fences, preambles or wrong shape (7/30 raw parse)", "masking fails differently: valid but wrong values, or forced unlikely tokens when the prompt fights the schema"]},
+    {"with": "structured-outputs/repair-loop", "q": "Both this card's cleaning and the repair loop work after generation. What does the repair loop add, and what does it cost?", "answer": ["cleaning only strips wrappers once; the repair loop validates, feeds the error back and calls again", "it can fix wrong shapes and, with a value check, wrong values", "each extra try is a full model call"]}
+  ],
+  "predict": {"q": "You rerun the 30 prompt-only calls at temperature 0 instead of 0.7. Predict the raw <code>json.loads</code> pass count: 0, 7, or 30? Commit before revealing.", "answer": "0 or 30, not 7: at temperature 0 every run takes the top token, so all 30 replies are the same. The token-masking card's temperature-0 call without <code>format</code> opened with <code>```json</code>, so expect 0 of 30. Its logprobs also show why this is fragile: <code>{</code> and <code>```</code> were nearly tied (37.9% vs 37.7%). Temperature 0 makes the failure consistent, not absent."},
+  "apply": {"task": "On your own machine, send one prompt-only request 10 times at temperature 0.7 for a small schema of your own. Tally each reply as raw-parses, fenced, preamble, or wrong shape. Then write a 10-line <code>clean_text</code> (strip fences, keep first <code>{</code> to last <code>}</code>) and re-tally.", "done": "You have a before/after tally, and for every reply cleaning didn't fix you can name the reason (wrong shape or missing key) rather than \"bad JSON\".", "hint": "The card's reference point: 7 of 30 raw, 23 fenced, 1 wrong shape, and cleaning got 30 of 30 parsed but only 29 of 30 valid."},
+  "reflect": [
+    "Which prediction did you get wrong: the cause of the failures (fences, not preambles), or how much cleaning fixes?",
+    "What couldn't you explain cleanly: why instructions can't reach zero, or why JSON mode still misses the shape?",
+    "Which relationship is still fuzzy: schema difficulty → lower prompt-only coverage, or cleaning → hidden failure rate?",
+    "Where in your own code does a cleaning step quietly hide raw failures?",
+    "What will you look for in the token-masking card: the step where <code>Sure</code> gets probability zero?"
+  ],
+  "revisit": [],
+  "prereq": []
+}

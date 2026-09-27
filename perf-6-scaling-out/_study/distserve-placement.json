@@ -1,0 +1,64 @@
+{
+  "prime": {
+    "problem": "Deciding to split prefill from decode doesn't tell you how many GPUs each side gets, how each copy is split, or where it sits. Pick badly and the KV cache crosses a slow network on every request, or one pool starves while the other idles.",
+    "fits": "Second DistServe card. DistServe I gave the reasons and the queueing rules for each phase; this card turns them into a placement search, a KV-transfer plan and measured results. Its intra-op/inter-op choices are the TP and PP of the pipeline card.",
+    "expect": ["placement = parallelism + instance counts + GPU mapping", "Algorithm 1 (fast network) vs Algorithm 2 (layer-aligned segments on NVLink)", "the simulator that replaces real measurements", "pull-based KV transfer and its cost", "results and when not to disaggregate"],
+    "goal": "Size a disaggregated fleet for a target rate, estimate the KV transfer per request over NVLink and IB, and explain why Alg 2 aligns pipeline stages across the two instances."
+  },
+  "attend": [
+    "What does the search maximise, and why per GPU rather than in total?",
+    "Why can Alg 1 search prefill and decode separately, while Alg 2 has to search them together?",
+    "Which fact about the KV cache makes \"instance segments\" possible: which layer's KV goes to which GPU?",
+    "Why does decode pull KV instead of prefill pushing it?",
+    "In the card's Llama-8B lab, why does disaggregation lose on code prompts but win big on summarization?"
+  ],
+  "core": {
+    "must": [
+      "Simulate every (TP, PP) candidate for each phase against the workload and SLOs → keep the highest goodput per GPU → replicate n = ⌈R/g_p⌉ prefill and m = ⌈R/g_d⌉ decode instances → the P:D ratio falls out of the workload (1.59 chatbot, 2.31 code, 3.41 summarization in the lab), not a fixed rule",
+      "KV of layer ℓ is only ever needed by layer ℓ of the decode instance → cut both instances into the same pipeline stages and put matching stages on one node → the KV only moves over NVLink → on a 25 Gb/s cluster transfer is < 0.1% of latency, where one OPT-66B request would take 387 ms over the network",
+      "Disaggregation pays when a tight TPOT meets long prompts (a 28 ms prefill freezes a 10 ms TPOT budget ~3 times) → with short prompts a prefill costs about one decode step, so splitting only adds rounding and queueing (0.83× on code) → loose SLOs, short prompts or few GPUs favour colocation",
+      "Decode pulls KV when it has room, using prefill GPU memory as the queue → bursts don't overflow decode memory → each side runs at its own pace, at the cost of a shared fate: one decode instance serving several prefill instances can take them down"
+    ],
+    "elevated": [
+      "GQA shrinks what moves: 70B is 320 KiB per token vs OPT-66B's 2,304 KiB → an 8k 70B prompt moves in 6 ms over NVLink (≈ one TP8 decode step) but 54 ms over one IB link → with GQA models the transfer is feasible cross-node, where DistServe's MHA testbed needed Alg 2"
+    ],
+    "reference": [
+      "Algorithm 1 and 2 pseudocode details and O(N·M²) search cost",
+      "Appendix A's latency-model constants",
+      "Table 2 simulator accuracy values",
+      "the §6.5 Alg 1/Alg 2 naming swap",
+      "Table 3's chosen placements per model"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw the pipeline from workload + SLOs to a fleet: simulator → per-phase goodput → replicas. Under it, draw the OPT-175B Alg 2 layout on one node and mark where the KV moves. Add one line on when you'd skip all of this.",
+    "checklist": [
+      "search each phase's parallelism by simulated goodput per GPU; replicate to cover the rate",
+      "Alg 1 treats cross-node KV as free and searches phases independently; Alg 2 co-locates matching stages",
+      "KV moves layer to matching layer, so aligned stages keep it on NVLink",
+      "decode pulls; prefill memory buffers bursts",
+      "skip it for loose SLOs, short prompts or a handful of GPUs"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain what a DistServe placement is, and why the answer changes when the workload's average prompt length changes.", "kind": "concept", "answer": ["the parallelism of each instance type, how many of each, and which GPUs they sit on", "longer prompts make prefill slower per request, so each prefill instance serves fewer req/s", "so more prefill instances per decode instance are needed (P:D 1.59 → 3.41 in the lab), and prefill may want more TP"]},
+    {"q": "Walk through what happens to one request's KV cache in the OPT-175B Alg 2 placement, from prefill to its first decode step.", "kind": "mechanism", "answer": ["prefill runs in 3 pipeline stages (3 GPUs each), each producing the KV of its own layers", "each stage's KV stays on its node's prefill GPUs until the decode instance pulls it", "the decode stage for the same layers sits on the same node, so the pull is over NVLink", "95% of requests see under 30 ms of transfer; transmission is < 0.1% of latency"]},
+    {"q": "Using the card's formula, how long does a 512-token OPT-66B request's KV take over 25 Gb/s and over A100 NVLink, and what does that tell you about Alg 1 vs Alg 2 on DistServe's testbed?", "kind": "tradeoff", "answer": ["1.21 GB per request (the paper's \"1.13 GB\" is GiB)", "25 Gb/s = 3.125 GB/s → 387 ms; NVLink 300 GB/s per direction → 4.0 ms", "so on that testbed the KV must stay on NVLink, which is Alg 2; Alg 1 only makes sense with InfiniBand-class links"]},
+    {"q": "Why did vLLM++ (vLLM with its parallelism searched) score the same as vLLM?", "kind": "concept", "answer": ["its best configuration was the default intra-op 4 anyway", "tuning parallelism can't remove interference while the phases share GPUs", "the gain comes from the split, not from the search alone"]}
+  ],
+  "compare": [
+    {"with": "perf-2-scaling-book-inference/inference-engine-design", "q": "The Scaling Book's P = 3G balance vs DistServe's simulated search: what does each assume, why does the search ask for more prefill (1.59 vs 1.23 for the chatbot), and when is the formula enough?", "answer": ["the formula balances throughput: P/T_prefill = B·G/(T_step·n_out), with both pools 100% busy", "the search includes queueing and the SLO tail, so it needs spare prefill capacity to keep TTFT inside the target", "the formula is a one-minute estimate; the search gives parallelism, SLO margin and rounding"]},
+    {"with": "perf-6-scaling-out/disaggregation-in-production", "q": "DistServe's placement vs Dynamo's planner: both decide how many prefill and decode workers to run. What does each react to, and how does each fail?", "answer": ["DistServe searches offline on a simulator and replans when the workload shifts (seconds to minutes, then reloads weights)", "Dynamo's planner resizes xPyD at run time on predicted or live load, targeting TTFT and ITL", "DistServe fails on sudden shifts and has no fault tolerance; a planner fails when workers take minutes to start and prediction lags"]}
+  ],
+  "predict": {"q": "Swap OPT-66B (MHA) for Llama-3.1-70B (GQA, 8 KV heads) on DistServe's 25 Gb/s testbed at 512-token prompts. Does it still need Alg 2's NVLink-only placement? Commit first.", "answer": "Less urgently. 70B's KV is 320 KiB per token, so a 512-token request is 160 MiB (≈ 168 MB): about 54 ms over 25 Gb/s (3.125 GB/s), vs 387 ms for OPT-66B. That is still a large slice of a tight TTFT, so co-located stages still help, but the 7.2× smaller KV makes cross-node transfer plausible on a faster (InfiniBand-class) network, which is Alg 1's assumption."},
+  "apply": {"task": "Size a disaggregated Llama-3.1-8B chatbot for 250 req/s using the card's lab goodputs (prefill TP1 68.4 req/s per GPU, decode TP1 108.4). Give n, m and the total GPUs, and compare with the colocated TP1 replica at 38.1 req/s per GPU. Then compute the KV transfer for one 4,096-token Llama-3.1-70B prompt over one NVLink link (450 GB/s) and over one IB link (50 GB/s).", "done": "You have n, m and the GPU totals for both designs, plus two transfer times, and one sentence on whether the 70B transfer would need Alg 2.", "hint": "n = ⌈250/68.4⌉ = 4, m = ⌈250/108.4⌉ = 3 → 7 GPUs; colocated ⌈250/38.1⌉ = 7 GPUs, a tie after rounding. KV = 4,096 × 327,680 B = 1.34 GB: 2.98 ms on NVLink, 26.8 ms on IB, an acceptable slice of a 100 ms+ TTFT, so Alg 1 would do on InfiniBand."},
+  "reflect": [
+    "Which prediction did you get wrong: how much GQA shrinks the transfer, or whether 70B still needs Alg 2?",
+    "Can you explain why the KV cache \"only moves between corresponding layers\" and why that matters?",
+    "Which relationship is still fuzzy: workload → P:D ratio, or network speed → Alg 1 vs Alg 2?",
+    "Did the rounding tie in the apply step surprise you? What does it say about disaggregating at small scale?",
+    "What will you look for next: how production systems decide per request, not per fleet?"
+  ],
+  "revisit": ["perf-6-scaling-out/distserve-interference", "perf-6-scaling-out/pipeline-data-parallel", "perf-2-scaling-book-inference/inference-engine-design", "perf-4-attention-kv/gqa"],
+  "prereq": ["perf-6-scaling-out/distserve-interference"]
+}

@@ -1,0 +1,56 @@
+{
+  "prime": {
+    "problem": "A radix-tree cache lives in one GPU's HBM, which it shares with the running batch: at most 488k tokens of Llama-3.1-8B per H100. Kimi's long, repetitive traffic reuses far more KV than that, and moving KV between machines was assumed to need too much bandwidth.",
+    "fits": "First Mooncake card. RadixAttention reused KV within a GPU; Mooncake keeps it in a cluster-wide pool of CPU DRAM and SSD, and this card checks when loading a prefix beats recomputing it. Prefill/decode disaggregation from perf-2 is the setting.",
+    "expect": ["store-vs-recompute inequality (B_min)", "KV tiers: HBM → DRAM → SSD → remote DRAM", "Mooncake Store: paged blocks, prefix-chained hash keys, replicas, LRU", "Transfer Engine over RDMA", "capacity: 3M tokens per node vs 50M needed"],
+    "goal": "Compute the minimum bandwidth for loading KV to beat recomputing it, and explain why a pooled cross-machine cache beats a local one."
+  },
+  "attend": [
+    "Loading a prefix costs bytes; recomputing it costs FLOPs. What ratio decides which is faster, and why does it barely depend on prefix length?",
+    "Why is the bandwidth bar lower for a bigger model and higher for a faster GPU?",
+    "Why is each block's hash key built from its own tokens and its prefix?",
+    "Why does one node's DRAM catch less than half of the reusable hits in the paper's traces?",
+    "Which tier does Mooncake add that a single-node engine doesn't have?"
+  ],
+  "core": {
+    "must": [
+      "Recompute costs l(a p² d + b p d²) FLOPs → loading costs the prefix's KV bytes → load wins when bandwidth B > 2sG / (gqa·(a p + b d)) → only a few GB/s (6 for LLaMA3-70B on 8×A800, ≈ 9 for Llama-3.1-8B on H100) → cross-machine KV is cheap enough",
+      "One node's DRAM holds ~3M tokens of 70B KV → most reusable prefixes land on other nodes or get evicted → pool every node's DRAM and SSD into one store reachable over RDMA → hit rate up to +136%, prefill time up to −48% vs local caches",
+      "KV of a block depends on everything before it → key = hash(block, prefix) → identical prefixes deduplicate, same tokens after a different prefix don't collide → hot keys get replicas on many nodes so one NIC isn't a bottleneck"
+    ],
+    "elevated": [
+      "B_min scales with G (GPU FLOP/s) and falls as b·d and gqa grow → faster GPUs raise the bar (H800 needs ~3× the A800's) → future GPUs make storing harder, bigger models make it easier"
+    ],
+    "reference": ["Transfer Engine internals (16 KB slices, NIC selection, endpoint pooling)", "the put/get/change_replica API names", "the paper's b = 22 vs our b = 26", "exact Transfer Engine measurements (87 and 190 GB/s)", "the prefill and decode pools' SLO thresholds"]
+  },
+  "compress": {
+    "prompt": "From memory, write the store-vs-recompute inequality in words (bytes to load ÷ bandwidth < FLOPs to recompute ÷ compute), then the three things Mooncake Store does, then one line on why the pool must span machines.",
+    "checklist": [
+      "load time = prefix KV bytes ÷ B; recompute time = prefill FLOPs ÷ G",
+      "B_min is a few GB/s and shrinks for bigger models",
+      "paged blocks with prefix-chained hash keys (dedup)",
+      "replicas for hot blocks, LRU eviction",
+      "one node's DRAM is too small to catch most repeats (Fig 9)"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why moving KV between machines turned out to be affordable, contrary to the assumption other systems made.", "kind": "concept", "answer": ["prefill is expensive per token, so recomputing a prefix costs many FLOPs per KV byte", "the break-even bandwidth is only ~6 GB/s for LLaMA3-70B on 8×A800", "a 100 Gbps NIC carries 12.5 GB/s, so RDMA networks clear the bar"]},
+    {"q": "Walk through the four-step workflow for a request whose prefix is cached in the pool.", "kind": "mechanism", "answer": ["s1: the prefill node loads the matching prefix blocks from remote DRAM into HBM", "s2: it prefills only the uncached tail, chunked and pipelined if long; new KV goes back to CPU memory", "s3: the store streams KV layer by layer to the chosen decode node, overlapped with s2", "s4: the request joins that node's continuous batch"]},
+    {"q": "When is keeping KV in a remote store a bad deal?", "kind": "tradeoff", "answer": ["slow links: below ~9.3 GB/s the 8B can lose to recompute; a 25 Gbps link loses even at 32k", "short prefixes: savings of ~15 ms can be eaten by lookup, round trip and imperfect overlap", "low reuse: in the arXiv trace over half of cached blocks were never used", "fast GPUs raise the bandwidth bar"]}
+  ],
+  "compare": [
+    {"with": "perf-4-attention-kv/radixattention", "q": "RadixAttention caches prefixes in one GPU's HBM; Mooncake in a cluster DRAM/SSD pool. What is fundamentally traded, which design choice makes each fast, and how does each fail?", "answer": ["HBM: 3.35 TB/s, no transfer cost, but capacity shared with the batch (≤ 488k tokens of the 8B)", "pool: terabytes to petabytes, but every hit costs a network transfer", "radix fails by evicting under batch pressure; the pool fails when the link is below B_min or reuse is low"]},
+    {"with": "perf-6-scaling-out/disaggregation-in-production", "q": "Course 6 covers disaggregated prefill and decode (Splitwise, Mooncake, Dynamo). What does Mooncake's KV store add on top of disaggregation itself?", "answer": ["disaggregation already moves each request's KV from prefill to decode nodes", "Mooncake also keeps KV after the request, in a shared pool, and reuses it for later requests", "the same RDMA path serves both transfer and reuse"]}
+  ],
+  "predict": {"q": "Llama-3.1-8B on one H100 with a 2,000-token cached system prompt. Is loading it over a 25 Gbps link (3.1 GB/s) faster than recomputing? Over 100 Gbps (12.5 GB/s)? Commit first.", "answer": "The prefix is 2,000 × 128 KiB = 0.262 GB. Recompute by Eq 1 at 100% of 989 TF: about 30.3 ms. At 3.1 GB/s loading takes about 84 ms, so recompute wins; at 12.5 GB/s about 21 ms, so loading wins, but only by ~9 ms before any lookup or overlap overhead. B_min at p = 2,000 is 8.64 GB/s (our arithmetic with the card's a = 4, b = 26)."},
+  "apply": {"task": "Run labs/store-vs-recompute.py. Then compute by hand, for Llama-3.1-8B on an H100 at prefix p = 2,000: B_min, the KV size, the recompute time (Eq 1 at 100% of G) and the load time over 50 GB/s and 12.5 GB/s. Finally set G to 50% of 989 TF in the lab and say what happens to B_min and why.", "done": "Your hand numbers match the lab's formula to three figures, and you can explain the 50%-G change in one sentence.", "hint": "B_min = 2·2·989e12 / (4·(4·2,000 + 26·4,096)) = 8.64 GB/s; KV 0.262 GB; recompute 30.3 ms; load 5.2 ms at 50 GB/s and 21.0 ms at 12.5 GB/s (our arithmetic). Halving G halves B_min: a slower GPU makes recomputing costlier, so storing wins more easily."},
+  "reflect": [
+    "Which prediction did you get wrong: the 25 Gbps case, or the 100 Gbps margin?",
+    "Could you explain why B_min shrinks for bigger models, without the formula?",
+    "Which relationship is still fuzzy: GPU speed → B_min, or capacity per node → hit rate?",
+    "Did you distinguish FAST'25 numbers from the arXiv report's?",
+    "What will you look for in Mooncake II: how the scheduler decides where a request runs, now that KV can move?"
+  ],
+  "revisit": ["perf-4-attention-kv/radixattention", "perf-4-attention-kv/kv-quantization", "perf-2-scaling-book-inference/inference-engine-design"],
+  "prereq": ["perf-4-attention-kv/radixattention"]
+}

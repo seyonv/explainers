@@ -1,0 +1,123 @@
+{
+  "prime": {
+    "problem": "The image service's queue must fail over automatically: a human is too slow for 99.9%, and a backup that promotes itself on silence creates two leaders during a partition. You need a group of servers that agrees on one leader and one log, never loses a committed entry, and keeps going while a majority is up.",
+    "fits": "Builds on the service-discovery card's majority quorums and the quorums card's overlap argument; it's the \"Paxos leader election\" the architecture card relied on. This is the coordination the consistency part says to use only for the rules a merge can break.",
+    "expect": [
+      "terms and randomised election timeouts (150–300 ms)",
+      "RequestVote and the up-to-date rule",
+      "AppendEntries with prevLogIndex/prevLogTerm",
+      "commit on a majority, own-term entries only",
+      "<code>|A ∩ B| ≥ 2q − n ≥ 1</code>"
+    ],
+    "goal": "Trace an election after a leader crash, explain why a lagging node can't win and why nothing committed is lost, and put numbers on failover time and per-commit latency."
+  },
+  "attend": [
+    "Why did S5 and S4 each start an election and lose, and what exactly did S2 and S3 check before refusing?",
+    "Why does randomising the election timeout matter, and what happens if every timeout is exactly 150 ms?",
+    "How does the new leader repair S5's log that is two entries behind?",
+    "Why does S3 append a no-op for term 4 before counting anything as committed?",
+    "Why does a commit in a five-node group spread over four regions wait 69 ms, not 8 ms?"
+  ],
+  "core": {
+    "must": [
+      "Leader silent past a follower's randomised timeout → it becomes a candidate for a new term and asks for votes → one vote per server per term, granted only if the candidate's log is at least as up to date → a majority elects one leader per term",
+      "An entry is committed once a majority stores it → any two majorities overlap (2q − n ≥ 1) → every winning coalition includes someone holding every committed entry, who refuses candidates that lack it → the new leader always has every committed entry",
+      "The leader replicates with AppendEntries carrying the previous entry → a follower missing it says no → the leader steps back one index and retries → logs are repaired to match the leader's",
+      "A commit waits for the leader plus q − 1 acks → latency = the (q − 1)-th fastest follower RTT (69 ms for 5 nodes from East US) → and with no majority reachable, writes stop: consensus picks consistency over availability"
+    ],
+    "elevated": [
+      "A leader counts replicas only for entries from its own term → so it appends a no-op on election → committing that no-op commits all earlier entries with it → without the rule, an old-term entry on a majority could still be overwritten"
+    ],
+    "reference": [
+      "the paper's section numbers (§5.2–5.4, §5.6, §8)",
+      "the seed-0 timeline (188.8, 213.1, 263.7, 273.7 ms)",
+      "the 10,000-seed table (44.2%, 217 ms mean, 450 ms p99)",
+      "ZAB vs Raft vs Paxos naming; etcd and Consul as implementations"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, write Raft as three chains: election (timeout → candidate → votes with the up-to-date check → leader), replication (append → majority → commit, own term only), safety (majorities overlap → committed entries survive). Put one number on each.",
+    "checklist": [
+      "randomised timeouts avoid split votes (150–300 ms)",
+      "one vote per term, only for an up-to-date log",
+      "commit = stored on a majority; the leader counts only its own term's entries (hence the no-op)",
+      "AppendEntries repairs followers by stepping back to the last matching entry",
+      "two majorities share a server, so committed entries can't be lost",
+      "every write pays the majority's round trip; no majority → no writes"
+    ]
+  },
+  "retrieve": [
+    {
+      "q": "Explain why S4, one entry behind, could never become leader after S1 crashed, using the overlap argument.",
+      "kind": "concept",
+      "answer": [
+        "entry 4 is on S1, S2, S3 (a majority), so it is committed",
+        "any 3 votes must include S1, S2 or S3; S1 is down",
+        "S2 and S3 refuse any candidate whose log lacks entry 4, so S4's best is S4 + S5 = 2 of 5"
+      ]
+    },
+    {
+      "q": "Walk through the log repair for S5 (log [1, 1]) after S3 becomes leader with [1, 1, 1, 1, 4].",
+      "kind": "mechanism",
+      "answer": [
+        "S3 sends AppendEntries for index 5 with prev = 4: S5 has no entry 4, says no",
+        "prev = 3: no again; prev = 2 (term 1): matches",
+        "S3 sends entries 3, 4, 5; S5's log becomes [1, 1, 1, 1, 4]",
+        "once index 5 is on 4 of 5 servers (≥ 3), commitIndex = 5, committing 1–5"
+      ]
+    },
+    {
+      "q": "Should the image service run a 5-node Raft group across four regions, or a 3-node group in one region, for its job queue? Give the cost and the gain of each.",
+      "kind": "tradeoff",
+      "answer": [
+        "5 nodes across regions: each commit waits the 2nd-fastest follower RTT, 69 ms (13.8% of the 500 ms budget); survives a region loss",
+        "3 nodes in one region: commits in under 10 ms; a region-wide event takes the queue down",
+        "for the job queue, the per-job commit is paid 10K times a second, which favours one region plus the correlated-failure card's work on c"
+      ]
+    }
+  ],
+  "compare": [
+    {
+      "with": "cs-5-distributed-systems/quorums-staleness",
+      "q": "Both use majorities, but a Dynamo-style store with w = r = 2 of 3 can still return an old value under LWW, and Raft can't. Which design choice makes the difference?",
+      "answer": [
+        "Raft has one leader per term that orders every write in one log; there are no concurrent versions to pick between",
+        "the quorum store lets any replica accept writes, so it must choose a winner by timestamp, and clocks skew",
+        "the price: Raft needs a leader election on failure and refuses writes without a majority"
+      ]
+    },
+    {
+      "with": "cs-5-distributed-systems/partial-failure-cap",
+      "q": "In CAP terms, what does a Raft group do on each side of a partition that splits 5 nodes into 3 and 2, and why is that not a contradiction of \"highly available\"?",
+      "answer": [
+        "the 3-node side elects a leader (if needed) and keeps committing",
+        "the 2-node side can't get a majority: it refuses writes",
+        "CAP's A requires every non-failing node to answer, so this is CP; operators call it highly available because the majority side stays up"
+      ]
+    }
+  ],
+  "predict": {
+    "q": "The old leader S1 restarts after S3 has become leader of term 4. S1 still believes it leads term 1 and sends AppendEntries to S2. What happens to S1's message, and what happens to S1? Commit first.",
+    "answer": "S2 is in term 4, so it rejects an AppendEntries from term 1 and replies with its current term. S1 sees a higher term (4 > 1), steps down to follower and adopts term 4. From then on it accepts S3's AppendEntries, and its log gets index 5 (the term-4 no-op) appended. Terms are what stop a returning old leader from causing split brain."
+  },
+  "apply": {
+    "task": "Use <code>up_to_date</code> and <code>commit_index</code> from <code>code/consensus-raft.py</code> without running first: predict each result, then check. (a) candidate last term 3, index 5 vs a voter with log [1, 1, 4]; (b) candidate term 4, index 3 vs voter [1, 1, 4, 4]; (c) candidate term 4, index 4 vs the same voter. (d) Leader log [1, 1, 1, 1, 4] in term 4 with follower match indexes [5, 5, 4, 3, 0]; (e) the same with [5, 5, 5, 3, 0]. Finally, compute the commit latency for a 3-node group with the leader in East US and followers at 8 and 69 ms.",
+    "done": "You predicted False, False, True for the votes, commitIndex 0 for (d) and 5 for (e), and 8 ms for the 3-node commit, and you can explain (d): entry 4 is on a majority but is from term 1, so the term-4 leader can't count it until its own entry 5 is on a majority.",
+    "hint": "(a) compares last terms first: 3 < 4, so no. (b) same last term, shorter log, so no. For the 3-node group, a majority is 2: the leader plus the fastest follower."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: how a returning old leader is neutralised?",
+    "Could you explain the own-term commit rule and why the no-op exists?",
+    "Which relationship is still fuzzy: majority overlap → committed entries survive, or randomised timeouts → fast elections?",
+    "Where does a system you know use etcd, Consul or ZooKeeper, and for which small piece of state?",
+    "What will you reopen before the checkpoint on consistency?"
+  ],
+  "revisit": [
+    "cs-5-distributed-systems/service-discovery",
+    "cs-5-distributed-systems/quorums-staleness",
+    "cs-5-distributed-systems/image-resize-architecture"
+  ],
+  "prereq": [
+    "cs-5-distributed-systems/service-discovery"
+  ]
+}

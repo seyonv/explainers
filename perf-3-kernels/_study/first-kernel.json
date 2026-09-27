@@ -1,0 +1,63 @@
+{
+  "prime": {
+    "problem": "A GPU is not fast per thread; a single GPU thread adding two arrays runs at 0.04% of the memory's bandwidth, slower than numpy on a laptop. Unless the launch spreads the work across every SM and the data is already on the device, all that hardware sits idle.",
+    "fits": "Right after the execution model. That card gave you grid, block and thread on paper; here you launch one and watch Harris's T4 ladder go from 1 thread to 1,932×. It is also the first memory-bound kernel, the pattern the coalescing card zooms into.",
+    "expect": ["<code>__global__</code> and <code>&lt;&lt;&lt;blocks, threads&gt;&gt;&gt;</code>", "the grid-stride loop", "ceiling division and bounds checks", "unified memory page faults and prefetch", "asynchronous errors and <code>CUDA_CHECK</code>"],
+    "goal": "Write and launch a correct grid-stride kernel, explain each rung of the 1 → 45× → 1,932× ladder, and know where a CUDA error really comes from."
+  },
+  "attend": [
+    "Why does going from 1 thread to 256 threads give only 45×, not 256×?",
+    "Why does going from 1 block to 4,096 blocks give about 43×, and what hardware count does that number match?",
+    "What exactly did the unprefetched grid-stride kernel spend its 4.5 ms on, and where did that cost go after prefetching?",
+    "Why can an illegal memory access in the kernel be reported at an unrelated <code>cudaMemcpy</code> three lines later?",
+    "How does the post's bandwidth figure count bytes, and why is it three arrays and not two?"
+  ],
+  "core": {
+    "must": [
+      "A block never leaves its SM → one block uses 1 of 40 SMs and one SM's memory pipe → 256 threads give 45×, not 256× → many blocks spread over all 40 SMs give another ~43× → then the whole chip is DRAM-bound at 83% of 320 GB/s",
+      "Vector add does 1 add per 12 bytes → far below any ridge → the only question is how close you get to peak bandwidth → more math per thread would not help",
+      "Unified memory migrates pages on first touch → every page fault stalls the threads that touched it → the kernel ran 95× slower than with prefetch → prefetch moves the copy out of the kernel, but the copy (690 µs) still costs 14.5× the kernel",
+      "Launches are asynchronous and return nothing → errors surface at the next call that checks the error state → check <code>cudaGetLastError()</code> after the launch and the sync after, or the report lands somewhere unrelated"
+    ],
+    "elevated": [
+      "Grid-stride loop (<code>i += blockDim.x * gridDim.x</code>) → any grid size covers any n, <code>i &lt; n</code> doubles as the bounds check, and a warp's accesses stay adjacent → the same pattern returns in reduction kernel 7"
+    ],
+    "reference": [
+      "the exact <code>CUDA_CHECK</code> macro and <code>cudaGetLastError</code> vs <code>cudaPeekAtLastError</code>",
+      "the error strings (<code>invalid configuration argument</code> vs <code>invalid argument</code>)",
+      "Harris's exact nanosecond timings and the unprefetched first-profile numbers",
+      "<code>cudaMallocManaged</code>, <code>cudaMemPrefetchAsync</code>, <code>cudaMallocHost</code> signatures"
+    ]
+  },
+  "compress": {
+    "prompt": "Without scrolling up, explain the T4 ladder in 3–5 sentences: why each rung (1 thread, 1 block, many blocks, no prefetch) lands where it does. Or draw it as a chain from \"one thread\" to \"83% of peak\" with one cause on each arrow.",
+    "checklist": [
+      "one thread waits on memory for every element: 137 MB/s, 0.04% of peak",
+      "one block uses one SM: 45×, still 1.9% of peak",
+      "4,096 blocks use all 40 SMs: another ~43×, 265 GB/s = 83% of 320",
+      "without prefetch, page faults inside the kernel cost 95×; prefetch moves the copy out but doesn't make it free",
+      "vector add is memory-bound, so bandwidth is the only scoreboard"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why a GPU running one thread is slower than numpy on your M3, even though the GPU has 2,560 cores.", "kind": "concept", "answer": ["one thread uses 1 of 2,560 cores and waits on memory for every element (87.6 ns per element)", "numpy streams the arrays near the M3's ~100 GB/s", "GPU speed comes from many threads in flight hiding memory latency, not from per-thread speed"]},
+    {"q": "Trace the grid-stride loop for thread 5 of block 3 under <code>&lt;&lt;&lt;4096, 256&gt;&gt;&gt;</code> and under <code>&lt;&lt;&lt;1, 256&gt;&gt;&gt;</code> with N = 1,048,576: its first index, its stride, and how many elements it handles.", "kind": "mechanism", "answer": ["4,096 blocks: index 3 × 256 + 5 = 773, stride 1,048,576, so one element", "1 block: there is no block 3; thread 5 starts at 5, stride 256, and handles 4,096 elements", "<code>i &lt; n</code> in the loop is the bounds check in both"]},
+    {"q": "Your data starts on the CPU and you add it once. Should you move it to the GPU? Use the card's numbers to decide, and say what changes the answer.", "kind": "tradeoff", "answer": ["moving 8 MiB of inputs took 690 µs against 47.5 µs of kernel, so for one add, stay on the CPU", "the GPU pays off only when data stays resident across many operations", "that is exactly the inference-engine case: weights live on the GPU for the whole run"]},
+    {"q": "A kernel launch with <code>&lt;&lt;&lt;512, 2048&gt;&gt;&gt;</code> 'runs' and your program prints garbage but no error. What went wrong, where would a check have caught it, and what would a check right after the launch not tell you?", "kind": "mechanism", "answer": ["2,048 threads per block exceeds the 1,024 limit, so the launch was rejected", "<code>cudaGetLastError()</code> right after the launch returns the config error", "a clean check after the launch only means it was accepted; runtime faults appear at the next sync or CUDA call"]}
+  ],
+  "compare": [
+    {"with": "perf-3-kernels/fusion-cuda-graphs", "q": "On an H100 this vector add's floor is about 3.8 µs, similar to the cost of launching it. Compare \"make the kernel faster\" with \"launch it less often\": which lever does each card pull, and which one can still help a kernel that already runs at 83% of peak?", "answer": ["this card: fill the GPU and reach bandwidth, which is already done at 83%", "fusion-cuda-graphs: remove launches and DRAM round trips between kernels", "at 83% of peak the kernel itself has little left; the remaining time is launch overhead and extra passes over memory, which only fusion or graphs remove"]},
+    {"with": "perf-3-kernels/triton-programming-model", "q": "The same vector add in CUDA and in Triton tutorial 01: what does each make you write for bounds and indexing, and why do both end up at the same bandwidth?", "answer": ["CUDA: blockIdx × blockDim + threadIdx and an if (or the grid-stride loop)", "Triton: pid × BLOCK_SIZE + arange and a boolean mask", "both are limited by DRAM bandwidth, and both already coalesce, so there is nothing more to gain"]}
+  ],
+  "predict": {"q": "Launch the grid-stride kernel with exactly one wave on a T4: <code>&lt;&lt;&lt;160, 256&gt;&gt;&gt;</code> for N = 1,048,576. Commit: how many elements does each thread handle, and should it be much slower than 4,096 blocks?", "answer": "The stride is 160 × 256 = 40,960, so 1,048,576 = 25 × 40,960 + 24,576: the first 24,576 threads handle 26 elements and the other 16,384 handle 25. It should not be much slower: all 40 SMs are still full (4 blocks × 256 threads each), and each thread now has many independent loads in a row. The time is still set by DRAM bandwidth. That is the point of the grid-stride loop: the grid size stops mattering once it fills the GPU."},
+  "apply": {"task": "In <code>labs/first-kernel.ipynb</code> on a Colab T4, add a fourth launch config, <code>&lt;&lt;&lt;160, 256&gt;&gt;&gt;</code>, next to Harris's three, and time all four with prefetch. Compute GB/s as 12,582,912 B ÷ time and % of 320 GB/s. Then remove the prefetch from the 4,096-block version and confirm the slowdown, and break the launch with 2,048 threads to see which check catches it.", "done": "You have a table of four prefetched configs plus the unprefetched one, each with GB/s and % of 320, and you can say whether 160 blocks is within ~10% of 4,096 blocks on your T4 and which error string your toolkit printed.", "hint": "Harris's T4 reference: 47,520 ns for 4,096 blocks = 264.8 GB/s; 4,514,384 ns without prefetch. The notebook hasn't been run by the author, so your numbers are the real result."},
+  "reflect": [
+    "Which prediction did you get wrong: the per-thread element count, or how 160 blocks compare with 4,096?",
+    "Could you explain the 45× without saying \"one SM\"? What actually limits a single SM's memory traffic?",
+    "Which relationship is still fuzzy: blocks → SMs busy, or SMs busy → bandwidth?",
+    "Did the prefetch result change how you think about \"GPU speedups\" quoted without the copy time?",
+    "What will you revisit before the coalescing card: how the 12,582,912 bytes were counted?"
+  ],
+  "revisit": ["perf-3-kernels/execution-model"],
+  "prereq": ["perf-3-kernels/execution-model"]
+}

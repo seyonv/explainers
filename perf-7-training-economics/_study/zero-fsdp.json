@@ -1,0 +1,58 @@
+{
+  "prime": {
+    "problem": "Plain data parallelism adds throughput but never memory: every GPU holds all 16 bytes per parameter, so an 8B model's 128.5 GB of state doesn't fit an 80 GB H100 no matter how many GPUs you add. Something has to stop every GPU storing the same copy.",
+    "fits": "Builds on the training-step card's 16Ψ state and course 6's collectives (all-reduce = reduce-scatter + all-gather). This card shards the state that card counted, using the collectives that card taught.",
+    "expect": ["DP all-reduce, overlap and bucketing", "ZeRO stages 1/2/3: optimizer state, then grads, then weights", "communication 2Ψ vs 3Ψ", "FSDP units, FlatParameter, prefetch", "the tokens-per-GPU bound B/X > C/W"],
+    "goal": "Compute per-GPU state and per-step traffic for each ZeRO stage, and say when sharding stays hidden behind compute and when it doesn't."
+  },
+  "attend": [
+    "Why is the optimizer state the cheapest thing to shard, and the weights the most expensive?",
+    "ZeRO-1 and ZeRO-2 shard more than plain DP yet send the same bytes. How?",
+    "Where does ZeRO-3's extra Ψ come from, and why can it usually be hidden?",
+    "Why does the compute-bound condition depend on tokens per GPU but not on the model's size?",
+    "Why is FSDP a bad way to serve decode, even though it's the default for training?"
+  ],
+  "core": {
+    "must": [
+      "Every DP rank stores identical state → ZeRO gives each rank 1/Nd of the optimizer state, then the grads, then the weights → per-GPU state goes 16Ψ → 4Ψ + 12Ψ/Nd → 2Ψ + 14Ψ/Nd → 16Ψ/Nd → only stage 3 keeps shrinking with Nd (8B on 8 GPUs: 128.5 → 16.1 GB)",
+      "An all-reduce is a reduce-scatter plus an all-gather → ZeRO-1/2 do the same two collectives, just keeping only their own slice between them → 2Ψ, no extra traffic; ZeRO-3 must re-gather the weights in backward too → 3Ψ, 1.5×",
+      "Gradient traffic is one set of weights per step, but backward math grows with tokens per GPU → communication hides only while tokens per GPU > C/W (≈ 1,923 on an 8-GPU NVLink ring, ~2,500 across nodes) → past ~512 GPUs at a fixed global batch the rings stop hiding",
+      "FSDP gathers weights just in time because training has thousands of tokens of math per gather → decode has a handful of tokens per step → gathering 7/8 of the 8B takes 31.2 ms vs 4.79 ms to read it locally → serving moves activations (TP), not weights"
+    ],
+    "elevated": [
+      "ZeRO shards only model states → activations are per-rank data and can't be sharded this way → long sequences still need recompute, TP/SP or CP on top",
+      "FSDP prefetches the next unit's all-gather while computing the current one → the extra forward gather overlaps with math (~18% speedup on GPT-175B) → peak memory is the sharded model plus the largest unsharded unit"
+    ],
+    "reference": ["the 7.5B / 64-GPU example: 120 → 31.4 → 16.6 → 1.88 GB", "the 25 MB bucket default", "<code>model.no_sync()</code>", "FlatParameter padding and the sharding factor F", "\"DP shouldn't exceed 512\" and 2550²/2F ≈ 100 tokens with TP on TPU v5p"]
+  },
+  "compress": {
+    "prompt": "Draw four bars (plain DP, ZeRO-1, ZeRO-2, ZeRO-3) for one GPU, split into weights, grads and optimizer state, and write the traffic each sends per step. Then one sentence on when ZeRO-3's traffic stops hiding.",
+    "checklist": [
+      "state per GPU: 16Ψ, 4Ψ + 12Ψ/Nd, 2Ψ + 14Ψ/Nd, 16Ψ/Nd",
+      "traffic: 2Ψ, 2Ψ, 2Ψ, 3Ψ (reduce-scatter + all-gather, plus a second weight gather)",
+      "stages 1–2 level off because every GPU still holds full weights (and grads in stage 1)",
+      "hidden while tokens per GPU exceed C/W; fails on slow links or small per-GPU batches",
+      "activations are not sharded by any stage"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why adding GPUs under plain DP never lets the 8B fit, while ZeRO-3 does it with 8.", "kind": "concept", "answer": ["DP replicates all 16Ψ on every GPU: 128.5 GB each at any Nd", "ZeRO-3 divides all of it: 128.5 ÷ 8 = 16.1 GB", "the cost is gathering weights just before each layer runs, forward and backward"]},
+    {"q": "Walk through one ZeRO-2 step on 8 GPUs: what each rank computes, sends, keeps and frees, from forward to the next forward.", "kind": "mechanism", "answer": ["forward: full BF16 weights, no communication", "backward: reduce-scatter each gradient bucket; keep only own 1/8 slice, free the rest at once", "optimizer: update own FP32 master, m, v slice (12Ψ/8 + own grads)", "all-gather the updated BF16 weights so every rank has the full copy for the next forward"]},
+    {"q": "Your 8 GPUs are in 8 different nodes with one 50 GB/s NIC each. Which stage would you pick for the 8B, and what does the step look like?", "kind": "tradeoff", "answer": ["DP doesn't fit; ZeRO-1 (44.2 GB) or ZeRO-2 (30.1 GB) fit and send 2Ψ; ZeRO-3 sends 3Ψ", "traffic 562 ms (2Ψ) or 843 ms (3Ψ) against ~200 ms of math per 4k-token sequence: communication-bound either way", "fix: more tokens per GPU (≈ 19,780 needed at 50 GB/s), or put the 8 GPUs in one NVLink node, where every stage hides"]}
+  ],
+  "compare": [
+    {"with": "perf-6-scaling-out/pipeline-data-parallel", "q": "Course 6 said independent replicas are the right DP for serving; this card makes sharded DP the default for training. What does each move, what does training have that decode lacks, and how does each fail when used in the other's job?", "answer": ["serving replicas move nothing between each other; FSDP moves weights (2–3Ψ per step)", "training has thousands of tokens per GPU per step to hide the gathers behind; decode has a handful", "FSDP for decode: 31.2 ms of gathers per token vs 4.79 ms of local reads", "replicas for training: every GPU must hold all 16Ψ, which doesn't fit"]},
+    {"with": "perf-7-training-economics/parallelism-4d", "q": "ZeRO-3 and tensor parallelism both split the weights. What is fundamentally different about when their communication happens, and which one can sit on a slow network?", "answer": ["ZeRO-3 gathers whole layers before computing and reduce-scatters grads after: prefetchable, off the critical path", "TP splits each matmul, so its collectives sit inside every layer, on the critical path", "ZeRO-3 tolerates inter-node links if tokens per GPU are high; TP stays inside NVLink (8-way)"]}
+  ],
+  "predict": {"q": "Keep ZeRO-3 on 8 GPUs but swap Adam for an optimizer with half the state (K = 6 instead of 12). How much does the ZeRO-1 per-GPU figure for the 8B change, and how much does the ZeRO-3 figure change?", "answer": "ZeRO-1: 2Ψ + 2Ψ + 6Ψ/8 = 16.06 + 16.06 + 6.02 = 38.1 GB, down from 44.2 GB (−6.0 GB). ZeRO-3: (2 + 2 + 6)Ψ/8 = 10.0 GB, down from 16.1 GB (−6.0 GB). The saving is the same 6Ψ/8 in both, but stage 1 is dominated by the unsharded weights and grads, so a lighter optimizer shrinks its win (the card's k = 4 try-this)."},
+  "apply": {"task": "Llama-3.1-70B (70.55B) on 16 H100s (two nodes), 16 bytes per parameter. (1) Compute per-GPU state for ZeRO-1, 2 and 3. (2) Which stages fit 80 GB, and how much is left for activations under ZeRO-3? (3) The 70B's activations at 8k, micro-batch 1, are 182.5 GB with attention recomputed and 10.7 GB with full recompute (training-step card's formula). Does either fit next to ZeRO-3's state? (4) ZeRO-3 traffic per GPU per step in bytes (3Ψ × 2 bytes × 15/16) and its time at 50 GB/s, against 1.17 s of backward math for one 4,096-token sequence.", "done": "(1) 335.1 / 202.8 / 70.6 GB. (2) Only ZeRO-3 fits, with 9.45 GB left. (3) Neither: even full recompute's 10.7 GB is more than 9.45 GB, so you need more GPUs or TP/SP to split activations. (4) 396.8 GB, 7.9 s over one 50 GB/s NIC: communication-bound by ~7× unless the weights move over NVLink or tokens per GPU grow.", "hint": "ZeRO-1 = 2Ψ + 2Ψ + 12Ψ/16; ZeRO-2 = 2Ψ + 14Ψ/16; ZeRO-3 = 16Ψ/16, with Ψ = 70.55e9."},
+  "reflect": [
+    "Which prediction did you get wrong: how much a lighter optimizer helps stage 1 versus stage 3?",
+    "What couldn't you explain cleanly: why ZeRO-1/2 cost no extra traffic?",
+    "Which relationship is still fuzzy: tokens per GPU → hides the traffic, or weights gathered → bad for decode?",
+    "In the 70B exercise, did it surprise you that sharding the state still left activations as the blocker?",
+    "What will you revisit before the 4D-parallelism card?"
+  ],
+  "revisit": ["perf-7-training-economics/training-step", "perf-6-scaling-out/collectives", "perf-6-scaling-out/pipeline-data-parallel"],
+  "prereq": ["perf-7-training-economics/training-step", "perf-6-scaling-out/collectives"]
+}

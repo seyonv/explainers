@@ -1,0 +1,63 @@
+{
+  "prime": {
+    "problem": "Every step the engine has two scarce resources: how much work one step may do (which sets latency) and how many tokens of KV history fit in memory (which sets how many requests can be resident). Admit too few and the GPU idles; admit too many and requests evict each other and redo their work.",
+    "fits": "Ties Sarathi's token budget to course 4's paged KV memory. Orca II reserved worst-case memory; this card is how vLLM V1 admits greedily and recovers by preemption.",
+    "expect": ["two budgets: tokens per step and KV blocks", "{request_id: num_tokens} per step", "admission when blocks fit", "preemption by recompute (latest arrival first)", "max_num_seqs, gpu_memory_utilization"],
+    "goal": "Compute the KV pool for a GPU and model, predict roughly when a burst will start preempting, and choose the knobs for a latency or throughput target."
+  },
+  "attend": [
+    "What does the scheduler decide with the token budget, and what does it decide with the block pool?",
+    "Why does V1 no longer distinguish prefill and decode in its scheduling output?",
+    "Why does gpu_memory_utilization multiply all 80 GB rather than the memory left after the weights?",
+    "When a running request needs a block and none is free, which request is evicted, and what does it lose?",
+    "Why can raising max_num_seqs lower throughput instead of raising it?"
+  ],
+  "core": {
+    "must": [
+      "Token budget caps tokens per step → caps the step's math → caps TBT; the KV pool caps resident tokens → caps how many requests can run → the two budgets bind in different regimes",
+      "Admit while the next chunk's blocks fit, allocate as tokens arrive → many more requests resident than worst-case reservation (all 200 running by 7.16 s) → but outputs keep growing → when the pool runs dry the latest arrival is evicted and later re-prefills everything → preemption",
+      "Past the point where the pool binds, a higher max_num_seqs doesn't make a bigger batch → more requests grow into the same blocks and evict each other → recompute eats throughput (128 → 256 seqs: 49 more preemptions, −1%)",
+      "Recompute replays prompt + output so far as a prefill → cheap for an 8B model at modest lengths (≈ 35.5 ms floor for 2,188 tokens), but the victim's stream stops meanwhile → frequent preemption signals mis-set knobs"
+    ],
+    "elevated": [
+      "The first preemption lands where the arithmetic says: free blocks after admitting all prompts ÷ requests = tokens each can grow (147 per request in the burst; first eviction at 140) → you can predict preemption from the pool size alone"
+    ],
+    "reference": [
+      "the per-GPU default table (A100 2,048/256 vs H100 8,192/1,024 …)",
+      "--scheduling-policy names and the priority tie-break",
+      "block size 16 and 2 MiB per block",
+      "the scheduler source file paths"
+    ]
+  },
+  "compress": {
+    "prompt": "Write the block-pool formula from memory and fill it in for the H100 at 0.92. Then draw the burst as a chain: admission → pool fills → first preemption → recompute → finish. Label each arrow with the knob that moves it.",
+    "checklist": [
+      "N_blocks = ⌊(u·M − W) ÷ (B·b_tok)⌋ = 27,437 blocks at u = 0.92",
+      "admission is limited by the token budget (≈ 4 prompts per step at 8,192) and by blocks",
+      "headroom ÷ requests = how far each can grow before preemption",
+      "victim = latest arrival (FCFS) or lowest priority; it recomputes from scratch",
+      "max_num_seqs only helps below the point where the pool binds"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why the two budgets can't be merged into one: what failure does each one prevent?", "kind": "concept", "answer": ["the token budget prevents long steps (stalls, bad TBT)", "the block pool prevents running out of KV memory", "a step can be short and still overflow memory (many long contexts), or fit in memory and still be long (a big prompt chunk)"]},
+    {"q": "Walk through what the scheduler does when a running request needs a new block and the pool is empty, under FCFS and recompute.", "kind": "mechanism", "answer": ["pick the victim: the most recently arrived running request", "free all its blocks and reset its computed tokens to 0", "put it at the front of the waiting queue; no new admissions that step", "later it re-prefills prompt + generated tokens before continuing"]},
+    {"q": "You run 8k-context chat on an H100 and see frequent preemptions. List the knob changes the vLLM docs suggest, and which one you'd try first given that only 53 sequences of 8k fit at 0.92.", "kind": "tradeoff", "answer": ["decrease max_num_seqs or max_num_batched_tokens, or increase gpu_memory_utilization", "at 8k the pool binds near 53 sequences, so capping max_num_seqs near that removes eviction churn without shrinking the real batch", "raising utilization gains little memory (0.92 already leaves only 6.4 GB)"]},
+    {"q": "Why did a max_num_seqs of 64 give zero preemptions but 16% lower throughput in the 200-request burst?", "kind": "tradeoff", "answer": ["only 64 requests ever run, so the pool never fills", "136 requests wait: half of all requests wait 12 s or more for a first token", "the batch is smaller than what the pool could hold, so each step serves fewer users"]}
+  ],
+  "compare": [
+    {"with": "perf-4-attention-kv/paged-sharing", "q": "PagedAttention offered two recoveries from preemption, swap and recompute. Why did vLLM V1 keep only recompute, and when would swapping still be the better trade?", "answer": ["swap copies small blocks over PCIe and back, which is inefficient, and blocks admissions while anything is swapped", "recompute costs GPU math, which is cheap for an 8B model at these lengths", "swap would win when recompute is expensive: very long contexts or very large models, with a fast host link"]},
+    {"with": "perf-5-engines/orca-system", "q": "Run the same 200-request burst under Orca-style reservation with a max length of 8,192 and under V1's greedy admission. What is fundamentally different about when each pays its cost?", "answer": ["reservation pays up front: only 53 requests admitted, TTFT p50 12.85 s, 4,097 tok/s", "greedy pays later and only if the pool fills: 33 preemptions, 5,177 tok/s, TTFT p50 3.57 s", "reservation can't thrash; greedy can if knobs are wrong"]}
+  ],
+  "predict": {"q": "Same burst, but every output length is drawn from 1–1,024 instead of 512–1,024 (the lab's out_lo = 1). Does the first preemption come earlier, later or never? Commit first.", "answer": "Never, per the card's lab note: with out_lo = 1 many requests finish early and free their blocks while others are still growing, so the pool never runs dry. Preemption needs requests that are all still growing at once, which is what the 512-token minimum created."},
+  "apply": {"task": "By hand: (1) compute N_blocks for Llama-3.1-8B on an H100 at u = 0.9 and u = 0.5, and how many 4k-token sequences fit in each. (2) A burst of 100 requests with 4,096-token prompts arrives at u = 0.92 (27,437 blocks). After all prompts are admitted, how many output tokens can each request generate before the pool runs dry? (3) What is the 100%-MFU floor to recompute one victim that had generated that many tokens?", "done": "Two block counts with sequence counts, a per-request headroom in tokens, and a recompute floor in ms, before checking.", "hint": "Check after trying (our arithmetic, weights-only simplification): (1) 26,674 blocks → 104 sequences of 4k; 11,415 → 44. (2) 100 × 256 = 25,600 blocks; 1,837 left = 29,392 tokens → 293 tokens each. (3) 2 × 8.03e9 × (4,096 + 293) ÷ 989e12 ≈ 71.3 ms."},
+  "reflect": [
+    "Which prediction did you get wrong: whether early finishers prevent preemption entirely?",
+    "Could you explain to someone why a higher cap can lower throughput, without the word 'thrashing'?",
+    "Which relationship is still fuzzy: pool size → headroom per request → when preemption starts, or token budget → admission speed → preemption count?",
+    "What surprised you about how cheap recompute is for an 8B model, and when would that stop being true?",
+    "Before the anatomy card: where does the scheduler run, and what does its CPU time cost the GPU?"
+  ],
+  "revisit": ["perf-5-engines/sarathi-chunked-prefill", "perf-5-engines/orca-system", "perf-4-attention-kv/paged-memory"],
+  "prereq": ["perf-5-engines/sarathi-chunked-prefill", "perf-4-attention-kv/paged-memory"]
+}

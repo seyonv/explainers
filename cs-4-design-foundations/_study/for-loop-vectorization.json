@@ -1,0 +1,57 @@
+{
+  "prime": {
+    "problem": "An O(n) Python loop over numbers can still be hundreds of times slower than it needs to be: adding 17 to 10⁷ ints took 0.582 s as a loop and 0.00286 s with NumPy on the M3. The algorithm is fine; the cost is per-item bookkeeping.",
+    "fits": "Sixth estimation card. Algorithm-beats-hardware said the constant c matters once f(n) is optimal, and the compilers card said CPython won't shrink c for you. This card opens one loop iteration to see where c goes, and changes the engine instead.",
+    "expect": ["boxed objects vs raw machine values", "11 bytecodes per item", "NumPy vectorization", "temporary arrays", "PyPy, Numba and SIMD"],
+    "goal": "Explain where a Python loop's time goes per item, predict when NumPy will help and when it won't, and pick the right alternative for a loop that can't be vectorized."
+  },
+  "attend": [
+    "Of the source's five per-item steps inside <code>INPLACE_ADD</code>, which is the only one NumPy also does?",
+    "Why does a list of ints cost 36 B per item while an int64 array costs 8?",
+    "Why does <code>np.abs(a).mean()</code> peak at 80 MB of extra memory, and how does chunking cap it?",
+    "Which three meanings does \"vectorization\" have, and which one is the card's main point?",
+    "What kinds of loop have no array form, and what does the card suggest for them?"
+  ],
+  "core": {
+    "must": [
+      "A list holds pointers to full int objects → each <code>l[i] += 17</code> dispatches ~11 bytecodes, checks types, calls a C function and allocates a new 28-byte int → the add itself is a tiny fraction of 58.2 ns per item",
+      "A NumPy array holds raw 8-byte ints → <code>a += 17</code> is one C loop of load, add, store (plus SIMD) → 0.286 ns per item, 203× faster, with the same O(n)",
+      "Each vectorized step materialises a full-size temporary → <code>np.abs(a).mean()</code> allocates another 80 MB at 10⁷ items → chunking (10⁵ at a time) caps the peak at ~800 KB",
+      "Vectorization needs the same operation on many items of one type → branches or recurrences like <code>x[i] = f(x[i-1])</code> have no array form → compile the loop instead (Numba, PyPy for pure Python), and check the algorithm first"
+    ],
+    "elevated": [
+      "The same data costs 36 B per item as a list of ints (8 B pointer + 28 B object) vs 8 B in an int64 array → 360 MB vs 80 MB at 10⁷ → memory traffic, not only instructions, is part of the 203×"
+    ],
+    "reference": ["the exact 3.10 bytecode names", "the source's PyPy and Numba timings", "AVX-512 / Neon register widths", "the Rust → C correction"]
+  },
+  "compress": {
+    "prompt": "From memory, draw one iteration of <code>l[i] += 17</code> as a strip: which steps are bookkeeping and which one is the add. Next to it, draw NumPy's inner loop. Then write two sentences on when vectorizing fails.",
+    "checklist": [
+      "Python: dispatch bytecodes, look up the type's add, unbox both, add, box a new int, store the pointer",
+      "NumPy: load 8 bytes, add, store 8 bytes (several per SIMD instruction)",
+      "58.2 ns vs 0.286 ns per item on the M3",
+      "fails on memory (temporaries), branches and recurrences, and tiny inputs",
+      "Numba or PyPy compile the loop itself"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why vectorizing doesn't change the complexity yet can be 200× faster.", "kind": "concept", "answer": ["both versions touch each item once: O(n)", "vectorizing removes the per-item interpreter bookkeeping and object allocation", "it only cuts the constant, from 58.2 to 0.286 ns per item"]},
+    {"q": "Walk through what happens inside the single bytecode <code>INPLACE_ADD</code> for the list at index 1000.", "kind": "mechanism", "answer": ["look up the type of the int object and its add slot", "call that C function with both objects", "read the machine integers out of both", "add 1000 + 17 = 1017", "allocate a new 28-byte int to hold the result"]},
+    {"q": "Your per-item logic has an if/else and each item depends on the previous one. NumPy, Numba or PyPy: which does the card point you to, and what does each cost?", "kind": "tradeoff", "answer": ["NumPy can't express the dependency without a loop", "Numba compiles your own loop and works with NumPy arrays: a dependency and a first compile", "PyPy JITs pure-Python loops but interfaces poorly with NumPy", "a C/Cython/Rust extension works but adds a build step"]}
+  ],
+  "compare": [
+    {"with": "cs-4-design-foundations/compiler-optimizations", "q": "The compilers card fixed the string loop by changing the algorithm; this card fixes the add loop by changing the engine. Why was each the right fix for its loop?", "answer": ["the string loop was O(n²): no engine fixes growth", "the add loop is already O(n): only the constant can improve", "diagnose f(n) first, then c"]},
+    {"with": "cs-6-data-systems/cache-conscious-structures", "q": "cs-6 says an in-memory database's remaining cost is the CPU waiting on cache misses. How does NumPy's contiguous array help with the same problem that a list of pointers makes worse?", "answer": ["a list scatters int objects across the heap: each item is a pointer chase", "an array stores values back to back, so each cache line holds 8 int64s", "the layout decides how many cache misses happen, in both cards"]}
+  ],
+  "predict": {"q": "Your data starts as a Python list of 10⁷ ints. You write <code>np.array(l) + 17</code> once and convert back with <code>.tolist()</code>. Before trying: do you get anything like the 203× speed-up over the plain loop? Commit, then reveal.", "answer": "No, not for a single operation. <code>np.array(l)</code> has to visit all 10⁷ Python int objects to unbox them, and <code>.tolist()</code> allocates 10⁷ new ones: the same kind of per-item work the loop did. The 203× applies to work done while data <i>stays</i> in the array. Convert once, do many operations, convert back once (or never)."},
+  "apply": {"task": "On your machine, time four versions of \"add 17 to every item\" for 10⁶ items: the card's index loop, a list comprehension, <code>map</code> with a lambda, and NumPy <code>a += 17</code>. Report nanoseconds per item for each. Then compute the memory per item for a list of <b>floats</b> vs a float64 array, using <code>sys.getsizeof</code>.", "done": "You have four ns-per-item figures, ranked, with NumPy far ahead and the three pure-Python versions within a small factor of each other; and your memory line reads 8 B pointer + 24 B float object = 32 B per item vs 8 B in the array (32 MB vs 8 MB for 10⁶).", "hint": "<code>timeit.timeit(stmt, number=1)</code> on a fresh list each time; <code>sys.getsizeof(1.0)</code> is 24 in CPython 3.10."},
+  "reflect": [
+    "Which prediction did you get wrong: whether converting once per operation keeps the speed-up?",
+    "What couldn't you explain cleanly: why a list costs 36 B per int?",
+    "Which relationship is still fuzzy: boxed objects → per-item cost, or temporaries → memory peaks?",
+    "Which loop in your own code has a recurrence that NumPy can't express?",
+    "What will you look for next: whether the algorithm was the real problem all along?"
+  ],
+  "revisit": ["cs-4-design-foundations/algorithm-beats-hardware", "cs-4-design-foundations/back-of-envelope"],
+  "prereq": ["cs-4-design-foundations/compiler-optimizations"]
+}

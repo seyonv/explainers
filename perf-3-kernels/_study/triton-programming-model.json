@@ -1,0 +1,62 @@
+{
+  "prime": {
+    "problem": "Writing fast CUDA means handling coalescing, shared-memory staging, barriers, vector loads and pipelining by hand, thread by thread; siboehm needed six weekends for one matmul. Most custom kernels (fusions, new softmaxes) don't justify that effort, but they still need to be fast.",
+    "fits": "It follows fusion: <code>torch.compile</code> generates Triton kernels, and a fused softmax is the tutorial's showcase. It maps the compiler's automatic optimizations back onto the earlier cards (coalescing, bank conflicts, vectorization, tensor cores), and sets up Triton's matmul.",
+    "expect": ["\"blocked program, scalar threads\"", "<code>tl.program_id</code>, <code>tl.arange</code>, masks", "<code>BLOCK_SIZE</code> as a compile-time constant", "fused softmax and its ~4× bound", "persistent programs and <code>num_warps</code>"],
+    "goal": "Translate a CUDA kernel into a Triton program, predict fusion's speed-up from element counts, and say when Triton is and isn't the right tool."
+  },
+  "attend": [
+    "In Triton there is no <code>threadIdx</code>. What replaces \"who am I\" and \"which elements are mine\"?",
+    "What does the compiler take over from you, and which choices does it still leave you?",
+    "Where does the tutorial's ~4× for fused softmax come from, and why does the measured speed-up only reach it for N ≥ 2,048?",
+    "Naive softmax streams bytes about as fast as Triton does. So why is it 4× slower?",
+    "Why can't the tutorial's softmax kernel handle a 128,256-wide vocabulary row on an H100?"
+  ],
+  "core": {
+    "must": [
+      "The unit you write is a program that owns a block of data → loads and stores are whole vectors of offsets with a mask → the compiler sees the block's data flow → it chooses the thread layout, coalescing, vector width, shared-memory staging and barriers for you",
+      "Naive softmax is five kernels, each going through DRAM → it reads 5MN + 2M and writes 3MN + 2M elements → fused, it reads X once and writes Y once (2MN) → speed-up ≈ 4 + 2/N → 3.84–4.11× measured for N ≥ 2,048",
+      "The fused kernel keeps one whole row on-chip for its max and sum → it only works while a row fits in one program's SRAM → a vocab row (131,072 floats padded, 512 KiB) exceeds an H100 SM's 256 KB → it needs a chunked kernel with a running max and sum (online softmax)",
+      "Block sizes are <code>tl.constexpr</code> powers of two → each value compiles a new kernel and ragged edges are masked → a 781-wide row runs as 1,024 lanes with 243 masked to −∞"
+    ],
+    "elevated": [
+      "Tutorial 01's GB/s doubles with every doubling of size up to 65,536 elements while time stays ~6 µs → that is launch and timing overhead, not memory → a small-n benchmark measures the harness, not the kernel"
+    ],
+    "reference": [
+      "the tutorial's exact kernel code and <code>triton.cdiv</code>, <code>tl.load(…, other=…)</code> syntax",
+      "the occupancy formula used for the persistent grid (<code>NUM_REGS // (n_regs × 32 × num_warps)</code>)",
+      "<code>num_stages</code> rule (4 if shared memory > 200,000 B, else 2)",
+      "platform notes: no macOS wheels, <code>TRITON_INTERPRET=1</code>, the HIP path"
+    ]
+  },
+  "compress": {
+    "prompt": "Write tutorial 01's kernel from memory next to the first-kernel card's CUDA version, pairing each line (who am I, which elements, bounds, load/compute/store, launch). Then write the one-line element count that gives softmax's 4× and the one condition it depends on.",
+    "checklist": [
+      "<code>pid = tl.program_id(0)</code> replaces the global thread index",
+      "<code>offsets = pid·BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)</code> is a vector of indices",
+      "<code>mask = offsets &lt; n</code> replaces <code>if (i &lt; n)</code>",
+      "launch grid = <code>cdiv(n, BLOCK_SIZE)</code> programs",
+      "softmax: (8MN + 4M) ÷ 2MN ≈ 4, as long as a row fits on-chip"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain what \"programs, rather than threads, are blocked\" means, and why it lets the compiler do optimizations that CUDA leaves to you.", "kind": "concept", "answer": ["CUDA: you write scalar code per thread and group threads into blocks", "Triton: you write block-level code over vectors and tiles; the compiler maps it onto threads", "seeing a whole tile's loads and stores lets it pick coalesced layouts, vector widths, shared-memory staging and syncs"]},
+    {"q": "Trace tutorial 01 for n = 100,000 with BLOCK_SIZE = 1,024: the grid size, what the last program's mask looks like, and what each masked lane does.", "kind": "mechanism", "answer": ["grid = cdiv(100,000, 1,024) = 98 programs", "the last program starts at 97 × 1,024 = 99,328: 672 real lanes, 352 masked", "masked lanes are neither loaded nor stored"]},
+    {"q": "You need a softmax over a 128,256-token vocabulary for 4,096 sequences. Compare using <code>torch.softmax</code>, the tutorial's fused kernel, and writing a chunked online-softmax Triton kernel.", "kind": "tradeoff", "answer": ["the fused tutorial kernel can't hold a padded 512 KiB row in one program", "<code>torch.softmax</code> works and is tuned, but you can't fuse it with sampling or anything else", "a chunked online-softmax kernel keeps a running max and sum, reads the row once, and can be fused; it's the extra effort that pays when the op is hot (16.81 → 4.20 GB on an H100)"]}
+  ],
+  "compare": [
+    {"with": "perf-3-kernels/first-kernel", "q": "The same vector add in CUDA and Triton hits the same bandwidth. What does each version make explicit that the other hides, and when would that hidden detail bite you?", "answer": ["CUDA makes the thread index, block size and bounds check explicit; Triton hides threads behind vectors and masks", "Triton makes BLOCK_SIZE a compile-time constant and hides the thread layout", "hidden layout bites when you need per-thread control (warp shuffles, custom shared-memory layouts) or a feature the compiler doesn't support yet"]},
+    {"with": "perf-4-attention-kv/online-softmax", "q": "The tutorial's fused softmax holds a row on-chip; online softmax streams it. What state does each keep, which one FlashAttention needs, and why?", "answer": ["tutorial: the whole row in registers/SRAM, then max and sum", "online: only a running max and running sum, rescaled as each chunk arrives", "FlashAttention needs online softmax because the scores row is never materialised: keys arrive in tiles"]}
+  ],
+  "predict": {"q": "A softmax row of N = 3,000 floats. Commit before computing: what BLOCK_SIZE does the tutorial use, how many lanes are masked, and is the fused kernel's predicted speed-up over naive higher or lower than at N = 781?", "answer": "BLOCK_SIZE = next_power_of_2(3,000) = 4,096, so 1,096 lanes are masked (−∞ on load). The predicted ratio 4 + 2/N is 4.0007 at 3,000 and 4.0026 at 781: slightly lower, and both round to 4. The measured gap is a different story: at small N fixed costs blunt the gain (2.44× at N = 256), so 3,000 should land near the ~4× the table shows for N ≥ 2,048."},
+  "apply": {"task": "Open <code>labs/triton-basics.ipynb</code> on a T4. Run tutorials 01 and 02, then add a softmax size of your own (N = 3,000) and compute its naive and fused bytes for M = 4,096 rows in FP32 and the T4 floor for each at 320 GB/s. Compare your measured Triton ÷ naive and Triton ÷ torch ratios with the tutorial's table.", "done": "You have predicted and measured times for N = 3,000 (naive (8MN + 4M)·4 B vs fused 2MN·4 B), a sentence on whether the ~4× held, and one row where torch.softmax beat Triton on your T4 (or a note that none did).", "hint": "At M = 4,096 and N = 3,000: MN = 12,288,000 elements; naive ≈ 393.3 MB, fused ≈ 98.3 MB, so ≈ 1.23 ms vs 0.31 ms at 320 GB/s."},
+  "reflect": [
+    "Which prediction did you get wrong: the masked-lane count, or the speed-up at N = 3,000?",
+    "Could you say which of the earlier cards' hand optimizations Triton does <i>not</i> do for you?",
+    "Which relationship is still fuzzy: block program → compiler freedom, or row size → one-program limit?",
+    "Did the \"4× faster than the Torch JIT\" flag change how you read vendor or tutorial claims?",
+    "What will you revisit before Triton matmul: what num_warps and num_stages actually control?"
+  ],
+  "revisit": ["perf-3-kernels/first-kernel", "perf-3-kernels/fusion-cuda-graphs", "perf-3-kernels/reduction-divergence"],
+  "prereq": ["perf-3-kernels/first-kernel"]
+}

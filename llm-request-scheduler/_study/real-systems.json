@@ -1,0 +1,65 @@
+{
+  "prime": {
+    "problem": "Published speedups range from 2× to 36.9× for what sounds like the same idea, and every vendor has a headline number. Without a way to place each system on the stack and read its baseline, you copy the wrong design at the wrong scale.",
+    "fits": "Second-to-last card, after the whole system is drawn. It checks the course's design against what vLLM, SGLang, TGI, TensorRT-LLM and thirteen production teams actually built, using the same seven scheduler choices and the same stack layers.",
+    "expect": [
+      "five engines on seven scheduler choices",
+      "production write-ups: faced → built → number",
+      "recurring patterns: paging, prefix routing, P/D, early rejection",
+      "why the speedups disagree (different baselines)"
+    ],
+    "goal": "Place any serving system on the stack, compare engines on admission, preemption, prefix caching and chunking, and read a published speedup critically by its baseline, model and workload."
+  },
+  "attend": [
+    "Every engine converged on the same core. Where exactly do they still differ?",
+    "Why does TGI never preempt, and what does it pay for that?",
+    "vLLM is 24× faster than HF and 3.5× faster than TGI in the same post. What does that tell you about headline speedups?",
+    "Which of the recurring patterns only appear at fleet scale, and why not on one box?",
+    "Which numbers on this card are vendor or commissioned benchmarks?"
+  ],
+  "core": {
+    "must": [
+      "Every serious engine batches at the iteration level over a paged KV cache with prefix reuse → they differ in how bravely they admit (optimistic, estimate, reserve) and what they do when memory runs out (recompute newest, retract least progress, never preempt)",
+      "Above the engine, big fleets add the same layers → a router that sends requests to their prefix, separate prefill and decode pools, KV tiers down to disk, and a gateway that rejects early → each appears only when scale demands it",
+      "A speedup = new ÷ baseline, on some model, hardware and workload → the same system looks 3.5× or 24× depending on the baseline → compare only within one setup, prefer \"within SLO\" claims, and flag vendor numbers"
+    ],
+    "elevated": [
+      "Reserve-to-completion (TGI, TensorRT-LLM default) never preempts but holds max_new_tokens for every request → when most answers stop early the batch stays small → optimistic admission (vLLM) packs more at the cost of preemption"
+    ],
+    "reference": [
+      "each engine's commit hash and exact default values",
+      "the ByteByteGo post list and dates",
+      "DeepSeek's theoretical 545% margin and $87,072/day"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw the five-layer stack (gateway, router, pools, engine, KV tiers) and write two real systems on each layer. Then fill a 3-column mini-table for vLLM, SGLang and TGI: admission, preemption, prefix caching.",
+    "checklist": [
+      "engine layer: vLLM, SGLang, TGI, TensorRT-LLM all continuous + paged",
+      "admission: vLLM optimistic, SGLang estimate (new_token_ratio), TGI reserve",
+      "preemption: vLLM recompute newest, SGLang retract least progress, TGI never",
+      "prefix: vLLM chained hashes, SGLang radix tree",
+      "fleet layers: llm-d/SGLang router, DeepSeek/Mooncake P/D, Mooncake/GKE early rejection"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why the published continuous-batching speedups range from 2× to 36.9× even though they describe the same idea.", "kind": "concept", "answer": ["each divides by a different baseline (naive static, optimised static, dynamic, a continuous engine)", "models, hardware and output-length spreads differ; bigger models and longer outputs make static look worse", "some compare at equal latency, others at peak tok/s"]},
+    {"q": "Walk through what SGLang does when it runs out of KV memory, from admission estimate to victim to recovery.", "kind": "mechanism", "answer": ["running requests reserve new_token_ratio × remaining tokens; the ratio starts at 0.7 and decays", "when memory runs out it retracts: fewest output tokens first, ties by longest input", "the victim is re-prefilled later, and the ratio jumps back up from what was observed"]},
+    {"q": "You run one H100 for an internal chat tool. Which ideas from the case studies do you copy, and which do you skip?", "kind": "tradeoff", "answer": ["copy the shared core: continuous batching, paged KV, prefix caching, chunked prefill, recompute on preemption", "skip P/D pools (nothing to split), fleet routers and KV tiers", "add a bounded queue and 429s if load can exceed the replica"]}
+  ],
+  "compare": [
+    {"with": "llm-request-scheduler/full-system", "q": "The full-system card is one reference design; this card is many real ones. Which design choice in the reference would DeepSeek, Character.AI and TGI each change, and why?", "answer": ["DeepSeek: split prefill and decode into separate pools (4 + 18 nodes) and cache KV on disk", "Character.AI: sticky sessions and a host-memory KV cache because conversations are long", "TGI: reserve to completion instead of preempting"]},
+    {"with": "perf-5-engines/engine-anatomy", "q": "Course 5 opens vLLM and SGLang's process structure. Which differences on this card's engine table come from the scheduler, and which from the process layout?", "answer": ["scheduler: decode-first vs prefill-first, optimistic vs estimated admission, recompute vs retract", "process layout: where detokenizing runs, overlap scheduling (SGLang on by default)", "both engines share continuous batching over paged KV and prefix reuse"]}
+  ],
+  "predict": {"q": "A new engine claims \"20× throughput over Hugging Face Transformers\". Before looking up anything: what three questions do you ask, and roughly where would you expect it to land against vLLM?", "answer": "Ask the baseline (HF generate is a naive, essentially static baseline), the model and hardware, and whether it's peak tok/s or within an SLO. vLLM itself reported 24× over HF and 3.5× over TGI in the same post, so 20× over HF says little: it is likely in the same range as vLLM, not ahead of it. Only a same-setup comparison against a modern continuous engine would tell you more."},
+  "apply": {"task": "Two checks on published numbers. (a) DeepSeek reports about 73.7k input tok/s per prefill node and 14.8k output tok/s per decode node, 8 H800s each. Compute tokens per second per GPU for each phase and the ratio. (b) ByteByteGo's tier mix sends 85% to a small model (1/20 of premium cost), 10% to medium (1/5) and 5% to premium, for about 11% of premium cost. Recompute the average cost for a 70% / 20% / 10% mix.", "done": "(a) ≈ 9,212 input tok/s per prefill GPU vs 1,850 output tok/s per decode GPU, about 5× apart: the same prefill/decode gap the course models on one GPU, now visible in pool sizes. (b) 0.7 × 1/20 + 0.2 × 1/5 + 0.1 × 1 = 0.035 + 0.04 + 0.1 = 0.175 → 17.5% of premium cost.", "hint": "Divide each node figure by 8; the premium share dominates the tier mix."},
+  "reflect": [
+    "Which prediction did you get wrong: where a \"20× over HF\" engine lands?",
+    "Could you place Mooncake on the stack in one sentence, naming each layer it touches?",
+    "Which relationship is still fuzzy: admission philosophy → preemption behaviour, or scale → which fleet layers appear?",
+    "Which published number on this card would you want to re-derive before quoting it?",
+    "What will you revisit before explain-it-back: which real system best illustrates each of the three big questions?"
+  ],
+  "revisit": ["llm-request-scheduler/full-system", "llm-request-scheduler/admission-preemption", "llm-request-scheduler/continuous-batching", "llm-request-scheduler/disaggregation"],
+  "prereq": ["llm-request-scheduler/full-system"]
+}

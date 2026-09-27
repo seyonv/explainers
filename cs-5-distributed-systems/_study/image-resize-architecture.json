@@ -1,0 +1,122 @@
+{
+  "prime": {
+    "problem": "\"Is the image service CP or AP?\" has no single answer. A job queue that loses or reorders work is broken; an auth check that is a few seconds stale is fine; a usage counter can wait hours. Forcing one choice on all of them either makes every request depend on the slowest part, or lets the queue split-brain.",
+    "fits": "Applies the partial-failure and CAP card's per-partition choice to the running example's five subsystems, using the sizing card's 10K requests/s and 40 workers. The Paxos failover it relies on is taught later in the Raft card.",
+    "expect": [
+      "C vs A per subsystem",
+      "management plane vs data plane",
+      "availabilities in series: 0.999 / 0.9999",
+      "2 of 3 up: <code>3a²(1 − a) + a³</code>",
+      "local aggregation → batch writes"
+    ],
+    "goal": "For each of the five subsystems, say whether it favours consistency or availability, what its readers can live with, and the number behind the decision; then apply the same reasoning to a new subsystem."
+  },
+  "attend": [
+    "Why does the FIFO queue favour consistency, and what does it pay for that during a leader's failure?",
+    "Why does the API tier need 99.99% when the whole service only promises 99.9%?",
+    "In the edge-cache trace, who benefits from staleness during the auth outage, and who pays for it?",
+    "Why does splitting the management plane from the data plane let auth favour availability?",
+    "Local aggregation cuts write calls 33,333× but rows only 15%. What would make the rows shrink too?"
+  ],
+  "core": {
+    "must": [
+      "Ask what each subsystem's readers can live with → a queue can't lose or reorder jobs → favour C: refuse while a majority elects a new leader (j2 refused ~2 s) → no job lost, FIFO kept",
+      "Auth runs on every request (864M a day) but accounts change rarely → cache identity at the edge and favour A → requests keep working through an auth-plane outage → the price is staleness: a new user waits (18 s in the trace), and a revoked key works until the next refresh",
+      "Availabilities in series multiply → a 99.99% front door leaves 0.999 / 0.9999 = 99.91%, 38.9 min a month, for everything behind it → the front door needs more nines than the SLA",
+      "Usage is write-heavy and read hours later → aggregate locally, batch to an eventually consistent store → 100,000 requests become 3 writes per 10 s per window → billing tolerates the delay"
+    ],
+    "elevated": [
+      "⌈10K / 5K⌉ + 1 = 3 API servers → losing one still leaves 2 × 5K = 10K → 2-of-3 availability 99.9925% at 99.5% each, <i>if</i> they fail independently, which correlated failures break"
+    ],
+    "reference": [
+      "the exact edge refresh interval (5 s) and outage window (10–30 s), both illustrative",
+      "SQS standard vs FIFO queue semantics",
+      "the simulated usage traffic's parameters (85,047 rows, 998 busy cores)",
+      "the 30 min vs 10 s failover durations (illustrative)"
+    ]
+  },
+  "compress": {
+    "prompt": "Redraw the five-box figure from memory and mark each box C or A. Next to each, write one line: what its readers can live with, and what the choice costs.",
+    "checklist": [
+      "API tier: A, 99.99% target because it's the front door (38.9 min left for the rest)",
+      "queue: C, Paxos/majority failover; refuses briefly rather than lose or reorder",
+      "auth: A at the edge, split from the rare management plane; stale for seconds",
+      "usage: eventually consistent, local aggregation then batch; billing reads it later",
+      "the question is always what the readers can tolerate, not a global CAP label"
+    ]
+  },
+  "retrieve": [
+    {
+      "q": "Explain why \"choose per subsystem\" beats \"consistent everywhere\" for this service, with the number that makes consistent-everywhere expensive.",
+      "kind": "concept",
+      "answer": [
+        "every auth check would ask the source of truth: 864M round trips a day per region",
+        "and an auth-plane outage would fail every resize",
+        "per subsystem: only the queue pays for consistency, where losing order actually breaks the product"
+      ]
+    },
+    {
+      "q": "Walk through the queue trace from t = 0 to t = 4: which nodes store each job, when is j2 refused, and why is no job lost or reordered?",
+      "kind": "mechanism",
+      "answer": [
+        "t = 0: j1 stored on Q1 and Q2 (2 of 3), acked",
+        "t = 1–2: Q1 cut off; j2 reaches only Q1 (1 of 3), so it is refused",
+        "t = 3: Q2 and Q3, a majority, elect Q2",
+        "t = 4: the API retries j2 on Q2; Q2 and Q3 store it after j1: no loss, FIFO kept"
+      ]
+    },
+    {
+      "q": "Security asks that revoked API keys stop working immediately. What does that do to the auth subsystem's C/A choice, and what are two ways to meet it without making every check a round trip?",
+      "kind": "tradeoff",
+      "answer": [
+        "a revocation is a case where staleness is dangerous, so pure edge caching (A) is not enough for it",
+        "push invalidations to the edge when a key is revoked",
+        "or check the data plane only for sensitive calls, keeping the cached path for the rest"
+      ]
+    }
+  ],
+  "compare": [
+    {
+      "with": "cs-5-distributed-systems/partial-failure-cap",
+      "q": "The CAP card's two-replica plan upgrade and this card's edge cache both answer stale during a fault. What makes stale acceptable in one case and questionable in the other, and which design choice decides it?",
+      "answer": [
+        "the edge cache serves identity that changes rarely; a new user waiting seconds is tolerable",
+        "the plan upgrade gates what a customer can do and may affect billing; stale can mean a wrong charge",
+        "the deciding choice is what the <i>readers</i> can live with, which is exactly the per-subsystem rule"
+      ]
+    },
+    {
+      "with": "cs-5-distributed-systems/consensus-raft",
+      "q": "The queue uses \"Paxos leader election\". What does the Raft card add to this card's 2-second refusal window, and what number replaces the illustrative election time?",
+      "answer": [
+        "Raft shows how the majority elects: randomised timeouts, RequestVote, and only up-to-date candidates win",
+        "the simulated election in the Raft card finishes 273.7 ms after the crash (mean 217 ms with lagging logs)",
+        "the refusal window is roughly timeout + election, far below the 30-minute manual failover"
+      ]
+    }
+  ],
+  "predict": {
+    "q": "The team adds a sixth subsystem: an <i>image metadata</i> store that clients read after each resize to get the output URL and dimensions. Should it favour C or A, and what failure would each choice produce? Commit first.",
+    "answer": "Read-your-write matters: the client just caused the resize and immediately asks for its output. Favouring A with plain eventual consistency means a client can get \"not found\" for an image it just made. So favour C for the write-then-read path (or route the read to the replica that took the write, a session guarantee), and allow A for other readers such as galleries, where a few seconds' lag is fine. The per-subsystem rule even splits one subsystem by reader."
+  },
+  "apply": {
+    "task": "Using <code>k_of_n</code> from <code>code/image-resize-architecture.py</code>, compute the 2-of-3 availability of the API tier for per-server availability 99.9%, 99.5% and 99%. Then compute the monthly downtime each allows (× 43,200 min), and decide which per-server availability meets the 99.99% front-door target. Finally, say what a single bad deploy to all three servers does to your answer.",
+    "done": "You have 99.9997% (≈ 0.13 min/month), 99.9925% and 99.970%, you've picked the per-server availabilities that meet 99.99%, and you can say why a shared deploy caps the tier near 1 − c whatever the formula says.",
+    "hint": "3 × 0.999² × 0.001 + 0.999³ = 0.999997002. Downtime = (1 − A) × 43,200 min. Both 99.9% and 99.5% per server clear 99.99%; 99% does not."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: whether the metadata store needs C, and for which readers?",
+    "Could you justify each of the five C/A choices without the figure?",
+    "Which relationship is still fuzzy: reader tolerance → C/A choice, or series availability → front-door nines?",
+    "Where in a system you know is a management plane mixed into the data plane?",
+    "What will you reopen before the backpressure card?"
+  ],
+  "revisit": [
+    "cs-5-distributed-systems/image-resize-sizing",
+    "cs-5-distributed-systems/partial-failure-cap",
+    "cs-5-distributed-systems/correlated-failure"
+  ],
+  "prereq": [
+    "cs-5-distributed-systems/partial-failure-cap"
+  ]
+}

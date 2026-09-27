@@ -1,0 +1,59 @@
+{
+  "prime": {
+    "problem": "A mask is one yes/no per vocabulary token, before every output token, computed on the CPU while the GPU waits. Done naively that's 248,320 checks × 38 steps = 9.4 million checks for one order. If the mask takes longer than the model step, the GPU sits idle and structured output becomes slower than plain output.",
+    "fits": "Fourth card of part 2. The FSM card precomputed everything; the PDA card showed that part of the mask needs the stack at run time. This card shows how real backends compute masks fast anyway: tries, byte pruning, a lexer/parser split, and precomputing the part that doesn't depend on the stack.",
+    "expect": ["<code>t_token ≈ max(t_GPU, t_mask)</code>", "the token trie", "UTF-8 pruning", "lexer vs Earley parser", "context-independent vs context-dependent tokens"],
+    "goal": "Explain how each trick avoids checking most tokens, predict when mask time starts to show up in time per token, and match each backend to the workload it suits."
+  },
+  "attend": [
+    "Why is mask time free up to a point, and what happens the moment it exceeds the model step?",
+    "In the trie, why does rejecting one node let the engine skip every token beneath it?",
+    "What does the lexer handle cheaply, and why does the full Earley parser only need to wake at word boundaries?",
+    "What makes a token context-dependent in XGrammar, and why is that set so small for JSON?",
+    "Why does Guidance beat no-grammar per token in the paper, while llama.cpp's grammar nearly doubles the time?"
+  ],
+  "core": {
+    "must": [
+      "The mask runs on the CPU in parallel with the GPU forward pass → <code>t_token ≈ max(t_GPU, t_mask)</code> → mask cost is invisible while it's under the step (20 μs vs 15.40 ms) → once it's over (100 ms edge schemas) the GPU waits on every token",
+      "Tokens share prefixes → store the vocabulary as a byte trie → a rejected node rules out every token below it → 6 visits instead of 12 token checks in the toy, and whole branches of a real vocabulary skipped",
+      "Most tokens' legality depends only on the grammar position, not the stack → precompute those into a table (over 99% in XGrammar) → only the context-dependent rest (under 1%) needs a run-time stack check → a PDA's reach at close to an FSM's per-token cost",
+      "A cheap regex lexer inside strings and numbers, the full Earley parser only at lexeme boundaries → the expensive check runs at under 0.5% of trie nodes → masks computed on the fly with no precompute (llguidance: GCT ≈ 0)"
+    ],
+    "elevated": [
+      "An Earley parser keeps several parses alive at once → an ambiguous <code>anyOf</code> needn't be resolved until the text decides it (<code>\"e</code>mail vs <code>\"v</code>ersion) → llguidance can serve schemas a deterministic machine would have to reject or rewrite"
+    ],
+    "reference": ["which byte sequences are invalid UTF-8 (e.g. <code>0xC1 0x81</code>)", "the cookbook's toy vocabulary (<code>a</code>, <code>ab</code>, <code>an</code>, …, <code>1e2</code>)", "LM Format Enforcer's internals", "per-dataset TPOT values in the paper's Tables 2, 3 and 13"]
+  },
+  "compress": {
+    "prompt": "From memory, write the <code>max(t_GPU, t_mask)</code> line, then the four tricks as one line each: what it skips, and why skipping is safe.",
+    "checklist": [
+      "mask and forward pass overlap, so the mask only costs time when it's slower",
+      "trie: a rejected prefix rejects every longer token under it",
+      "UTF-8 pruning drops byte sequences that can never be text (the cookbook says 30–50%)",
+      "lexer/parser split: cheap regex inside lexemes, the full parser only at boundaries (under 0.5% of nodes)",
+      "context split: precompute stack-independent tokens, check only the under-1% that need the stack",
+      "the paper's TPOT is the only independent check, and it times whole engines, not masks"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why mask speed doesn't matter at all in some setups and dominates in others, using the <code>max()</code> formula and the card's two step times.", "kind": "concept", "answer": ["the mask overlaps the forward pass, so only its excess over t_GPU costs time", "20 μs is 0.13% of an A100 step (15.40 ms) and 0.035% of an M3 step (57.2 ms): hidden", "a 100 ms edge-case mask is 6.5× the A100 step, so the GPU waits every token (3.8 s over a 38-token answer)", "slow GPUs hide slow masks; fast GPUs expose them"]},
+    {"q": "Walk the cookbook's integer constraint through its 12-token trie: which nodes are visited, which are rejected, and which tokens are never looked at?", "kind": "mechanism", "answer": ["visited: <code>a</code> (rejected), <code>1</code>, <code>10</code>, <code>103</code>, <code>108</code> (allowed), <code>1e</code> (rejected): 6 visits", "<code>ab</code>, <code>an</code>, <code>and</code>, <code>ant</code> are skipped because <code>a</code> was rejected; <code>1e1</code>, <code>1e2</code> because <code>1e</code> was", "mask: 4 allowed, 8 masked"]},
+    {"q": "In <code>(3 + (5 * 2))</code>, classify <code>*</code> after <code>5</code> and the final <code>)</code>, and say what XGrammar does with each at run time.", "kind": "mechanism", "answer": ["<code>*</code> after a number is legal from the grammar position alone: context-independent, a precomputed lookup", "the final <code>)</code> is legal only because a <code>(</code> is still open: context-dependent, checked against the stack at run time"]},
+    {"q": "You serve a new schema on every request at high throughput. llguidance or XGrammar, and which number from the card drives the choice?", "kind": "tradeoff", "answer": ["llguidance: no precompute, so GCT is 0.00–0.02 s per new schema (paper, as Guidance)", "XGrammar precomputes per schema (0.11–0.30 s in the paper's HF runs, overlapped with prefill), which pays off only on reuse", "for one fixed schema reused many times, XGrammar's lookup table is the better fit"]}
+  ],
+  "compare": [
+    {"with": "structured-outputs/cfg-pda", "q": "The PDA card said a stack makes part of the mask impossible to precompute. How does XGrammar's split turn that into a small cost, and when would the split stop helping?", "answer": ["it precomputes every token whose legality depends only on the position (over 99% for JSON)", "only stack-dependent tokens (closing brackets, end-of-text) are checked at run time", "it helps less when many tokens depend on the stack or the grammar is unusual: the cookbook's edge schemas at tens to hundreds of ms per mask"]},
+    {"with": "perf-5-engines/structured-outputs", "q": "The engines course looks at the same mask from inside a batched server. What changes when one server builds a mask per request for 64 requests per step, and which trick from this card matters most there?", "answer": ["the mask is per request, so CPU mask work scales with batch size while the GPU step grows much more slowly", "a mask that hides behind one request's step can stop hiding at batch 64", "precomputing the context-independent part (and overlapping mask with forward pass) is what keeps it off the critical path"]}
+  ],
+  "predict": {"q": "The trie saves the most when a rejected node hides many tokens. At which grammar position does it help <i>least</i>: right after <code>\"sku\":\"</code> (must start one of 10 SKUs), or inside a free-text string field? Commit before revealing.", "answer": "Inside the free-text string. There almost every token is legal, so few branches are rejected and the walk has to reach nearly every node. Right after <code>\"sku\":\"</code> almost every first byte is wrong, so rejecting a handful of top-level branches skips nearly the whole vocabulary. The string case is where the lexer earns its keep: it only asks the cheap question \"still a valid string?\" and never wakes the full parser."},
+  "apply": {"task": "Draw the cookbook's 12-token vocabulary (<code>a</code> <code>ab</code> <code>an</code> <code>and</code> <code>ant</code> <code>1</code> <code>10</code> <code>103</code> <code>108</code> <code>1e</code> <code>1e1</code> <code>1e2</code>) as a trie. Walk it for two constraints: (1) an integer, as on the card, and (2) a lowercase word <code>[a-z]+</code>. For each, count nodes visited, tokens allowed, and tokens skipped without being looked at. Then decide, for a mask costing 20 μs and one costing 100 ms, whether it hides behind the M3's 57.2 ms step, and give the ratio.", "done": "You have two walks with three counts each and two hidden/not-hidden verdicts with ratios, written before you open the check.", "hint": "Check, only after trying: integer → 6 visits (<code>a</code> rejected, <code>1</code>, <code>10</code>, <code>103</code>, <code>108</code>, <code>1e</code> rejected), 4 allowed, 6 skipped. Lowercase word → 6 visits (<code>a</code>, <code>ab</code>, <code>an</code>, <code>and</code>, <code>ant</code>, <code>1</code> rejected), 5 allowed, 6 skipped. 20 μs is 0.035% of 57.2 ms: hidden. 100 ms is 175%: the GPU waits every step, 3.8 s over a 38-token answer."},
+  "reflect": [
+    "Which prediction did you get wrong: where the trie helps least?",
+    "What couldn't you explain cleanly: why the mask can be free, or why it suddenly isn't?",
+    "Which relationship is still fuzzy: stack dependence → run-time check, or run-time check → TPOT?",
+    "Which of the cookbook's percentages would you want measured on your own vocabulary before trusting it?",
+    "Before the compile-time card: which backend moves work from per-token to compile time, and which does the opposite?"
+  ],
+  "revisit": ["structured-outputs/token-masking", "structured-outputs/regex-fsm", "structured-outputs/cfg-pda"],
+  "prereq": ["structured-outputs/cfg-pda"]
+}

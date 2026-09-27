@@ -1,0 +1,124 @@
+{
+  "prime": {
+    "problem": "A context switch is kernel software, but software alone can't stop a user program from rewriting page tables, can't interrupt a loop that never calls the kernel, and can't keep address translations from different processes apart without throwing them away. The hardware has to supply those guarantees, and what it can't hide (cold caches) shows up as cost.",
+    "fits": "Last Context-switching card. It explains the pieces the two previous cards assumed: the trap in step ①, the timer behind involuntary switches, the page-table register from the process switch, and why the next task starts cold.",
+    "expect": [
+      "privilege levels: EL0 / EL1 (rings on x86)",
+      "the vector table, traps and interrupts",
+      "TLB + ASID (tagged translations)",
+      "page faults: 4,096 in a 64 MB cold pass",
+      "mode switch vs context switch"
+    ],
+    "goal": "Explain what each hardware piece guarantees, why a tagged TLB avoids flushes, and read the cold-vs-warm measurement correctly: what the 2.7 µs per fault includes and what it doesn't."
+  },
+  "attend": [
+    "Which operations does the mode bit forbid user code, and why is that the foundation of isolation between processes?",
+    "How does the CPU know where to jump on a timer interrupt or a <code>svc</code>, and who set that address?",
+    "What does an ASID on each TLB entry let the kernel skip on a process switch?",
+    "Why did the first pass over 64 MB take 4,096 page faults, and what else does each fault's 2.7 µs cover?",
+    "Why is <code>os.getppid()</code> a mode switch and not a context switch?"
+  ],
+  "core": {
+    "must": [
+      "A mode bit checked on every privileged instruction → user code (EL0) can't touch page tables, interrupts or the vector table → only the kernel (EL1) can → isolation is enforced by hardware at full speed, not checked in software",
+      "Timer interrupts and traps jump to fixed offsets in the kernel's vector table → the kernel always regains control, whatever user code does → limited direct execution: user code runs directly, but can't keep the core",
+      "Each TLB entry is tagged with an address-space ID → only entries matching the current ASID are used → a process switch doesn't need a flush → A's translations survive B's turn (8 or 16 bits: 256 or 65,536 IDs, recycled)",
+      "First touch of each lazily mapped page traps (page fault) → the kernel maps and zero-fills it → 64 MB ÷ 16 KB = 4,096 faults → cold 15.1 ms vs warm 4.1 ms (≈ 2.7 µs per fault) → a new or long-absent process pays this plus cold caches"
+    ],
+    "elevated": [
+      "64 MB is 4× the 16 MB L2 → even the warm pass streams from DRAM (≈ 16.4 GB/s) → so the 3.7× gap here is mostly page faults and TLB set-up, not cache misses → the cache part of a switch's indirect cost was not isolated by this run"
+    ],
+    "reference": [
+      "register names: VBAR_EL1, TTBR0_EL1, <code>svc</code>, TLBI ASIDE1IS",
+      "M3 cache sizes: 128 KB L1d, 16 MB L2 (sysctl)",
+      "the 422 ns vs 100 ns syscall-vs-call timings",
+      "lmbench 1996's 4 µs syscall and 6 µs switch"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, list the four hardware pieces a context switch leans on, and beside each write the one guarantee it gives and what would break without it. Then write the cold-pass arithmetic (faults, time per fault) and one sentence on what it does and doesn't show.",
+    "checklist": [
+      "mode bit: user code can't take over the machine",
+      "vector table + timer + trap: the kernel always gets control back",
+      "page-table base register: one write switches address spaces",
+      "TLB + ASID: translations of several processes coexist, no flush",
+      "4,096 faults = 64 MB ÷ 16 KB; (15.1 − 4.1) ms ÷ 4,096 ≈ 2.7 µs, including zero-fill",
+      "caches aren't saved; the next task evicts and refills them"
+    ]
+  },
+  "retrieve": [
+    {
+      "q": "Explain why \"limited direct execution\" needs both a privilege mode and a timer. What would go wrong with only one of them?",
+      "kind": "concept",
+      "answer": [
+        "direct execution: user code runs on the CPU at full speed, not interpreted",
+        "mode bit alone: user code can't seize the machine, but a loop that never traps keeps the core forever",
+        "timer alone: the kernel regains control, but user code could have rewritten the vector table or its page table first"
+      ]
+    },
+    {
+      "q": "Walk through what the hardware does when process A, at EL0, touches a page of a fresh numpy array for the first time.",
+      "kind": "mechanism",
+      "answer": [
+        "the address translation misses: no valid page-table entry",
+        "the CPU raises a synchronous exception, switches to EL1 and jumps to the vector table's entry",
+        "the kernel allocates a physical page, zero-fills it, installs the mapping and returns",
+        "the instruction is retried and succeeds; the TLB now caches that translation under A's ASID"
+      ]
+    },
+    {
+      "q": "An OS design choice: flush the whole TLB on every process switch, or tag entries with ASIDs. Give the cost of each and when the ASID approach still has to flush.",
+      "kind": "tradeoff",
+      "answer": [
+        "flush: simple and correct, but every process restarts with an empty TLB and misses on each page's first touch every time it's scheduled",
+        "ASIDs: translations survive switches, at the cost of tag bits and ID management",
+        "with only 256 (8-bit) or 65,536 (16-bit) IDs, the OS must recycle an ID, and flush its old entries, when more processes need them"
+      ]
+    }
+  ],
+  "compare": [
+    {
+      "with": "cs-7-operating-systems/processes",
+      "q": "Copy-on-write in the processes card and the cold-pass page faults here both trap on a memory access. What is the same, and what does the kernel do differently in each?",
+      "answer": [
+        "both are page faults: the access hits a page that isn't mapped writable, so the CPU traps to EL1",
+        "COW: the page exists but is shared read-only; the kernel copies it for the writer",
+        "cold pass: the page was never mapped; the kernel allocates and zero-fills a new one",
+        "both are lazy: work is done only for pages actually touched"
+      ]
+    },
+    {
+      "with": "cs-7-operating-systems/context-switch-how",
+      "q": "The how-card says the bill for a switch comes after it. Using this card's parts, list exactly what the next process finds cold, and which of those an ASID keeps warm.",
+      "answer": [
+        "caches: filled with the previous task's lines; never saved, simply evicted and refilled",
+        "TLB: with ASIDs, the returning process's own old entries may still be there; without them, empty",
+        "so ASIDs save the translation refill, but nothing saves the cache refill; pinning and fewer switches reduce it"
+      ]
+    }
+  ],
+  "predict": {
+    "q": "Repeat the cold/warm run with a 128 MB array on the M3, and imagine the same 64 MB run on a machine with 4 KB pages. How many page faults does each cold pass take, and if each fault cost the same 2.7 µs, how much extra time? Commit before revealing.",
+    "answer": "128 MB ÷ 16 KB = 8,192 faults, about 22 ms extra. 64 MB ÷ 4 KB = 16,384 faults, about 44 ms extra. The 4 KB estimate is shaky in both directions: each small page needs less zero-filling than a 16 KB one, but there are four times as many traps. Bigger pages mean fewer faults and fewer TLB entries, which is one reason the M3 uses 16 KB."
+  },
+  "apply": {
+    "task": "Extend <code>code/context-switch-hardware.py</code>: run the cold/warm sum for 16, 64 and 128 MB, and record the time and page faults of each pass. Then add a third pass after allocating and touching a <i>different</i> 256 MB array in between (<code>b = np.ones(...)</code>), and see whether the original array's pass slows again. Keep total run time light.",
+    "done": "Cold-pass faults are exactly 1,024, 4,096 and 8,192 (size ÷ 16,384), warm passes show 0 faults, and you can say whether the post-256 MB pass got slower and why that is (or isn't) cache eviction, given that 16 MB of L2 can't hold any of these arrays.",
+    "hint": "Fault counts are exact from <code>ru_minflt</code>; times are noisy, so run each pass 3 times and take the best. Since all three sizes are at least as big as the L2, warm passes already stream from DRAM, so don't expect the interfering array to change much."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: the fault counts, or what page size does to them?",
+    "Can you explain why an ASID makes a flush unnecessary, in one sentence and without the diagram?",
+    "Which relationship is still fuzzy: mode bit + timer → limited direct execution, or page fault → lazy mapping → cold cost?",
+    "Is every trip into the kernel a context switch? Could you now say what separates them in a code review?",
+    "What will you look for in the scheduling card: how the kernel spends the control this hardware gives it?"
+  ],
+  "revisit": [
+    "cs-7-operating-systems/context-switch-how",
+    "cs-7-operating-systems/context-switch-initiation",
+    "cs-7-operating-systems/processes"
+  ],
+  "prereq": [
+    "cs-7-operating-systems/context-switch-how"
+  ]
+}

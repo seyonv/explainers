@@ -1,0 +1,68 @@
+{
+  "prime": {
+    "problem": "Many requests start with the same system prompt, few-shot examples or chat history, and without reuse the server prefills those tokens again every time. In E7 that is 72% of the GPU spent on prompts it has already seen, and a 3.3 s median wait for the first token.",
+    "fits": "Eighth card of group 3. It extends the block manager: ref counts and freed-but-cached blocks were already there; this card adds the index (chained hashes or a radix tree) that finds them, and the scheduler's half of the job, ordering and routing for hits.",
+    "expect": [
+      "chain hash per full block: h_i = H(h_{i−1}, block tokens)",
+      "longest-prefix lookup, stop at the first miss",
+      "the last-token rule",
+      "block hashing vs radix tree",
+      "ordering (LPM) and routing for hits"
+    ],
+    "goal": "Compute a workload's best-case hit rate, trace a prefix lookup with chained hashes, choose between block hashing and a radix tree, and explain why hit rate needs ordering and routing to survive."
+  },
+  "attend": [
+    "Why must a block's hash include its parent's hash, and what goes wrong if each block is hashed alone?",
+    "Why must even a 100% prefix match leave one prompt token to compute?",
+    "The hit rate was 91.6% but TTFT fell 209×. Where did the rest of the speed-up come from?",
+    "Why does output throughput rise only 1.29×?",
+    "Moving the unique suffix in front of the shared prompt gives 0% hits. Why?"
+  ],
+  "core": {
+    "must": [
+      "Same tokens from position 0 → identical K and V in every layer → keep a finished request's full blocks keyed by their exact prefix → a new request skips prefill for the longest cached prefix",
+      "Hash each block together with its parent's hash → equal hash means equal whole prefix, not just equal block → lookup walks the chain until the first miss: O(L ÷ B) dict lookups",
+      "Cached blocks with ref 0 stay findable in the LRU free list → a hit pulls one back out of the middle → eviction under load hits exactly when the cache is most needed → hits need memory headroom",
+      "A cache only helps if the next request with that prefix runs while it is still there → order the queue by cached prefix (LPM) on one replica, and route to the replica holding it across many → round robin spreads every prefix over every replica"
+    ],
+    "elevated": [
+      "Only full blocks are hashed → up to block_size − 1 tokens of a shared prefix can't be reused → bigger blocks share less",
+      "Prefix caching only removes prefill → it does nothing for decode → output-heavy workloads gain little throughput even at a high hit rate"
+    ],
+    "reference": [
+      "SHA-1 in our lab vs xxhash in nano-vllm and the extra keys (LoRA ID, cache salt)",
+      "SGLang's lock_ref and _split_node names",
+      "the published hit rates (Character.AI 95%, GKE 35 → 70%, DeepSeek 56.3%)"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw two requests sharing a prefix as chained block hashes, mark where the lookup stops, and show the ref counts. Then write the hit-rate formula and one line each on ordering and routing.",
+    "checklist": [
+      "same prefix → same K and V; keep full blocks after a request ends",
+      "chain hash: a block's key includes its parent's",
+      "lookup until the first miss; never cover the last prompt token",
+      "ref-0 cached blocks are evictable, LRU, still hits until reused",
+      "LPM ordering and prefix-aware routing keep hits alive"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why prefix caching is exact (no approximation) only when matching starts at token 0.", "kind": "concept", "answer": ["each layer mixes earlier tokens into every later token's hidden state", "so a block's K and V depend on everything before it, not just its own tokens", "equal tokens from position 0 give equal K and V; the same block after a different prefix does not"]},
+    {"q": "Walk through match_prefix for request B (tokens 1–8, then 40–45, block size 4) when request A (tokens 1–13) is cached.", "kind": "mechanism", "answer": ["compute B's chained hashes for its full blocks", "block 0 (1–4) hits A's block 0; block 1 (5–8) hits A's block 1", "block 2 (40–43) misses: stop", "B's table starts [0, 1], ref counts rise to 2, num_computed = 8"]},
+    {"q": "Block hashing or a radix tree: which fits a paged engine with a flat block allocator, and which fits cache-aware ordering? What does each give up?", "kind": "tradeoff", "answer": ["hashing: an O(1) map beside the allocator, full blocks only, LRU via the free list", "radix tree: token-level matches, leaf-only eviction, and LPM/DFS-weight read it directly", "hashing gives up partial-block sharing; the tree gives up simplicity (node splits, O(E log E) eviction)"]}
+  ],
+  "compare": [
+    {"with": "llm-request-scheduler/kv-cache", "q": "Prefix caching reuses KV across requests; the KV cache reuses it within one. Which extra problems does crossing the request boundary create that the per-request cache never has?", "answer": ["a lookup index keyed by token prefix", "shared blocks need ref counts and must be read-only", "eviction policy competes with running requests for memory", "cross-tenant sharing raises a timing side-channel question (cache salt)"]},
+    {"with": "llm-latency/prompt-caching", "q": "The latency course sees prompt caching as a discount on the bill. What does the server-side view explain that the caller-side view can't, and what does the caller control?", "answer": ["server side: why stable content must come first, and why hits depend on routing and memory headroom", "caller side: put stable parts first, respect minimum lengths and cache markers", "the caller can't control eviction or which replica serves it"]}
+  ],
+  "predict": {"q": "E7's four shared prompts fit easily in 30,469 blocks. Before re-running: what happens to the hit rate if the pool is cut to 1,000 blocks while 64 requests run at once?", "answer": "It falls. Four 2,048-token prompts need 4 × 128 = 512 blocks to stay cached, and running requests' own KV competes for the same 1,000 blocks. Under pressure, allocations evict ref-0 cached blocks first, so prompts get evicted between uses and are prefilled again, exactly when load is highest. The pitfall on the card: eviction competes with running requests."},
+  "apply": {"task": "A workload has 8 system prompts of 1,000 tokens each, and each of 500 requests picks one and adds a unique 100-token suffix. With block size 16 and plenty of memory, compute (a) total prompt tokens, (b) tokens reused per hit (full blocks only), (c) tokens actually computed if each system prompt is prefilled once, and (d) the hit rate. Then redo (b)–(d) for block size 256 and explain the difference.", "done": "(a) 500 × 1,100 = 550,000. (b) ⌊1,000 ÷ 16⌋ × 16 = 992. (c) 550,000 − 492 × 992 = 61,936. (d) ≈ 88.7% (a perfect token-level cache would reach ≈ 89.5%). With 256-token blocks only 768 tokens are reused per hit and the hit rate falls to ≈ 68.7%: the last partial block of each system prompt is never shared.", "hint": "The first request for each of the 8 prompts misses; the other 492 hit."},
+  "reflect": [
+    "Which prediction did you get wrong: how memory pressure affects hit rate?",
+    "Could you explain the chain hash to someone who suggests hashing each block alone?",
+    "Which relationship is still fuzzy: hit rate → prefill saved, or prefill saved → TTFT (via the queue)?",
+    "Where would you move a date or user name in your own prompts after this card?",
+    "What will you revisit before the routing card: why round robin splits a prefix cache N ways?"
+  ],
+  "revisit": ["llm-request-scheduler/block-manager", "llm-request-scheduler/kv-cache", "llm-request-scheduler/policies"],
+  "prereq": ["llm-request-scheduler/block-manager"]
+}

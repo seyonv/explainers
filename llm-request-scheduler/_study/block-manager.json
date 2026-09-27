@@ -1,0 +1,68 @@
+{
+  "prime": {
+    "problem": "If each request gets one contiguous KV slot sized for the longest it could become, 60% of the pool is held but empty and only 95 requests fit at 2k. Nobody knows a request's final length, so the memory has to be handed out a little at a time, without scanning the pool and without ever freeing a block twice.",
+    "fits": "Fourth card of group 3. step() called can_allocate and allocate as black boxes; this card opens them. It builds on the KV cache's 128 KiB per token and sets up the next card's question: what to do when can_allocate says no.",
+    "expect": [
+      "fixed-size blocks (16 tokens = 2 MiB here)",
+      "a free list, one block table per request, ref counts",
+      "<code>N_seqs = ⌊M ÷ (L + w)⌋</code>: contiguous 95 vs paged 237",
+      "O(1) per block; tail-first freeing",
+      "block size, free-list structure, watermark, when to allocate"
+    ],
+    "goal": "Compute how many sequences fit under contiguous and paged allocation, trace allocate and free_request on a small pool including a shared block, and justify each design choice (block size, free list, free order, watermark)."
+  },
+  "attend": [
+    "Why can no request hold more than one partly empty block?",
+    "When request A finishes, why does block 2 go on the free list but block 1 become evictable?",
+    "What does a block table let the attention kernel do that a contiguous array did for free?",
+    "What goes wrong with 1-token blocks, and what goes wrong with 256-token blocks?",
+    "The watermark never blocks a running request. Whom does it block, and why?"
+  ],
+  "core": {
+    "must": [
+      "Fixed-size blocks + a block table per request → a request takes a new block only when its last fills → at most half a block wasted per request on average → 237 sequences at 2k instead of 95 contiguous (2.5×)",
+      "Allocation pops the free list, freeing pushes back, can_allocate compares two counts → every per-block operation is O(1) → the scheduler can ask for every request every step without scanning 30,469 blocks",
+      "A ref count per block → many block tables can point at one physical block → a shared prefix is stored once and returns to the pool only at ref 0",
+      "Allocate on demand → more requests fit → but can_allocate can say no mid-request → the scheduler needs a policy for \"out of blocks\" (preemption)"
+    ],
+    "elevated": [
+      "Free tail first → freed cached blocks join the LRU with the prefix's head last → the shared first blocks of a prompt are evicted last",
+      "Paged attention gathers from scattered blocks → 20–26% slower attention kernel (2023, OPT on A100) → still up to 22× the request rate end to end, because batch size buys throughput"
+    ],
+    "reference": [
+      "the exact class code and OrderedDict details",
+      "TGI's and nano-vllm's block sizes (1 / 256)",
+      "the PagedAttention ablation's best ranges (16–128 on ShareGPT)"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw a 12-block pool with two requests sharing their first block: the block tables, the ref counts and the free list. Then write the capacity formula and fill it in for contiguous and paged at 2k.",
+    "checklist": [
+      "blocks of B tokens; a block table maps logical → physical block",
+      "a new block only when the last one fills: ≤ 1 partial block per request",
+      "free list pop/push and can_allocate are O(1)",
+      "ref counts let prefixes be shared; a block returns at ref 0",
+      "contiguous 95 vs paged 237 sequences at 2k (2.5×)"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain where contiguous reservation's 60% waste comes from and why paging removes almost all of it.", "kind": "concept", "answer": ["a contiguous slot must be sized for max prompt + max output (5,120 tokens) because the final length is unknown", "a 2k request leaves 3,072 of those slots empty", "paging holds only the real length plus half a block on average (0.4% of the pool)"]},
+    {"q": "Walk through free_request for request A (blocks [0, 1, 2], block 0 shared with B, block 1 a full hashed prompt block, block 2 partial).", "kind": "mechanism", "answer": ["walk the table backwards: block 2 → ref 0, no hash → free list", "block 1 → ref 0, hashed → evictable, still cached", "block 0 → ref 1, because B still reads it: stays", "the pool now has 8 free: blocks 6–11 and 2 on the free list, plus block 1 as evictable"]},
+    {"q": "Choose a block size for a server with a 2,048-token shared system prompt and many short requests. What do you gain and lose with 16 vs 256?", "kind": "tradeoff", "answer": ["16: 8 tokens wasted per sequence, 128 table entries, fine-grained prefix sharing", "256: 128 tokens wasted per sequence (224 vs 237 at 2k), 8 entries, but only full blocks are shared, so up to 255 prefix tokens can't be reused", "vLLM's 16 is the usual compromise; the paper found too-small blocks read inefficiently"]}
+  ],
+  "compare": [
+    {"with": "llm-request-scheduler/admission-preemption", "q": "Reserve-to-completion and on-demand allocation can both use paged blocks. What does each give up, and which one needs the next card's preemption machinery?", "answer": ["reserve: blocks for max_new_tokens sit idle until outputs grow into them; never preempts", "on demand: packs more requests but can run out mid-request", "only on-demand allocation needs preemption and thrashing control"]},
+    {"with": "perf-4-attention-kv/paged-memory", "q": "Course 4 reads PagedAttention as OS-style virtual memory. Which parts of the analogy hold for this BlockManager, and where does it break?", "answer": ["holds: block = page, block table = page table, free list = free frames, ref counts = shared pages", "breaks: there is no disk to page out to by default; running out means preemption and recompute", "and the KV kernel, not hardware, does the address translation"]}
+  ],
+  "predict": {"q": "You switch to 4k contexts but keep block size 16. Before computing: does paging's advantage over contiguous reservation grow or shrink, and roughly to what?", "answer": "It shrinks. Contiguous reservation still holds 5,120 slots per request but now 4,096 are used, so waste falls to 20%: ⌊487,504 ÷ 5,120⌋ = 95. Paging fits ⌊487,504 ÷ (4,096 + 8)⌋ = 118. The gain drops from 2.5× to about 1.24×: paging helps most when real lengths are far below the reserved maximum."},
+  "apply": {"task": "Run the toy picture in labs/scheduler.py: BlockManager(12, 4, prefix_caching=True), request A with tokens 1–10, request B with tokens 1, 2, 3, 4, 50, 51, 52, request C with 5 tokens of its own. After allocating all three, free A, then free B, printing the free list, the evictable set and num_free() after each. Finally submit request D with tokens 1–9 and report what match_prefix gives it.", "done": "After allocation: tables A [0, 1, 2], B [0, 3], C [4, 5], ref of block 0 = 2, 6 free. After freeing A: free list gains block 2, evictable {1}, num_free 8. After freeing B: free list gains block 3, evictable {1, 0}, num_free 10. D hits blocks [0, 1] (8 tokens cached) and needs only 1 token of prefill; both blocks leave the evictable set.", "hint": "Allocate each request's whole prompt, add it to num_computed, then call cache_full_blocks so full blocks get hashes."},
+  "reflect": [
+    "Which prediction did you get wrong: how paging's advantage changes at 4k?",
+    "Could you explain why tail-first freeing protects shared prefixes?",
+    "Which relationship is still fuzzy: ref count 0 → evictable (not free), or evictable → still a cache hit?",
+    "In the exercise, did D's cache hit surprise you after both A and B had finished?",
+    "What will you revisit before the admission card: exactly when can_allocate says no during decode?"
+  ],
+  "revisit": ["llm-request-scheduler/kv-cache", "llm-request-scheduler/step-algorithm", "llm-request-scheduler/request-state"],
+  "prereq": ["llm-request-scheduler/kv-cache"]
+}

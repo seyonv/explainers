@@ -1,0 +1,64 @@
+{
+  "prime": {
+    "problem": "A 671B model is only servable if each token touches a small part of it, its KV cache is small, its experts spread evenly over many GPUs, and balancing them doesn't cost quality or drop tokens. Each of those is an architecture decision made before any serving code exists.",
+    "fits": "Third card of the MoE block. MoE basics gave routers and imbalance, course 4 gave MLA, and expert parallelism gave the serving layout. This card reads DeepSeek-V3's §2 as a list of choices that make that layout work; DeepSeek-V3 II covers the infrastructure.",
+    "expect": ["DeepSeekMoE: 256 small routed experts + 1 shared", "sigmoid gating and node-limited routing (M = 4)", "auxiliary-loss-free balancing with a per-expert bias", "MLA's 68.6 KiB/token KV", "MTP as a training signal and a draft"],
+    "goal": "Recount V3's total and active parameters from the config, explain how each architectural choice changes the serving cost, and say why the balancing win comes from batch-wise scope rather than the bias itself."
+  },
+  "attend": [
+    "Why does V3 score each expert with its own sigmoid rather than a softmax over all experts?",
+    "How does ranking nodes by their top-2 expert scores cap a token's InfiniBand traffic?",
+    "The bias b_i affects which experts are picked but not the gate value: why does that keep balancing from pulling on the model's outputs?",
+    "What does Table 5 plus the batch-wise-aux-loss experiment tell you about why aux-free helps?",
+    "Why does MLA let a bigger decode batch fit per GPU, and how much smaller is it than an 8-group GQA?"
+  ],
+  "core": {
+    "must": [
+      "Split each FFN into 256 small routed experts (44M each) + 1 always-on shared expert, pick 8 → 37.6B active of 671B → at batch 1 a step reads 37.6 GB vs 70.6 GB for a dense 70B in FP8, but by batch 64 almost every expert is touched and the whole model streams → small experts spread one or a few per GPU under expert parallelism",
+      "Rank nodes by the sum of each node's top K_r/M = 2 scores, keep 4, choose the top 8 inside them → at most 4 cross-node copies per token (≤ 28 KiB vs ~37 KiB with no limit) → all-to-all traffic over the slow link is bounded by design",
+      "A per-expert bias nudged by γ = 0.001 changes selection only, never the gate or the loss → no gradient trades quality for balance and no token is dropped → but balance is only enforced over the whole batch → one-domain serving batches can overload a few experts → redundant experts at inference",
+      "MLA caches one 512-dim latent + a 64-dim RoPE key per token per layer → 68.6 KiB/token in BF16 vs 244 KiB for GQA-8 and 3.81 MiB for MHA → more sequences fit per GPU, so decode batches (and expert batches) grow"
+    ],
+    "elevated": [
+      "Batch-wise aux loss matches the bias method exactly (2.253 vs 2.253 at 1B, 2.080 vs 2.080 at 3B) → the gain is the looser scope (experts specialise per domain), not the bias → any batch-wise balancer would do, and all inherit the same serving imbalance risk",
+      "The MTP module predicts the token after next and is kept as a draft → 85–90% acceptance → 1.85–1.90 tokens per step and a reported 1.8× TPS → on an MoE, verifying two tokens can route to different experts and read more weights"
+    ],
+    "reference": [
+      "every §4.2 hyperparameter value (d_c 512, d_c′ 1536, 128 heads × 128)",
+      "config.json extras: vocab 129,280, dense FFN 18,432, routed_scaling_factor 2.5, n_group/topk_group",
+      "Table 5 row values per benchmark",
+      "the sequence-wise balance loss formula and α = 0.0001",
+      "the MTP module's own 11.6–14B parameter count"
+    ]
+  },
+  "compress": {
+    "prompt": "In 3–5 sentences from memory, list V3's four serving-relevant choices (experts, routing limit, balancing, attention) and the consequence of each. Or draw one arrow chain per choice ending in a serving number.",
+    "checklist": [
+      "fine-grained experts + a shared one: 671B total, ~37B active",
+      "node-limited routing: ≤ 4 nodes, so IB traffic per token is capped",
+      "bias balancing: no loss term, no dropping, but batch-wise only",
+      "MLA: 68.6 KiB/token KV, 3.6× smaller than GQA-8",
+      "MTP: better training, and a draft with 85–90% acceptance"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain auxiliary-loss-free balancing: what is adjusted, when, by how much, and why it doesn't hurt quality the way an aux loss can.", "kind": "concept", "answer": ["each expert has a bias b_i added to its affinity only when choosing the top 8", "after each step, overloaded experts' bias drops by γ = 0.001 and underloaded ones' rises", "the gate still uses the raw sigmoid score, and b isn't in the loss, so no gradient pulls outputs toward balance"]},
+    {"q": "Route one token through V3's gate: from the FFN input u_t to the weighted sum. Which steps use the bias, which the node limit, and what do the 8 gates sum to?", "kind": "mechanism", "answer": ["s_i = sigmoid(u · e_i) for all 256 routed experts", "rank nodes by the sum of each node's top-2 affinity scores, keep 4; pick the top 8 inside them, where selection uses s_i + b_i", "gates g_i = s_i / Σ kept s_j sum to 1", "h′ = u + FFN_shared(u) + Σ g_i FFN_i(u)"]},
+    {"q": "Compare V3 at batch 1 with a dense Llama-3.1-70B in FP8 on bytes read per step, then at batch 64. What changes, and what does it imply for how V3 must be served?", "kind": "tradeoff", "answer": ["batch 1: 37.6 GB vs 70.6 GB, V3 reads 0.53× the dense 70B", "batch 64: ≈ 222 of 256 experts touched per layer, ≈ 585 GB per step", "so batched V3 streams most of 671 GB like a dense model; only spreading experts over many GPUs (EP) keeps each GPU's read small"]}
+  ],
+  "compare": [
+    {"with": "perf-6-scaling-out/moe-basics", "q": "Mixtral 8×7B (8 coarse experts, top-2, no shared expert) vs DeepSeek-V3 (256 fine experts, top-8, one shared): what is fundamentally different for serving, and which design choice causes it?", "answer": ["Mixtral activates 28% of its parameters, V3 5.5%", "with 8 experts, EP can't spread wider than 8 GPUs; with 256, experts spread one or a few per GPU", "the shared expert gives every token a common path, so routed experts can specialise", "V3's E/k = 32 makes its critical batch 9,440 vs Mixtral's 1,180 on an H100: harder to fill, so it needs large-scale EP"]},
+    {"with": "perf-4-attention-kv/mla", "q": "MLA vs GQA on V3's dimensions: what does each cache, which design choice lets MLA avoid rebuilding per-head K and V, and what does MLA cost?", "answer": ["GQA caches K and V for each of its KV-head groups; MLA caches one compressed latent plus a shared RoPE key", "absorbing the up-projections into the query and output matrices means per-head K and V are never built at inference", "the cost is extra projection math per token and a decoupled RoPE path; the win is 68.6 vs 244 KiB per token"]}
+  ],
+  "predict": {"q": "Change V3 to activate 16 routed experts per token instead of 8, keeping 256. What happens to active parameters, to total parameters, and to the batch at which each expert becomes compute-bound? Commit first.", "answer": "Active rises from ≈ 37.6B to ≈ 57.9B (8 more experts × 58 layers × 44.0M ≈ 20.4B more); total stays 671B. E/k halves from 32 to 16, so the H100 critical batch falls from 9,440 to 4,720: more compute per token, but each expert fills up twice as fast. The lab's K_ACTIVE = 16 shows the parameter part."},
+  "apply": {"task": "Run labs/ds-v3-params.py and reproduce 671.0B total and 37.6B active from the config. Then compute by hand: (1) KV bytes for one 8,192-token sequence with MLA and with the hypothetical GQA-8; (2) experts touched per layer and weight bytes per step at batch 16 (uniform routing, 17.1 GB always read + 58 × touched × 44.0 MB). Finally set gamma = 0.0 in the lab and describe what the load curve does.", "done": "Your two parameter totals match the lab, you have both KV sizes and the batch-16 bytes per step, and you can say in one sentence why γ = 0 never corrects the skew.", "hint": "(1) MLA 70,272 B × 8,192 = 0.58 GB; GQA-8 249,856 B × 8,192 = 2.05 GB. (2) 256 × (1 − (1 − 8/256)^16) ≈ 102 experts per layer → 17.1 + 58 × 102 × 0.044 ≈ 277 GB per step (≈ 17.3 GB per token). With γ = 0 the biases never move, so the skewed router's max/mean load stays where it started."},
+  "reflect": [
+    "Which prediction did you get wrong: active parameters at top-16, or the critical batch?",
+    "Can you explain why the bias doesn't affect quality, without saying \"it's not in the loss\" only?",
+    "Which relationship is still fuzzy: batch-wise balance → specialisation, or batch-wise balance → serving imbalance?",
+    "Could you say which of V3's choices were made for training and which for inference, per the report?",
+    "What will you look for on DeepSeek-V3 II: how the infrastructure hides the all-to-all this architecture creates?"
+  ],
+  "revisit": ["perf-6-scaling-out/moe-basics", "perf-6-scaling-out/expert-parallel", "perf-4-attention-kv/mla", "perf-5-engines/eagle"],
+  "prereq": ["perf-6-scaling-out/moe-basics", "perf-4-attention-kv/mla"]
+}

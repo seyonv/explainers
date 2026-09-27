@@ -1,0 +1,121 @@
+{
+  "prime": {
+    "problem": "A Dynamo-style store calls a write done after w of n replicas ack and a read done after r answer. Pick w and r too small and reads can miss the latest write; too large and every request waits on slow replicas. \"Eventually consistent\" gives no number to choose with: how often is a read stale, and for how long?",
+    "fits": "Builds on the eventual-consistency card (replicas accept writes alone) and the service-discovery card's majority quorums. This card generalises the overlap to any w and r, and turns \"eventual\" into a probability. Raft, next, uses the w = r = majority case with a leader.",
+    "expect": [
+      "w + r > n: read and write sets overlap",
+      "<code>P<sub>stale</sub> = C(n−k, r) / C(n, r)</code>",
+      "k-staleness: <code>1 − P<sub>stale</sub><sup>j</sup></code>",
+      "WARS: write, ack, read, response latencies",
+      "LWW, read repair and Riak's corner cases"
+    ],
+    "goal": "Explain why w + r > n makes the newest value appear among a read's answers, compute how often a partial quorum reads stale, and say why overlap still isn't a guarantee of fresh reads."
+  },
+  "attend": [
+    "Why must 3 + 3 picks among 5 replicas land on some replica twice, and what does that replica guarantee the read?",
+    "With n = 3, w = 1, r = 1, why is a read right at the ack stale 2/3 of the time?",
+    "Why did the WARS simulation measure only 0.486 stale at t = 0, below the 2/3 bound?",
+    "Why is replication lag easy to measure with a leader and undefined for a leaderless store?",
+    "Overlap puts the newest value in the answers. What can still make the store return an old one?"
+  ],
+  "core": {
+    "must": [
+      "Write waits for w acks, read for r answers → if w + r > n the two sets share ≥ w + r − n replicas (pigeonhole) → at least one answer has the latest acked write → the read can pick it",
+      "w + r ≤ n (a partial quorum) → the read set can miss every replica holding the new value → P(stale) = C(n − k, r)/C(n, r) with k replicas holding it → 2/3 at the ack for n = 3, w = r = 1 → \"eventual\" becomes a number",
+      "The write keeps spreading after the ack → the longer the read waits (t), the more replicas have it → WARS: fresh 0.514 at t = 0 rising to 0.959 at 50 ms → staleness is both how often and for how long",
+      "Overlap delivers the newest value but the store must still know which is newest → with last-write-wins and skewed clocks it can pick the older one; a partly failed write can be spread by read repair → w + r > n is not linearizability"
+    ],
+    "elevated": [
+      "Each tuning point trades staleness for latency and availability → w tolerates n − w failures for writes, r tolerates n − r for reads → Riak-style w = r = 1 stays writable when most replicas are down, at the price the table quantifies"
+    ],
+    "reference": [
+      "Riak's PW/PR options and their corner case",
+      "WARS's latency distributions (exponential, means 20 and 5 ms) and 100,000 trials",
+      "the Bailis et al. PBS paper naming",
+      "Merkle-tree anti-entropy"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, write the overlap inequality, the staleness formula and the k-staleness formula, each with one worked number. Then one sentence on why overlap still isn't a freshness guarantee.",
+    "checklist": [
+      "w + r > n → overlap ≥ w + r − n ≥ 1 replica",
+      "P(stale) = C(n − k, r)/C(n, r): 2/3 for n = 3, k = 1, r = 1",
+      "within the last j versions: 1 − P<sup>j</sup> (0.556 at j = 2)",
+      "waiting helps: WARS fresh 0.514 → 0.959 over 50 ms",
+      "LWW with clock skew and read repair of failed writes still return old or unexpected values",
+      "stronger promises need transactions or consensus"
+    ]
+  },
+  "retrieve": [
+    {
+      "q": "Explain why a partial quorum (w + r ≤ n) can be the right choice, and what number you should compute before choosing it.",
+      "kind": "tradeoff",
+      "answer": [
+        "it's faster (waits for fewer replicas) and stays writable/readable with more replicas down",
+        "the price is a nonzero chance of stale reads",
+        "compute P(stale) at the ack and how quickly it falls with time (PBS/WARS), then decide if the app can live with it"
+      ]
+    },
+    {
+      "q": "Walk through the source's Figure 1 with R4 and R5 down, then the all-up contrast where the read asks R3, R4, R5: what does each read return and why?",
+      "kind": "mechanism",
+      "answer": [
+        "down case: the write lands on R1–R3 (w = 3); the read can only ask R1–R3, all answer v2",
+        "all-up case: the write was acked by R1–R3, the read asks R3, R4, R5 → v2, v1, v1",
+        "R3 is the overlap, so the newest version v2 is among the answers and wins",
+        "read repair then writes v2 back to R4 and R5"
+      ]
+    },
+    {
+      "q": "Why is the table's 2/3 an upper bound on staleness for a read issued right at the ack, and what makes real systems fresher still?",
+      "kind": "concept",
+      "answer": [
+        "at the ack at least k = w replicas have the value; more may already have it",
+        "while the ack and read travel, the write keeps spreading (WARS measured 0.486 stale, not 0.667)",
+        "read repair and anti-entropy, left out of WARS, spread it further"
+      ]
+    }
+  ],
+  "compare": [
+    {
+      "with": "cs-5-distributed-systems/consensus-raft",
+      "q": "Raft commits on a majority and reads through the leader; a Dynamo-style store with w = r = 2 of 3 also overlaps. What does Raft's leader add that the quorum store lacks, and what does the quorum store keep that Raft gives up?",
+      "answer": [
+        "Raft's leader puts all writes in one order, so there's no \"which version is newest\" question and no LWW clock skew",
+        "the quorum store has no leader to fail over: any replica can take writes, so it stays available with more combinations of failures",
+        "Raft refuses writes without a majority; a partial-quorum store keeps accepting them at a quantified staleness"
+      ]
+    },
+    {
+      "with": "cs-8-probability-discrete/hypergeometric-capture-recapture",
+      "q": "The staleness formula is a hypergeometric count. Map its parts onto the capture-recapture setting: what are the \"marked\" items, the population and the sample?",
+      "answer": [
+        "population: the n replicas; marked: the k that already have the new value",
+        "the sample: the r replicas the read hears from, drawn without replacement",
+        "P(stale) is the chance the sample contains zero marked items: C(n − k, r)/C(n, r)"
+      ]
+    }
+  ],
+  "predict": {
+    "q": "A 5-replica store uses w = 2, r = 2. Right at the ack (k = 2), what is P(stale)? And what is the chance a read returns one of the last two versions? Commit first.",
+    "answer": "w + r = 4 ≤ 5, so staleness is possible. P(stale) = C(3, 2)/C(5, 2) = 3/10. Within the last 2 versions: 1 − (3/10)<sup>2</sup> = 0.91. For comparison, n = 5 with w = r = 1 is stale 4/5 at the ack, and w = 3, r = 2 is stale 1/10 even though it still doesn't overlap."
+  },
+  "apply": {
+    "task": "Using <code>p_stale</code> from <code>code/quorums-staleness.py</code>, fill in a table for n = 5: rows r = 1, 2, 3, columns k = 1…5. Mark the cells where w + r > n would hold with w = k. Then run the WARS simulation for n = 5 with (w, r) = (1, 1) and (3, 3) at t = 0 and 20 ms, and compare the measured staleness with the table's bound.",
+    "done": "Your n = 5 table has 4/5, 3/5, 2/5, 1/5, 0 in the r = 1 row and zeros exactly where k + r > 5; <code>wars(5, 3, 3, [0, 20])</code> gives 1.0 fresh at both times; <code>wars(5, 1, 1, [0, 20])</code> gives 0.385 and 0.774, fresher than the table's 1 − 4/5 = 0.2 at the ack, and you can say why.",
+    "hint": "r = 2 row: C(5−k, 2)/10 = 6/10, 3/10, 1/10, 0, 0. r = 3 row: C(5−k, 3)/10 = 4/10, 1/10, 0, 0, 0. The simulation's fresher-than-bound result has the same cause as n = 3: the write keeps spreading during the read."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: that w = 3, r = 2 is still stale 1 in 10 at the ack?",
+    "Could you explain w + r > n to someone with the pigeonhole argument and no formula?",
+    "Which relationship is still fuzzy: overlap → newest in the answers, or newest in the answers → newest returned?",
+    "What w and r does a store you know use, and what staleness does that imply?",
+    "What will you reopen before the Raft card?"
+  ],
+  "revisit": [
+    "cs-5-distributed-systems/eventual-consistency-limits",
+    "cs-5-distributed-systems/service-discovery",
+    "cs-8-probability-discrete/hypergeometric-capture-recapture"
+  ],
+  "prereq": []
+}

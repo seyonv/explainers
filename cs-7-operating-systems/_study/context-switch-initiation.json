@@ -1,0 +1,122 @@
+{
+  "prime": {
+    "problem": "While a user thread runs, the kernel isn't running at all. So how does it ever get the core back to run someone else? If it relied on threads to hand the core over, one infinite loop would freeze the machine. There must be both a way for threads to give up the core and a way to take it from them.",
+    "fits": "Second Context-switching card. The last card showed <i>how</i> a switch works; this one shows <i>what starts it</i>. It links back to the threads card (the GIL's 5 ms interval is a different thing) and forward to scheduling, which decides who runs once the kernel has control.",
+    "expect": [
+      "voluntary switches: blocking calls, lock waits, yields",
+      "involuntary switches: timer interrupts, higher-priority wakeups",
+      "<code>getrusage</code>: <code>ru_nvcsw</code> and <code>ru_nivcsw</code>",
+      "cooperative vs preemptive multitasking",
+      "CPython's switch interval is not an OS time slice"
+    ],
+    "goal": "Predict from a piece of code which kind of switch it causes and roughly how many, and explain why involuntary counts depend on the machine while voluntary ones depend on your code."
+  },
+  "attend": [
+    "What are the only two ways the kernel regains the CPU from a running user thread?",
+    "Why did 200 sleeps give exactly 200 voluntary switches on both a quiet and a crowded machine?",
+    "Why did the same fib(30) get preempted 25 times in one run and 1,543 times in another?",
+    "Why can't CPython's 5 ms switch interval explain the 25 involuntary switches of a single-threaded fib(30)?",
+    "What does busy-waiting do to the switch counters compared with blocking?"
+  ],
+  "core": {
+    "must": [
+      "A thread asks for something it must wait for (read, sleep, lock) → the kernel marks it blocked and runs someone else → voluntary switch → the count is set by your code (200 sleeps → 200)",
+      "A hardware timer interrupts every few ms → the kernel's handler checks whether the slice is used up or a higher-priority thread is ready → involuntary switch (preemption) → even a thread that never blocks gets off the core (fib(30): 25)",
+      "Involuntary switches depend on competition for cores → same fib(30): 25 on the series run vs 1,543 at load average 81 (61.7×) → preemption counts measure the machine, not your code",
+      "Cooperative only (switch only on syscalls or yields) → one loop that never yields owns the core → the timer is what makes the OS safe from any program; busy-waiting defeats blocking and just turns waits into preemptions"
+    ],
+    "elevated": [
+      "CPython's 5 ms <code>switchinterval</code> is a user-level GIL hand-off → to the kernel a thread waiting for the GIL is just blocked on a condition variable → GIL hand-offs appear as ordinary voluntary switches, not as a separate kind"
+    ],
+    "reference": [
+      "the field names <code>ru_nvcsw</code> and <code>ru_nivcsw</code>",
+      "the exact counts of the noisy run (12, 52, 25, 1,543)",
+      "<code>os.sched_yield()</code>",
+      "OSTEP's 10 ms slice / 1 ms switch example"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw a two-column table: voluntary vs involuntary, with the trigger, who decides, what sets the count, and one measured example each. Then write one sentence on why the 5 ms GIL interval belongs in neither column.",
+    "checklist": [
+      "voluntary: blocking I/O, sleep, lock wait, yield; the thread's own code decides",
+      "involuntary: timer interrupt or higher-priority wakeup; the kernel decides",
+      "voluntary count is set by your code; involuntary count by machine load",
+      "200 sleeps → 200; fib(30) → 25 quiet, 1,543 at load 81",
+      "the timer guarantees the kernel control back from any loop",
+      "the GIL interval is CPython's, invisible to the kernel"
+    ]
+  },
+  "retrieve": [
+    {
+      "q": "Explain why a timer interrupt is necessary for an OS that must stay responsive, even though most threads block often.",
+      "kind": "concept",
+      "answer": [
+        "blocking gives the core back only if the thread chooses to wait",
+        "a CPU loop never blocks, so without a timer it would keep the core forever",
+        "the timer forces a trap into the kernel every few ms, so it can preempt any thread"
+      ]
+    },
+    {
+      "q": "Walk through what happens on one core when thread A calls <code>read()</code> on an empty pipe while B is ready, until A runs again after its data arrives.",
+      "kind": "mechanism",
+      "answer": [
+        "A's read traps into the kernel, which can't finish it, marks A blocked and switches to B (voluntary)",
+        "B runs until its slice ends on a timer interrupt, or it blocks",
+        "the data arrives (device interrupt), A becomes ready but doesn't run yet",
+        "at the next scheduling decision A is chosen and resumes inside read()"
+      ]
+    },
+    {
+      "q": "A latency-critical thread keeps missing deadlines. Its <code>getrusage</code> shows few voluntary and many involuntary switches. What does that tell you, and which remedies does the card mention?",
+      "kind": "tradeoff",
+      "answer": [
+        "it isn't waiting on I/O; it is being preempted by competing work",
+        "give it its own core and keep other work off it (isolation, pinning), or reduce competition",
+        "or restructure waits in user space (asyncio switches at await, no kernel switch)"
+      ]
+    }
+  ],
+  "compare": [
+    {
+      "with": "cs-7-operating-systems/threads",
+      "q": "An OS time slice vs CPython's 5 ms GIL switch interval: who enforces each, what does each hand over, and why can both exist at once?",
+      "answer": [
+        "the OS slice is enforced by the kernel via a timer interrupt; it hands the core to another thread or process",
+        "the GIL interval is CPython asking the GIL holder to release it; it hands the right to run bytecode to another Python thread",
+        "they are independent layers: a thread can hold the GIL and still be preempted by the OS, and a GIL hand-off looks to the kernel like a thread blocking and waking"
+      ]
+    },
+    {
+      "with": "cs-7-operating-systems/scheduling",
+      "q": "This card explains when the kernel gets control; scheduling explains whom it picks. How does the choice of time slice connect the two, and what does a tiny slice cost?",
+      "answer": [
+        "the timer's slice is the round-robin quantum: every expiry is a chance to pick again",
+        "a smaller slice improves response (RR q = 2 → 1: 2.00 → 1.00) but means more switches (7 → 13 slices for the same jobs)",
+        "each switch costs µs directly plus cold caches; OSTEP's 10 ms slice with a 1 ms switch wastes about 10%"
+      ]
+    }
+  ],
+  "predict": {
+    "q": "Replace <code>time.sleep(0.001)</code> in the 200-iteration loop with a busy-wait: <code>t = perf_counter(); while perf_counter() - t &lt; 0.001: pass</code>. Predict the voluntary and involuntary counts compared with the sleep version. Commit before revealing.",
+    "answer": "Voluntary drops to about 0: the thread never asks to wait. Involuntary becomes whatever the timer and competition impose over about 0.2 s of CPU: on a quiet machine a few dozen at most (the card's fib(30) got 25 in 0.129 s), on a busy one many more. The wall time stays about the same, but the core is now busy the whole time instead of free for other work."
+  },
+  "apply": {
+    "task": "Extend <code>code/context-switch-initiation.py</code> with the busy-wait version above and a version that holds a <code>threading.Lock</code> that another thread keeps for 1 ms, 200 times. Run all rows twice: once on a quiet machine and once while <code>python3 -c 'while 1: pass'</code> runs on every core. Tabulate voluntary and involuntary per row and run.",
+    "done": "Sleep and lock-wait rows show about 200 voluntary in both runs; the busy-wait row shows near 0 voluntary; involuntary counts rise clearly under load for the CPU-heavy rows. You can name which column your code controls and which the machine controls.",
+    "hint": "<code>os.cpu_count()</code> tells you how many spinner processes to start (8 on the M3). Kill them afterwards. A contended <code>Lock.acquire</code> blocks in the kernel, so each wait should count as one voluntary switch, like a sleep."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: the busy-wait's voluntary count, or how much load changed involuntary counts?",
+    "Can you explain, without the table, why voluntary counts don't change with load?",
+    "Which relationship is still fuzzy: timer interrupt → preemption, or GIL interval vs OS slice?",
+    "Where in your own code would busy-waiting be hiding as a polling loop?",
+    "What will you look for in the hardware card: what the timer interrupt and the trap actually are?"
+  ],
+  "revisit": [
+    "cs-7-operating-systems/context-switch-how",
+    "cs-7-operating-systems/threads"
+  ],
+  "prereq": [
+    "cs-7-operating-systems/context-switch-how"
+  ]
+}

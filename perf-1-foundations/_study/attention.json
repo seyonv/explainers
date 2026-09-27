@@ -1,0 +1,59 @@
+{
+  "prime": {
+    "problem": "A token's meaning depends on the words before it, but the MLP sees each token alone. Something has to let tokens read each other, and whatever it keeps from earlier tokens becomes memory that every request carries for its whole life.",
+    "fits": "Opens the attention box of the forward-pass card (41.94M parameters per layer). It explains where the KV cache comes from and why its size depends on the KV-head count; the roofline and serving cards later turn that cache into bytes read per step.",
+    "expect": ["<code>softmax(QKᵀ/√d_k)·V</code>", "the causal mask", "heads, and MHA / GQA / MQA", "the KV cache: 128 KiB per token"],
+    "goal": "Compute a small attention by hand, and explain why the number of KV heads, not query heads, sets the cache size and the decode bytes."
+  },
+  "attend": [
+    "Why are the scores divided by √d_k, and what would happen to the softmax without it as heads get wider?",
+    "In the worked example, 'cat' scores 2 against 'sat' but gives it zero weight. What forces that zero, and why does generation need it?",
+    "During decode, why must earlier tokens' K and V be kept, while their Q can be thrown away?",
+    "When 4 query heads share one KV head, what shrinks and what stays exactly the same?",
+    "Why can't a serving engine switch an existing MHA checkpoint to GQA with a setting?"
+  ],
+  "core": {
+    "must": [
+      "Query dotted with every earlier key → scores ÷ √d_k → causal mask sets the future to −∞ → softmax per row gives weights that sum to 1 → the output is a weighted mix of values: the only step where tokens exchange information",
+      "Each new token's query needs every earlier token's K and V in every layer → recomputing them would make a generation cost grow as T² → store them: the KV cache → bytes per token = 2·L·K·H·2, whatever the number of query heads",
+      "GQA lets 4 query heads share one KV head → KV per token 512 → 128 KiB → 4× more 8k sequences fit (14 → 59 on an H100) and 4× fewer KV bytes per decode step → but the query-side score and mix FLOPs stay the same",
+      "The score grid is T × T per head → it grows as T² (67M cells per head per layer at 8,192) → at long context attention's work and cache reads, not the weights, start to dominate"
+    ],
+    "elevated": [
+      "The KV-head count is part of the architecture → switching needs uptraining (mean-pool each group's K/V projections, then about 5% more pretraining in the paper's main recipe) → an engine can't turn GQA on for an MHA model",
+      "Dot products of d_k-dim vectors grow with d_k → unscaled logits saturate the softmax → dividing by √128 ≈ 11.3 keeps Llama's scores in a usable range"
+    ],
+    "reference": ["the toy Q, K, V values", "GQA-g naming (GQA-1 = MQA, GQA-32 = MHA here)", "the H200 and B200 sequence counts", "attention parameters per layer for the MHA and MQA variants (67.1M, 34.6M)"]
+  },
+  "compress": {
+    "prompt": "From memory, write the attention formula and label each piece with its job in a few words. Then draw MHA, GQA-8 and MQA as query heads pointing at KV heads, and write the KV bytes per token under each.",
+    "checklist": [
+      "QKᵀ gives match scores; ÷√d_k keeps the softmax from saturating",
+      "the causal mask hides future tokens (−∞ → weight 0)",
+      "softmax per row gives weights summing to 1, which mix the values",
+      "K and V (not Q) are cached because later queries need them",
+      "KV bytes per token = 2·L·K·H·2: 512 / 128 / 16 KiB for 32 / 8 / 1 KV heads"
+    ]
+  },
+  "retrieve": [
+    {"q": "Recompute the 'sat' row of the worked example: raw scores, scaled scores, softmax weights and output vector.", "kind": "mechanism", "answer": ["scores [1, 2, 1] against The, cat, sat", "÷ √4 → [0.5, 1.0, 0.5] (nothing masked: sat is last)", "exp sum 6.016 → weights 0.274, 0.452, 0.274", "output [0.274, 0.904, 0.822, 0]"]},
+    {"q": "Explain why the size of the KV cache depends on the number of KV heads and not on the number of query heads.", "kind": "concept", "answer": ["future tokens only need past tokens' K and V", "a query is used once, for its own token, and then discarded", "under GQA, several query heads read the same stored K and V, so only KV heads cost memory"]},
+    {"q": "You serve Llama-3.1-8B shapes at 8k context on one H100. Compare MHA, GQA-8 and MQA on sequences that fit, cache bytes read per decode step relative to the weights, and quality risk.", "kind": "tradeoff", "answer": ["fit: 14 / 59 / 476 sequences in 63.9 GB", "per 8k sequence 4.29 / 1.07 / 0.134 GB; MHA's is 27% of the 16.06 GB weight read, GQA-8's 6.7%", "MQA risks quality loss (the GQA paper); uptrained GQA comes close to MHA quality"]},
+    {"q": "A teammate says \"switching to GQA made our prefill 4× faster.\" What's wrong with the claim, and what does GQA actually speed up?", "kind": "tradeoff", "answer": ["prefill's score and mix FLOPs (about 4·T²·N·H per layer, halved by the mask) don't change: all 32 query heads still run", "only the K and V projections shrink (67.1M → 41.9M attention parameters per layer)", "the real gains are memory capacity and decode bandwidth"]}
+  ],
+  "compare": [
+    {"with": "perf-4-attention-kv/mla", "q": "GQA vs MLA: both shrink the KV cache. What does each one cache, which design choice makes the cache smaller, when would you pick each, and what does each cost?", "answer": ["GQA caches fewer whole K/V heads, shared by groups of query heads", "MLA caches one short latent vector per token per layer and folds the expansion into other matrices", "GQA is simple and supported everywhere; MLA gets a much smaller cache (DeepSeek-V3: 68.6 KiB per token vs 3.81 MiB for MHA with the same heads)", "both must be trained into the model; MLA adds complexity (decoupled RoPE, weight absorption)"]},
+    {"with": "perf-1-foundations/flops-per-token", "q": "This card says the score grid grows as T²; the FLOPs card says attention adds 4·S·D FLOPs per token per layer. How are these the same fact, and why doesn't the 2N rule see it?", "answer": ["one new token at context S computes S scores and mixes S values per head: 2·S·H + 2·S·H, × N heads = 4·S·D", "summed over all T tokens of a sequence that becomes the T² grid", "these multiply activations (cached K, V), not parameters, so a per-parameter rule misses them: +27% at 8k, 4.3× at 128k"]}
+  ],
+  "predict": {"q": "A variant keeps 32 query heads but uses 4 KV heads (groups of 8). Before computing: KV per token, how many 8k sequences fit in 63.9 GB, and whether you'd expect quality to move toward MHA or toward MQA.", "answer": "KV per token = 2 × 32 × 4 × 128 × 2 = 65,536 B = 64 KiB, half of GQA-8. An 8k sequence is 0.537 GB, so about 119 fit (computed). Quality moves toward MQA: more query heads share each set of keys and values, so each group has less to work with."},
+  "apply": {"task": "Write single-head causal attention in numpy (about 15 lines) and check it against the card's worked example. Then extend it to GQA with 4 query heads, 2 KV heads and d_k = 4 on random inputs, and check the two things the lab checks: with K = N it matches MHA, and changing a later token's V never changes an earlier token's output.", "done": "Your 'sat' row gives weights 0.274 / 0.452 / 0.274 and output [0.274, 0.904, 0.822, 0], and both GQA checks pass.", "hint": "Repeat each KV head N/K times along the head axis (np.repeat) before computing QKᵀ; build the mask with np.triu(..., k=1) set to −inf."},
+  "reflect": [
+    "Which prediction did you get wrong: the KV bytes for 4 heads, or the direction of the quality change?",
+    "Could you explain without the formula why K and V are cached but Q isn't?",
+    "Which relationship is still fuzzy: KV heads → cache size, or cache size → decode bytes per step?",
+    "Where did you slip in the hand computation: the scaling, the mask, or the softmax?",
+    "What will you reopen before the FLOPs card: the T² grid, or the GQA table?"
+  ],
+  "revisit": ["perf-1-foundations/transformer-forward"],
+  "prereq": ["perf-1-foundations/transformer-forward"]
+}

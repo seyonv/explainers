@@ -1,0 +1,121 @@
+{
+  "prime": {
+    "problem": "A plain lock answers \"is anyone inside?\" but not \"who?\". Without an owner, a method that calls another locked method waits on itself forever, and a stray release from the wrong thread lets two threads in. And when the lock is taken, the waiter must either burn a core spinning or pay a sleep and a wake-up.",
+    "fits": "Second Synchronization card. It refines the lock from the last card with ownership, reentrancy and a choice of how to wait; semaphores (next) drop ownership on purpose.",
+    "expect": [
+      "ownership: who may unlock",
+      "<code>Lock</code> vs <code>RLock</code>, and self-deadlock",
+      "spinlocks, futex-style blocking, two-phase locks",
+      "58 ns uncontended vs a 4.1 µs hand-off",
+      "lock convoys"
+    ],
+    "goal": "Say when a plain mutex, an RLock or a spinlock fits, predict a self-deadlock from code, and explain why contention costs far more than the lock itself."
+  },
+  "attend": [
+    "What two fields does an RLock keep that a plain Lock doesn't, and how do they let <code>withdraw()</code> re-enter?",
+    "Why did another thread's <code>release()</code> succeed on a <code>Lock</code> but raise on an <code>RLock</code>?",
+    "When is spinning cheaper than sleeping, and what goes wrong with spinning on one CPU when the holder is descheduled?",
+    "Where does the 71× gap between 58 ns and 4.1 µs come from, and why does it make a hot lock line waiters up?",
+    "Why does the card prefer a plain mutex over RLock everywhere, even though RLock never self-deadlocks?"
+  ],
+  "core": {
+    "must": [
+      "A plain Lock records no owner → the same thread re-acquiring it waits on itself → self-deadlock (<code>acquire(timeout=0.1)</code> → False) → RLock records owner + count → the owner re-enters (count 1 → 2 → 1 → 0)",
+      "Ownership = only the locker may unlock → a stray release from another thread is an error, not a silent second entry → that check is what separates a mutex from a binary semaphore → Python's plain Lock doesn't enforce it; RLock does",
+      "Free lock → one atomic instruction, no syscall (58 ns) → taken lock → sleep in the kernel and be woken (≈ 4.1 µs hand-off) → contention costs ~71× the lock → hot locks form convoys moving at one wake-up per step → hold them less (shorter sections, sharding)",
+      "Spin vs sleep depends on who holds the lock → holder running on another core and releasing soon → spinning wins → holder descheduled → spinners waste whole slices → two-phase locks spin briefly, then sleep"
+    ],
+    "elevated": [
+      "<code>with lock:</code> costs 87 ns vs 58 ns bare → 29 ns of with-statement overhead → irrelevant next to a 4.1 µs contended hand-off, so always use <code>with</code> for safety"
+    ],
+    "reference": [
+      "<code>pthread_mutex_t</code>, <code>std::mutex</code>, <code>os_unfair_lock</code>, Linux futex(2)",
+      "the exact RuntimeError text for releasing an un-acquired RLock",
+      "Dahm locks and OSTEP section 28.16",
+      "17.2 million uncontended lock+unlock per second"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw the four-step transfer/withdraw trace for a Lock and for an RLock side by side, then write one causal chain for \"what happens when the mutex is taken\" that ends in lock convoys.",
+    "checklist": [
+      "a plain Lock has no owner, so re-acquiring it blocks the owner",
+      "an RLock keeps owner and count; only the owner can re-enter or release",
+      "a free lock is one atomic instruction, no syscall",
+      "a taken lock means spin (burn a core) or sleep (pay a wake-up)",
+      "hand-off costs ~71× the free lock, so contention, not the lock, is the cost",
+      "fix contention by holding less, not by a faster lock"
+    ]
+  },
+  "retrieve": [
+    {
+      "q": "Explain what \"ownership\" adds to a mutex, and which Python lock types actually enforce it.",
+      "kind": "concept",
+      "answer": [
+        "the thread that locked it is the only one allowed to unlock it",
+        "a release from any other thread is then an error instead of silently letting a second thread in",
+        "RLock (and error-checking pthread mutexes) enforce it; threading.Lock and Semaphore(1) don't"
+      ]
+    },
+    {
+      "q": "Walk through what a futex-style mutex does for an uncontended acquire, and then for an acquire while another thread holds it.",
+      "kind": "mechanism",
+      "answer": [
+        "uncontended: an atomic instruction in user space flips it to taken; no system call (58 ns acquire + release)",
+        "contended: the atomic fails, so the thread asks the kernel to sleep it on that lock",
+        "on unlock the holder sees a waiter and asks the kernel to wake one; the waiter must be scheduled again before it runs (microseconds)"
+      ]
+    },
+    {
+      "q": "A recursive tree-walk method takes <code>self.lock</code> and calls itself on children. Choose between Lock and RLock, and say what you pay and risk with each.",
+      "kind": "tradeoff",
+      "answer": [
+        "Lock: the first recursive call self-deadlocks (hangs, or returns False with a timeout)",
+        "RLock: works, with small owner/count bookkeeping",
+        "risk of RLock: it hides accidental re-entry into a method that assumes the data is consistent; alternatively take the lock once in an outer method and recurse in an unlocked helper"
+      ]
+    }
+  ],
+  "compare": [
+    {
+      "with": "cs-7-operating-systems/semaphores",
+      "q": "A mutex vs a binary semaphore: both let one thread in. What is fundamentally different, which design choice causes it, when would you choose the semaphore anyway, and how does each fail?",
+      "answer": [
+        "the mutex has an owner; a semaphore is a counter anyone may V",
+        "no owner is what lets a semaphore be used as a signal: one thread P's, another V's",
+        "choose the semaphore for signalling (<code>Semaphore(0)</code> as \"done\") or counting N permits",
+        "the mutex fails by self-deadlock without reentrancy; the semaphore fails silently when a stray V lets two threads in"
+      ]
+    },
+    {
+      "with": "cs-7-operating-systems/context-switch-how",
+      "q": "The 4.1 µs hand-off here is half of the thread Event round trip there. What does that number include beyond the mutex itself, and what does it tell you about spinning vs sleeping?",
+      "answer": [
+        "it includes a sleep, a wake-up, a scheduler decision and Python's own work, so it is a ceiling",
+        "that is thousands of times a 58 ns free lock",
+        "if the holder will release in less than a wake-up's time, spinning briefly is cheaper; otherwise sleep (two-phase)"
+      ]
+    }
+  ],
+  "predict": {
+    "q": "Eight threads each run <code>for _ in range(10**5): with lock: n += 1</code>. The work inside the lock takes nanoseconds. Will 8 threads finish faster than 1 thread doing all 8 × 10⁵ increments? Commit before revealing.",
+    "answer": "No, and possibly much slower. Every increment needs the same lock, so the critical section runs one thread at a time whatever the thread count, and each time the lock passes to a sleeping waiter it costs a wake-up (≈ 4.1 µs, about 71× the 58 ns free lock). One thread pays only uncontended acquires; eight threads can form a convoy. The fix is to hold the lock less: count locally per thread and add once at the end."
+  },
+  "apply": {
+    "task": "Using the card's numbers, estimate how many lock hand-offs per second one hot mutex can do if every acquire must wake a sleeping thread (≈ 4.1 µs each), and compare that with the uncontended rate. Then write a recursive <code>depth(node)</code> that takes an RLock at each level on a 3-level tree, and print <code>lock._is_owned()</code> and the recursion level at each acquire and release. Finally, switch it to a plain Lock with <code>acquire(timeout=0.1)</code> and record what happens.",
+    "done": "You have the two rates (about 244,000 hand-offs/s vs about 17.2 million uncontended/s, roughly 71× apart), a printed RLock trace whose depth goes 1 → 2 → 3 → 2 → 1 → 0, and the plain Lock returning False at depth 2.",
+    "hint": "1 / 4.1 µs ≈ 243,900; 1 / 58 ns ≈ 17,241,000. <code>_is_owned()</code> is a private RLock helper; if you'd rather not use it, keep your own depth counter."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: whether 8 threads beat 1 on a hot lock?",
+    "Could you explain why Python's plain Lock is \"a mutex by convention\" without the ownership table?",
+    "Which relationship is still fuzzy: taken lock → sleep → wake-up cost, or wake-up cost → convoy?",
+    "When would you actually choose an RLock now, and when would you restructure instead?",
+    "What will you look for in the semaphores card: what giving up ownership makes possible?"
+  ],
+  "revisit": [
+    "cs-7-operating-systems/locks"
+  ],
+  "prereq": [
+    "cs-7-operating-systems/locks"
+  ]
+}

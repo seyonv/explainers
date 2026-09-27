@@ -1,0 +1,57 @@
+{
+  "prime": {
+    "problem": "Each replica keeps the KV cache of prompts it has seen, but a load balancer that ignores this sends a chat's next turn to a random replica, which recomputes the whole history. Sticky routing fixes the hits and melts one replica under a popular prefix. The router has to weigh cache against load.",
+    "fits": "Builds on course 4's RadixAttention (prefix caching inside one engine) and cost-per-token's input pricing (prefill tokens have a price). This card is the step in front of N engines: which copy gets each request.",
+    "expect": ["round-robin's 1/N home rate", "prefix-hash and session-hash stickiness", "Dynamo's cost function: prefill blocks after the cache credit + decode blocks", "llm-d's Endpoint Picker, approximate vs precise modes", "the Gateway API Inference Extension"],
+    "goal": "Compute a KV-aware router's choice by hand, predict when stickiness beats it and when it melts, and price what routing saves."
+  },
+  "attend": [
+    "Round-robin balances perfectly. What does it waste, and how does the waste scale with N?",
+    "Why does hashing on the system prompt give 100% home turns and a 33-second mean TTFT?",
+    "In Dynamo's example, why does the worker with the best cache lose, and why can no credit rescue it?",
+    "What can approximate mode get wrong that precise mode can't, and what does precise mode cost?",
+    "Why is the dollar saving small for an 8B model, and where is the real prize?"
+  ],
+  "core": {
+    "must": [
+      "A turn's prompt = system prompt + all earlier turns → only the replica that served the last turn has that history cached → round-robin sends it there 1/N of the time (12.5% at N = 8) → most turns recompute their history",
+      "Hashing a prefix pins it to one replica → always warm, but prefix popularity is skewed (53% on one prompt) → one replica gets 4.26× the mean requests → its prefill queue never drains → TTFT grows to minutes",
+      "Cost = prefill blocks left after the cache credit + decode blocks already running (+ optional per-request charge) → a warm but busy worker can lose to a colder, idle one → the overlap credit is the dial between cache reuse (TTFT) and even load (ITL)",
+      "Cached prompt tokens are prefill you don't run → fewer prefill GPU-seconds (1,703 → 1,048 at credit 4 in the lab) → more traffic before TTFT degrades; the saving scales with 2N, so it matters more for bigger models and longer histories"
+    ],
+    "elevated": [
+      "The router's picture of each cache is either guessed from its own decisions (approximate, 16-token block hashes in an LRU) or fed by the engines' KV events (precise) → approximate mode can route to a pod that already evicted the prefix, paying the balance cost without the hit"
+    ],
+    "reference": ["Dynamo's parameter names (overlap_score_credit, prefill_load_scale, router_temperature)", "llm-d's filter → scorer → picker pipeline and ext-proc", "GIE's InferencePool and the \"have moved\" note", "published claims: llm-d 3× / 2× on MI300X, Baseten 2× TTFT", "the lab's workload parameters"]
+  },
+  "compress": {
+    "prompt": "From memory, draw four routers side by side (round-robin, prefix hash, session hash, cost function) and for each write the hit it gets and the way it fails. Then write Dynamo's cost in one line.",
+    "checklist": [
+      "round-robin: even load, history found 1/N of the time",
+      "prefix hash: always warm, hot prefix melts one replica",
+      "session hash: strong for chat with plenty of memory, blind to load, collapses with small caches",
+      "cost function: most of the hits without hot spots; credit trades TTFT for balance",
+      "cost = max(0, P − c·overlap) + decode blocks (+ w·active)"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why a router, not the engine, has to solve cache locality once you run more than one replica.", "kind": "concept", "answer": ["each engine's prefix cache (RadixAttention) holds only what that engine served", "which engine a request reaches is decided before any engine sees it", "so the router must know or guess where each prefix lives, and weigh that against load"]},
+    {"q": "Work through Dynamo's example: three workers, a 10-block prompt, overlaps 2 / 5 / 8 and decode loads 10 / 5 / 9, credit 1. Who wins, and what happens at credit 2?", "kind": "mechanism", "answer": ["costs: 8 + 10 = 18, 5 + 5 = 10, 2 + 9 = 11 → worker 2", "credit 2: 6 + 10 = 16, 0 + 5 = 5, 0 + 9 = 9 → still worker 2", "worker 3's 9 decode blocks already exceed worker 2's whole cost, and the credit only erases prefill"]},
+    {"q": "For plain multi-turn chat with plenty of memory, session hashing beat the cost function on hits and mean TTFT. When would you still pick the cost function?", "kind": "tradeoff", "answer": ["when caches are small (2 GB: session hash 45.4% cached, 259 ms p99 vs cost function 53.7%, 149 ms)", "when decode load is uneven (1.28× vs 1.06× busiest/mean)", "when replicas scale in and out, which reshuffles session hashes", "when p99 matters more than the mean (103 vs 115 ms)"]}
+  ],
+  "compare": [
+    {"with": "perf-4-attention-kv/cache-aware-scheduling", "q": "Course 4's cache-aware scheduling orders requests inside one engine to reuse its radix tree; this card places requests across engines. What is the same decision, and what does the router lack that the engine has?", "answer": ["both trade cache reuse against fairness/load: longest-prefix-first vs cost function", "the engine sees its own tree exactly", "the router must learn each engine's cache from events or guess from its own decisions, and can be wrong after an eviction"]},
+    {"with": "perf-4-attention-kv/mooncake-scheduling", "q": "With Mooncake's pooled KV store, any replica can fetch a prefix. What happens to the value of KV-aware routing, and which term of Dynamo's formula captures the in-between case?", "answer": ["if every replica can fetch the prefix, where the request lands matters much less", "routing then balances load and only prefers local hits for speed", "Dynamo credits host and disk hits with their own weights (h, d), smaller than a GPU hit"]}
+  ],
+  "predict": {"q": "Grow the fleet from 8 to 32 replicas with the same workload. Commit: what happens to round-robin's share of turns that land where their history is, and does a cost-function router lose its hits the same way?", "answer": "Round-robin falls to 1/32 ≈ 3.1% of turns home, so almost every turn recomputes its history. The cost function keeps about 49% home at credit 4 and needs 584 prefill GPU-seconds instead of 1,760 (the card's N_REP = 32 try-this). The more replicas you have, the more locality-blind routing wastes."},
+  "apply": {"task": "Use Dynamo's cost with prefill_load_scale 1 and no per-request charge: cost = max(0, P − credit × overlap) + decode blocks. A 20-block prompt; worker A holds 4 of its blocks and runs 4 decode blocks; worker B holds 12 and runs 13. (1) Compute both costs at credit 1, 2 and 4 and name the winner each time. (2) Explain the credit-4 result. (3) With 16 replicas, what share of chat turns does round-robin send home?", "done": "(1) Credit 1: A 20, B 21 → A. Credit 2: A 16, B 13 → B. Credit 4: A 8, B 13 → A. (2) At credit 4 B's prefill is already clamped to 0 (12 × 4 > 20), so more credit can't help it, while A's partial cache keeps shrinking its cost: past some point the credit favours the less-loaded worker again. (3) 1/16 = 6.25%.", "hint": "The max(0, …) clamp is the whole story in part (2)."},
+  "reflect": [
+    "Which prediction did you get wrong: round-robin's home share at 32 replicas, or how well the cost function holds up?",
+    "What couldn't you explain cleanly: why the best cache can lose?",
+    "Which relationship is still fuzzy: cache hit → prefill saved → TTFT, or stickiness → hot replica → queueing?",
+    "In the exercise, did the clamp at credit 4 surprise you?",
+    "What will you revisit before the reliability card?"
+  ],
+  "revisit": ["perf-4-attention-kv/radixattention", "perf-4-attention-kv/cache-aware-scheduling", "perf-7-training-economics/cost-per-token"],
+  "prereq": ["perf-4-attention-kv/radixattention", "perf-7-training-economics/cost-per-token"]
+}

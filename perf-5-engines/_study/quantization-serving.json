@@ -1,0 +1,124 @@
+{
+  "prime": {
+    "problem": "Quantization promises 2× or 4× from fewer bits, but a serving step reads weights, reads KV and does math, and each format shrinks different parts. Pick the wrong one for your batch size and you get almost nothing: 4-bit weights can make chat decode 3.7× faster and a full-batch server 1.04× faster.",
+    "fits": "The 'fewer bytes per step' lever. It uses course 2's step formula and critical batch size, and course 3's tensor-core formats, and asks which format helps which regime.",
+    "expect": [
+      "W4A16 (GPTQ, AWQ): weight-only",
+      "W8A8 (SmoothQuant) and FP8: weights and activations",
+      "the regime map: decode at small vs large batch, prefill",
+      "activation outliers and smoothing (α)",
+      "why 30–50%, not 2×"
+    ],
+    "goal": "Predict which format speeds up decode at batch 1, decode at full batch and prefill, and explain why real gains fall short of the bit ratio."
+  },
+  "attend": [
+    "Which term of the step formula does W4A16 shrink, and why does its math still run at the BF16 rate?",
+    "Why does W4A16's advantage fade once the batch passes about 76, while W8A8 keeps its prefill gain?",
+    "What in the KV cache does neither weight format touch, and how large is it at batch 238?",
+    "Why are activations harder to quantize than weights, and how does SmoothQuant move the difficulty?",
+    "What three changes let GPTQ scale OBQ-style error compensation to 175B parameters?"
+  ],
+  "core": {
+    "must": [
+      "W4A16 stores weights in 4 bits but unpacks them to BF16 before the multiply → the weight read shrinks ×0.26 but math runs at 989 TFLOPS → decode at small batch (bytes-bound) gets 3.70× → prefill (math-bound) gets 1.00× → the MLP's B_crit drops to 76, past which the math sets the step",
+      "W8A8/FP8 quantizes activations too → the matmul runs on 8-bit tensor cores at 2× rate and weights are ×0.5 → prefill 2.00×, batch-1 decode 1.97×, and it wins from B = 148 up",
+      "Neither format shrinks the KV reads → at B = 238 they're 19.07 of 23.86 ms (80%) → full-batch gains collapse to 1.04–1.11× → KV quantization is the lever for that part",
+      "Activation outliers ~100× larger sit in fixed channels → one INT8 scale leaves normal channels 2–3 levels → divide activations by s and multiply weights by s (an exact identity) → both become quantizable, with α splitting the difficulty"
+    ],
+    "elevated": [
+      "INT8 GEMM kernels can apply scales only along tokens and output channels, after the multiply → per-input-channel activation scales are impossible there → which is why smoothing folds the scale into the previous layer offline",
+      "W4A16 dequantizes inside the main loop (3 extra ops per weight, per AWQ), W8A8 in the epilogue → part of why real gains fall short of the bit ratio"
+    ],
+    "reference": [
+      "GPTQ's Hessian, lazy batch size 128 and 1% dampening",
+      "AWQ's grid search over α and group size 128",
+      "the perplexity tables (OPT-175B, OPT-6.7B)",
+      "Kiely's sensitivity ranking and page numbers",
+      "NVFP4 bit layout"
+    ]
+  },
+  "compress": {
+    "prompt": "Draw the step formula from memory and mark, with arrows, which term each format shrinks. Then sketch the speedup-vs-batch curve for W4A16 and W8A8 (log B), marking B = 76, B = 148 and B = 238.",
+    "checklist": [
+      "weight read: both shrink it; math: only W8A8/FP8 speeds it up; KV reads: neither",
+      "W4A16: 3.70× at B = 1, fades after B = 76, 1.04× at 238, 1.00× prefill",
+      "W8A8: 1.97× at B = 1, 2.00× prefill, 1.11× at 238, ahead from B = 148",
+      "real gains leak through KV, dequant overhead and high-precision ops: 30–50%",
+      "SmoothQuant moves outlier difficulty from activations to weights with an exact rescaling"
+    ]
+  },
+  "retrieve": [
+    {
+      "q": "Explain why 4-bit weight-only quantization speeds up chat decode but not a long-prompt prefill.",
+      "kind": "concept",
+      "answer": [
+        "prefill of 1,000 tokens is 16.1 TFLOP of math, 16.24 ms at 989 TFLOPS; the 4.79 or 1.24 ms weight read hides under it",
+        "W4A16 unpacks weights to BF16, so the math rate doesn't change",
+        "batch-1 decode is 0.02 ms of math and 4.79 ms of weight reads, so shrinking bytes is nearly the whole win"
+      ]
+    },
+    {
+      "q": "Walk through SmoothQuant's transformation for one linear layer: what is divided, what is multiplied, where the division goes at run time, and what α controls.",
+      "kind": "mechanism",
+      "answer": [
+        "Y = (X diag(s)⁻¹)(diag(s) W): exactly the same product",
+        "activation channel j is divided by s_j, weight row j multiplied by s_j",
+        "the division folds into the previous layer offline, so it costs nothing at run time",
+        "s_j = max|X_j|^α ÷ max|W_j|^(1−α): α = 0 leaves outliers in X, 1 moves them all into W"
+      ]
+    },
+    {
+      "q": "You serve Llama-3.1-8B on an H100 for a busy API at full batch, and separately on an A100 for a single user. Which format do you choose for each, and why not the same one?",
+      "kind": "tradeoff",
+      "answer": [
+        "H100 full batch: FP8 W8A8, since it's the only format that also helps math-bound prefill and large batch (1.11× at 238, 2.00× prefill)",
+        "A100 single user: W4A16 (GPTQ/AWQ), since batch-1 decode is bytes-bound and the A100 has no FP8 tensor cores",
+        "at full batch neither weight format helps much; KV quantization or fewer KV heads is the bigger lever"
+      ]
+    }
+  ],
+  "compare": [
+    {
+      "with": "perf-4-attention-kv/kv-quantization",
+      "q": "Weight quantization and KV-cache quantization shrink different bytes. At batch 1 and at batch 238, which one matters more on the running example, and how does each fail on quality?",
+      "answer": [
+        "batch 1: weights dominate (4.79 of 4.87 ms), so weight quantization matters",
+        "batch 238: KV reads are 80% of the step, so KV quantization matters",
+        "weights are the least sensitive to quantization; KV errors compound token to token (Kiely's ranking)"
+      ]
+    },
+    {
+      "with": "perf-5-engines/spec-decoding-practice",
+      "q": "Quantization and speculative decoding both speed up small-batch decode. What is fundamentally different about how they do it, and how does each one's gain change as batch grows?",
+      "answer": [
+        "quantization makes each step read fewer bytes; speculation gets more tokens out of each weight read",
+        "quantization's gain fades as KV reads dominate but never goes below 1× in our model",
+        "speculation's gain disappears once the step turns compute-bound, and can go below 1× (0.70× at B = 256 in course 2's model)"
+      ]
+    }
+  ],
+  "predict": {
+    "q": "Move from 2k to 8k context at the largest batch that fits in BF16 (59 sequences). Do W4A16's and FP8's full-batch gains grow or shrink compared with 2k, and why? Commit to a direction for each.",
+    "answer": "Our recomputation: at B = 59 and 8k, BF16 is 23.70 ms, W4A16 20.15 ms (1.18×), FP8 21.31 ms (1.11×). W4A16's full-batch gain <i>grows</i> compared with 2k's 1.04×: only 59–70 sequences fit, which is below its B_crit of 76, so its step is still bound by bytes rather than BF16 math. At each format's own maximum batch the lab gives +19% for W4A16 and +13% for W8A8 (2k: +4% and +13%). But KV is still about 80% of the step (18.9 of 23.7 ms), so neither comes near batch 1's 3.70× or 1.97×."
+  },
+  "apply": {
+    "task": "Using the card's step formula (KV reads + max(math at the format's rate, weight read)), compute the BF16, W4A16 and FP8 step at 8k context for B = 1 and B = 59. Report each speedup vs BF16 and the share of the BF16 step that is KV reads at B = 59. Then say in one sentence which lever would help the B = 59 case most.",
+    "done": "Six step times with four speedups, a KV share in %, and a one-sentence lever choice, before checking.",
+    "hint": "Check after trying (our recomputation): B = 1: BF16 5.12 ms, W4A16 1.56 ms (3.29×), FP8 2.72 ms (1.88×). B = 59: BF16 23.70, W4A16 20.15 (1.18×), FP8 21.31 (1.11×). KV reads ≈ 79.8% of the BF16 step, so quantize the KV cache (course 4)."
+  },
+  "reflect": [
+    "Which prediction did you get wrong about 8k context, and what did you assume about B_crit?",
+    "Could you explain why W4A16's math stays at the BF16 rate without looking at the card?",
+    "Which relationship is still fuzzy: format → which term shrinks, or batch size → which term dominates?",
+    "Why does Kiely's 30–50% sit between our 1.97× and 1.11×? Could you name the leaks?",
+    "Before speculative decoding: what idle resource at small batch does speculation spend that quantization doesn't?"
+  ],
+  "revisit": [
+    "perf-3-kernels/tensor-cores-low-precision",
+    "perf-2-scaling-book-inference/critical-batch-size",
+    "llm-latency/quantization"
+  ],
+  "prereq": [
+    "perf-2-scaling-book-inference/critical-batch-size"
+  ]
+}

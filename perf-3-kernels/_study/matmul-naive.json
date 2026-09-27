@@ -1,0 +1,62 @@
+{
+  "prime": {
+    "problem": "Before tuning a matmul you need to know how fast it could possibly go. Without that floor, a kernel at 309 GFLOP/s looks fine until you learn cuBLAS does 23,250 on the same GPU and the math alone allows a 4.57 ms run. The naive kernel is correct and simple, and it re-reads the inputs until it moves 2,046× the bytes it needs.",
+    "fits": "First of four cards on siboehm's worklog. It applies perf-1's roofline to a single kernel and the coalescing card's access analysis to matmul. Every later matmul card is measured against this card's lower bound and ladder.",
+    "expect": ["FLOPs = 2n³ + n²", "minimum traffic and the two floors", "arithmetic intensity vs the ridge", "the naive kernel's 548 GB", "tile quantization"],
+    "goal": "Compute the math and memory floors for any matmul on any GPU, say which one binds, and explain why the naive kernel is far from both."
+  },
+  "attend": [
+    "Which of the two floors (4.57 ms math, 0.35 ms memory) binds for a 4092² FP32 matmul on the A6000, and how many times the minimum traffic can a kernel move before that flips?",
+    "Where do the naive kernel's 548 GB come from, thread by thread?",
+    "548 GB in 0.44 s would need 1,236 GB/s, more than the card's 768 GB/s. What does that tell you about where the loads are really served?",
+    "Why does the tensor-core version of the same problem end up \"almost surely memory-bound\"?",
+    "Why is the batch-1 Llama up-projection memory-bound no matter how good the kernel is?"
+  ],
+  "core": {
+    "must": [
+      "Count FLOPs (2n³) and unavoidable bytes (read A, B, C once, write C once) → divide each by the peak → the larger is the floor → for 4092² FP32 on the A6000, 4.57 ms math vs 0.35 ms bytes → compute-bound as long as a kernel moves under ~13× the 268 MB minimum",
+      "One thread per output with no reuse → each thread reads a whole row of A and column of B (8,185 floats) → 548 GB, 2,046× the minimum → intensity 0.25 FLOP/B against a ridge of 39 → the problem is compute-bound, the kernel is not",
+      "Compute-bound describes the problem → the kernel's own traffic decides where it lands → the whole ladder raises reuse (bytes per FLOP down) until the math floor binds",
+      "Faster math (tensor cores at 309 TF) shrinks the math floor to 0.44 ms → it nearly meets the 0.35 ms byte floor → headroom over minimum traffic collapses (3.5× on an H100 in BF16) → fast math makes data movement matter more, not less"
+    ],
+    "elevated": [
+      "A matrix-vector product (batch-1 decode) has intensity ≈ 1 FLOP/B → far below any ridge → no kernel trick fixes it; only batching more tokens raises intensity (the critical-batch-size card)"
+    ],
+    "reference": [
+      "A6000 specs (30 TF FP32, 768 GB/s, 84 SMs) and the results table's exact GFLOP/s",
+      "tile quantization counts (32,752 idle threads at 4092, 0 at 4096)",
+      "source quirks: 268 vs 278 MB, ~10× vs 13.1×, the unexplained 245 FLOP/B",
+      "the SGEMM signature <code>C = αAB + βC</code> and the 32 × 32 launch"
+    ]
+  },
+  "compress": {
+    "prompt": "Write the two-floor calculation for 4092² on the A6000 from memory in four lines (FLOPs, bytes, two times, which binds), then one line for the naive kernel's traffic and one for what the rest of the ladder must do.",
+    "checklist": [
+      "137 GFLOP, 268 MB minimum",
+      "4.57 ms math vs 0.35 ms memory: compute-bound problem",
+      "naive: 8,185 floats per thread × 4092² threads × 4 B ≈ 548 GB, 2,046× the minimum",
+      "intensity 0.25 vs ridge 39: the naive kernel is limited by memory accesses",
+      "the ladder raises reuse until bytes stop mattering"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain the difference between a problem being compute-bound and a kernel being compute-bound, using the naive matmul.", "kind": "concept", "answer": ["the problem's floors say it <i>can</i> be compute-bound: minimum bytes take far less time than the math", "the naive kernel moves ~2,000× the minimum, so its own bytes dominate", "a kernel is compute-bound only if its actual traffic stays under ~13× the minimum on the A6000"]},
+    {"q": "Compute the floors for a 2048² FP32 matmul on a T4 (8.1 TF, 320 GB/s): FLOPs, minimum bytes, the two times, and how much traffic the naive kernel would move.", "kind": "mechanism", "answer": ["FLOPs = 2·2048³ + 2048² ≈ 17.18 GFLOP", "minimum bytes = 4 × 2048² × 4 B ≈ 67.1 MB", "math 2.12 ms vs memory 0.21 ms: compute-bound, ratio ≈ 10×", "naive: (2·2048 + 1) × 2048² × 4 B ≈ 68.7 GB, ~1,024× the minimum"]},
+    {"q": "A team wants to speed up batch-1 decode by writing a better GEMM kernel for the Llama up-projection. Use the card's numbers to say what the best kernel could achieve and what would actually help.", "kind": "tradeoff", "answer": ["1 × 4096 × 14336 in BF16: 0.117 GFLOP, 117.5 MB, intensity 1.0", "floor 35 µs from bytes vs 0.12 µs of math: memory-bound at 0.3% of compute peak", "a better kernel can only approach the byte floor; batching more tokens (or fewer bytes per weight) is what moves it"]}
+  ],
+  "compare": [
+    {"with": "perf-2-scaling-book-inference/roofline", "q": "perf-2's roofline uses arithmetic intensity of an operation; this card uses the bytes a kernel actually moves. How do the two intensities for the 4092² matmul differ (512 vs 0.25), and which question does each answer?", "answer": ["operation intensity (FLOPs ÷ minimum bytes, 512) says what the problem allows", "kernel intensity (FLOPs ÷ bytes moved, 0.25 for naive with no cache) says where this kernel sits", "the first chooses between compute- and memory-bound in principle; the second tells you how much reuse the kernel is leaving on the table"]},
+    {"with": "perf-3-kernels/reduction-divergence", "q": "Harris's reduction and siboehm's matmul both start at a few percent of peak. Why does Harris judge by GB/s and siboehm by GFLOP/s, and what does that say about which fixes each ladder needs?", "answer": ["reduction: 0.25 ops/byte at best, so the problem itself is memory-bound; bandwidth is the target", "matmul: 512 FLOP/B at best, so the problem is compute-bound; FLOP/s is the target", "reduction's fixes chase bandwidth and instruction overhead; matmul's fixes chase reuse until math binds"]}
+  ],
+  "predict": {"q": "At prefill with 4,096 tokens, the Llama up-projection is compute-bound (intensity 1,792). Commit: roughly how many tokens must a batch hold before that same layer crosses the H100's ridge of 295 FLOP/B?", "answer": "A few hundred. With B tokens, FLOPs = 2·B·4096·14336 and bytes ≈ 2·(4096·14336 + B·(4096 + 14336)); for small B the weights dominate the bytes, so intensity ≈ B. Our recomputation: B = 256 gives about 237 FLOP/B, B = 295 about 270, and B = 512 about 441, and the crossing is at about 326 tokens. That is the critical-batch-size idea from perf-2, seen from one GEMM."},
+  "apply": {"task": "Run <code>labs/matmul-bounds.py</code>, then add a 2048² row for the A6000, T4 and H100 FP32 (compute floor, memory floor, ratio, naive no-cache traffic). Then open <code>labs/matmul-ladder.ipynb</code> on a T4 and record kernel 1's GFLOP/s at 4096² and 1024² as a % of cuBLAS and of 8.1 TF.", "done": "Your 2048² row reads about 0.57 / 0.087 ms (6.6×) on the A6000, 2.12 / 0.21 ms (10.1×) on the T4 and 0.26 / 0.020 ms (12.8×) on the H100 FP32, and you've compared your T4's kernel-1 % of cuBLAS with the A6000's 1.3%.", "hint": "The ratio (compute floor ÷ memory floor) is how many times the minimum traffic a kernel can move and still be compute-bound. It shrinks as n shrinks, because FLOPs grow as n³ and bytes as n²."},
+  "reflect": [
+    "Which prediction did you get wrong: the crossing batch size, or which floor binds?",
+    "Can you now explain \"compute-bound problem, memory-bound kernel\" in one sentence?",
+    "Which relationship is still fuzzy: reuse → bytes moved, or bytes moved → which floor binds?",
+    "Did the 1,236 GB/s inference (caches absorb the loads) change what you think the naive kernel is waiting on?",
+    "What will you revisit before kernel 2: how a warp's 32 threads map onto rows of A?"
+  ],
+  "revisit": ["perf-3-kernels/coalescing", "perf-1-foundations/roofline-intuition"],
+  "prereq": ["perf-1-foundations/roofline-intuition"]
+}

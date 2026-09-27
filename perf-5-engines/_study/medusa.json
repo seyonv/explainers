@@ -1,0 +1,62 @@
+{
+  "prime": {
+    "problem": "A separate draft model has to be small, fast, aligned with the target and served alongside it, and a suitable one often doesn't exist. Medusa asks whether the big model can draft for itself: a few cheap extra heads that guess several tokens ahead from the hidden state it already computed.",
+    "fits": "Third speculative card. It keeps Part I's draft-and-verify loop but removes the separate draft, verifies many candidates at once with tree attention, and offers a looser acceptance rule.",
+    "expect": ["Medusa heads: one FFN + residual + vocab projection each", "candidate trees and tree attention masks", "Medusa-1 (frozen backbone) vs Medusa-2 (joint training)", "typical acceptance (not distribution-exact)", "acceleration rate ÷ overhead"],
+    "goal": "Explain how one forward pass drafts and verifies a tree of candidates, compute a tree's size and when it stops being free, and say what Medusa gives up compared with exact speculative sampling."
+  },
+  "attend": [
+    "Why is each head initialised so that, before training, it predicts exactly what the original LM head predicts?",
+    "How does the tree attention mask let nine candidate tokens be verified in one pass with batch size still 1?",
+    "Why does the Cartesian product of top guesses blow up, and how does the optimised tree pick nodes?",
+    "What does typical acceptance accept that min(1, p/q) would reject, and what does that cost?",
+    "Why does a 64-node tree stop being free somewhere between batch 2 and batch 16?"
+  ],
+  "core": {
+    "must": [
+      "Heads read the last hidden state the backbone already computed → K extra guesses from one pass → no second model to serve or align → but each head guesses k + 1 tokens ahead without seeing what was sampled in between → accuracy about 0.6",
+      "Top-s_k guesses per head form a tree of shared prefixes → an ancestor-only attention mask with depth-based positions verifies the whole tree in one pass → the longest accepted path is kept → 3.47 tokens per step for 1.22× step cost on Vicuna-7B",
+      "Every tree node is an extra token in the matmul → at batch 1 that math hides under the weight read → as B × nodes passes the ridge (≈ 295 on H100, 161 on A100) the step turns compute-bound → gain fades (our crude H100 model: break-even near B = 16)",
+      "Typical acceptance keeps any token the model finds plausible enough (threshold min(ε, δ·e^(−H))) → more acceptances at high temperature → but the output is no longer a sample from the model's distribution"
+    ],
+    "elevated": [
+      "W₂ (d × V) dominates a head's size → with a 128k vocabulary 5 heads are 34% of an 8B model's parameters (vs 11% for Vicuna-7B) → at batch 1 those bytes are read every step, so the reported 1.22× overhead may be optimistic for Llama-3"
+    ],
+    "reference": [
+      "loss weights λ_k = 0.8^k and λ₀ = 0.2 / 0.01",
+      "Medusa-2's 4× head learning rate and warm-up recipe",
+      "per-category MT-Bench speedups",
+      "the AlpacaEval tok/s table and roofline Table 8"
+    ]
+  },
+  "compress": {
+    "prompt": "Draw one Medusa step from memory: backbone → h_t → original head + K heads → a small tree → one verify pass with a mask → accepted prefix. Then write the node-count formula and one line each on Medusa-1 vs Medusa-2 and on typical acceptance.",
+    "checklist": [
+      "heads share h_t, so drafting costs almost nothing beyond the heads' own weights",
+      "tree nodes = Σ over depth of the product of top-s choices (2 + 2·3 = 8 in the example)",
+      "mask: each node sees the prompt and its own ancestors, siblings share a position",
+      "Medusa-1 freezes the backbone (lossless under greedy); Medusa-2 fine-tunes it (faster, output changes slightly)",
+      "typical acceptance is faster at high temperature but not exact"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why Medusa-2 changes the model's output even with greedy decoding, while Medusa-1 doesn't.", "kind": "concept", "answer": ["Medusa-1 freezes the backbone; the first token each step is its own greedy choice and later tokens are kept only if they match", "Medusa-2 fine-tunes the backbone jointly with the heads", "so the model itself differs slightly (MT-Bench −0.14 to +0.05)"]},
+    {"q": "Walk through verifying the Fig 2 tree (root 'It', head 1 top-2, head 2 top-3): how many tokens go in, what positions they get, and which earlier tokens row 3 ('the' under 'is') may attend to.", "kind": "mechanism", "answer": ["1 root + 2 + 6 = 9 tokens in one pass, batch still 1", "positions by depth: p for the root, p + 1 for head-1 guesses, p + 2 for head-2 guesses", "row 3 sees the cached prompt, the root (0) and its parent 'is' (1), plus itself", "it can't see its sibling 'a' or anything under ''', which get rejected independently"]},
+    {"q": "A team serves at batch 32 on an H100 and asks whether to switch on Medusa. What does the card's model predict, and what would you change about the tree before measuring?", "kind": "tradeoff", "answer": ["with a 64-node tree, B = 32 means 2,048 tokens per step, far past 295: compute-bound", "our crude model gives 0.50× (3,339 vs 6,675 tok/s); the paper sees drops past batch 32 on A100", "shrink the tree as batch grows (a few nodes per sequence), and benchmark at the real concurrency"]}
+  ],
+  "compare": [
+    {"with": "perf-5-engines/eagle", "q": "Medusa's heads and EAGLE's draft layer both reuse the target's hidden state. What does EAGLE feed its draft that Medusa's heads never see, and how does that show up in accuracy and speed?", "answer": ["EAGLE feeds the token that was actually sampled, shifted one step, so each branch has one right answer", "Medusa's head k guesses k + 1 ahead from one state without knowing what was sampled", "draft accuracy about 0.8 vs 0.6; EAGLE 1.5–1.6× faster on MT-bench and exact"]},
+    {"with": "perf-5-engines/spec-decoding-practice", "q": "Medusa's paper found off-the-shelf small drafts gave only 1.47–1.60×. Using the practice card's lesson about c, explain why, and why heads avoid it.", "answer": ["a separate draft costs c of a target step for every drafted token", "tiny off-the-shelf drafts (68M–1.1B) are either inaccurate or not cheap enough", "heads add only their own weights to a pass the target runs anyway, so c is close to 0 per extra guess"]}
+  ],
+  "predict": {"q": "Typical acceptance with ε = 0.09 and δ = 0.3: a candidate token has p = 0.05 under the original model. Is it accepted when the model's entropy is 0.5, 1.5 and 3.0 nats? Commit for each.", "answer": "Threshold = min(0.09, 0.3·e^(−H)). At H = 0.5 it's 0.090, so 0.05 is rejected. At H = 1.5 it's 0.3·e^(−1.5) ≈ 0.067, still rejected. At H = 3.0 it's ≈ 0.015, accepted. The more unsure the model, the more candidates count as plausible, which is why typical acceptance speeds up sampling at high temperature, and why it isn't exact."},
+  "apply": {"task": "Design a smaller tree. With top-3, top-2 and top-2 from heads 1–3, (a) count the new tokens per step and the total with the root; (b) on the H100 (ridge ≈ 295 tokens), at what batch does this tree hit the ridge, compared with the 64-token tree's ≈ 4.6; (c) compute one Medusa head's parameter count for a model with d = 4,096 and a 151,936-token vocabulary, and say what that means for batch-1 overhead.", "done": "A node count, a ridge batch, a head size, and one sentence on why the smaller tree trades acceptance for batch headroom.", "hint": "Check after trying (our arithmetic): (a) 3 + 6 + 12 = 21 new tokens, 22 with the root. (b) 295 ÷ 22 ≈ 13.4, so about 3× the batch headroom of the 64-token tree. (c) 4,096² + 4,096 × 151,936 ≈ 639M parameters per head, dominated by W₂, so fewer heads or a shared LM head matter a lot at batch 1."},
+  "reflect": [
+    "Which prediction did you get wrong: where typical acceptance flips from reject to accept?",
+    "Could you explain the tree attention mask to someone using only 'ancestors' and 'positions'?",
+    "Which relationship is still fuzzy: tree size → tokens accepted, or tree size × batch → compute-bound?",
+    "Would you ship Medusa-2 for a product that needs outputs to match the base checkpoint? Why or why not?",
+    "Before EAGLE: what information are Medusa's far heads missing?"
+  ],
+  "revisit": ["perf-5-engines/spec-decoding-math", "perf-2-scaling-book-inference/critical-batch-size"],
+  "prereq": ["perf-5-engines/spec-decoding-math"]
+}

@@ -1,0 +1,65 @@
+{
+  "prime": {
+    "problem": "One user at a time wastes almost all of a decode step: the GPU reads 16.06 GB of weights to make one token. Without seeing exactly how much a batch shares and what it doesn't share, you can't say how far batching goes before memory, KV reads or latency stop it.",
+    "fits": "First card of group 2. The bottlenecks card named the weight read as decode's limit; this card turns that into the mechanism under every batching strategy and scheduler decision that follows: put more tokens into each read.",
+    "expect": [
+      "the step-time formula with T = B",
+      "E1: 205 → 9,973 tok/s from B = 1 to 238",
+      "the knee: B_crit ≈ 295 on paper, KV read = weight read at B ≈ 60",
+      "why memory caps the batch before compute does"
+    ],
+    "goal": "Compute a batch's step time and throughput from the formula, explain the three things that stop batching from scaling forever, and say what batching costs each user."
+  },
+  "attend": [
+    "Which term of the formula is shared by the whole batch, and which grows with every request?",
+    "The critical batch size is 295 on paper. Name the two reasons the running example never gets there.",
+    "Why does throughput level off toward about 12,500 tok/s at 2k even if memory were unlimited?",
+    "Why does 8-bit weight quantization double batch-1 speed but add only 4% at B = 238?",
+    "At 2 req/s every batching strategy gives about 520 tok/s. What does that say about when batching matters?"
+  ],
+  "core": {
+    "must": [
+      "The weight read (4.79 ms) is paid once per step whatever the batch → B requests share it → total throughput rises almost with B while each user slows only a little (205 → 101 tok/s per user at B = 64)",
+      "Each request adds its own KV read (0.27 GB per step at 2k) → the KV read equals the weight read at B ≈ 60 (2k) or 15 (8k) → past that, most of each step is KV reading and throughput levels off",
+      "KV memory holds only 238 sequences at 2k (59 at 8k) → both below the 295 critical batch size → decode is capacity-bound before it is ever compute-bound"
+    ],
+    "elevated": [
+      "Levers overlap when they cut the same term → 8-bit weights shrink the shared read, which is 98% of a batch-1 step but 20% of a full one → quantize weights when you can't batch; quantize KV when you can"
+    ],
+    "reference": [
+      "the bus analogy",
+      "the M3 llama-server measurement (3.5× from 1 to 16 users)",
+      "the dashed \"unlimited memory\" curves and their 3,100 tok/s asymptote at 8k"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, sketch total tok/s against batch size for 2k context: where the curve is nearly linear, where it bends, and where it stops. Label the three things that bend or stop it, with one number each.",
+    "checklist": [
+      "shared weight read: nearly free tokens at small B",
+      "KV read grows with B × context and equals the weight read near B ≈ 60",
+      "memory stops the curve at 238 (2k) or 59 (8k)",
+      "the 295 critical batch size is never reached",
+      "each user slows (205 → 42 tok/s at 238): the latency cost"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why doubling the batch from 32 to 64 nearly doubles throughput, while doubling it again from 128 to 238 adds only about 17%.", "kind": "concept", "answer": ["at small B the weight read dominates and is shared", "at large B the KV read, which grows with every request, dominates the step", "so each extra request adds almost as much time as it adds tokens"]},
+    {"q": "Walk through computing the step time and throughput for 64 decodes at 2k context, term by term.", "kind": "mechanism", "answer": ["math 1.04 ms vs weights 4.79 ms: the max is 4.79", "KV 64 × 2,048 × 131,072 B = 17.2 GB → 5.13 ms", "step 9.92 ms → 64 ÷ 9.92 ms = 6,450 tok/s"]},
+    {"q": "Why not always run at the maximum batch? Give the three costs and one number for each.", "kind": "tradeoff", "answer": ["latency: per-user speed 205 → 42 tok/s at 238", "memory: admit too many and the scheduler preempts (63 preemptions at 4,000 blocks, TTFT p99 4.1 s)", "arrivals: at 2 req/s there are never 238 requests to batch"]}
+  ],
+  "compare": [
+    {"with": "perf-2-scaling-book-inference/critical-batch-size", "q": "Course 2 derives the critical batch size from linear layers alone. What does this card's KV term change about the conclusion \"batch up to B_crit and decode becomes compute-bound\"?", "answer": ["same derivation: 2PB/C = W/BW gives B ≈ 295", "but each request's KV read adds bytes that don't shrink with B", "so real decode stays below the ridge, and memory caps B first anyway"]},
+    {"with": "llm-request-scheduler/static-batching", "q": "This card shows what a full batch buys. What does static batching fail to keep full, even though it batches 32 requests?", "answer": ["the seats: finished rows stay idle until the longest one ends (71% idle)", "the queue: new requests wait for a whole batch to fill and finish", "so it delivers about 916 tok/s where 32 full seats could give 4,349"]}
+  ],
+  "predict": {"q": "Contexts grow from 2k to 4k. Before computing: at what batch size does the KV read now equal the weight read, and how many sequences fit?", "answer": "The KV read per request doubles, so the crossover halves: 16.06 GB ÷ (4,096 × 128 KiB) ≈ 30 requests. Memory holds 487,504 ÷ 4,096 = 119 sequences. At that cap the step is still about 23.9 ms (it reads the whole pool), so throughput is about half the 2k figure."},
+  "apply": {"task": "Compute with the formula: (a) the step time, total throughput and per-user speed for B = 100 at 2k; (b) the memory cap and the throughput at that cap for 4k context. Compare (b) with the card's 2k and 8k rows and state the rule that connects all three.", "done": "(a) about 12.8 ms, 7,808 tok/s total, 78 tok/s per user. (b) 119 sequences, a step of about 23.9 ms, about 4,986 tok/s. At the cap every context reads almost the whole 63.9 GB pool per step, so the step is ~24 ms either way, and throughput scales with how many sequences fit: 9,973 (2k), 4,986 (4k), 2,489 (8k).", "hint": "At the memory cap, B × context ≈ 487,504 tokens, so the KV term is always ≈ 19 ms."},
+  "reflect": [
+    "Which prediction did you get wrong: the 4k crossover batch, or the 4k cap?",
+    "Could you explain why the critical batch size is \"never reached\" without mentioning memory?",
+    "Which relationship is still fuzzy: batch → shared weight read, or batch × context → KV read?",
+    "Where did the per-user cost of batching surprise you?",
+    "What will you revisit before the static-batching card: how many requests are actually present when a batch forms?"
+  ],
+  "revisit": ["llm-request-scheduler/bottlenecks", "llm-request-scheduler/kv-cache", "perf-2-scaling-book-inference/step-time"],
+  "prereq": ["llm-request-scheduler/bottlenecks"]
+}

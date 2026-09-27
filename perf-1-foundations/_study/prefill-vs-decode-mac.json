@@ -1,0 +1,58 @@
+{
+  "prime": {
+    "problem": "Everything so far was arithmetic from spec sheets. Until you measure on hardware you own, \"prefill is compute-bound, decode is memory-bound\" is a slogan, and you can't tell a slow machine from a slow setup.",
+    "fits": "Applies the roofline right after you learn it: the same model does 188 tok/s in prefill and 14 in decode on your M3. The serving-metrics card next turns these two phases into TTFT and TPOT.",
+    "expect": ["prefill: one parallel pass", "decode: one pass per token, serial", "effective bandwidth = tok/s × bytes per step", "the prefill ÷ decode gap: 13× measured, 295× on H100 ceilings"],
+    "goal": "Measure prefill and decode on your own machine, back out the effective bandwidth, and explain why the gap is 13× on the M3 but about 295× on an H100 at batch 1."
+  },
+  "attend": [
+    "Why does prefill tok/s rise with prompt length (92 → 137 → 188) while decode stays near 15?",
+    "Why can't decode be parallelised within a single request?",
+    "How do you get an effective bandwidth from a tokens/s number, and what assumption hides in the 3.4 GB?",
+    "Why does N cancel when you divide the H100's prefill ceiling by its decode ceiling?",
+    "Why does decode slow slightly (15.25 → 14.12 tok/s) as the prompt grows?"
+  ],
+  "core": {
+    "must": [
+      "Prefill pushes every prompt token through each weight in one pass → many FLOPs per byte fetched → limited by compute and by how well the prompt fills the chip → tok/s rises with prompt length (92 → 188)",
+      "Decode makes one token per full pass → each weight byte serves one token → I ≈ 1 → speed ≤ bandwidth ÷ bytes per step → about 15 tok/s on the M3, a 209 tok/s ceiling on an H100",
+      "Measured tok/s × bytes per step = effective bandwidth → 15 × 3.4 GB ≈ 51 GB/s, about half the M3's ~100 GB/s → the gap to peak is efficiency, not the model",
+      "Token n+1 needs token n → decode is serial inside a request → only batching across requests shares each weight read → one user on a laptop is the worst case for decode"
+    ],
+    "elevated": [
+      "Each decode step also reads the KV cache → it grows with context → likely the 7% dip at 244 tokens (inferred, not measured) → at long context it becomes a big part of each step"
+    ],
+    "reference": ["Ollama's prompt_eval_count / eval_count fields and the script's flags", "the ~2.85 GB text-weights estimate (≈ 43 GB/s)", "the per-row bandwidths (51.9, 51.5, 48.0 GB/s)", "the cashier-vs-pen analogy"]
+  },
+  "compress": {
+    "prompt": "From memory, draw one request on a timeline: one prefill block, then a chain of decode steps. Under each phase write what limits it and the M3 number. Then write the one-line formula that turns decode tok/s into bandwidth.",
+    "checklist": [
+      "prefill: one parallel pass, compute-limited, 188 tok/s at 244 tokens",
+      "decode: 128 serial passes, bandwidth-limited, about 14–15 tok/s (≈ 70 ms each)",
+      "effective bandwidth ≈ tok/s × bytes per step ≈ 51 GB/s, half of peak",
+      "per token, prefill is ≈ 13× cheaper on the M3 and ≈ 295× on H100 ceilings",
+      "decode also reads a KV cache that grows with context"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why an H100's prefill-to-decode ceiling ratio equals the chip's ops:byte, whatever model it runs.", "kind": "concept", "answer": ["prefill ceiling = C ÷ 2N tokens/s (2 FLOPs per parameter per token)", "decode ceiling = W ÷ 2N tokens/s (2 bytes per parameter in BF16, one read per token)", "the ratio is C ÷ W = 295; N cancels"]},
+    {"q": "Using the 244-token row, compute the per-token cost of prefill and of decode, the total time for 128 output tokens, and prefill's share of it.", "kind": "mechanism", "answer": ["prefill 1.30 s ÷ 244 = 5.3 ms per token", "decode 1 ÷ 14.12 = 70.8 ms per token", "total 1.30 + 128 ÷ 14.12 = 1.30 + 9.07 = 10.37 s", "prefill is 12.5% of it"]},
+    {"q": "Why is the 27-token prompt's prefill only about half as fast per token as the 244-token one?", "kind": "mechanism", "answer": ["with few tokens, each weight fetched does little work, so the chip isn't saturated", "the pass still has to fetch the weights and pay fixed costs", "the card flags this as an inference from the rising numbers, not a measured utilisation"]},
+    {"q": "Your M3 decode implies about 51 GB/s. Name two changes that would raise single-user tok/s and one that wouldn't, and say why.", "kind": "tradeoff", "answer": ["fewer bytes per step: a smaller or more aggressively quantized model", "more bandwidth: a machine with faster memory, or a runtime that gets closer to the ~100 GB/s peak", "more compute does nothing for batch-1 decode; prompt caching only shortens prefill"]}
+  ],
+  "compare": [
+    {"with": "perf-1-foundations/serving-metrics", "q": "This card measures the two phases of one request; the serving card prices them. What does each phase become as a metric, and what does a server add that your Mac never sees?", "answer": ["prefill becomes TTFT (plus queue and network); decode becomes TPOT", "a server batches many users into each step, so one weight read serves B tokens", "it also adds queues, percentiles, SLOs and goodput", "at batch 1 on a laptop, goodput and batching don't apply"]},
+    {"with": "perf-2-scaling-book-inference/critical-batch-size", "q": "Mac decode at batch 1 vs server decode at a large batch: what flips decode from memory-bound to compute-bound, and why can't one user ever get there?", "answer": ["batching many sequences: each weight byte then serves B tokens, so I ≈ B", "past B_crit (≈ 295 on H100 in BF16) the weight matmuls become compute-bound", "one user has one token per step, so I stays at 1 however fast the machine"]}
+  ],
+  "predict": {"q": "You run a 2,000-token prompt through the same model on the M3. Before measuring: will prefill tok/s come out above or below 188, and decode above or below 14.12? Give the mechanism for each, then measure.", "answer": "Prefill should be at or above 188 until the chip saturates: more tokens share each weight fetch, the trend the three rows show. Decode should come out below 14.12, because each step also reads the KV cache, which is now about 8× longer than at 244 tokens. These are predictions from the card's mechanisms, not measured numbers: run the lab and see whether prefill has already flattened."},
+  "apply": {"task": "Run labs/measure_ollama.py with three prompt lengths of your own (roughly 30, 250 and 1,000 tokens). For each, compute prefill tok/s, decode tok/s, effective bandwidth (decode tok/s × 3.4 GB) and the prefill ÷ decode ratio, and put them next to the card's rows.", "done": "You have a 3-row table of your own numbers and can say (1) whether prefill still rises past 244 tokens, (2) whether decode falls as the prompt grows, and (3) whether your effective bandwidth stays near the card's 48–52 GB/s.", "hint": "The card's rows give 51.9, 51.5 and 48.0 GB/s. Close heavy apps first and run each prompt twice: it's a benchmark."},
+  "reflect": [
+    "Which prediction did you get wrong: prefill at 2,000 tokens, or decode?",
+    "Could you explain why N cancels in the H100's 295× without writing the formulas?",
+    "Which relationship is still fuzzy: tokens per weight read → prefill speed, or bytes per step → decode speed?",
+    "Did your own bandwidth number surprise you? What would you check first if it were far below 50 GB/s?",
+    "What will you reopen before the serving card: the timeline, or the bandwidth arithmetic?"
+  ],
+  "revisit": ["perf-1-foundations/roofline-intuition", "perf-1-foundations/gpu-machine"],
+  "prereq": ["perf-1-foundations/roofline-intuition"]
+}

@@ -1,0 +1,120 @@
+{
+  "prime": {
+    "problem": "You want about 1,000 test inputs per task. Random bytes are rejected before they reach real logic, and asking ChatGPT for all of them is too slow and costly. Something has to turn a few good inputs into many cheaply.",
+    "fits": "HumanEval's ground truth can answer any input, so the bottleneck moves to generating inputs. This is EvalPlus's scaling step, sitting between ChatGPT seeding and contract filtering.",
+    "expect": [
+      "~30 ChatGPT seeds per task",
+      "per-type rules (int ± 1, list remove/repeat/insert, str splice)",
+      "the pool feedback loop",
+      "the ingredient mechanism"
+    ],
+    "goal": "Run the mutation loop by hand on a seed, say why type rules keep inputs structurally legal, and name what they can't guarantee."
+  },
+  "attend": [
+    "Which part of the pipeline supplies semantic understanding, and which part only supplies volume?",
+    "Why does choosing the rule by the input's type keep a mutant callable by the same function?",
+    "Mutants go back into the pool. What kind of input does that let the loop reach that a single mutation step can't?",
+    "What does type-awareness fail to protect, and which later step catches it?",
+    "Why does the list rule end up producing the empty list, and why is that a valuable input?"
+  ],
+  "core": {
+    "must": [
+      "LLM seeds are semantically plausible but costly per call → take about 30 per task once → mutate locally with no further model calls → 1,000 inputs per task within an hour",
+      "Rule chosen by the value's type (int ± 1, drop/repeat list item, splice substring) → the mutant keeps the input's shape → the function can still be called on it → far fewer inputs wasted than random fuzzing",
+      "Valid mutants re-enter the pool → later mutants are mutations of mutations → the loop walks toward corners (duplicates, empty lists, boundaries) that hand-written tests skip",
+      "Type ≠ meaning → a mutant can break a semantic precondition (positive n, palindrome) → every mutant is checked against the task's contract before it is kept"
+    ],
+    "elevated": [
+      "Ingredient mechanism reuses fragments seen in valid inputs → mutants stay closer to the valid domain → fewer are thrown away by the contract check"
+    ],
+    "reference": [
+      "the full table-1 rule list (Tuple, Set, Dict, NoneType, bool)",
+      "the three seed prompts",
+      "the one-hour budget",
+      "the ~26% drop rate computed from 1,030 → 764.1"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw the loop as arrows: seed pool → pick → mutate → check → pool. Label what each step contributes, then add one sentence on why ChatGPT is used only at the start.",
+    "checklist": [
+      "ChatGPT gives about 30 valid seeds per task (quality)",
+      "a random pool entry gets one rule chosen by its type (quantity)",
+      "the contract check keeps valid mutants and drops the rest",
+      "kept mutants go back into the pool, so mutations compound",
+      "LLM calls are slow and costly; local mutation is nearly free"
+    ]
+  },
+  "retrieve": [
+    {
+      "q": "Explain why EvalPlus combines an LLM with a dumb mutator instead of using either one alone.",
+      "kind": "concept",
+      "answer": [
+        "LLM alone: good inputs but too slow and costly for 164 × 1,000",
+        "mutator alone from random data: inputs aren't semantically meaningful and get rejected",
+        "together: the LLM's semantics once per task, then cheap scale"
+      ]
+    },
+    {
+      "q": "Walk the worked example from seed <code>([5,3,2,8], [3,2])</code> to <code>([5,3,2,9,3], [])</code>: which rule fires at each step and what each step exercises.",
+      "kind": "mechanism",
+      "answer": [
+        "replace an item with its int mutation: 8 → 9",
+        "repeat an item: a duplicate 3 tests the \"unique\" requirement",
+        "remove an item twice from the second list: [3,2] → [3] → []",
+        "the empty list is the corner hand-written tests usually miss"
+      ]
+    },
+    {
+      "q": "Mutation here has no coverage feedback. What does that cost compared with a coverage-guided fuzzer, and why might the paper accept it?",
+      "kind": "tradeoff",
+      "answer": [
+        "no steering toward unexplored branches or rare shapes, so some are reached only by luck, or not at all",
+        "the paper leans on seed quality (ChatGPT) to place the pool near interesting inputs",
+        "the functions are small, and later reduction keeps only the inputs that matter"
+      ]
+    }
+  ],
+  "compare": [
+    {
+      "with": "paper-2305-01210/mutation-testing",
+      "q": "Both are called \"mutation\". Type-aware input mutation changes inputs; mutation testing changes programs. What is each trying to find, and how does each fail?",
+      "answer": [
+        "input mutation: new inputs that might expose a wrong sample",
+        "mutation testing: seeded program bugs that measure whether tests notice",
+        "input mutation fails by drifting out of the valid domain (contracts catch it)",
+        "mutation testing fails on equivalent mutants and depends on its rule set"
+      ]
+    },
+    {
+      "with": "cs-1-data-structures/testing-your-code",
+      "q": "That card's randomized testing against a brute force and this card's mutation loop both generate many inputs automatically. What design choice makes this one fit arbitrary HumanEval tasks, and when would you prefer the simpler random generator?",
+      "answer": [
+        "there, a hand-written generator per problem produces random small cases",
+        "here, generic per-type rules mutate LLM seeds, so no per-task generator is needed",
+        "a hand-written generator is better when you know the input space well and want exact control over sizes and distributions"
+      ]
+    }
+  ],
+  "predict": {
+    "q": "Imagine a task whose argument must be a sorted list. Commit first: roughly what share of list mutants (remove, repeat, insert-a-mutated-item, replace-with-mutated-item) stay sorted, and which rules are the problem?",
+    "answer": "Remove always keeps a sorted list sorted. Repeat usually breaks it, because the copy is inserted somewhere else, unless it lands next to the original. Insert and replace with an int ± 1 usually break it unless the new value happens to fit. So a large share fail a sortedness contract. Type-awareness gives the shape (a list of ints), not the invariant: the contract filter and the ingredient mechanism are what keep such tasks fed."
+  },
+  "apply": {
+    "task": "Write a tiny mutator for <code>int</code> (x ± 1) and <code>list</code> (remove, repeat, or replace an item with its int mutation), following table 1. Seed the pool with only the card's <code>([5,3,2,8], [3,2])</code>, run 1,000 steps (each step mutates one of the two lists of a random pool entry and adds the result to the pool), and count distinct inputs, inputs with an empty list, and mismatches between the ChatGPT #58 solution from the differential-testing card and <code>sorted(set(l1) &amp; set(l2))</code>. Then add a second seed <code>([6,8,1], [6,8,1])</code> and run again.",
+    "done": "You have both runs' counts and one sentence explaining the difference. In our runs (Python's <code>random</code>, seeds 0, 1, 2) the single-seed pool gave 776–838 distinct inputs, 26–50 with an empty list, and 0 mismatches every time; adding the second seed gave 4–118 mismatches. Mutation by ± 1 rarely drifts far enough to make the intersection hold a value like 8 in both lists, so the bug stays hidden: seed diversity, which is ChatGPT's job, decides what bulk mutation can reach.",
+    "hint": "Store inputs as tuples of tuples so you can put them in a set. The mismatch needs an intersection whose set iteration order isn't ascending, such as {1, 8}."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: how many list mutants keep a sorted invariant, or whether one seed is enough to expose the #58 bug?",
+    "What couldn't you explain cleanly: why the LLM is called only once per task?",
+    "Which relationship is still fuzzy: type rule → legal shape, or legal shape → valid input?",
+    "Could you name one input type table 1 would handle poorly?",
+    "What will you look for in the differential-testing card: where each input's expected output comes from?"
+  ],
+  "revisit": [
+    "paper-2305-01210/humaneval"
+  ],
+  "prereq": [
+    "paper-2305-01210/humaneval"
+  ]
+}

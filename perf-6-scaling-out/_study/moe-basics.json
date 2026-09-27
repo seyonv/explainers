@@ -1,0 +1,64 @@
+{
+  "prime": {
+    "problem": "A dense model computes with every weight for every token, so knowledge and compute grow together. Mixture of experts breaks that link, but at serving time a batch scatters over almost every expert, and each expert gets too few tokens to use the GPU well.",
+    "fits": "First card of the MoE block. Course 2's critical batch size (≈ 295 on an H100) is the idea it builds on: an MoE layer divides the batch among experts, so the critical batch is multiplied. Expert parallelism, DeepSeek-V3 and MegaScale-Infer all answer the problem this card sets up.",
+    "expect": ["router, top-k and gate values (three gating orders)", "total vs active parameters", "expert capacity, dropped tokens and the auxiliary loss", "the MoE critical batch B_crit · E/k", "experts touched vs batch size"],
+    "goal": "Explain what an MoE layer computes and stores, and predict, for a given model and batch, how many experts a decode step touches and whether any of them is compute-bound."
+  },
+  "attend": [
+    "What does the router compute for each token, and why is it so cheap next to one expert?",
+    "Why does Switch keep the un-renormalised gate value with top-1, while Mixtral and DeepSeek-V3 renormalise over the kept experts?",
+    "Why does even a perfectly balanced router drop tokens at capacity factor 1.0?",
+    "Why does the step's memory traffic look like a dense model's by batch 128, while each expert is still far from compute-bound?",
+    "What does the aux loss push toward, and why is it built from a non-differentiable f times a differentiable P?"
+  ],
+  "core": {
+    "must": [
+      "The router scores all E experts per token and keeps the top k → the token computes with k experts only → memory follows total parameters (671B for DeepSeek-V3), FLOPs follow active ones (37B) → an MoE stores knowledge cheaply per token of compute",
+      "A batch of B tokens splits over E experts → each expert sees ≈ B·k/E tokens → it only reaches B_crit when B ≥ B_crit · E/k → 1,180 for Mixtral and 9,440 for DeepSeek-V3 on an H100 → at ordinary decode batches every expert is memory-bound (the shrinking batch problem)",
+      "A token misses a given expert with probability 1 − k/E → by B = 128 DeepSeek-V3 touches 98.3% of experts (uniform routing) → the step reads nearly all 671 GB like a dense model while each expert has ~4 tokens of work → the byte saving fades with batch, which is why large MoEs pool tokens with expert parallelism",
+      "Routers pile tokens on favourites → static-shape capacity drops the overflow through the residual (25.1% at factor 1.25 with a skewed router) and a bigger buffer mostly buys empty slots → balancing (aux loss α·N·Σf·P, or V3's bias) is what lets capacity 1.0–1.25 suffice"
+    ],
+    "elevated": [
+      "Halving bytes per weight (FP8 weights, BF16 math) halves B_crit → DeepSeek-V3's MoE critical batch drops from 9,440 to ≈ 4,724 on an H100 → quantization shifts where experts turn compute-bound, which is why course 2's TPU int8 figure (3,840) differs"
+    ],
+    "reference": [
+      "Shazeer's noise term and W_noise",
+      "Switch Table 1 values and capacity-factor sweep",
+      "Mixtral's 46.70B / 12.88B recount details",
+      "α = 10⁻² and its sweep range",
+      "per-expert parameter counts (Mixtral 176.2M, V3 ≈ 44M)"
+    ]
+  },
+  "compress": {
+    "prompt": "Explain an MoE layer in 3–5 sentences from memory, then write two chains: one from \"top-k of E\" to \"memory ≠ compute\", one from \"batch splits over experts\" to \"needs expert parallelism\".",
+    "checklist": [
+      "router scores each expert; the token uses only the top k, weighted by gates",
+      "total parameters set memory; active parameters set FLOPs",
+      "each expert sees B·k/E tokens, so the critical batch is multiplied by E/k",
+      "most experts are touched once the batch is modest, so bytes read approach the full model",
+      "imbalance causes drops or stragglers; balancing keeps load near the mean"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain the difference between total and active parameters, and say which one sets memory and which sets FLOPs for DeepSeek-V3 in FP8.", "kind": "concept", "answer": ["total = every weight stored (671B), active = weights one token uses (37B)", "memory: 671 GB at 1 byte per parameter, more than one 8×H100 node (640 GB)", "FLOPs: about 2 × 37B = 74 GFLOP per token, like a 37B dense model"]},
+    {"q": "Route one token with logits [2.0, 1.2, 0.3, −0.5, 1.6, −1.0, 0.1, 0.7] top-2 the Mixtral way. Which experts, which gates, and how does Switch's top-1 differ?", "kind": "mechanism", "answer": ["Mixtral: keep the top 2 logits (experts 0 and 4), softmax over those two: 0.599 and 0.401", "Switch: softmax over all 8, pick expert 0 alone, and keep its gate 0.350 un-renormalised", "that 0.350 is what lets the gradient reach the router with k = 1"]},
+    {"q": "An engineer proposes raising the capacity factor from 1.25 to 2.0 to stop a skewed router dropping tokens. What does the card's lab say they'd get, and what should they do instead?", "kind": "tradeoff", "answer": ["with Zipf skew, drops only fall from 25.1% to 12.7%, while empty slots rise from 40.1% to 56.3%", "so compute and memory are paid for empty slots and tokens still drop", "fix the imbalance itself: an aux loss (or V3's bias), then a factor of 1.0–1.25 suffices"]},
+    {"q": "How many of DeepSeek-V3's routed experts does a decode step touch at batch 16, under uniform routing? What does that imply for bytes read per token vs batch 1?", "kind": "mechanism", "answer": ["1 − (1 − 8/256)^16 ≈ 39.8% of the 256 per layer", "far more bytes are read per step than at B = 1, but they're shared by 16 tokens", "so bytes per token fall with batch while each expert still sees only ~0.5 tokens on average"]}
+  ],
+  "compare": [
+    {"with": "perf-6-scaling-out/deepseek-v3-architecture", "q": "Switch's aux loss vs DeepSeek-V3's bias-based balancing: what does each change to get even load, which choice keeps the model's outputs untouched, and how does each fail?", "answer": ["the aux loss adds α·N·Σf·P to the training objective; V3 adds a per-expert bias used only for selection", "the bias never enters the gate or the loss, so nothing pulls outputs toward balance", "the loss fails by hurting quality if α is too large; bias balancing is batch-wise, so single sequences or domain-shifted serving batches can still be imbalanced"]},
+    {"with": "perf-2-scaling-book-inference/critical-batch-size", "q": "Dense critical batch vs MoE critical batch: what is the same physics, and which design choice multiplies the number?", "answer": ["same: an expert's GEMM is compute-bound once its tokens per weight byte reach the ops:byte ratio (~295 on H100 BF16)", "the router divides the batch among E experts with k per token", "so the batch the whole layer needs is B_crit × E/k: 4× for Mixtral, 32× for DeepSeek-V3"]}
+  ],
+  "predict": {"q": "Qwen3-235B-A22B routes top-8 of 128 experts. On an H100 in BF16, what decode batch does each expert need to be compute-bound, and is it closer to Mixtral's or DeepSeek-V3's? Commit first.", "answer": "E/k = 128/8 = 16, so B ≥ 295 × 16 = 4,720 tokens per step: between Mixtral (1,180) and DeepSeek-V3 (9,440). With FP8 weights and BF16 math it would halve to about 2,360. Either way, far above any single replica's decode batch."},
+  "apply": {"task": "Run labs/moe-router.py, then answer from the model: (1) with 1,024 tokens top-1 to 8 experts at capacity factor 1.25, how many slots does each expert get? (2) What share of Mixtral's experts does a batch of 4 touch, and of DeepSeek-V3's a batch of 2? (3) Change ZIPF_S to 2.0 and record the drop rate at factor 2.0 and the aux loss. Explain in one sentence why the aux loss rose.", "done": "You have the slot count, two touched shares, the two lab values from your ZIPF_S = 2.0 run, and a one-sentence explanation tying the loss to Σ f·P.", "hint": "(1) 1,024 / 8 × 1.25 = 160 slots. (2) Mixtral 1 − 0.75⁴ = 68.4%; V3 1 − (1 − 8/256)² = 6.2%. (3) The card reports drops of 40.7% at factor 2.0 and an aux loss of 0.0299 at ZIPF_S = 2.0: the loss is N·Σ f_i·P_i, which grows as load concentrates on fewer experts (it is smallest when every f_i = P_i = 1/N)."},
+  "reflect": [
+    "Which prediction did you get wrong: Qwen3's critical batch, or how fast the touched share saturates?",
+    "Could you explain the shrinking batch problem without quoting the formula?",
+    "Which relationship is still fuzzy: top-k → active parameters → FLOPs, or batch → experts touched → bytes read?",
+    "Did the capacity-factor result change how you think about \"just add a buffer\"?",
+    "What will you look for on the expert-parallelism card: how tokens from many GPUs reach one expert?"
+  ],
+  "revisit": ["perf-2-scaling-book-inference/critical-batch-size", "perf-2-scaling-book-inference/worked-problems"],
+  "prereq": ["perf-2-scaling-book-inference/critical-batch-size"]
+}

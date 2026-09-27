@@ -1,0 +1,68 @@
+{
+  "prime": {
+    "problem": "When a request is admitted nobody knows how long its answer will be, and its KV grows every step. Reserve for the worst case and half the reservation sits empty; reserve only for the next step and eventually someone must be evicted, and a too-eager scheduler evicts the same request over and over.",
+    "fits": "Fifth card of group 3. The block manager showed that on-demand allocation can run out of blocks; this card decides what to do about it: how much to charge at admission, whom to evict, how to bring them back, and when to refuse work at the door.",
+    "expect": [
+      "three admission philosophies: reserve, optimistic, estimate",
+      "victim rules: newest, lowest priority, least progress",
+      "recompute vs swap: break-even at ≈ 16.1 GB/s here",
+      "thrashing and four fixes",
+      "backpressure: bounded queues and 429s"
+    ],
+    "goal": "Compare the three admission philosophies with numbers, decide recompute vs swap from the break-even formula, diagnose thrashing on a trace and pick a fix, and say when to stop admitting altogether."
+  },
+  "attend": [
+    "Why does reserve-to-completion fit 317 requests while optimistic admission fits about 665 of the same kind?",
+    "Why doesn't the recompute-vs-swap break-even depend on how many tokens are restored?",
+    "If swap wins on paper for this model, why does vLLM V1 recompute by default?",
+    "Request 4 is admitted on its first chunk and then evicted twice. Which admission check lets that happen?",
+    "Why does every fix on this card eventually just move the wait into the queue?"
+  ],
+  "core": {
+    "must": [
+      "Unknown output lengths → reserve prompt + max_new_tokens (never preempts, 48% of each reservation used, 317 fit) or charge only the next step (≈ 665 fit, may preempt) or estimate and correct (SGLang's decaying ratio) → a packing-vs-eviction trade",
+      "Out of blocks for a running request → evict a victim (newest: O(1), least work lost; lowest priority: protects classes; least progress: least decode lost) → free its KV → restore by recompute or swap",
+      "Recompute costs n·2P ÷ C, swap costs 2·n·b_kv ÷ B_link → both grow with n → swap wins when B_link > b_kv·C ÷ P ≈ 16.1 GB/s → engines still recompute because re-prefill rides in normal steps and needs no host memory",
+      "Admitting on a first chunk while running requests keep growing → the newcomer is evicted as newest, readmitted, evicted again → thrashing (36 wasted tokens for a 30-token prompt) → check the whole prompt fits plus a small watermark"
+    ],
+    "elevated": [
+      "SGLang's new_token_ratio starts at 0.7, decays by ≈ 0.001 per decode step to 0.098 and jumps back up after a retraction → an additive-decrease, jump-up controller like TCP's congestion window"
+    ],
+    "reference": [
+      "the 221-token time-averaged output length (E[o²] ÷ 2E[o])",
+      "TGI's max_concurrent_requests default of 128 and Triton's queue-policy fields",
+      "the illustrative 25 GB/s and 10 GB/s PCIe rates"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw a decision tree: admission (reserve / optimistic / estimate) → out of blocks (victim rule) → restore (recompute / swap) → still overloaded (429). At each branch write the number from the card that argues for it.",
+    "checklist": [
+      "reserve: 317 fit, never preempts; optimistic: ≈ 665 fit, may preempt",
+      "newest-first victim: O(1), oldest requests always finish",
+      "swap beats recompute above ≈ 16.1 GB/s on paper; recompute is the default in practice",
+      "thrashing: admitted on a chunk, evicted as newest, readmitted",
+      "whole prompt + small watermark removes 98–100% of preemptions; 429s when the queue is too long"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain thrashing: what causes it, why the not-preempted guard in step() doesn't prevent it, and what it costs.", "kind": "concept", "answer": ["a request is admitted when only its first chunk fits, while running requests keep growing", "it is the newest, so it is the victim when blocks run out; it is readmitted a step later", "the guard only blocks admission in the same step", "cost: work thrown away (36 tokens for request 4; 995,150 recomputed tokens at 2.1 GB)"]},
+    {"q": "Walk through recompute vs swap for restoring 1,024 tokens on the running example, and derive the break-even link speed.", "kind": "mechanism", "answer": ["recompute: 2 × 8.03e9 × 1,024 ÷ 989e12 ≈ 16.6 ms", "swap: 1,024 × 131,072 B = 134 MB out and back ÷ 25 GB/s ≈ 10.7 ms", "break-even: B_link = b_kv · C ÷ P ≈ 16.1 GB/s, independent of n"]},
+    {"q": "Your KV pool is 8.4 GB. Compare reserve-to-completion with optimistic admission and with whole-prompt + 5% watermark, using the card's E4 numbers.", "kind": "tradeoff", "answer": ["reserve: 4,663 tok/s, TTFT p99 17.9 s, no preemptions", "optimistic (1% watermark): 6,108 tok/s, TTFT p99 4.1 s, 63 preemptions", "whole prompt + 5%: 6,145 tok/s, TTFT p99 3.9 s, 0 preemptions"]},
+    {"q": "Why not cap max_num_seqs low enough that memory never runs out?", "kind": "tradeoff", "answer": ["the cap throttles compute as well as memory: 16 seats give 2,694 tok/s vs 8,980 at 512", "the queue grows faster, so median wait goes 0.52 → 38.9 s", "a cap is a good latency knob (TPOT 5.8 vs 37.2 ms), not a memory fix"]}
+  ],
+  "compare": [
+    {"with": "llm-request-scheduler/step-algorithm", "q": "step() already has one anti-thrashing rule. How is it different from the four fixes on this card, and why is it not enough on the toy trace?", "answer": ["the not-preempted guard stops readmission in the same step", "the fixes change what admission checks (whole prompt, watermark) or when (cooldown)", "request 4 is readmitted one step later, so the guard alone leaves 3 preemptions"]},
+    {"with": "perf-4-attention-kv/paged-sharing", "q": "Course 4's PagedAttention card covers preemption in the original vLLM (swap or recompute per sequence group). What changed in V1, and which part of this card's formula explains the choice?", "answer": ["V1 defaults to recompute", "the formula alone says swap wins above ≈ 16 GB/s", "what the formula leaves out: recompute rides in normal steps, needs no pinned host memory, and freed prompt blocks may still be prefix-cache hits"]}
+  ],
+  "predict": {"q": "The model switches to an FP8 KV cache (64 KiB per token). Before computing: does the recompute-vs-swap break-even link speed go up or down, and does that make swap more or less attractive?", "answer": "Down, to about 8.1 GB/s: half the bytes to move for the same prefill FLOPs. Swap becomes attractive on even slower links. The recompute cost doesn't change, so any link faster than ≈ 8 GB/s now moves the KV faster than it could be rebuilt."},
+  "apply": {"task": "A request has a 1,024-token prompt and max_new_tokens = 2,048, with the course workload's outputs (time-averaged 221 generated tokens held). (a) How many such requests fit in 487,504 tokens under reserve-to-completion and under optimistic admission? (b) Compute the swap/recompute break-even link speed for an FP8 KV cache. (c) Implement the whole-prompt admission check in labs/mini_scheduler.py (compare can_fit(r, r.remaining) instead of the chunk) and run the toy trace: report steps, preemptions, last finish and mean E2E.", "done": "(a) 487,504 ÷ 3,072 ≈ 158 reserved vs 487,504 ÷ (1,024 + 221) ≈ 391 optimistic. (b) 65,536 × 989e12 ÷ 8.03e9 ≈ 8.07 GB/s. (c) 22 steps, 1 preemption, last finish ≈ 105.5 ms, mean E2E ≈ 59.5 ms, matching the card's \"+ whole prompt must fit\" row.", "hint": "In (c) only the admission check changes; the chunk you actually compute this step is still min(remaining, budget)."},
+  "reflect": [
+    "Which prediction did you get wrong: the FP8 break-even, or which way it moves the choice?",
+    "Could you explain why engines recompute even when the formula says swap?",
+    "Which relationship is still fuzzy: admit on a chunk → evict as newest, or watermark → fewer evictions → later finish?",
+    "Which fix would you ship first on a real server, and what would you measure to know it worked?",
+    "What will you revisit before the policies card: the victim rule's link to admission order?"
+  ],
+  "revisit": ["llm-request-scheduler/block-manager", "llm-request-scheduler/step-algorithm", "llm-request-scheduler/kv-cache"],
+  "prereq": ["llm-request-scheduler/block-manager"]
+}

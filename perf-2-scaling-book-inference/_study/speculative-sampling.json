@@ -1,0 +1,119 @@
+{
+  "prime": {
+    "problem": "At batch 1 a decode step spends almost all its time reading the weights and does a sliver of math. Batching fills that idle math with other users' tokens, which helps throughput but not the single user waiting. Speculative sampling fills it with guesses for the same user, and you need to know when that is exact, when it pays and when it backfires.",
+    "fits": "The last card: Appendices D and A. It uses the flat-then-linear step time from the critical-batch card and the step-time formula, and Appendix A checks that shape against a real measurement.",
+    "expect": ["draft → verify in one pass → keep the longest correct prefix", "the accept rule min(1, p/q) and the residual", "α, K, c and the speedup formula", "why it fades past B<sub>crit</sub>", "Appendix A: is the batch-240 knee real?"],
+    "goal": "Explain why verifying K tokens costs about one step, compute the expected speedup for given α, K and c, and predict at which batch speculation stops helping."
+  },
+  "attend": [
+    "Why does scoring K + 1 tokens in one big-model pass cost about the same as scoring one, at batch 1?",
+    "What exactly happens at the first wrong draft token, and what happens if all K are right?",
+    "How can probabilistic acceptance leave the output distribution exactly equal to the target's?",
+    "Why does the best lookahead K grow with the acceptance rate α?",
+    "Why does speculation turn into a slowdown at batch 256, and what does Appendix A's measurement say about the knee it runs into?"
+  ],
+  "core": {
+    "must": [
+      "At small batch a step is bound by reading the weights (4.79 ms for Llama-3.1-8B), and verifying 5 tokens adds only 81 µs of math → one big-model pass scores K + 1 positions for about the price of one → accepted drafts are free tokens",
+      "Accept each draft x with probability min(1, p(x)/q(x)); on rejection resample from max(0, p − q) → every emitted token is distributed exactly as p → quality is unchanged, only the trajectory differs",
+      "Expected tokens per verify = (1 − α<sup>K+1</sup>)/(1 − α) and each round costs K draft steps plus one verify → speedup = that ÷ (K·c + 1) → cheap, well-matched drafts (small c, high α) win; the best K rises with α",
+      "Verification multiplies tokens per step by K + 1 → once B·(K + 1) passes B<sub>crit</sub> the verify step turns compute-bound → gains fade (2.12× at B = 64) and invert (0.70× at B = 256) → speculation is the latency lever where batch is limited, not a throughput lever"
+    ],
+    "elevated": [
+      "Appendix A's measured step time is flat, then linear, with the knee near batch 240 per data-parallel shard → the rule is roughly true but the knee is soft because the TPU prefetches weights while HBM is otherwise idle",
+      "KV loads are shared across the verified tokens of a sequence → speculation can also help throughput at long context, where KV reads dominate"
+    ],
+    "reference": [
+      "Leviathan et al.'s notation (γ for lookahead) and theorem numbers",
+      "the toy lab (vocab 8, 200,000 chains, TV 0.002 vs 0.152)",
+      "the book's Chinchilla 70B + 4B figure (3–4 best on XSum)",
+      "drafter heads (Medusa, EAGLE) and n-gram drafts",
+      "Appendix A's 600M-parameter layer and 365 µs"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw one verify round for K = 4 with the second draft rejected: which tokens are kept, which is replaced, which are discarded. Then write the speedup formula and one line on why the gain disappears at large batch.",
+    "checklist": [
+      "draft K tokens cheaply; one big pass scores all K + 1 positions",
+      "keep the prefix up to the first rejection, replace that token with the target's, drop the rest; all accepted → bonus token",
+      "min(1, p/q) plus the residual keeps the output exactly p",
+      "speedup = (1 − α<sup>K+1</sup>) / ((1 − α)(K·c + 1))",
+      "past B<sub>crit</sub> the extra verify tokens cost real FLOPs"
+    ]
+  },
+  "retrieve": [
+    {
+      "q": "Explain why speculative sampling is a latency win but not a way to raise throughput on a busy server.",
+      "kind": "concept",
+      "answer": [
+        "it spends the idle FLOPs of a memory-bound step on one user's guesses",
+        "a busy server fills the same idle FLOPs with other users' tokens, which gives more total tokens per step",
+        "with large batches the step is already near compute-bound, so extra verify tokens cost their own FLOPs"
+      ]
+    },
+    {
+      "q": "Walk through the card's worked example: Llama-3.1-8B with a 1B draft, α = 0.8, K = 4. Give c, E, the round time and the speedup.",
+      "kind": "mechanism",
+      "answer": [
+        "target step 16.06 GB / 3.35 TB/s = 4.79 ms; draft 2 GB / 3.35 TB/s = 0.597 ms; c = 0.125",
+        "E = (1 − 0.8<sup>5</sup>) / 0.2 = 3.36 tokens per verify",
+        "round = 4 × 0.597 + 4.79 = 7.18 ms",
+        "speedup = 3.36 / (4 × 0.125 + 1) = 2.24× → ≈ 468 tok/s"
+      ]
+    },
+    {
+      "q": "Your acceptance rate is only 0.6. Would you raise or lower K from 4, and would a bigger (more accurate but slower) draft help?",
+      "kind": "tradeoff",
+      "answer": [
+        "lower it: at α = 0.6 the card's table peaks at K = 2 (1.57×), and K = 6 falls to 1.39×",
+        "a bigger draft raises c, which multiplies the draft cost by K; it only helps if α rises enough to pay for it",
+        "the try-this shows a 3B draft at α = 0.6, K = 6 becomes a 0.75× slowdown"
+      ]
+    }
+  ],
+  "compare": [
+    {
+      "with": "perf-2-scaling-book-inference/critical-batch-size",
+      "q": "Batching and speculation both spend the idle math below B<sub>crit</sub>. What does each fill it with, who benefits, and why can't you have both at full strength?",
+      "answer": [
+        "batching fills it with other users' tokens: total throughput rises, each user still gets one token per step",
+        "speculation fills it with one user's guesses: that user's tokens per step rise",
+        "both push tokens per step toward B<sub>crit</sub>; once B·(K + 1) passes it, extra tokens cost FLOPs, so the two compete"
+      ]
+    },
+    {
+      "with": "perf-5-engines/spec-decoding-math",
+      "q": "The book describes speculation qualitatively; Leviathan's analysis gives α and the speedup theorem. What assumption does the formula make that real text breaks, and which way does it bias the estimate?",
+      "answer": [
+        "it treats acceptances as independent with one fixed α",
+        "real acceptance varies by position and content (code is more predictable than prose, per the book's figure)",
+        "so a single α can over- or under-state the real speedup; the best K must be tuned on the actual data"
+      ]
+    }
+  ],
+  "predict": {
+    "q": "A draft that matches the target much better (α = 0.9) with the same 1B cost, K = 4. Commit first: is the speedup above or below 2.5×? And if you swap to a 3B draft at the same α?",
+    "answer": "E = (1 − 0.9<sup>5</sup>)/0.1 = 4.10 tokens per verify; speedup = 4.10 / (4 × 0.125 + 1) = 2.73×, above 2.5. With a 3B draft, c = 3/8.03 = 0.374, so the speedup is 4.10 / (4 × 0.374 + 1) = 1.64×: the better match is eaten by the slower draft."
+  },
+  "apply": {
+    "task": "Extend part (b) of <code>labs/speculative-sampling.py</code>: for α = 0.9 and α = 0.5, compute E and the speedup at K = 1, 2, 4 and 6 with the 1B draft (c = 0.125), and at K = 4 with a 3B draft (c ≈ 0.374). Find the best K for each α. Then say at which batch (with K = 4) the verify step crosses B<sub>crit</sub> ≈ 295 on an H100.",
+    "done": "At α = 0.9, K = 4 gives ≈ 2.73× (≈ 1.64× with the 3B draft) and larger K keeps helping (K = 6 ≈ 2.98×); at α = 0.5 the best is K = 2 at ≈ 1.40× (K = 1 ≈ 1.33×, K = 4 ≈ 1.29×). The verify step crosses 295 once B × 5 > 295, i.e. at B ≈ 60.",
+    "hint": "E = (1 − α<sup>K+1</sup>)/(1 − α); speedup = E / (K·c + 1). The crossing: B(K + 1) > 295 → B > 59, so from B = 60."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: the α = 0.9 speedup, or how much the 3B draft costs?",
+    "Could you explain, without the formula, why speculation keeps the output distribution exact?",
+    "Which relationship is still fuzzy: idle FLOPs → free verification, or B(K + 1) → B<sub>crit</sub> → slowdown?",
+    "Did Appendix A's soft knee change how literally you take <i>B > 240</i>?",
+    "Which lever would you pull first for a single-user edge deployment, and why this one over batching?"
+  ],
+  "revisit": [
+    "perf-2-scaling-book-inference/critical-batch-size",
+    "perf-2-scaling-book-inference/step-time",
+    "perf-2-scaling-book-inference/what-we-optimize"
+  ],
+  "prereq": [
+    "perf-2-scaling-book-inference/critical-batch-size",
+    "perf-2-scaling-book-inference/step-time"
+  ]
+}

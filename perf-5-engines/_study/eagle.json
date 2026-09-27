@@ -1,0 +1,65 @@
+{
+  "prime": {
+    "problem": "Separate drafts are too expensive and Medusa's heads guess blind about what was sampled. A draft needs to be nearly as cheap as a head, as accurate as a real model, and exact under sampling. EAGLE, MTP and n-gram lookup are three ways to get there.",
+    "fits": "Last speculative card. It builds on Medusa's tree verification and Part I's exact acceptance rule, and ends with why the gain fades at batch 64 in a real engine.",
+    "expect": ["feature-level drafting (second-to-top hidden state)", "the shifted sampled token", "multi-round speculative sampling on a tree (exact)", "EAGLE-2 dynamic trees, EAGLE-3 fused features", "DeepSeek-V3 MTP and n-gram/prompt lookup"],
+    "goal": "Explain what EAGLE's draft predicts and why feeding it the sampled token matters, estimate the draft's cost on the running example, and choose between EAGLE, MTP and n-grams for a workload and batch size."
+  },
+  "attend": [
+    "Why is predicting the next feature easier for a small draft than predicting the next token?",
+    "What ambiguity does the shifted token resolve, and why did it buy more (1.9 → 2.8×) than switching to features did?",
+    "How does multi-round speculative sampling try several siblings and still return an exact sample from p?",
+    "Why does the reused LM head dominate the draft's cost for Llama-3.1-8B but not for Vicuna-7B?",
+    "Why did SGLang's batch-64 run use a 3-token chain and no tree?"
+  ],
+  "core": {
+    "must": [
+      "Draft on the target's features, not tokens → a richer, more regular signal → one decoder layer suffices → then add the sampled token one step ahead → each branch has one right answer → draft accuracy ≈ 0.8 (Medusa ≈ 0.6), τ 3.2–4.5",
+      "Verify the tree with the target in one pass → at each node try siblings in turn, subtracting each from the residual → with one child this is exactly min(1, p/q) → lossless at any temperature",
+      "Speculation turns spare compute into tokens → each sequence can add only about 295 ÷ B verified tokens before the H100 step turns compute-bound (4.6 at B = 64) → trees must shrink to short chains → EAGLE-3 1.81× at B = 2 falls to 1.38× at B = 64, EAGLE-1 to about 1×",
+      "The cheapest draft is a lookup of what followed the same tokens earlier → c ≈ 0 → great when output copies input (2.53× on summarisation) → weak on free text (1.12–1.14× on open QA)"
+    ],
+    "elevated": [
+      "The draft reuses the target's 128k-vocabulary LM head → 525M of its 777M parameters → ≈ 0.46 ms per draft pass on the H100 (c ≈ 0.10) → five passes cost 1.48× a plain step → vocabulary size drives draft cost",
+      "MoE targets verify several draft tokens that route to different experts → the verify pass reads more expert weights than a normal step → Mixtral only 1.50×"
+    ],
+    "reference": [
+      "EAGLE's training recipe (68k ShareGPT, noise U(−0.1, 0.1), AdamW settings, w_cls = 0.1)",
+      "the static tree shape (k = 4 at the root)",
+      "per-model tables of n-α and τ",
+      "DeepSeek-V3 MTP loss weights (0.3 then 0.1)"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw EAGLE's draft pipeline (features + shifted tokens → FC → one decoder layer → next feature → target's LM head → draft token) and write one line each for EAGLE-2, EAGLE-3, MTP and n-grams: what changes and when it wins.",
+    "checklist": [
+      "trained part: FC 2h → h plus one decoder layer; embedding and LM head borrowed and frozen",
+      "the sampled token resolves the branch; verification is exact multi-round sampling",
+      "EAGLE-2: tree shape by draft confidence (calibrated), 20–40% faster",
+      "EAGLE-3: direct token prediction, fused low/mid/high features, scales with data",
+      "MTP: trained with the model, reused as a 1-token draft (85–90% accepted, 1.8×)",
+      "n-grams: free, strong only when output copies input"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain the 'always vs am' problem and why a feature-only draft can't solve it however well it's trained.", "kind": "concept", "answer": ["after 'I' the target might sample 'always' or 'am', and each leads to a different next feature", "the feature before sampling is the same in both cases, so one input maps to two targets", "only the sampled token distinguishes them, so the draft must be given it"]},
+    {"q": "Walk through multi-round speculative sampling at a node with k = 2 sibling drafts t₁ ~ p̂₁ and t₂ ~ p̂₂: what is tested, what is updated, and what happens if both fail?", "kind": "mechanism", "answer": ["accept t₁ if r < p(t₁)/p̂₁(t₁); if so, go deeper", "else set p ← norm(max(0, p − p̂₁)) and test t₂ against the updated p", "if t₂ also fails, update again and sample the bonus token from what's left", "the result is an exact sample from the target's p"]},
+    {"q": "Choose a draft for three deployments: (a) code-editing assistant at low concurrency, (b) DeepSeek-V3 serving, (c) a chat API at batch 64 on an H100 with Llama-3.1-8B. Justify each.", "kind": "tradeoff", "answer": ["(a) n-gram/prompt lookup: output copies the input, draft is free", "(b) the model's own MTP module: already trained, 85–90% second-token acceptance", "(c) EAGLE-3 with a short chain: 1.38× at 64 in SGLang; trees don't fit the ≈ 4.6 tokens per sequence of headroom"]},
+    {"q": "Using the paper's chain acceptance rates, estimate τ for a 5-token chain on LLaMA2-Chat 70B at T = 0 (0-α … 4-α = 0.75, 0.69, 0.65, 0.64, 0.64) and compare with Vicuna-7B's 3.31.", "kind": "mechanism", "answer": ["τ ≈ 1 + 0.75 + 0.75·0.69 + … ≈ 2.96 (our arithmetic)", "lower than Vicuna-7B's 3.31 because every position's α is lower", "an estimate only: the α's aren't independent"]}
+  ],
+  "compare": [
+    {"with": "perf-5-engines/medusa", "q": "Both Medusa and EAGLE draft from the target's hidden state and verify a tree. What is fundamentally different about what each drafter sees, which choice makes EAGLE exact and more accurate, and when might Medusa still be the pragmatic pick?", "answer": ["Medusa: K parallel heads from one state; EAGLE: an autoregressive one-layer draft fed features and sampled tokens", "the sampled token removes branch ambiguity; the exact multi-round rule keeps the distribution", "Medusa if your engine already supports its heads and you accept non-exact sampling, or you can't train an autoregressive draft"]},
+    {"with": "perf-6-scaling-out/deepseek-v3-architecture", "q": "DeepSeek-V3's MTP module is trained with the model for better training signal and later reused as a draft. How does that change the economics compared with training an EAGLE draft after the fact, and what limits it?", "answer": ["no separate training run: the draft comes free with pretraining", "it is aligned with the target by construction (85–90% acceptance)", "depth D = 1 gives at most 2 tokens per step, while EAGLE's τ is 3.2–4.5", "and MoE verification reads more experts per step"]}
+  ],
+  "predict": {"q": "On the running example, EAGLE with 5 draft passes gives a rough ceiling of 492 tok/s at τ ≈ 3.5. If you cut to 3 draft passes and τ somehow stayed at 3.5, what ceiling would you get, and why won't τ actually stay at 3.5? Commit first.", "answer": "Cycle = 4.79 + 3 × 0.46 = 6.19 ms, so 3.5 ÷ 6.19 ms ≈ 566 tok/s (our arithmetic). But a depth-3 draft can propose at most 3 tokens along any path, so τ is capped at 4 and will be lower than with 5 passes, since the deeper positions that added accepted tokens are gone. Fewer passes trade τ for cycle time, which is exactly the knob engines turn down at large batch."},
+  "apply": {"task": "Reproduce the card's H100 cost model for an EAGLE draft on Llama-3.1-8B: (a) draft-pass bytes from the decoder layer (218.1M), the FC (33.6M) and the reused LM head (525.3M), in BF16, and its time at 3.35 TB/s; (b) cycle time for 3 and 5 passes and the rough ceiling at τ = 3.5; (c) the per-sequence verified-token allowance 295 ÷ B for B = 2, 24 and 64, and match it against SGLang's measured EAGLE-1 and EAGLE-3 gains at those batches.", "done": "A draft-pass time, two cycle times and ceilings, and a three-row allowance table annotated with the measured gains.", "hint": "Check after trying (our arithmetic): (a) 777M × 2 B = 1.55 GB → 0.46 ms. (b) 3 passes: 6.19 ms → ≈ 566 tok/s; 5 passes: 7.11 ms → ≈ 492 tok/s. (c) B = 2: 147.5 tokens (EAGLE 1.40×, EAGLE-3 1.81×); B = 24: 12.3 (0.93×, 1.39×); B = 64: 4.6 (0.99×, 1.38×)."},
+  "reflect": [
+    "Which prediction did you get wrong: the 3-pass ceiling, or why τ can't stay the same?",
+    "Could you explain why EAGLE-3 dropped feature prediction without contradicting why EAGLE-1 adopted it?",
+    "Which relationship is still fuzzy: sampled token → less ambiguity → higher α, or batch size → headroom per sequence → chain length?",
+    "Which draft would you try first for your own workload, and what would you measure to confirm it?",
+    "Is there anything about MoE verification you couldn't explain in two sentences?"
+  ],
+  "revisit": ["perf-5-engines/medusa", "perf-5-engines/spec-decoding-math", "perf-4-attention-kv/mla"],
+  "prereq": ["perf-5-engines/medusa"]
+}

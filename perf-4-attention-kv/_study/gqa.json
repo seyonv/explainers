@@ -1,0 +1,123 @@
+{
+  "prime": {
+    "problem": "Every decode step reads every cached key and value. With one K and V head per query head (MHA), Llama-3.1-8B's shape would cache 512 KiB per token and only 14 sequences of 8k would fit on an H100. MQA shares one K/V head for all queries, but loses quality and trains unstably.",
+    "fits": "First card on making each token's KV smaller. The FlashAttention cards changed how attention is computed; from here the course attacks the bytes per token in the capacity formula, starting with the architectural knob Llama already uses.",
+    "expect": [
+      "G groups: GQA-H = MHA, GQA-1 = MQA",
+      "KV cut H/G",
+      "mean-pool conversion + uptraining (α = 0.05)",
+      "decode intensity ≈ query heads per group",
+      "the notation trap: G vs r"
+    ],
+    "goal": "Compute KV bytes, sequences that fit and decode throughput for any G, and explain why the paper picks 8 groups over MQA."
+  },
+  "attend": [
+    "What exactly is shared in GQA, and what stays per head?",
+    "Why does cutting KV heads 4× give almost exactly 4× decode throughput on a full H100, but 32× gives only 28.9×?",
+    "Why does GQA barely raise decode attention's arithmetic intensity toward the 295 ridge?",
+    "Why does a converted-but-not-uptrained GQA model do fine, while MQA needs uptraining to be useful?",
+    "What does \"G\" mean in the paper versus perf-2's attention-intensity card, and which is Llama's 4:1?"
+  ],
+  "core": {
+    "must": [
+      "Group H query heads into G groups sharing one K and V head → KV per token = 2·L·G·d_h·b → cache and per-step reads shrink by H/G → Llama's 8 groups: 128 KiB vs MHA's 512 KiB, 59 vs 14 sequences of 8k",
+      "A full H100 reads its whole pool every step (~19 ms) → smaller KV means more sequences share each step → throughput tracks the KV cut (4× → 4.0×) → until the batch is so large that matmul FLOPs (7.73 ms at MQA's 476) outweigh the weight read → 32× less KV buys 28.9×",
+      "Fewer K/V heads remove capacity the model had → MQA (G = 1) loses quality (−0.6 avg, 53.93 without uptraining) and spikes in training → G = 8 keeps quality within 0.1 of MHA at 5.4× its speed → an intermediate G is the sweet spot"
+    ],
+    "elevated": [
+      "Each K/V row is reused by r = H/G query heads → decode attention intensity ≈ r (4.00 FLOPs/byte for Llama) → still far below 295 → decode attention stays memory-bound for every G, so bytes, not FLOPs, set the step"
+    ],
+    "reference": [
+      "Table 1's per-task ROUGE, BLEU and F1 scores",
+      "the ms vs s axis quirk",
+      "600 TPUv3 chip-days",
+      "the sharding argument for replicated KV heads",
+      "Fig 6's per-G timings"
+    ]
+  },
+  "compress": {
+    "prompt": "Draw the three layouts (MHA, GQA-8, MQA) from memory with 8 query heads, then write one causal chain from G to decode throughput and one from G to quality.",
+    "checklist": [
+      "MHA: one K/V per query head; GQA: one per group; MQA: one for all",
+      "KV per token ∝ G; cut = H/G",
+      "fewer KV bytes → more sequences per full HBM → throughput ∝ cut, until compute-bound",
+      "fewer KV heads → less capacity → MQA quality loss; G = 8 ≈ MHA quality",
+      "conversion = mean-pool K/V projections + ~5% uptraining"
+    ]
+  },
+  "retrieve": [
+    {
+      "q": "Explain why GQA shrinks the KV cache without shrinking the number of attention heads the model computes.",
+      "kind": "concept",
+      "answer": [
+        "query heads stay separate; only K and V projections are shared per group",
+        "the cache stores K and V, so it scales with the number of groups",
+        "each query head still gets its own attention pattern over the shared K, V"
+      ]
+    },
+    {
+      "q": "Walk through the G = 8 row of the card's H100 table: sequences that fit, KV read time, step time, tokens/s.",
+      "kind": "mechanism",
+      "answer": [
+        "KV per 8k sequence 1.074 GB → ⌊63.94 / 1.074⌋ = 59",
+        "KV read 59 × 1.074 GB / 3.35 TB/s = 18.91 ms",
+        "max(0.96 ms FLOPs, 4.79 ms weights) = 4.79 ms",
+        "step 23.70 ms → 2,489 tokens/s"
+      ]
+    },
+    {
+      "q": "You are designing a new model and choosing G. What do you gain and lose going from 8 groups to 1, and when is the gain smaller than the KV cut suggests?",
+      "kind": "tradeoff",
+      "answer": [
+        "8× less KV, more sequences, faster decode",
+        "quality loss and training instability (loss spikes, divergence)",
+        "the gain shrinks once the batch makes the step compute-bound (MQA: 28.9× not 32×), and at short context and small batch weights dominate anyway"
+      ]
+    }
+  ],
+  "compare": [
+    {
+      "with": "perf-4-attention-kv/mla",
+      "q": "GQA and MLA both shrink the KV cache at training time. What is fundamentally different about what each one caches, which choice gives MLA both a smaller cache and better quality in DeepSeek's ablation, and what does MLA pay for it?",
+      "answer": [
+        "GQA caches full K and V for fewer heads; MLA caches one 512-dim latent plus a 64-dim RoPE key shared by all heads",
+        "per-head K and V are rebuilt from the latent through up-projections that absorption folds into the query and output weights",
+        "MLA equals GQA with 2.25 groups in size but beat MHA in DeepSeek's tests",
+        "MLA pays more FLOPs per byte in decode, a separate RoPE path and dedicated kernels"
+      ]
+    },
+    {
+      "with": "perf-2-scaling-book-inference/kv-tricks",
+      "q": "perf-2 listed GQA as one KV trick. This card adds uptraining and the quality curve. When is \"just use fewer KV heads\" not available to a serving team, and what do they reach for instead?",
+      "answer": [
+        "G is fixed when the model is trained; Llama-3.1-8B ships with 8",
+        "converting needs ~5% of pre-training compute to recover quality",
+        "serving teams use FP8 or 2-bit KV and paging instead"
+      ]
+    }
+  ],
+  "predict": {
+    "q": "Move the card's H100 table to 32k context. For G = 2 (hypothetical), how many sequences fit and what is the step time? How does it compare to the real model at 8k? Commit first.",
+    "answer": "At 32k, G = 2 is 32 KiB × 32,768 = 1.074 GB per sequence, exactly the real G = 8 model's size at 8k. So 59 fit and the step is the same 23.70 ms, 2,489 tokens/s. Context and KV heads trade one for one in the capacity formula (our arithmetic)."
+  },
+  "apply": {
+    "task": "Extend the card's table to 32k context for G = 32, 8, 2, 1: KV per sequence, sequences that fit in 63.94 GB, step time (B·KV/BW + max(2BP/C, W/BW)) and tokens/s. Then compute MQA's gain over MHA and explain why it's larger than at 8k.",
+    "done": "You have a four-row table with one line of arithmetic per row, and your MQA/MHA gain matches the card's try-this.",
+    "hint": "G = 32: 17.18 GB, 3 fit, 20.18 ms, 149 tok/s. G = 8: 4.295 GB, 14, 22.74 ms, 616 tok/s. G = 2: 1.074 GB, 59, 23.70 ms, 2,489. G = 1: 0.537 GB, 119, 23.86 ms, 4,986. MQA/MHA = 33.5×: every row stays weight-bound (the matmuls never exceed 4.79 ms), so the whole cut shows up; it even exceeds 32× because MHA's 3 sequences (51.5 GB) leave part of the pool empty (our arithmetic)."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: that 32k at G = 2 equals 8k at G = 8?",
+    "Could you explain why throughput tracks the KV cut, without the step formula?",
+    "Which relationship is still fuzzy: G → KV bytes → sequences, or G → quality?",
+    "Did the G notation trap catch you?",
+    "What will you look for in MLA: how a cache can be smaller than GQA-8's and still beat MHA?"
+  ],
+  "revisit": [
+    "perf-2-scaling-book-inference/kv-tricks",
+    "perf-2-scaling-book-inference/attention-intensity",
+    "perf-1-foundations/attention"
+  ],
+  "prereq": [
+    "perf-2-scaling-book-inference/kv-tricks"
+  ]
+}

@@ -1,0 +1,122 @@
+{
+  "prime": {
+    "problem": "Clients of the image service need to know which of the 40 resize servers are running <i>right now</i>. DNS only knows what could be at an address, caches it for minutes and never notices a crash. With servers joining, dying and pausing all the time, clients keep sending work to dead machines.",
+    "fits": "Builds on the request-path card's DNS and load balancer, and on the end-to-end card's 20 s ZooKeeper timeout. The registry itself is a replicated majority-quorum store, which the Raft card later explains from the inside.",
+    "expect": [
+      "ephemeral nodes tied to a session",
+      "heartbeats and the session timeout",
+      "watches instead of polling",
+      "majority quorums: <code>q = ⌊n/2⌋ + 1</code>",
+      "what ZooKeeper is not (cache, pub-sub, monitor)"
+    ],
+    "goal": "Trace how a registry learns a server died (and falsely decides a paused one did), compute what the detection delay costs in misdirected requests, and size a registry ensemble by the crashes it must survive."
+  },
+  "attend": [
+    "Why does nobody have to delete srv-2's entry after it crashes?",
+    "Why was srv-3 removed at t = 49 even though its process never died, and what does it have to do when it wakes?",
+    "What sets the number of requests sent to a dead server, and why is a DNS TTL so much worse?",
+    "Why does a 4-node ensemble survive no more crashes than a 3-node one?",
+    "How can a GC pause on a registry member contribute to quorum loss?"
+  ],
+  "core": {
+    "must": [
+      "Each server registers an ephemeral node tied to its session → the session lives while heartbeats arrive → silence past the timeout (20 s) ends the session and deletes the node → watchers are told → the list cleans itself",
+      "Detection is a timeout → a crashed server keeps receiving traffic until it expires → 20 s × 250 req/s = 5,000 misdirected requests (vs 75,000 at a 300 s DNS TTL) → the timeout is \"the major cost for MTTR\"",
+      "A long GC pause is silence too → the session expires while the process is alive (srv-3 at t = 49) → when it wakes its heartbeat is rejected and it must re-register → a registry can't tell paused from dead",
+      "The registry must not be a single point of failure → replicate it and commit on a majority q = ⌊n/2⌋ + 1 → any two majorities share a server, so they can't disagree → n = 3 survives 1 crash, n = 5 survives 2, even n buys nothing"
+    ],
+    "elevated": [
+      "Watches are one-shot notifications → clients don't poll → the registry's load stays small even with many clients, which is why it can keep all state in memory (node data capped around 1 MB)"
+    ],
+    "reference": [
+      "Chubby → ZooKeeper → etcd/Consul/Serf lineage",
+      "ZooKeeper 3.4 vs 3.5 dynamic reconfiguration",
+      "ZAB vs Raft naming",
+      "the <code>Registry</code> class's per-tick scan (O(sessions + nodes))"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw the registry timeline for one crashed and one paused server, then write the quorum formula and the table row for n = 3 and n = 5. One sentence each on why DNS and a database table fall short.",
+    "checklist": [
+      "ephemeral node + session + heartbeats: entries expire with their owner",
+      "watches push changes to clients",
+      "detection delay = session timeout → 5,000 requests to a dead server at 20 s",
+      "a GC pause looks like a crash: false expiry, re-register on wake",
+      "majority quorum: 2 of 3 survives 1, 3 of 5 survives 2; even n wastes a machine",
+      "DNS: cached, never notices crashes; DB table: polling, no ephemeral entries"
+    ]
+  },
+  "retrieve": [
+    {
+      "q": "Explain why ephemeral nodes plus watches answer \"who is up right now?\" better than a database table the servers write to.",
+      "kind": "concept",
+      "answer": [
+        "an ephemeral entry disappears on its own when the owner's session ends; a table row stays until someone deletes it",
+        "watches push each change; a table must be polled, adding load",
+        "the registry orders its change notifications; a table gives no such guarantee"
+      ]
+    },
+    {
+      "q": "Walk through the registry timeline for srv-3 from t = 29 to t = 55: what the registry sees, what the client's list shows, and what srv-3 does when it wakes.",
+      "kind": "mechanism",
+      "answer": [
+        "t = 29: last heartbeat; t = 30 the GC pause starts",
+        "t = 49: 20 s of silence, session expires, node deleted, watch fires: list becomes [srv-1]",
+        "t = 55: srv-3 wakes; its heartbeat is rejected (session gone)",
+        "it opens a new session and re-registers: list back to [srv-1, srv-3]"
+      ]
+    },
+    {
+      "q": "Your three-node registry lost writes during an incident where one member crashed and another hit a long GC pause. Should you go to 4 nodes or 5, and why?",
+      "kind": "tradeoff",
+      "answer": [
+        "n = 3 needs 2; crashed + paused leaves 1 < 2, so writes stop",
+        "4 nodes needs 3 and still survives only 1 failure: no gain",
+        "5 nodes needs 3 and survives 2: the incident's crash + pause leaves 3, writes continue"
+      ]
+    }
+  ],
+  "compare": [
+    {
+      "with": "cs-5-distributed-systems/consensus-raft",
+      "q": "This card uses a majority quorum from the outside; the Raft card builds one. What does Raft add on top of \"commit when a majority agrees\" to make the overlap argument actually work?",
+      "answer": [
+        "one leader per term that orders every write into one log",
+        "a vote restriction: only a candidate whose log has every committed entry can win",
+        "together with overlapping majorities, a new leader always holds every committed write"
+      ]
+    },
+    {
+      "with": "cs-5-distributed-systems/load-balancing-consumers",
+      "q": "A registry tells clients which servers exist; a message broker hands work to whichever consumer is free. When would you route resize jobs through a queue instead of having clients pick servers from the registry?",
+      "answer": [
+        "a queue decouples producers from consumer health: a dead consumer just stops taking jobs",
+        "registry-based client balancing sends work straight to a server, so a stale list means misdirected requests until expiry",
+        "use a queue for expensive, independent jobs (the resize case); a registry for request/response calls and for membership and config"
+      ]
+    }
+  ],
+  "predict": {
+    "q": "You change the session timeout from 20 s to 30 s. How many requests now go to a crashed server at 250 requests/s, and does srv-3's 25 s GC pause still get it removed? Commit first.",
+    "answer": "30 × 250 = 7,500 requests go to a crashed server before its entry vanishes (up from 5,000). But srv-3's 25 s pause no longer outlasts the timeout, so its session survives and it's never falsely removed. The timeout trades detection speed (MTTR) against false deaths, exactly the delay card's too-short vs too-long dilemma. At 10 s: 2,500 requests, and far more pauses become false deaths."
+  },
+  "apply": {
+    "task": "Modify <code>simulate()</code> in <code>code/service-discovery.py</code> to take the timeout as a parameter, and run it at 10 s, 20 s and 30 s. For each, record when srv-2 is removed, whether srv-3 is falsely removed, and the misdirected requests at 250 req/s. Then use <code>quorum(n)</code> to say whether a 5-node ensemble keeps accepting writes with one member crashed and one paused.",
+    "done": "Your table shows srv-2 removed at t = 15, 25 and 35; srv-3 falsely removed at 10 s and 20 s but not at 30 s; 2,500, 5,000 and 7,500 misdirected requests; and n = 5 with 2 down keeps 3 = q, so writes continue.",
+    "hint": "srv-2's last heartbeat is at t = 5, so removal is at 5 + timeout. srv-3's pause is 25 s; a timeout at or below 25 s expires it."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: whether a longer timeout stops the false removal?",
+    "Could you explain why an even-sized ensemble is wasteful without the table?",
+    "Which relationship is still fuzzy: heartbeat silence → expiry → watch, or majority → overlap → consistency?",
+    "Where would you use DNS or a plain load balancer instead, and why is that fine?",
+    "What will you reopen before the Raft card?"
+  ],
+  "revisit": [
+    "cs-5-distributed-systems/request-path",
+    "cs-5-distributed-systems/end-to-end-argument"
+  ],
+  "prereq": [
+    "cs-5-distributed-systems/request-path"
+  ]
+}

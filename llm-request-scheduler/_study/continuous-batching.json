@@ -1,0 +1,67 @@
+{
+  "prime": {
+    "problem": "Static and dynamic batching fix the batch for its whole life, so short requests hold seats they no longer use and new requests wait for the longest answer in the batch. For generation that caps a GPU at about a tenth of what it can do.",
+    "fits": "Fourth card of group 2. It removes the frozen batch that static and dynamic batching share, using the fact from why-batch that a step's cost barely depends on how many decodes it holds. It also creates the three problems the next cards solve: prefill stalls, memory checks and ordering.",
+    "expect": [
+      "re-form the batch before every forward step",
+      "<code>T_static = Σ max(o_i)</code> vs <code>T_cont ≈ ⌈Σo_i ÷ S⌉ + drain</code>",
+      "selective batching: flatten everything but attention",
+      "≈ 10× saturated throughput in our model",
+      "three new problems: stalls, memory, who joins first"
+    ],
+    "goal": "Hand-trace continuous vs static batching on a slot grid, explain why a ragged batch is possible, and name the three problems re-deciding every step creates."
+  },
+  "attend": [
+    "Why does static cost depend on the worst row in each batch, while continuous cost depends on the average?",
+    "Where are the only idle cells in the continuous toy grid, and why can't they be removed?",
+    "What does selective batching flatten into one matrix, and what must still run per sequence?",
+    "At 2 req/s continuous and static give the same tok/s but 780× different TTFT. What changed, if not throughput?",
+    "Anyscale's 23× is 8× from continuous batching and the rest from memory. Why would memory management add more on top?"
+  ],
+  "core": {
+    "must": [
+      "The scheduler re-decides the batch every step → a finished request leaves immediately → a waiting one takes its seat next step → no padding while work is queued (0% vs 71%)",
+      "Cost follows total work ÷ seats, not the worst row per batch → 13 steps instead of 17 in the toy grid, ≈ 10× saturated throughput in our model (916 → 9,102 tok/s)",
+      "Every op except attention sees the step as one flat [tokens × 4,096] matrix → attention runs per sequence against its own KV → rows of different lengths need no padding → joiners and leavers just change the row count",
+      "Re-deciding every step → a joiner's prefill can stall everyone, memory must be checked every step, and the queue order becomes the latency → chunking, paging/preemption and policies"
+    ],
+    "elevated": [
+      "Leaving is a list removal and joining an append between two forward passes → in labs/scheduler.py running.remove is O(R) → a linked list would make it O(1), but R is small"
+    ],
+    "reference": [
+      "the aliases (in-flight batching, rolling batching, llama.cpp's \"a.k.a dynamic batching\")",
+      "the per-engine join and memory table",
+      "the Orca 36.9× and TensorRT-LLM \"at least 2×\" figures"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw a 4-slot grid for static and for continuous batching with the same queued requests, and circle where the continuous version refills. Then write the two cost formulas and the three new problems under the grids.",
+    "checklist": [
+      "the batch is re-formed every step: leave on the last token, join on the next step",
+      "static pays for the slowest row per batch; continuous pays total work ÷ seats plus a drain",
+      "selective batching: flat matmuls, per-sequence attention",
+      "≈ 10× saturated throughput and 11 ms TTFT p50 at 2 req/s in our model",
+      "new problems: prefill stalls, per-step memory, who joins first"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why continuous batching improves throughput about 10× at saturation but leaves throughput unchanged at 2 req/s.", "kind": "concept", "answer": ["at saturation, static wastes 71% of seats on finished rows; continuous refills them", "at 2 req/s the GPU is mostly idle either way: there isn't enough work to fill seats", "what changes at low load is TTFT: 8,698 → 11.1 ms, because no one waits for a batch to fill or finish"]},
+    {"q": "Walk through what happens between two steps when one request emits its last token and one request is waiting.", "kind": "mechanism", "answer": ["finish_step marks it FINISHED and removes it from running", "its KV blocks go back to the free list", "the next step() serves running requests first, then admits the waiting one if budget, seats and blocks allow", "the next forward pass simply has one row fewer and one row more"]},
+    {"q": "Continuous batching solves idle seats. Name the three problems it creates and the card that answers each.", "kind": "tradeoff", "answer": ["a joiner's prefill stalls every decode in its step (9.9 → 72.8 ms) → chunked prefill", "a request's KV grows every step with unknown final length → block manager and admission/preemption", "with seats opening constantly, queue order sets latency → policies"]}
+  ],
+  "compare": [
+    {"with": "llm-request-scheduler/dynamic-batching", "q": "Both have \"dynamic\" in some engines' names. What is fundamentally different about when each re-decides the batch, and what does each fail at?", "answer": ["dynamic: once per batch, after a time window or when full", "continuous: before every forward step", "dynamic fails for generation (frozen batch, 58% padding); continuous fails only if you ignore stalls and memory"]},
+    {"with": "perf-5-engines/orca-iteration-scheduling", "q": "Orca introduced iteration-level scheduling with selective batching. Which part of this card is Orca's scheduling idea, which is its batching idea, and what did later engines replace?", "answer": ["scheduling: re-decide the batch every iteration", "batching: flatten non-attention ops, split for attention per sequence", "later engines replaced Orca's per-sequence attention loop with paged/varlen attention kernels, and added paged KV and chunked prefill"]}
+  ],
+  "predict": {"q": "Every request has exactly the same output length. Before tracing: how much does continuous batching gain over static on throughput and on TTFT?", "answer": "Little on throughput once all seats are full, because with equal lengths static rows finish together and no seats sit idle (only prompt padding remains). It still gains on TTFT: a new arrival joins at the next step instead of waiting for a batch to fill and run to completion. The throughput gain comes from length spread; the TTFT gain comes from not freezing the batch."},
+  "apply": {"task": "Six requests are queued with output lengths 5, 2, 7, 3, 4, 6 and there are 4 slots (ignore prefill, one token per slot per step). Hand-draw the static grid (batches of 4 in order) and the continuous grid (refill each freed slot next step). For each, count the steps, idle slot-steps and mean finish step, and the step at which requests 4 and 5 get their first tokens.", "done": "Static: 13 steps (7 + 6), 52 slot-steps, 25 idle, mean finish ≈ 6.8. Continuous: 9 steps, 36 slot-steps, 9 idle (all at the drain), mean finish ≈ 5.3; request 4 starts at step 3 and request 5 at step 4 instead of step 8.", "hint": "Useful work is 5 + 2 + 7 + 3 + 4 + 6 = 27 slot-steps; continuous needs at least ⌈27 ÷ 4⌉ = 7 steps plus the drain."},
+  "reflect": [
+    "Which prediction did you get wrong: the gain with equal lengths on throughput, or on TTFT?",
+    "Could you explain selective batching without drawing the matrix?",
+    "Which relationship is still fuzzy: re-deciding every step → no idle seats, or re-deciding every step → prefill stalls?",
+    "Which of the three new problems do you think hurts a real server first?",
+    "What will you revisit before the chunked-prefill card: why one long prompt makes a step 7.4× longer?"
+  ],
+  "revisit": ["llm-request-scheduler/static-batching", "llm-request-scheduler/dynamic-batching", "llm-request-scheduler/why-batch"],
+  "prereq": ["llm-request-scheduler/static-batching"]
+}

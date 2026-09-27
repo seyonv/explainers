@@ -1,0 +1,66 @@
+{
+  "prime": {
+    "problem": "Giving a disk database enough RAM stops the disk reads, yet it stays far slower than an in-memory engine. If you assume ‘in memory = fast’, you'll tune the wrong thing.",
+    "fits": "First card of the memory part. It builds on the B-tree card's page-sized nodes and asks what changes when the slow level is DRAM, not disk; the anti-caching and log-structured memory cards build whole systems on the answer.",
+    "expect": ["disk-era overhead (buffer pool, latches, locks, logging)", "the Shore numbers: 80–88%, then 3/4", "the latency ladder", "cache lines and cache misses", "node-per-line trees vs hash tables"],
+    "goal": "Explain where an in-memory engine's speed comes from, count cache lines for a lookup under different layouts, and pick a node size for the level the data lives in."
+  },
+  "attend": [
+    "If the OS already caches the disk blocks, what work does a disk engine still do on every lookup that an in-memory engine skips?",
+    "After removing 80–88% and then 3/4 of B-tree time, why are only 3–5 of 100 units left, and why did none of those cuts change the index layout?",
+    "Why does binary search over a sorted array touch about 20 cache lines for 10⁷ keys, while a tree of 64-byte nodes touches 8?",
+    "What does a hash table give up to reach about 1 line per lookup?",
+    "When the data moves back to disk, why do 4 KB nodes beat 64-byte nodes again?"
+  ],
+  "core": {
+    "must": [
+      "A disk engine with enough RAM still goes through pages, a buffer pool, latches, locks and a log → that machinery, not disk reads, was most of Shore's time → strip it (100 × 0.12–0.20 × 1/4) → only 3–5 units of B-tree time remain",
+      "Once overhead is gone the CPU waits on cache misses → each access pulls one 64-byte line (~100 ns from DRAM) → cost = distinct lines touched → layout, not comparison count, sets the speed",
+      "Binary search jumps far each probe → almost one miss per probe (20.19 lines for 23.33 probes) → packing 8 keys per line-sized node → 8 levels, 1 line each → about 2.5× fewer misses",
+      "Match the node to the slowest level the data lives in → a disk seek costs ~100,000 DRAM misses → on disk, 4 KB nodes with 3 reads win; in RAM, line-sized nodes or a hash table win"
+    ],
+    "elevated": [
+      "Hash table at load 0.5 with linear probing → the probe usually stays in one line (1.06 lines) → best for point lookups, useless for ranges, prefixes and ‘next key’"
+    ],
+    "reference": [
+      "the exact latency figures (L1 0.5 ns, L2 7 ns, SSD 150 µs, seek 10 ms)",
+      "CSS-tree and CSB+-tree names and papers",
+      "the 1/15 and 1/60 instruction ratios for New Order",
+      "the address-simulation code that counts lines"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, write the two steps that make an in-memory engine fast, with the Shore arithmetic for step 1 and the four line counts for step 2. Then say in one sentence how to choose a node size.",
+    "checklist": [
+      "step 1: remove disk-era overhead; 100 → 20 or 12 → 5 or 3 units",
+      "step 2: count cache misses; lines, not comparisons",
+      "sorted array 20.19, 4 KB B+tree 17.26, 64-byte-node tree 8.00, hash 1.06 lines",
+      "hash tables can't do ranges",
+      "node size = the transfer unit of the slowest level holding the data"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why ‘just add RAM’ doesn't make a disk-based engine as fast as an in-memory one.", "kind": "concept", "answer": ["the page cache already removes disk reads", "every lookup still pays buffer-pool lookups, latches, locking and logging", "in Shore those removed 80–88%, then a minimal kernel 3/4 of the rest"]},
+    {"q": "Walk through why a tree of 64-byte nodes over 10⁷ eight-byte keys has exactly 8 levels, and why each level costs one line.", "kind": "mechanism", "answer": ["a leaf holds 8 keys: 1,250,000 leaves", "inner nodes have 9 children: 138,889 → 15,433 → 1,715 → 191 → 22 → 3 → 1", "8 levels, and each node is exactly one cache line, so one miss per level"]},
+    {"q": "Your engine is fully in memory and serves both point lookups and range scans. Argue between a hash table and a node-per-line tree, and name what you'd measure.", "kind": "tradeoff", "answer": ["hash: ~1 line per point lookup, but no order", "tree: ~8 lines per lookup, but ranges and next-key work", "measure the mix of point vs range queries and the update rate (packed CSS-trees are read-mostly)"]}
+  ],
+  "compare": [
+    {"with": "cs-6-data-systems/database-indexes", "q": "Both cards tune a B-tree's node size. What is the expensive transfer in each, which number sets the node size, and what goes wrong if you use the other card's node size?", "answer": ["disk card: a page read (~ms); 4 KB pages, fan-out 256, 3 reads", "this card: a cache line (~100 ns); 64-byte nodes, 8 lines", "4 KB nodes in RAM: binary search inside each page costs ~6 lines per level", "64-byte nodes on disk: 8 disk reads instead of 3"]},
+    {"with": "cs-6-data-systems/in-memory-db-anticaching", "q": "This card explains why in-memory engines are fast; H-Store is one. Which of H-Store's three design decisions removes which piece of Shore's overhead?", "answer": ["one thread per partition removes locking and latching", "no buffer pool: tuples live in memory in their native format", "stored procedures remove client round trips per statement", "logging is reduced to command logs and snapshots"]}
+  ],
+  "predict": {"q": "Replace the 8-byte integer keys with 40-byte URL strings. Commit first: how many keys fit in a 64-byte node now, and what do real in-memory trees do about it?", "answer": "At most one full key per line, so a node-per-line tree loses its fan-out and degenerates towards one miss per comparison, as bad as binary search. Real designs store a short fixed-size prefix (or hash) of each key in the node and follow a pointer to the full key only to break ties, which keeps several keys per line at the cost of an occasional extra miss."},
+  "apply": {
+    "task": "Redo the node-per-line calculation for 16-byte keys: 4 keys per 64-byte leaf and 5 children per inner node, for 10⁷ keys. Count the levels by repeated ceiling division. Then redo step 1 of the Shore arithmetic with f = 0.85 and state the speed-up.",
+    "done": "You get 2,500,000 leaves → 500,000 → 100,000 → 20,000 → 4,000 → 800 → 160 → 32 → 7 → 2 → 1: 11 levels (vs 8 with 8-byte keys), and 100 × 0.15 × 0.25 = 3.75 units, about 26.7× less time.",
+    "hint": "Change KEY to 16 in <code>line_tree_levels</code> in <code>code/cache-conscious-structures.py</code> to check the level count."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: how many URL keys fit in a line?",
+    "What couldn't you explain cleanly: why comparisons don't predict speed but lines do?",
+    "Which relationship is still fuzzy: overhead removed → cache misses exposed, or node size → misses per lookup?",
+    "Could you name the slowest level your own data lives in, and the node size that implies?",
+    "What will you look for in the caching-patterns card: which level of this ladder a cache sits on?"
+  ],
+  "revisit": ["cs-6-data-systems/database-indexes", "cs-1-data-structures/hash-buckets"],
+  "prereq": ["cs-6-data-systems/database-indexes"]
+}

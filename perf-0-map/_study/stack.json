@@ -1,0 +1,59 @@
+{
+  "prime": {
+    "problem": "\"Make inference faster\" is not actionable until you know where a request spends its time and who owns each piece. Without a picture of the layers, a kernel win, a scheduler change and a routing rule all look like the same kind of work.",
+    "fits": "Second view of the series map. The overview gave one formula for $/token; this card lays the same field out as six layers a request passes through, from the API down to HBM, and ties each layer to the course that teaches it.",
+    "expect": ["the six layers: API, router, replicas, engine, kernels, hardware", "runtime vs infrastructure (Kiely)", "one request traced: prefill compute-bound, decode memory-bound", "request floor = prefill + (n<sub>out</sub> − 1) × decode step", "where a provider actually wins"],
+    "goal": "Trace one request down the stack with real floors, say which layer each of Kiely's six runtime techniques lives in, and explain why the same request costs 970 ms on an H100 but 407 ms on a B200."
+  },
+  "attend": [
+    "Which layers are \"runtime\" (one model, one instance) and which are \"infrastructure\", and where does parallelism sit on that line?",
+    "In the traced request, why is the 1,000-token prefill compute-bound while every decode step is memory-bound on the same chip?",
+    "Why does the H200 speed up only the decode part of the request, while the B200 speeds up both?",
+    "How does the router at layer 2 change the work done at layer 4 (a prefix-cache hit)?",
+    "Why can 406 requests like this one hold KV at once, and which layer decides whether they actually share a step?"
+  ],
+  "core": {
+    "must": [
+      "Prefill processes 1,000 tokens per weight read → about 1,000 FLOPs per weight byte → above the H100's 295 ops:byte → compute-bound → TTFT floor 16.2 ms, set by the tensor cores",
+      "Decode makes 1 token per full weight read → about 1 FLOP per byte → far below 295 → memory-bound → 4.79 ms per step set by HBM bandwidth → a faster chip for decode means more TB/s, which is why the H200 (4.8 TB/s) cuts decode but not prefill",
+      "Each layer owns one decision (which replica, how many GPUs, who shares a step, how close to the ceilings) → each moves a different metric (TTFT, uptime, TPOT/throughput, every latency) → the provider must tune all six for $/token at a latency target",
+      "Layer 4 packs requests into one step → the 16 GB weight read is shared → batch 64 gives 39× the tokens from the same GPU-hour → but per-user speed falls 209 → 128 tok/s → the scheduler trades TPOT for cost all day"
+    ],
+    "elevated": [
+      "KV per token is 128 KiB for Llama-3.1-8B → a 1,200-token request reserves 157 MB → 63.9 GB of free HBM holds ≈ 406 of them → so HBM left after the weights, not FLOPs, caps how many users an engine can batch"
+    ],
+    "reference": ["the software list: CUDA → cuBLAS/cuDNN/CUTLASS/FlashInfer/DeepGEMM → PyTorch → vLLM/SGLang/TensorRT-LLM → Dynamo", "router products: llm-d, Gateway API Inference Extension, Dynamo KV-aware router", "H100 SXM: 132 SMs, 989 TFLOPS BF16, 80 GB, 3.35 TB/s", "Kiely's page numbers (pp. 17, 19, 95–99, 112, 191)", "the example knobs (min replicas 0 vs 2, max batch 8 vs 256)"]
+  },
+  "compress": {
+    "prompt": "Course-level compress: from memory, draw the six boxes top to bottom, write the course that owns each one, and mark on the picture where prefill and decode each hit their limit. Then write the one-line request floor for the traced example.",
+    "checklist": [
+      "API → router → replicas → engine (scheduler, KV manager, runner, sampler) → kernels → hardware",
+      "courses: perf-1/7 at the API, perf-7/4 routing, perf-6/7 replicas, perf-5/4/2 engine, perf-3/4 kernels, perf-1/2 hardware",
+      "prefill: compute-bound at the tensor cores (16.2 ms); decode: memory-bound at HBM (4.79 ms/step)",
+      "floor = 16.2 + 199 × 4.79 ≈ 970 ms at batch 1, GPU only",
+      "runtime = one model on one instance; infrastructure = scaling, capacity and routing across instances"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain the difference between the runtime and the infrastructure halves of the stack, and name one decision each half makes about the same request.", "kind": "concept", "answer": ["runtime: one model on one GPU-backed instance (engine, kernels, batching)", "infrastructure: autoscaling, capacity and routing across many instances", "runtime example: which requests share this decode step", "infrastructure example: which replica gets the request, or whether a replica is scaled up"]},
+    {"q": "Walk the 1,000-in / 200-out request down the stack on one H100 and give the floor for each phase with the arithmetic.", "kind": "mechanism", "answer": ["tokenize at the API; router picks a replica (cold, no prefix hit)", "engine adds it to the running batch and reserves 1,200 × 128 KiB = 157 MB of KV", "prefill: 2 × 8.03e9 × 1,000 ÷ 989e12 = 16.2 ms, compute-bound", "decode: 16.06 GB ÷ 3.35 TB/s = 4.79 ms × 199 = 954 ms, memory-bound", "total ≈ 970 ms; the sampler streams each token back up"]},
+    {"q": "You have one H100 and a choice between an H200 and a B200 upgrade for a chat product whose answers are long. Which one helps more per request, and why does the answer depend on the output length?", "kind": "tradeoff", "answer": ["long answers → decode dominates → bandwidth matters most", "H200: same compute, 4.8 TB/s → decode 3.35 ms/step, request 682 ms", "B200: 8.0 TB/s and 2,250 TF/s → 2.01 ms/step and 7.1 ms prefill, request 407 ms", "short answers with long prompts would shift weight toward prefill FLOP/s, where the H200 gives nothing"]},
+    {"q": "A small team serves one model at low volume. Which of the six layers can they collapse, and what does Kiely warn about adding Dynamo too early?", "kind": "tradeoff", "answer": ["layers 2–3 shrink to almost nothing: one replica running an engine directly", "Dynamo (disaggregation, KV-aware routing) only pays off at enough volume", "below that it is extra work and overhead"]}
+  ],
+  "compare": [
+    {"with": "perf-0-map/_overview", "q": "The same batch-64 number (39× the tokens) appears on both cards. What does the stack card add about <i>where</i> that win is made, and what does the overview add about <i>what it is worth</i>?", "answer": ["stack: the win is made in layer 4 (the scheduler) on top of layer 6's shared weight read", "overview: turns it into $/token ($14.35 → $0.37) under an SLO", "both hide the real overheads; both are floors"]},
+    {"with": "perf-5-engines/engine-anatomy", "q": "This card draws layer 4 as four boxes; perf-5 opens them up. What does the stack picture get right about the engine, and what does it hide that decides real performance?", "answer": ["right: scheduler, KV manager, model runner and sampler are the parts, and the scheduler decides who shares a step", "hidden: CPU-side overheads, kernel launch cost and CUDA graphs, chunked prefill, and how the KV budget limits admission", "those hidden parts are why real engines reach only part of the floor"]},
+    {"with": "perf-6-scaling-out/_overview", "q": "Layer 3 splits big models across GPUs. Why does the 8B example stay on one GPU while a 70B model can't, and what new cost does splitting add that the one-GPU trace never pays?", "answer": ["8B: 16.06 GB of weights fits in 80 GB with 63.9 GB left for KV", "70B: about 140 GB in BF16, more than one H100 holds", "tensor parallelism splits each layer's weights, so each GPU reads less per step", "the new cost: collectives between GPUs every layer, which one-GPU decode never pays"]}
+  ],
+  "predict": {"q": "Change the request to a 2,000-token prompt and a 100-token answer, still batch 1 on one H100. Before computing: does the total floor go up or down from 970 ms, and which phase now takes a bigger share?", "answer": "Down, to about 507 ms. Prefill doubles to 2 × 8.03e9 × 2,000 ÷ 989e12 ≈ 32.5 ms (still compute-bound, 2,000 > 295), but decode shrinks to 99 × 4.79 ≈ 475 ms. Prefill's share grows from about 2% to about 6%, yet decode still dominates: output length matters far more than prompt length for the floor."},
+  "apply": {"task": "Trace your own request through the stack. For a 2,000-token prompt and 100 output tokens on one H100 (BF16 Llama-3.1-8B), write one line per layer saying what it decides, then compute the prefill floor, decode floor, total, the KV reserved for this request (2,100 tokens × 128 KiB) and how many such requests fit in the 63.9 GB left after the weights.", "done": "Your numbers are about 32.5 ms prefill, 474.6 ms decode, ≈ 507 ms total, ≈ 275 MB of KV, and ≈ 232 requests that fit at once (vs 406 for the card's 1,200-token request).", "hint": "KV reads add about 275 MB ÷ 16.06 GB ≈ 1.7% per decode step here, so you can still ignore them for the floor."},
+  "reflect": [
+    "Which prediction did you get wrong: the direction of the total, or how small prefill's share stayed?",
+    "What couldn't you explain cleanly: why the H200 leaves prefill unchanged?",
+    "Which relationship is still fuzzy: ops:byte → compute- vs memory-bound, or memory-bound → bandwidth decides the chip?",
+    "Which layer would you work in day to day at an inference company, and which course covers it?",
+    "Before perf-5, could you redraw layer 4's four boxes and say what each one decides?"
+  ],
+  "revisit": ["perf-0-map/_overview", "perf-1-foundations/gpu-machine", "perf-1-foundations/serving-metrics", "perf-2-scaling-book-inference/step-time"],
+  "prereq": []
+}

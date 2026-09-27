@@ -1,0 +1,64 @@
+{
+  "prime": {
+    "problem": "DeepSeek-V3's math per token is cheap (37B active), but training and serving it means sending tokens to experts on other nodes over InfiniBand on every MoE layer, which on H800s is only a third of NVLink's speed. Run naively, the GPUs would wait on the network half the time.",
+    "fits": "Fourth card of the MoE block and the second on DeepSeek-V3. It uses expert parallelism's dispatch/combine and EPLB, the pipeline card's bubbles, and DistServe's separate prefill and decode instances, and shows how one team co-designed schedule, kernels, number format and deployment around the all-to-all.",
+    "expect": ["PP16 × EP64 × ZeRO-1 training with no TP", "DualPipe: pairing forward and backward chunks", "20-SM all-to-all kernels and IB → NVLink forwarding", "fine-grained FP8 (1×128 / 128×128 scales, FP32 every 128)", "prefill and decode units, and the Day 6 production numbers"],
+    "goal": "Explain how each part of §3 hides or shrinks cross-node traffic, read the deployment units' slot arithmetic, and check the training bill and the 545% margin without being misled by them."
+  },
+  "attend": [
+    "Why did DeepSeek avoid tensor parallelism in training, and what memory tricks made that possible?",
+    "With a ~1:1 compute-to-communication ratio, how does pairing one forward chunk with one backward chunk hide the all-to-all?",
+    "Why does a per-tensor FP8 scale fail, and what do 1×128 tiles and FP32 promotion every 128 elements each fix?",
+    "Why does decode use one expert per GPU on 320 GPUs while prefill packs 9 per GPU on 32?",
+    "What do $5.576M and 545% leave out?"
+  ],
+  "core": {
+    "must": [
+      "Cross-node EP gives ~1:1 compute:communication → split each chunk into attention / dispatch / MLP / combine and pair a forward chunk with a backward chunk → each one's all-to-all runs under the other's compute (with a hand-tuned SM split) → communication is fully hidden, and the bidirectional schedule also shrinks the bubble ((PP/2 − 1) terms instead of (PP − 1))",
+      "IB is the bottleneck (NVLink 160 vs IB 50 GB/s, 3.2×) → cap each token at 4 nodes, send once per node over IB, forward over NVLink → up to 3.2 experts per node ride NVLink at no extra cost → 20 of 132 SMs (15%) run the communication kernels with warp specialisation",
+      "FP8 has little range (E4M3 max 448) → one outlier in a per-tensor scale crushes everything else → per-tile (1×128) and per-block (128×128) scales isolate outliers, and promoting partial sums to FP32 every 128 elements fixes the Tensor Core's ~14-bit accumulation (≈ 2% error at K = 4096) → FP8 training within 0.25% of BF16",
+      "Each expert must see a big enough batch → prefill (compute-heavy, many tokens per request) packs 9 experts per GPU on a 32-GPU unit; decode (few tokens per step) spreads 1 expert per GPU over 320 GPUs fed by DP80 attention → tokens per expert stay ~256, still memory-bound, so the MoE path gets few SMs and attention the rest"
+    ],
+    "elevated": [
+      "The paper's decode unit (EP320, 40 nodes) differs from Day 6 production (EP144, 18 nodes, 2 routed + 1 shared per GPU) → slot checks 320 = 256 + 64 and 288 = 256 + 32 → a smaller unit trades per-expert batch for a smaller failure and scheduling unit"
+    ],
+    "reference": [
+      "Table 2's ZB1P and DualPipe bubble formulas term by term",
+      "the E5M6 format and which tensors stay in BF16/FP32",
+      "the hardware wish list (§3.5)",
+      "the training GPU-hour breakdown and $2/GPU-hour",
+      "Day 6 token totals, R1 prices and the revenue arithmetic"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, write one arrow chain per §3 problem: the ~1:1 comm ratio (→ DualPipe), the 3.2× link gap (→ node limit + forwarding), FP8 range (→ fine-grained scales + FP32 promotion), and expert starvation (→ prefill/decode units). Keep each to one line.",
+    "checklist": [
+      "DualPipe overlaps one chunk's communication with another's compute and halves the bubble terms",
+      "≤ 4 nodes per token; IB once per node, NVLink fan-out; 20 SMs for comms",
+      "1×128 activation tiles, 128×128 weight blocks, FP32 every 128",
+      "prefill EP32 with 9 experts per GPU; decode EP320 (paper) or EP144 (Day 6) with 1–2 per GPU",
+      "the headline cost and margin are a rental conversion and a hypothetical"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why DeepSeek trained V3 without tensor parallelism and what they used instead.", "kind": "concept", "answer": ["TP would put two all-reduces per layer on the critical path, and over IB that is too slow", "they used PP16 × EP64 × ZeRO-1 data parallelism", "recomputing RMSNorm and MLA up-projections, an EMA in CPU memory and sharing embedding/head on one PP rank saved enough memory to skip TP"]},
+    {"q": "Walk through how one token's hidden state reaches 8 experts on 3 nodes under V3's cross-node all-to-all.", "kind": "mechanism", "answer": ["the token crosses IB once per target node (3 copies), to the GPU with the same in-node index", "each receiving GPU forwards it over NVLink to the GPUs holding its experts there", "forwarding starts on arrival, so IB and NVLink transfers overlap", "combine runs the reverse: NVLink send, forward + accumulate to IB, IB receive + accumulate"]},
+    {"q": "A startup wants to copy DeepSeek's decode unit (EP320, one expert per GPU) for a V3 deployment with modest traffic. What do you advise, with numbers?", "kind": "tradeoff", "answer": ["the unit only pays with enough concurrent users to give every expert ~256 tokens per step", "the report itself calls the unit \"a burden for small-sized teams\"", "at low volume the ~671 GB of FP8 weights fit one 8×H200 node (1,128 GB), which is far simpler", "and a 320-GPU lockstep group fails far more often than an 8-GPU one"]},
+    {"q": "Check the Day 6 cost and node numbers: daily cost from the average node count, and the node count implied by the day's token totals and per-node throughputs.", "kind": "mechanism", "answer": ["226.75 nodes × 8 GPUs × 24 h × $2 = $87,072", "prefill 608B ÷ 86,400 s ÷ 73.7k tok/s per node ≈ 95.5 nodes; decode 168B ÷ 86,400 ÷ 14.8k ≈ 131.4", "95.5 + 131.4 ≈ 226.9, within 0.1% of the reported average"]}
+  ],
+  "compare": [
+    {"with": "perf-6-scaling-out/pipeline-data-parallel", "q": "1F1B vs DualPipe: what idles in each, which design choice lets DualPipe hide communication, and what does it pay for that?", "answer": ["1F1B idles during (PP − 1)(F + B) of fill/drain, and with ~1:1 all-to-all the compute also waits on the network", "DualPipe feeds micro-batches from both ends and interleaves a forward with a backward chunk, so each one's communication runs during the other's compute", "it keeps two copies of the parameters (cheap with large EP) and needs stages and micro-batches divisible by 2"]},
+    {"with": "perf-6-scaling-out/distserve-placement", "q": "DeepSeek's prefill/decode units vs DistServe's placements: both split phases. What does each size its units for, and why do DeepSeek's units end up so much larger?", "answer": ["DistServe sizes each phase for goodput per GPU under TTFT/TPOT SLOs on dense models", "DeepSeek sizes each phase so every expert gets a large enough batch", "a 256-expert MoE needs tokens pooled from many attention replicas, so decode units span 144–320 GPUs; a dense OPT pair fits in 3–21 GPUs"]}
+  ],
+  "predict": {"q": "Suppose DeepSeek ran decode as EP72 with the Day 6 slot count (256 routed + 32 redundant = 288). How many experts per GPU, how many GB of routed-expert weights per GPU in FP8, and would each expert see more or fewer tokens per step than in EP144 at the same total traffic? Commit first.", "answer": "288 ÷ 72 = 4 routed experts per GPU, 4 × 58 × 44.0M ≈ 10.2 GB of routed-expert weights. At the same traffic each expert still receives the same tokens overall (tokens per expert depend on total batch and top-8, not on how experts are packed), but each GPU now runs 4 experts' GEMMs per layer, so per-GPU work doubles vs EP144's 2 routed experts, and a failure takes down a 72-GPU unit instead of 144."},
+  "apply": {"task": "Recompute three of the card's checks and one new one: (1) the pre-training wall-clock on 2,048 GPUs from 2,664K GPU-hours; (2) the rough utilization from 6 × 37B × 14.8T FLOPs over those hours, as a share of the H800's 1,979 TFLOPS FP8 peak; (3) the Day 6 concurrent streams at 20–22 tok/s per user from 168B output tokens a day. New: fill in DualPipe's bubble multiplier and 1F1B's at PP = 8.", "done": "You have four numbers from (1)–(3) that match the card within rounding, and the two PP = 8 multipliers with the formulas they came from.", "hint": "(1) 2,664,000 ÷ 2,048 = 1,301 h ≈ 54.2 days. (2) 3.29e24 FLOPs ÷ (2,664K × 3,600 s) ≈ 343 TFLOP/s per GPU ≈ 17% of 1,979. (3) 168B ÷ 86,400 = 1.94M tok/s → 88k–97k streams. PP = 8: 1F1B (PP − 1) = 7 × (F + B); DualPipe (PP/2 − 1) = 3 × (F&B + B − 3W)."},
+  "reflect": [
+    "Which prediction did you get wrong: experts per GPU at EP72, or what changes about per-expert tokens?",
+    "Could you explain FP32 promotion every 128 elements to someone who knows only BF16?",
+    "Which relationship is still fuzzy: node limit → IB copies, or IB copies → NVLink fan-out?",
+    "Can you say exactly what the $5.576M and the 545% exclude?",
+    "Before MegaScale-Infer: what if attention and experts didn't have to share the same GPUs at all?"
+  ],
+  "revisit": ["perf-6-scaling-out/deepseek-v3-architecture", "perf-6-scaling-out/expert-parallel", "perf-6-scaling-out/pipeline-data-parallel", "perf-6-scaling-out/distserve-interference", "perf-3-kernels/tensor-cores-low-precision"],
+  "prereq": ["perf-6-scaling-out/deepseek-v3-architecture", "perf-6-scaling-out/expert-parallel"]
+}

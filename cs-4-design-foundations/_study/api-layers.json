@@ -1,0 +1,57 @@
+{
+  "prime": {
+    "problem": "If clients depend on your table layout, your Python class or one call per field, then every rename, cache, shard or scale-up breaks them, or costs 100 round trips to show 50 links.",
+    "fits": "Last framing card. Simplicity separated logic from state inside one program; this card separates what callers see (a contract) from how the layers below store it. The idempotency idea returns in cs-5.",
+    "expect": ["four layers: object → data model → bytes → hardware", "the API as a contract", "versioning", "cursor pagination", "idempotency keys"],
+    "goal": "Follow one record down every layer with its real size, and design a small versioned API that survives retries, growth and overload."
+  },
+  "attend": [
+    "Why is the same link 243 B as an object, 75 B as bytes and 12,288 B on disk?",
+    "Why does <code>é</code> make the UTF-8 bytes one longer than the character count?",
+    "Which contract changes can ship in v1, and which force a /v2?",
+    "Why does a cursor (<code>after=2</code>) stay correct when rows are inserted, while <code>OFFSET</code> doesn't?",
+    "What does the idempotency key let a client do after a timeout?"
+  ],
+  "core": {
+    "must": [
+      "Each layer stores the same record in a different form → the API is the promise at the top → callers get the same answers in the same shape → layers below (SQLite → sharded store) can change without breaking clients",
+      "Additive changes (an optional field) → old parsers ignore them → stay in v1; breaking changes (rename <code>url</code>) → every v1 parser fails → ship as /v2",
+      "Retry with the same idempotency key → the server finds the stored result → same id, <code>created: False</code>, no duplicate → timeouts become safe to retry",
+      "Keyset pagination (<code>WHERE id > after</code>) → index seek straight to the next row → cost doesn't grow with page number and inserts don't shift pages; OFFSET walks and drops every earlier row"
+    ],
+    "elevated": [
+      "Storage engines read and write whole pages (4,096 B in SQLite) → one 75-byte link costs 12,288 B on disk → the cost is mostly fixed; more links fill the same pages first"
+    ],
+    "reference": ["the byte-level hex of the JSON", "<code>ensure_ascii</code> and <code>separators</code> arguments", "SQLite page_size × page_count", "HTTP 429 status code"]
+  },
+  "compress": {
+    "prompt": "Draw the four layers for one TinyURL link, with the size at each, and put the API contract on top. Then list the four concerns the API hides, one line each on what goes wrong without it.",
+    "checklist": [
+      "object 243 B → JSON 74 chars → 75 bytes (é is 2) → 12,288 B in 3 pages → hardware",
+      "the contract is all a client sees; everything below can change",
+      "versioning: additive stays in v1, breaking goes to v2",
+      "degradation: shed load early (429), keep the core path",
+      "pagination by cursor; idempotency by key"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why letting clients read your table directly breaks more than it saves.", "kind": "concept", "answer": ["every client depends on the schema", "renaming a column, adding a cache or sharding breaks all of them at once", "a contract lets the layers below change freely"]},
+    {"q": "Trace two calls to <code>v1_create(\".../a\", \"k1\")</code>: what does the server do each time and what does it return?", "kind": "mechanism", "answer": ["first: no row with idem k1, so INSERT → {'id': 1, 'created': True}", "second: SELECT finds idem k1 → {'id': 1, 'created': False}", "no duplicate link is created"]},
+    {"q": "Your service is overloaded. Compare slowing every request down with answering HTTP 429 early. Which does the card prefer, and what does the other cost?", "kind": "tradeoff", "answer": ["429 early refuses some requests fast and keeps serving the rest", "slowing everyone makes every caller time out and retry, adding load", "degradation keeps the core (redirects) working while extras (stats) report unavailable"]}
+  ],
+  "compare": [
+    {"with": "cs-5-distributed-systems/idempotency-retries", "q": "This card shows an idempotency key on one create call; cs-5 makes retries safe across a network. What problem does the cs-5 card add that this card doesn't face, and what is still the same mechanism?", "answer": ["same: a client-chosen key the server remembers, so a repeat has the same effect as one call", "cs-5 adds that a timeout can't tell a lost request from a lost reply", "and retry policy: exponential, randomised backoff at one layer only"]},
+    {"with": "cs-4-design-foundations/simplicity", "q": "Both cards hide something. What does the simplicity card hide behind a pure function, what does this card hide behind a contract, and when does each hiding leak?", "answer": ["simplicity isolates logic from state inside one program", "the API hides storage, format and scale from other teams' code", "the contract leaks as latency (page size), timeouts and 429s; pure logic leaks when essential state must still live somewhere"]}
+  ],
+  "predict": {"q": "A client pages through links with <code>OFFSET</code>, 20 per page. Before computing: roughly how many rows does the database walk and drop to serve page 500? And what happens to the client if a new link is inserted near the front while it pages?", "answer": "It walks and drops 499 × 20 = 9,980 rows just to reach page 500, and the cost grows with every page. An insert near the front shifts every later row by one, so the client sees one link twice (or skips one) at a page boundary. A cursor avoids both: <code>WHERE id > last_id</code> seeks straight there, and rows added before the cursor don't move what comes after it."},
+  "apply": {"task": "Run the card's layers on an ASCII-only link, <code>https://example.com/menu</code>: compute the JSON character count and the UTF-8 byte count (same code, same compact separators). Then add an optional <code>title</code> field to <code>v1_create</code>'s response and write one test that an old v1 client (which reads only <code>id</code> and <code>created</code>) still works.", "done": "Your JSON is 69 characters and 69 bytes (no multi-byte characters, unlike the café link's 74 and 75), and the old-client test passes because it ignores the new field.", "hint": "<code>json.dumps(asdict(link), ensure_ascii=False, separators=(\",\", \":\"))</code>, then <code>len(text)</code> and <code>len(text.encode())</code>."},
+  "reflect": [
+    "Which prediction did you get wrong: the OFFSET cost, or the duplicate/skip on insert?",
+    "What couldn't you explain cleanly: why one small record costs three pages on disk?",
+    "Which relationship is still fuzzy: contract → freedom below, or idempotency key → safe retries?",
+    "Where do layers leak even when the API is well designed?",
+    "Which of these API concerns would you raise first in a system-design interview?"
+  ],
+  "revisit": ["cs-4-design-foundations/requirements-scoping", "cs-4-design-foundations/simplicity"],
+  "prereq": []
+}

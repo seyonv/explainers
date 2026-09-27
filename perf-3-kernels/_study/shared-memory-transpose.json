@@ -1,0 +1,63 @@
+{
+  "prime": {
+    "problem": "Some algorithms need a stride: a transpose must read rows and write columns, so one side is always uncoalesced and the naive kernel runs at 18% of a copy. You need somewhere on the chip to rearrange data cheaply, and that place has its own access rule that can serialise a warp 32 ways.",
+    "fits": "The coalescing card showed why the naive transpose's writes waste 7/8 of every sector. This card is the fix: stage the tile in shared memory. It introduces banks, <code>__syncthreads()</code> and padding, which the reduction cards and siboehm's kernel 3 reuse.",
+    "expect": ["shared memory as a per-block scratchpad", "<code>__syncthreads()</code>", "32 banks, bank conflicts, broadcast", "padding <code>tile[32][33]</code>", "XOR swizzles"],
+    "goal": "Explain each step of Harris's transpose ladder, compute which bank any tile element lands in, and pick a padding or swizzle that makes a column read conflict-free."
+  },
+  "attend": [
+    "Harris's <code>copySharedMem</code> runs as fast as copy. What two suspects does that one experiment rule out?",
+    "In <code>transposeCoalesced</code>, which thread wrote the element that a thread reads back from the tile, and why does that force a barrier?",
+    "Why does a column of <code>float tile[32][32]</code> land entirely in one bank, and what does one extra column change in the arithmetic?",
+    "Why does width 33 work but width 34 leave a 2-way conflict?",
+    "When would staging a copy through shared memory add nothing at all?"
+  ],
+  "core": {
+    "must": [
+      "Transpose needs a stride on one side → read a 32 × 32 tile coalesced into shared memory → barrier → write it out coalesced from the mirrored position → the stride happens on-chip, where it costs no DRAM sectors",
+      "Threads read tile elements that other warps wrote → warps run in no fixed order → <code>__syncthreads()</code> is required between the store and the column read → every thread of the block must reach it",
+      "bank = word index mod 32 → a column of a 32-wide tile has word = 32i + j → every row maps to bank j → 32-way conflict → pad to 33 so bank = (i + j) mod 32 → one request serves the warp",
+      "Coalescing global memory gives the biggest step (2.73× on the M2050) → removing bank conflicts gives the rest (1.94×) → together 5.3×, about 95% of the fastest copy"
+    ],
+    "elevated": [
+      "Conflict degree for a float column read of a width-w tile is gcd(w, 32) → any odd width is conflict-free, 34 is 2-way, 48 is 16-way → an XOR swizzle reaches 1-way without extra bytes, which matters where padding would break 16-byte alignment for wide loads"
+    ],
+    "reference": [
+      "the M2050 and K20c GB/s table",
+      "per-GPU shared memory sizes (48 KB of 64 KB on Fermi, 64 KB on a T4, 228 KB on an H100) and the 48 KB dynamic opt-in",
+      "Kepler's switchable 8-byte banks (<code>cudaDeviceSetSharedMemConfig</code>)",
+      "the CUTLASS swizzle formula <code>(lane_id % 8) ^ (lane_id / 8)</code>"
+    ]
+  },
+  "compress": {
+    "prompt": "Draw the <code>transposeNoBankConflicts</code> pipeline from memory: global row → tile → barrier → tile column → global row. Mark where each of the two problems (sectors, banks) would appear without the fix, and write the bank formula for a padded tile under it.",
+    "checklist": [
+      "reads and writes of global memory are both along rows, so both coalesced",
+      "the column access happens in shared memory",
+      "the barrier is needed because a thread reads values another warp stored",
+      "bank = word mod 32; width 32 puts a column in one bank, width 33 spreads it across all 32",
+      "result: 18.8 → 51.3 → 99.5 GB/s on the M2050, ~95% of the fastest copy"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why <code>transposeCoalesced</code> is still only about half of copy speed, even though every global access is now coalesced.", "kind": "concept", "answer": ["the column read from <code>tile[32][32]</code> puts all 32 lanes in one bank", "the hardware splits the request into 32 serial passes", "so shared memory, not DRAM, is now the bottleneck: 51.3 GB/s on the M2050"]},
+    {"q": "For <code>float tile[32][33]</code>, compute the bank of tile[0][0], tile[1][0] and tile[31][0], and say how many requests a column read needs.", "kind": "mechanism", "answer": ["word = 33i + j: 0, 33, 1,023", "banks: 0, 1, 31 (1,023 mod 32 = 31)", "all 32 rows land on different banks, so one request"]},
+    {"q": "Pad or swizzle? Compare <code>tile[32][33]</code> with an XOR-swizzled <code>tile[32][32]</code>: what each costs, and where padding stops being the right answer.", "kind": "tradeoff", "answer": ["padding: one extra float per row (+128 B, +3.1%), trivial index math", "swizzle: no extra bytes, but harder index math", "padding breaks the 16-byte alignment that 128-bit loads and tensor-core loads (<code>ldmatrix</code>, TMA) need; there, swizzles win"]},
+    {"q": "You remove <code>__syncthreads()</code> from <code>transposeCoalesced</code> and the output is right on your test. Why is the kernel still wrong, and which tool would catch it?", "kind": "mechanism", "answer": ["a warp may read a column before the other 7 warps have stored their rows", "passing a test only means the warps happened to run in a friendly order", "Compute Sanitizer's racecheck flags the shared-memory read-after-write hazard"]}
+  ],
+  "compare": [
+    {"with": "perf-3-kernels/matmul-coalescing-smem", "q": "The transpose tile and siboehm's kernel 3 tile both stage 32 × 32 floats in shared memory. What is each tile <i>for</i>, and why does one give 5.3× and the other only 1.5×?", "answer": ["transpose: rearrange data so both global sides are coalesced; each value is used once", "kernel 3: reuse each loaded value 32 times to cut global loads", "the transpose's bottleneck was DRAM waste, which staging removes; kernel 3's bottleneck moved to two shared-memory loads per FMA (MIO throttle)"]},
+    {"with": "perf-3-kernels/reduction-divergence", "q": "Reduction kernel 2 and <code>transposeCoalesced</code> both suffer shared-memory bank conflicts. What access pattern causes each, and what fixes each: padding, or changing which thread reads which word?", "answer": ["transpose: a column read, stride 32 words, fixed by padding the row", "reduction kernel 2: index = 2·s·tid, stride 2s words, 2- to 4-way on 32 banks", "reduction's fix is sequential addressing (kernel 3), changing which thread reads which word, since the stride changes every step"]}
+  ],
+  "predict": {"q": "A colleague uses <code>float tile[32][48]</code> to leave room for a wider kernel later. Commit: how many ways does the column read conflict, and what width between 33 and 48 would you pick instead?", "answer": "48 mod 32 = 16, so row i starts at bank 16i mod 32, which is only 0 or 16: the 32 lanes share 2 banks, a 16-way conflict (gcd(48, 32) = 16). Any odd width is conflict-free for floats, so 33 (or 49 if they truly need more than 48 columns). Even widths are never fully conflict-free: 34 is 2-way, 36 is 4-way, 40 is 8-way."},
+  "apply": {"task": "Run <code>labs/bank-conflicts.py</code>, then add widths 34, 36, 40 and 48 to its layout list. Before running, write the conflict degree you expect for each column read. Then open <code>labs/transpose.ipynb</code> on a T4, run all five kernels, and compute naive → padded and padded ÷ copy for your T4.", "done": "Your predictions match the lab (34 → 2-way, 36 → 4-way, 40 → 8-way, 48 → 16-way), and you have your T4's five GB/s numbers with both ratios next to Harris's M2050 values (5.29× and 94.6%).", "hint": "The conflict degree for a float column read is gcd(width, 32). On the T4, expect the naive kernel to lose less than on the M2050 (larger caches), as the K20c already did."},
+  "reflect": [
+    "Which prediction did you get wrong: the 48-wide conflict, or which width to pick instead?",
+    "Could you explain why the barrier is needed without saying \"to be safe\"?",
+    "Which relationship is still fuzzy: column read → one bank, or padding → diagonal?",
+    "Were you surprised that coalescing, not bank conflicts, was the bigger step?",
+    "What will you revisit before the reduction cards: bank arithmetic, or barrier rules?"
+  ],
+  "revisit": ["perf-3-kernels/coalescing", "perf-3-kernels/execution-model"],
+  "prereq": ["perf-3-kernels/coalescing"]
+}

@@ -1,0 +1,62 @@
+{
+  "prime": {
+    "problem": "The naive matmul reads its inputs with each warp's 32 loads landing on 32 different rows, getting 15 GB/s from a 768 GB/s card, and every result re-reads 8,184 floats from global memory. Both waste bandwidth in a different way, and fixing one doesn't fix the other.",
+    "fits": "Second matmul card. It applies the coalescing card to kernel 1's index mapping (kernel 2) and the shared-memory card's tiles to reuse (kernel 3). Kernel 3's profile, MIO throttle, is the problem the blocktiling card solves.",
+    "expect": ["thread-to-output mapping and warp layout", "coalesced loads and broadcasts", "shared-memory cache blocking", "GMEM and SMEM loads per result", "MIO throttle"],
+    "goal": "Explain why two edited lines give 6.4×, why on-chip tiles give only 1.5× more, and count global and shared loads per result for any block tile."
+  },
+  "attend": [
+    "Kernel 2 changes only which thread computes which entry of C. What does a warp read from A and from B on one step of the loop, before and after?",
+    "Why is the SASS identical for kernels 1 and 2 even though one is 6.4× faster?",
+    "Kernel 3 cuts global loads 32-fold. Why is it only 1.5× faster?",
+    "What does the stall reason \"MIO throttle\" say is full, and why does that point at shared-memory loads here?",
+    "At 66% occupancy with warps often \"not selected\", why isn't occupancy the problem?"
+  ],
+  "core": {
+    "must": [
+      "Warps are 32 consecutive <code>threadIdx.x</code> → kernel 1 mapped <code>threadIdx.x</code> to rows, so a warp read 32 rows of A 16 KB apart (33 sectors per step) → kernel 2 maps it to columns, so a warp reads 32 neighbouring floats of B plus one broadcast float of A (5 sectors) → GMEM throughput 15 → 110 GB/s, 6.43×",
+      "Coalescing fixes bytes per load, not the number of loads → kernel 2 still issues 2K = 8,184 global loads per result (0.25 FLOP/B) → only reuse can cut the count",
+      "Load a 32 × 32 tile of A and B into shared memory once per block → each loaded float serves 32 results → GMEM loads per result fall 2K → K/16 (8 FLOP/B) → but every FMA now needs two shared-memory loads (2K per result)",
+      "Two LDS per FMA → the MIO queue fills → warps stall on MIO throttle while FMA units idle → the kernel is shared-memory-instruction-bound, not DRAM-bound → the fix is more results per thread (kernel 4)"
+    ],
+    "elevated": [
+      "Kernel 2 was already getting heavy L1 and broadcast help (≈ 7.95 TB/s of thread-level loads against 110 GB/s measured, ~98.6% served on-chip) → kernel 3 mostly turns implicit cache hits into explicit shared-memory hits → which is why its gain is modest"
+    ],
+    "reference": [
+      "the thread-to-warp formula <code>threadIdx.x + blockDim.x·(threadIdx.y + …)</code>",
+      "the ptxas report (37 registers, 8,192 B smem, 400 B cmem)",
+      "the Volta paper's 750 vs 12,080 GiB/s",
+      "the text-vs-table discrepancy (\"~2200 GFLOPS\" vs 2,980.3)"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw one warp's reads of A and B for one step of the k-loop in kernel 1 and kernel 2 (sector counts on each). Then write the loads-per-result line for kernels 1, 2 and 3 and circle the number that caused kernel 3's stall.",
+    "checklist": [
+      "kernel 1: 32 rows of A (32 sectors) + one float of B broadcast (1) = 33 sectors",
+      "kernel 2: one float of A broadcast (1) + 32 neighbouring floats of B (4) = 5 sectors",
+      "kernels 1 and 2: 2K GMEM loads per result; kernel 3: K/16 GMEM, 2K SMEM",
+      "2 SMEM loads per FMA fill the MIO queue",
+      "coalescing fixes the bytes per load; tiling fixes the number of global loads; neither fixes shared-memory pressure"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why coalescing gave 6.4× but did not change the number of global loads each result needs.", "kind": "concept", "answer": ["coalescing merges a warp's 32 loads into few sectors, so fewer bytes move per load", "each result still reads a full row of A and column of B: 2K loads", "cutting the count needs reuse, which is what shared-memory tiles do"]},
+    {"q": "Walk through one iteration of kernel 3's outer loop for one block: who loads what, where the two barriers go, and what each thread computes.", "kind": "mechanism", "answer": ["each of 1,024 threads copies one float of A and one of B into <code>As</code>/<code>Bs</code>, coalesced", "<code>__syncthreads()</code> so the whole tile is present", "each thread does 32 FMAs over its row of As and column of Bs", "<code>__syncthreads()</code> again before the next tile overwrites it; then slide along K"]},
+    {"q": "Try a 64 × 64 tile in kernel 3 (one result per thread). What happens to GMEM loads per result, SMEM loads per result, and can you even launch it?", "kind": "tradeoff", "answer": ["GMEM loads halve: K·(64 + 64)/(64·64) = K/32, 16 FLOP/B", "SMEM loads stay 2K per result: still two per FMA, so MIO throttle remains", "64 × 64 = 4,096 results at one per thread needs 4,096 threads, over the 1,024-per-block limit: you have to give threads more results anyway"]}
+  ],
+  "compare": [
+    {"with": "perf-3-kernels/shared-memory-transpose", "q": "Both kernel 3 and the tiled transpose use shared memory after fixing coalescing. Which bottleneck did staging remove in each, and which new one appeared?", "answer": ["transpose: removed wasted DRAM sectors; the new problem was bank conflicts, fixed by padding", "kernel 3: removed repeated global loads; the new problem was shared-memory instruction throughput (2 LDS per FMA)", "padding can't fix kernel 3, because its loads are conflict-free already; the count is the problem"]},
+    {"with": "perf-3-kernels/occupancy", "q": "Kernel 3's occupancy calculation (66.7% on the A6000) appears on both cards. Why does this card dismiss occupancy while the occupancy card uses kernel 3 as its worked example, and what would make occupancy the real problem?", "answer": ["the profiler shows warps ready but not selected, so there are enough warps; the limit is the MIO pipe", "the occupancy card uses kernel 3 to teach the calculator, not to diagnose it", "occupancy would matter if warps stalled on memory latency (long_scoreboard) with few eligible warps"]}
+  ],
+  "predict": {"q": "Kernel 3's no-cache GMEM ceiling on the H100 is 8 FLOP/B × 3.35 TB/s = 26.8 TFLOP/s. Commit: if you used a kernel-3-style tiling for a 1,000-token Llama-3.1-8B prefill, about how long would it take compared with the 16.2 ms floor, and which change would you make first?", "answer": "About 599 ms, 37× the floor: 1.61e13 FLOPs ÷ 26.8e12 FLOP/s. The first change is more results per thread and a larger block tile (kernels 4–5 raise GMEM intensity to 16 and 32 FLOP/B and cut shared-memory loads per FMA), and on an H100 the real answer is tensor-core MMA tiles, because even 32 FLOP/B is far below the 295 ridge."},
+  "apply": {"task": "Use <code>labs/matmul-loads.py</code> to tabulate GMEM loads per result, SMEM loads per result and GMEM FLOP/B for kernel 3 with block tiles 32 × 32, 64 × 32 and 64 × 64 (one result per thread), and mark which ones are launchable within 1,024 threads per block. Then run <code>labs/matmul-ladder.ipynb</code> on a T4 and compute kernel 2 ÷ kernel 1 and kernel 3 ÷ kernel 2.", "done": "Your table shows K/16 (8 FLOP/B), K/21.3 (10.7) and K/32 (16), with SMEM stuck at 2K in all three and only 32 × 32 launchable, and you have your T4's two step ratios next to the A6000's 6.43× and 1.50×.", "hint": "GMEM loads per result = K·(BM + BN) ÷ (BM·BN). A 64 × 32 tile at one result per thread needs 2,048 threads."},
+  "reflect": [
+    "Which prediction did you get wrong: the 599 ms prefill, or what to change first?",
+    "Could you explain why kernel 3 is only 1.5× without mentioning MIO throttle? (Try: two loads per FMA.)",
+    "Which relationship is still fuzzy: thread mapping → sectors, or tiling → loads per result?",
+    "Did the L1-cache inference (98.6% served on-chip) change how you read the 15 → 110 GB/s jump?",
+    "What will you revisit before kernel 4: why SMEM loads per result stayed at 2K?"
+  ],
+  "revisit": ["perf-3-kernels/matmul-naive", "perf-3-kernels/coalescing", "perf-3-kernels/shared-memory-transpose"],
+  "prereq": ["perf-3-kernels/matmul-naive", "perf-3-kernels/shared-memory-transpose"]
+}

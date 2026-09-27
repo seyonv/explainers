@@ -1,0 +1,65 @@
+{
+  "prime": {
+    "problem": "Static batching makes the first request wait for a full batch. A time window caps that wait, and for one-pass models it is exactly right. For generation it still fails, and seeing why tells you what the real problem with request-level batching is.",
+    "fits": "Third card of group 2, between static and continuous batching. It fixes static's fill wait and shows that the remaining problem, a batch frozen until its longest output, is what continuous batching removes.",
+    "expect": [
+      "fire when full or when the oldest has waited max_delay",
+      "<code>E[b] ≈ min(B_max, 1 + λ·d)</code>, λ_full = (B_max − 1) ÷ d",
+      "Triton's max_queue_delay_microseconds and preferred_batch_size",
+      "TGI's waiting_served_ratio: a dynamic batcher for joiners"
+    ],
+    "goal": "Predict a dynamic batcher's batch size and added latency from λ and d, explain why it works for one-pass models and fails for generation, and recognise its idea inside continuous batching."
+  },
+  "attend": [
+    "The timer starts at the oldest request, not at the last batch. What does that bound?",
+    "If the window is only 50 ms, where do dynamic batching's 1,957 ms of median TTFT come from?",
+    "Why does a batch of 9 cost the same as a batch of 1 for 32-token one-pass inputs, but a batch of 32 doesn't?",
+    "What does the idle-server formula assume that stops being true for generation?",
+    "How does TGI's waiting_served_ratio reuse the same trade-off with a stall in place of a forward pass?"
+  ],
+  "core": {
+    "must": [
+      "Fire when full or after max_delay → a request waits at most d for company → batches grow with traffic as 1 + λ·d → a bounded latency cost buys bigger batches",
+      "One-pass models finish every row in one pass → nothing to pad on output length → batching is nearly free up to ≈ 295 tokens per pass → dynamic batching is the right tool (209 → 1,873 req/s)",
+      "For generation the batch still lives until its longest output → the next batch forms from whatever queued meanwhile (≈ λ × 3.06 s) → the window barely matters and TTFT is set by output length (1,957 ms p50) → about 900 tok/s, a tenth of continuous"
+    ],
+    "elevated": [
+      "The window idea survives inside continuous batching → TGI gates joiners by count or decode steps, Sarathi/vLLM by leftover token budget → an admission window re-decided every few milliseconds"
+    ],
+    "reference": [
+      "Triton's config field names and default of 0 µs",
+      "Baseten's 16 requests / 100 ms example",
+      "TGI's disputed 0.3 vs 1.2 default and max_waiting_tokens = 20"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, write the firing rule and E[b] ≈ min(B_max, 1 + λ·d). Then draw two timelines, one for a one-pass model and one for generation, showing what a request waits for in each, and circle the part the window can't fix.",
+    "checklist": [
+      "fire when full or when the oldest has waited d",
+      "added wait ≤ d; batch ≈ 1 + λ·d until it fills",
+      "one-pass: everyone finishes together, so it works",
+      "generation: the batch runs to its longest output; the next forms behind it",
+      "the window lives on as token-budget admission in continuous batching"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why dynamic batching is the right tool for an embedding model and the wrong one for a chat model.", "kind": "concept", "answer": ["embedding: one pass per request, all rows finish together, so a wider pass is nearly free", "chat: one pass per token; the batch is frozen until its longest output", "so new requests queue behind a whole batch whatever the window"]},
+    {"q": "Walk through what the dynamic batcher does at 2 req/s with d = 50 ms and B_max = 32, and why the mean batch it fires is 5.92, not 1.1.", "kind": "mechanism", "answer": ["the idle formula predicts 1 + 2 × 0.05 = 1.1", "but the model is busy running the previous batch for 3.06 s on average", "requests pile up behind it: 2 req/s × 3.06 s ≈ 6.1 per batch, matching 5.92"]},
+    {"q": "Traffic is 10 req/s to a one-pass model. Should you set a 50 ms window, and what would you set instead?", "kind": "tradeoff", "answer": ["a 50 ms window gives E[b] ≈ 1 + 10 × 0.05 = 1.5: little batching for up to 50 ms of wait", "keep d small or leave Triton's default of 0", "batching only pays once traffic fills batches toward the ≈ 295-token knee"]}
+  ],
+  "compare": [
+    {"with": "llm-request-scheduler/static-batching", "q": "Static and dynamic batching differ only in max_delay (∞ vs finite) in the same simulator function. Which of static's costs does the finite window remove, which remain, and why do both saturate near 900 tok/s?", "answer": ["removed: the wait for B arrivals (8,698 → 1,957 ms TTFT p50)", "remaining: the frozen batch, idle seats (58–70%) and worst-case memory", "both saturate because every batch still runs to its longest output"]},
+    {"with": "llm-request-scheduler/chunked-prefill", "q": "Chunked prefill's token budget is described as the window moved from time to tokens. What is re-decided how often in each, and what does each trade?", "answer": ["dynamic: once per batch, after a time window", "token budget: every step, by how many prompt tokens fit after the decodes", "dynamic trades a little wait for a fuller pass; the budget trades TTFT for smoother streams"]}
+  ],
+  "predict": {"q": "You raise the window from 50 ms to 500 ms for generation at 2 req/s. Before running it: does TTFT p50 go up a lot, a little, or not at all?", "answer": "Only a little. The batch size is set by how many requests queue while the previous batch runs (≈ 6), not by the window, so a longer window rarely fires on its own timer. It can add some wait in the gaps when no batch is running, but the median TTFT stays dominated by waiting for the running batch's longest output. The card suggests exactly this experiment."},
+  "apply": {"task": "A one-pass model takes 64-token inputs on the running example's H100. Using the card's cost model, compute the pass time and requests per second at b = 1, 4, 5 and 8, and find where extra requests stop being free. Then, with d = 20 ms and B_max = 32, compute E[b] at 300 req/s and the rate λ_full above which the timer no longer matters.", "done": "b = 1: 4.80 ms, 208 req/s; b = 4: 4.80 ms, 833 req/s; b = 5: 5.21 ms, 960 req/s; b = 8: 8.33 ms, 960 req/s. The knee is near b ≈ 4.6 (295 ÷ 64). E[b] = 1 + 300 × 0.02 = 7, and λ_full = 31 ÷ 0.02 = 1,550 req/s.", "hint": "Pass time = max(2 × 8.03e9 × 64b ÷ 989e12, 4.79 ms) plus a small KV term."},
+  "reflect": [
+    "Which prediction did you get wrong: how much a 10× longer window changes TTFT?",
+    "Could you explain the 5.92 mean batch size without the formula?",
+    "Which relationship is still fuzzy: window → batch size (idle server), or busy time → batch size (busy server)?",
+    "Where in a real system would you still deploy a Triton-style dynamic batcher?",
+    "What will you revisit before the continuous-batching card: exactly what a frozen batch prevents?"
+  ],
+  "revisit": ["llm-request-scheduler/static-batching", "llm-request-scheduler/why-batch"],
+  "prereq": ["llm-request-scheduler/static-batching"]
+}

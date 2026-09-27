@@ -1,0 +1,65 @@
+{
+  "prime": {
+    "problem": "Tensor parallelism makes a token faster but can't leave the node, and a model that already fits wastes GPUs on all-reduces. You need the other two ways to use more GPUs, and a rule for which layout serves the most tokens at the latency you promised.",
+    "fits": "Fourth card, closing the dense-model block. Megatron II gave the TP step-time model; this card adds pipeline stages and replicas to it and compares every layout of 70B on 8 and 16 H100s. DistServe and the sizing card reuse these layouts.",
+    "expect": ["pipeline stages, micro-batches and bubbles at inference", "replicas (data parallelism) with no communication", "TP8 × PP2 vs TP16 vs TP8 × DP2", "why FSDP is a regression for decode", "the decision table"],
+    "goal": "Predict batch-1 latency and big-batch throughput for a TP × PP × DP layout, and pick the layout for a given model size, node count and latency target."
+  },
+  "attend": [
+    "Why does splitting 70B into two pipeline stages leave per-token latency unchanged instead of halving it?",
+    "At inference there's no backward pass: where does a serving pipeline's bubble come from, then?",
+    "Why does TP4 × PP2 serve fewer tokens per second than TP8 on the same 8 GPUs?",
+    "Why do replicas lose throughput at 8k context but nearly tie at 2k?",
+    "What makes TP16 lose at a big batch even when its batch-1 latency wins?"
+  ],
+  "core": {
+    "must": [
+      "A pipeline stage owns a contiguous block of layers → a token still visits every stage in turn → latency ≈ sum of the stages + hops ≈ the TP-only step → PP adds memory and throughput (p micro-batches keep stages busy), never speed: TP4 × PP2 takes 11.70 ms, the same as TP4 alone",
+      "A serving pipeline has no backward and never drains → the bubble left is fill/drain plus imbalance between micro-batches → one long prefill next to short decodes idles the other stage (≈ 950 ms in Sarathi's Falcon-180B example) → chunked prefill makes micro-batches uniform and removes it",
+      "PP sends one activation per stage boundary instead of 160 all-reduces per step → it is the cheap way to cross the slow inter-node link → TP8 in each node × PP2 across nodes; TP16 over IB pays 160 cross-node latencies and, past 8 KV heads, can't split the cache (212 vs 424 sequences, 6,811 vs 13,717 tok/s)",
+      "Replicas share nothing → each holds its own weights and KV → no communication and a small blast radius, but each copy eats memory that could hold KV → at 8k context one TP8 copy holds 185 sequences vs 132 for two TP4 copies → KV room decides the batch, so layout choice depends on context length"
+    ],
+    "elevated": [
+      "In memory-bound decode each micro-batch re-reads its stage's weights → TP4 × PP2 reads 17.6 GB twice per cycle (29.06 ms of HBM vs TP8's 23.80 ms) to save some all-reduce time (1.77 vs 4.13 ms) → a bad trade inside a node where NVLink is cheap",
+      "FSDP moves weights instead of activations → gathering 7/8 of 141.1 GB per token takes 274 ms vs 5.27 ms to read a TP8 shard → synchronized DP is a training setting that regresses decode"
+    ],
+    "reference": [
+      "the Sarathi-Serve Falcon-180B 1,150/200/950 ms numbers",
+      "Kiely's page numbers and exact wording",
+      "the layout table's individual TPOT values",
+      "DeepSeek-V3 Table 2's training bubble formula",
+      "the lab's CTX/ALPHA/HOP knobs"
+    ]
+  },
+  "compress": {
+    "prompt": "Draw the four 8-GPU layouts (TP8, TP4 × PP2, TP4 × DP2, FP8 TP2 × DP4) as boxes and, next to each, one arrow chain for what it buys and what it costs. Then write the one-line rule for crossing nodes.",
+    "checklist": [
+      "TP is the only split that shortens each token; it pays 2 all-reduces per layer",
+      "PP adds memory and throughput, not speed; bubbles come from fill/drain and uneven micro-batches",
+      "DP replicas never talk; each costs a full copy of the weights",
+      "KV room sets the batch, so context length decides between one big pool and many replicas",
+      "across nodes: TP inside, PP or replicas across"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why pipeline parallelism \"adds throughput, not speed\" in decode, using what one token does and what p micro-batches do.", "kind": "concept", "answer": ["one token must pass stage 1 then stage 2, so its time is the sum of the stages plus hops", "splitting layers makes each stage p times shorter but the token visits all p", "with p micro-batches in flight, all stages work at once, so total tokens per second rises"]},
+    {"q": "Walk through the Sarathi imbalance bubble: two stages, one micro-batch carrying a 1,150 ms prefill, the other a 200 ms decode. Where does the idle time appear and how long is it?", "kind": "mechanism", "answer": ["stage 2 finishes the 200 ms decode and waits for the prefill micro-batch still on stage 1", "a micro-batch can't start its next iteration until it leaves stage 2 with its token", "the stage waiting on the long one idles ≈ 1,150 − 200 = 950 ms", "chunking the prefill makes the micro-batches equal and removes that bubble"]},
+    {"q": "You have two nodes and Llama-3.1-70B already fits in one. Compare TP8 × PP2 with TP8 × DP2 on throughput, TPOT and failure, and pick one.", "kind": "tradeoff", "answer": ["throughput: 13,717 vs 13,252 tok/s, within about 3%", "TPOT at full load: 30.9 vs 27.9 ms, replicas are better", "a GPU failure takes both nodes down under PP2, only one replica under DP2", "pick the replicas unless the model plus KV actually needs two nodes"]},
+    {"q": "Why would FP8 TP2 × DP4 be slightly faster than BF16 TP4 at batch 1, even though each GPU reads the same 35.3 GB?", "kind": "mechanism", "answer": ["both read 35.3 GB of weights per GPU per step", "a 2-GPU all-reduce pays 2 hops, a 4-GPU one 6, so 160 all-reduces cost less", "11.26 vs 11.70 ms"]}
+  ],
+  "compare": [
+    {"with": "perf-6-scaling-out/megatron-scaling", "q": "Megatron II's step model and this card's layout model use the same terms. What does adding PP and DP let you optimise that TP alone can't?", "answer": ["TP alone only trades GPUs for per-token latency", "PP lets one copy span nodes with one activation per boundary", "DP adds capacity with zero communication", "together they let you choose throughput per GPU and blast radius, not just latency"]},
+    {"with": "perf-7-training-economics/zero-fsdp", "q": "FSDP is standard in training but a regression for decode. Which property of each workload decides that?", "answer": ["training is compute-heavy per weight byte (big batches, forward + backward), so gathering weights hides under compute", "decode reads every weight for a few tokens, so it's bound by the weight read itself", "moving weights over a link that is orders of magnitude slower than HBM makes that read slower: 274 ms vs 5.27 ms for 70B"]}
+  ],
+  "predict": {"q": "Put 70B on 8 H100s as TP2 × PP4 (four stages of two GPUs). Each GPU still holds 17.6 GB. What is the batch-1 time per token, roughly, and why? Commit first.", "answer": "About 21.8 ms (≈ 46 tok/s). Each stage reads 17.64 GB of weights plus 0.34 GB of KV (5.36 ms) and does 40 two-GPU all-reduces (≈ 0.08 ms), so ≈ 5.45 ms; the token passes all four stages plus 3 hops: 4 × 5.45 ≈ 21.8 ms. The same bytes per GPU as TP8, but a token only uses 2 GPUs' bandwidth at a time, so it's almost 3× slower than TP8's 7.62 ms."},
+  "apply": {"task": "Run labs/layouts.py, then change CTX to 2048. For TP8, TP4 × DP2 and FP8 TP2 × DP4 write down total tok/s at both contexts. Explain in two sentences why the gap between the single big pool and the replicas shrinks at 2k. Then design: a team must serve 70B with TPOT ≤ 12 ms at batch 1 on one node; which layouts qualify?", "done": "You have the 8k and 2k throughputs from your run, a two-sentence explanation that names KV room, and a list of qualifying layouts with their batch-1 times.", "hint": "At 8k: 6,626 / 5,220 / 5,440 tok/s. At 2k the card reports FP8 TP2 × DP4 at 21.3k vs TP8's 22.1k: each sequence needs a quarter of the KV, so extra weight copies cost fewer sequences. Batch 1 ≤ 12 ms: TP8 7.62, TP4 × DP2 11.70, FP8 TP2 × DP4 11.26 and TP4 × PP2 11.70 all qualify."},
+  "reflect": [
+    "Which prediction did you get wrong: that a four-stage pipeline is almost 3× slower than TP8, or by how much?",
+    "Can you say where a serving pipeline's bubble comes from without mentioning the backward pass?",
+    "Which relationship is still fuzzy: weight copies → KV room → batch, or batch → tokens per second?",
+    "Could you argue for TP8 × DP2 over TP8 × PP2 to someone who only looks at throughput?",
+    "Before DistServe: which of TP (intra-op) and PP (inter-op) would you give a prefill-heavy phase, and why?"
+  ],
+  "revisit": ["perf-6-scaling-out/megatron-scaling", "perf-6-scaling-out/collectives", "perf-5-engines/sarathi-chunked-prefill"],
+  "prereq": ["perf-6-scaling-out/megatron-scaling"]
+}

@@ -1,0 +1,67 @@
+{
+  "prime": {
+    "problem": "The limit order book is usually given as maths: a tick grid, orders (p, q, t), best bid and ask, three events. That spec says nothing about which data structures make ‘best price’, ‘add’, ‘cancel’ and ‘market order’ fast, and a naïve choice makes one of them O(n).",
+    "fits": "Fourth case-study card, and the course's clearest spec-to-system translation. It builds on cs-1's heaps and on the dict-of-queues idea from the LFU cache card; cs-10's market-making card uses the same book from the trader's side.",
+    "expect": ["price-then-time priority", "per side: dict tick → deque, plus a heap of ticks", "lazy deletion of empty levels and cancelled orders", "walking the book, average fill and slippage", "the spread"],
+    "goal": "Translate the book's definitions into data structures with stated costs, and trace a market order through the book by hand, computing average price and slippage."
+  },
+  "attend": [
+    "Why store prices as integer ticks instead of floats, and what does that make possible?",
+    "Why group orders by price level first, instead of keeping one heap or one sorted list of all orders?",
+    "What does lazy deletion save on a cancel, and what does <code>best()</code> have to do because of it?",
+    "In the 250-share market buy, why is #1 filled before #5 even though they share a price?",
+    "Why does taking liquidity widen the spread from 1 tick to 3?"
+  ],
+  "core": {
+    "must": [
+      "Price priority then time priority → per side, a dict tick → FIFO deque of orders, plus a heap of the distinct ticks → the best level is the heap top, and the oldest order at it is the deque head",
+      "The heap orders only L price levels, not every order → adding to an existing level, cancelling and filling are O(1) → a new level costs O(log L)",
+      "Cancel marks the order's quantity 0 instead of searching the deque → O(1) cancel → best() skips zeroed orders and pops empty levels when they reach the top, once per level",
+      "A market order eats the head of the best level, then the next level → average fill = Σ pᵢnᵢ / Σ nᵢ → slippage = average − best ask on arrival (10.018 − 10.01, $2.00 on 250) → and the spread widens as levels empty"
+    ],
+    "elevated": [
+      "Integer ticks make comparisons exact and prices usable as dict keys → no float-equality bugs",
+      "A sequence counter replaces the timestamp t → two clock readings can tie, a counter can't → replaying the event log rebuilds the book exactly"
+    ],
+    "reference": [
+      "δ = 0.01 and the six illustrative orders",
+      "bids stored as −tick in a min-heap",
+      "pro-rata matching and tick-offset arrays as alternatives",
+      "the 2,000-book fuzz test"
+    ]
+  },
+  "compress": {
+    "prompt": "Close the card and draw one side of the book as the system stores it (dict, deques, heap), then list the cost of best, add, cancel and a market order. Finish with the formulas for average fill and slippage.",
+    "checklist": [
+      "dict tick → deque (time priority); heap of ticks (price priority); bids as −tick",
+      "best: O(1) peek after lazy pops; add O(1) or O(log L) for a new level; cancel O(1)",
+      "market: O(k + d log L) for k fills and d levels emptied",
+      "average = Σ pᵢnᵢ / Σ nᵢ; slippage = average − best price on arrival",
+      "integer ticks and a sequence counter for exactness"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why ‘one heap of all orders keyed by (price, seq)’ is worse than grouping by level first.", "kind": "concept", "answer": ["the heap then holds n orders, so every operation is O(log n), not per level", "a level's total size needs a scan", "cancelling from the middle of a heap needs a search"]},
+    {"q": "Walk through the market buy of 250 against asks 60 + 40 @ 10.01, 100 @ 10.02, 200 @ 10.03: each fill, the running cost, the average and the slippage.", "kind": "mechanism", "answer": ["#1: 60 @ 10.01 (600.60); #5: 40 @ 10.01 (1,001.00)", "#2: 100 @ 10.02 (2,003.00); #3: 50 @ 10.03 (2,504.50)", "average 2,504.50 / 250 = 10.018", "slippage 0.008 × 250 = $2.00; spread now 3 ticks"]},
+    {"q": "An interviewer asks whether a heap is what real matching engines use. Argue its limits and name two alternatives.", "kind": "tradeoff", "answer": ["a heap can't list levels in order, so publishing the top 10 needs a sort", "stale entries pile up under heavy cancelling", "a balanced tree of levels for sparse prices; an array indexed by tick offset near the best price for O(1)", "doubly linked lists per level for true O(1) cancels"]}
+  ],
+  "compare": [
+    {"with": "cs-1-data-structures/heaps", "q": "The cs-1 heap card and this book both use a heap for ‘best so far’. What does the book put in the heap, what does it keep out, and what does lazy deletion change?", "answer": ["the book heaps only distinct price ticks, not orders", "orders stay in per-level deques, so time priority is O(1)", "lazy deletion leaves empty levels in the heap until they reach the top; each is popped once"]},
+    {"with": "cs-1-data-structures/lfu-cache", "q": "Both the O(1) LFU cache and the order book are ‘a dict of queues’. What is the key, what does each queue order, and what finds the extreme element?", "answer": ["LFU: key = hit count, each bucket is ordered by age, a min-count pointer finds the victim", "book: key = price tick, each deque is ordered by arrival, a heap finds the best tick", "both make the common operations O(1) by grouping equal keys"]}
+  ],
+  "predict": {"q": "The ask side holds exactly 400 shares (the card's book) and a market buy of 1,000 arrives. Commit first: what does this card's <code>submit</code> do with the other 600, and what state is the book in afterwards?", "answer": "It fills all 400 across 10.01, 10.02 and 10.03, then finds no best ask and stops; a market order has no tick, so the remaining 600 aren't rested: they're dropped, like an immediate-or-cancel order. The ask side is now empty, so there is no best ask and no spread until a seller arrives. Real venues add price protection so a market order can't sweep to absurd prices."},
+  "apply": {
+    "task": "On the card's starting book, trace a market <i>sell</i> of 300 by hand: each fill, the proceeds, the average price, the slippage against the best bid on arrival, and the new best bid, best ask and spread. Check with <code>start_book</code> and <code>submit('S', 300)</code> in <code>code/order-book-to-system.py</code>.",
+    "done": "Fills: #4 200 @ 10.00, then #6 100 @ 9.99; proceeds 2,000.00 + 999.00 = 2,999.00; average 9.9967; slippage 10.00 − 9.9967 ≈ 0.0033 per share, $1.00 in total; after: best bid 9.99 (50 left on #6), best ask 10.01, spread 2 ticks.",
+    "hint": "A sell walks the bids from the highest price down."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: what happens to the unfilled 600?",
+    "What couldn't you explain cleanly: why the heap holds ticks rather than orders?",
+    "Which relationship is still fuzzy: time priority → deque, or price priority → heap?",
+    "Could you state every operation's cost without looking, and the one assumption each cost relies on?",
+    "What will you look for in the autodiff-tape card: another interview prompt where the source gives the maths and you must design the structure?"
+  ],
+  "revisit": ["cs-1-data-structures/heaps", "cs-1-data-structures/lfu-cache"],
+  "prereq": ["cs-1-data-structures/heaps"]
+}

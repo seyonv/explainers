@@ -1,0 +1,64 @@
+{
+  "prime": {
+    "problem": "Once attention and experts sit on different GPUs, each token goes attention → network → experts → network → attention on every layer. With one batch, every GPU idles while the other side works and while data is on the wire.",
+    "fits": "Second MegaScale-Infer card. Part I split the pools and sized n_a; this card keeps both pools busy with the pipeline card's micro-batch trick in a two-stage, per-layer form, and replaces NCCL for the many-to-many traffic. The results close the MoE block.",
+    "expect": ["the three constraints: T_a ≈ T_e, T_c < T_f, m ≥ 2(1 + T_c/T_f)", "Eq 4–5: latency and total time", "the plan search (Algorithm 1)", "M2N: a CPU-driven RDMA path instead of NCCL", "results with named baselines, and Step-3's latency critique"],
+    "goal": "Pick the number of micro-batches for a given compute and network time, predict the busy share and the per-token latency cost, and read the paper's multipliers against their baselines."
+  },
+  "attend": [
+    "Why is m = 2 never quite enough when the network time is non-zero?",
+    "What does each of the three constraints hide: the other side's compute, or the network?",
+    "Why does the ping-pong pipeline raise throughput but leave per-token latency the same or worse?",
+    "Which NCCL behaviours make it slow for this M-to-N traffic at ~200 KB messages?",
+    "Why is \"up to 1.90×\" a different claim from \"7.11×\", and which baseline is each against?"
+  ],
+  "core": {
+    "must": [
+      "A micro-batch's round trip is T_a + T_c + T_e + T_c = 2(T_f + T_c) when balanced → a node has m·T_f of other work meanwhile → no idle time if m·T_f ≥ 2(T_f + T_c) → m ≥ 2(1 + T_c/T_f): 3 when T_c < ½T_f, 4 for slower networks, and m = 2 always leaves a gap",
+      "Balance (T_a ≈ T_e) removes one side waiting on the other → a fast link (T_c < T_f) lets the transfer hide under compute → enough micro-batches cover the round trip → break any one and busy share drops (T_e = T_a/2: experts 49.7%; T_c = 1.3 T_f: 64.6%, even m = 8 only 76.5%)",
+      "Each micro-batch waits for m slots of work at every layer → per-token latency ≤ m·T_f·L → at a 150 ms TBT SLO, Mixtral's 56 layers and m = 3 leave T_f ≤ 893 µs per layer → throughput per GPU rises, latency doesn't fall → a loose SLO is part of the recipe (Step-3's critique)",
+      "Small per-pair messages (~196 KB for Mixtral) make fixed per-message overheads dominate → NCCL's GPU→CPU-proxy copies, ≤ 8-op groups and synchronisation push T_c toward T_f → a CPU-driven RDMA path with no copies or SMs: 4.2× throughput, 68.2% lower median and 92.9% lower P99 at 256 KB, M = N = 8"
+    ],
+    "elevated": [
+      "Fixed micro-batch size means throughput ∝ busy share → the model predicts m 1→2 ≈ 1.99× and 2→3 ≈ 1.2–1.4×; the paper measured 1.9× and 1.10–1.38× (bigger models gain more because they communicate more)"
+    ],
+    "reference": [
+      "Eq 6's per-GPU communication formula and Eq 8's memory bound",
+      "Algorithm 1's loop bounds (M ∈ {1, 2, 4, 8}, N_m = 4) and the \"minimize\" typo",
+      "the six-step sender/receiver RDMA sequence",
+      "high-priority ACKs and congestion-control tuning",
+      "the 1.7× vs 1.86× heterogeneous discrepancy and the production 1.5–2.0×"
+    ]
+  },
+  "compress": {
+    "prompt": "Write the three constraints from memory, each followed by → and what it hides. Then derive m ≥ 2(1 + T_c/T_f) in two lines and write the latency bound. Finish with one sentence on why NCCL was replaced.",
+    "checklist": [
+      "T_a ≈ T_e hides one side's compute from the other",
+      "T_c < T_f lets the transfer fit under a micro-batch's compute",
+      "m·T_f ≥ 2(T_f + T_c) covers one round trip, so m ≥ 2(1 + T_c/T_f): 3 or 4",
+      "per-token latency grows to about m·T_f·L; throughput, not speed, improves",
+      "NCCL's copies, grouping and sync overheads dominate small M2N messages"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why the ping-pong pipeline needs at least 3 micro-batches on a fast network but 4 on a slower one.", "kind": "concept", "answer": ["a micro-batch's round trip is 2(T_f + T_c): its own compute on both sides plus two transfers", "the node must have m·T_f of other work to cover it", "m ≥ 2(1 + T_c/T_f): below T_c = ½T_f that's ≤ 3, above it up to 4 (T_c/T_f < 1)"]},
+    {"q": "Walk through the first few time units of the m = 3 timeline with T_a = T_e = 1 and T_c = 0.4: when each micro-batch starts attention, when it reaches the experts, and whether the attention node ever waits.", "kind": "mechanism", "answer": ["attention runs micro-batch 1 (0–1), 2 (1–2), 3 (2–3)", "micro-batch 1 arrives at the experts at 1.4 and finishes at 2.4, and is back at 2.8", "the attention node frees up at 3.0, just after micro-batch 1 returns, so it runs back to back", "with m = 2 it would free up at 2.0 and wait until 2.8"]},
+    {"q": "A chat product needs a 50 ms TBT on a 56-layer MoE. What per-layer compute time does m = 3 allow, and what does that tell you about using MegaScale-Infer's design as-is?", "kind": "tradeoff", "answer": ["T_f ≤ 50 ms ÷ (3 × 56) ≈ 298 µs per layer (vs 893 µs at 150 ms)", "that forces much smaller micro-batches or faster GPUs, cutting the throughput gain", "Step-3 redesigned the model and pipeline (3 stages, ~272 µs per layer per stage) to use AFD under 50 ms"]},
+    {"q": "Why did MegaScale-Infer's own M2N library add up to 1.53× on top of the NCCL-based disaggregated version?", "kind": "mechanism", "answer": ["with NCCL, T_c approached T_f, breaking constraint 2, so the network stopped hiding", "the CPU-driven RDMA path removes GPU→CPU copies, group setup and GPU synchronisation", "with T_c < T_f the ping-pong pipeline can hide the transfer again"]}
+  ],
+  "compare": [
+    {"with": "perf-6-scaling-out/pipeline-data-parallel", "q": "The serving pipeline (PP stages over layers) vs the ping-pong pipeline (two alternating pools per layer): what is the same trick, what is different about the stages, and how does each fail?", "answer": ["both keep several micro-batches in flight so no stage waits", "PP's stages are blocks of layers visited once per token; ping-pong's two stages alternate L times per token, with a network hop each way", "PP fails on imbalanced micro-batches (prefill next to decode); ping-pong fails on unbalanced T_a/T_e or a slow link (T_c ≥ T_f)"]},
+    {"with": "perf-6-scaling-out/expert-parallel", "q": "DeepEP's GPU-driven low-latency all-to-all vs MegaScale-Infer's CPU-driven M2N: which design choice does each make about who posts the network operations, and when does each win?", "answer": ["DeepEP posts RDMA from the GPU (with a receive hook that overlaps without SMs)", "M2N posts from CPU threads, argued to saturate the NIC at several hundred KB per pair", "M2N suits AFD's larger per-pair messages; the paper concedes GPU-driven sends may win as messages get smaller with more experts"]}
+  ],
+  "predict": {"q": "Keep m = 3 and T_a = T_e, but the network slows to T_c/T_f = 0.7. What steady-state busy share does the model predict, and what should the planner do? Commit first.", "answer": "Steady state is min(1, m / 2(1 + r)) = 3 / 3.4 ≈ 88%. Constraint 3 now needs m ≥ 3.4, so the planner should move to m = 4 (bound 3.4 ≤ 4), accepting a higher per-token latency (m·T_f·L grows by a third), or cut T_c with a better transfer path."},
+  "apply": {"task": "Run labs/pingpong.py. Then compute by hand: (1) the smallest m for T_c/T_f = 0.45 and for 0.95; (2) Eq 5's T_total for Mixtral (L = 56) at m = 4, T_a = T_e = 1, T_c = 0.4, and compare with the lab; (3) the per-layer T_f budget at a 150 ms TBT for m = 4. Finally sweep T_e from 0.3 to 1.5 at T_a = 1 in the lab and describe which side idles on each end.", "done": "You have two minimum-m values, a T_total that matches the lab, a per-layer budget, and a two-sentence description of the T_e sweep.", "hint": "(1) 2 × 1.45 = 2.9 → m = 3; 2 × 1.95 = 3.9 → m = 4. (2) (1 + 1 + 2 × 0.4) + 1 × (4 × 56 − 1) = 2.8 + 223 = 225.8. (3) 150 ms ÷ (4 × 56) ≈ 670 µs. Sweep: T_e < 1 means experts idle (attention-bound, like DBRX at DP 1–4); T_e > 1 means attention idles (expert-bound, DBRX past DP 8)."},
+  "reflect": [
+    "Which prediction did you get wrong: the busy share at T_c/T_f = 0.7, or the planner's fix?",
+    "Could you derive the m bound from the round trip without looking?",
+    "Which relationship is still fuzzy: m → throughput, or m → per-token latency?",
+    "Can you name the baseline behind each of 1.90×, 7.11× and 1.86×?",
+    "Before sizing: which MoE serving design would you pick for a strict chat SLO, and why?"
+  ],
+  "revisit": ["perf-6-scaling-out/megascale-infer-design", "perf-6-scaling-out/pipeline-data-parallel", "perf-6-scaling-out/expert-parallel", "perf-6-scaling-out/collectives"],
+  "prereq": ["perf-6-scaling-out/megascale-infer-design"]
+}

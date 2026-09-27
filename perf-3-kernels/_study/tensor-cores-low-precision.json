@@ -1,0 +1,62 @@
+{
+  "prime": {
+    "problem": "An FP32 SGEMM can be tuned to 94% of cuBLAS and still use under 5% of an H100, because LLM matmuls run on tensor cores in BF16, FP8 and FP4. Fewer bits mean faster math and fewer bytes, but a 4-bit number has only 8 magnitudes, so without per-block scales an outlier wipes out its neighbours.",
+    "fits": "It follows the matmul ladder: kernel 5's register outer product is what a tensor-core MMA does in hardware, bigger. It reuses matmul I's two floors to show precision pulling both at once, and hands off to perf-5's serving-side quantization.",
+    "expect": ["WMMA <code>D = A·B + C</code> on 16 × 16 × 16", "FP8 E4M3 vs E5M2", "block scaling: MX (32, power-of-two) vs NVFP4 (16, E4M3)", "precision as a double lever", "decode vs prefill gains"],
+    "goal": "Say how much faster each precision's tensor-core math is, compute the decode and prefill floors it gives Llama-3.1-8B, and quantize a small block by hand to see why NVFP4's scale beats MXFP4's."
+  },
+  "attend": [
+    "One WMMA instruction does 4,096 multiply-adds for a warp. How does that compare with a warp of CUDA cores, and where does the 8–30× speed gap come from?",
+    "Why does halving precision help decode through bytes but prefill through math?",
+    "E4M3 and E5M2 are both 8 bits. What does each trade, and why does E4M3 top out at 448?",
+    "Why does one outlier in an MXFP4 block send small weights to zero, and what two things about NVFP4 prevent that?",
+    "If FP8 math is 2× faster, why would a batch-32 decode step get only ~1.3× from FP8 weights?"
+  ],
+  "core": {
+    "must": [
+      "A tensor core makes one warp do a whole 16 × 16 × 16 matrix multiply-accumulate → 4,096 multiply-adds per instruction vs 32 FMAs on CUDA cores → 8× on a T4 (FP16) and 14.8× on an H100 (BF16) → the same block/warp tiling, with an MMA at the bottom instead of an FMA",
+      "Fewer bits per weight → decode (memory-bound) moves fewer bytes: 209 → 417 → ~742 tok/s ceilings for BF16 → FP8 → NVFP4 weights → prefill (compute-bound) gets faster only if the math runs in that format (16.2 → 8.1 ms for FP8)",
+      "Exponent bits buy range, mantissa bits buy precision → FP8 E4M3 reaches only 448 → every low-precision tensor needs a scale → one scale per tensor lets a single outlier set the step for everything",
+      "Per-block scales localise outliers → MX shares a power-of-two scale over 32 values, NVFP4 an E4M3 scale over 16 plus a tensor scale → NVFP4's fractional scale fits the block max exactly → 0.093 vs 0.138 relative error at about 4 bits"
+    ],
+    "elevated": [
+      "Most of NVFP4's win is the E4M3 scale, not the smaller block → MXFP4 with 16-value blocks only reaches 0.130, while NVFP4 with 32-value blocks already gets 0.108 (the lab's 1M-weight sweep)"
+    ],
+    "reference": [
+      "the format table (bias, max, min normal/subnormal, binades)",
+      "WMMA fragment API and types per compute capability (FP16 on 7.0+, BF16/TF32 on 8.0+)",
+      "T4/H100/B200 dense TFLOPS and ops:byte ratios",
+      "MX spec §6.3's scale rule and the MXFP8 clipping quirk (16.9% of blocks)"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, write the two floors with precision in them (decode ≥ P·b/W, prefill ≥ 2·P·n/C_b) and fill in BF16 and FP8 for Llama-3.1-8B on an H100. Then draw one MXFP4 block and one NVFP4 block with bits per value, and say in one line why the outlier hurts one more than the other.",
+    "checklist": [
+      "decode: 16.06 → 8.03 GB of weights, 209 → 417 tok/s",
+      "prefill of 1,000 tokens: 16.2 → 8.1 ms",
+      "MXFP4: 32 × E2M1 + one E8M0 scale = 4.25 bits; NVFP4: 16 × E2M1 + one E4M3 scale = 4.5 bits",
+      "a power-of-two scale can't fit the block max, so the outlier clips and small values round to zero",
+      "NVFP4's fractional scale and half-size blocks keep more values non-zero"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why lower precision is called a \"double lever\" for inference, and why an H100 serving NVFP4 weights gets the decode half but not the prefill half.", "kind": "concept", "answer": ["fewer bytes per weight shrink the memory-bound decode floor", "a faster tensor-core format shrinks the compute-bound prefill floor", "the H100 has no FP4 tensor math, so 4-bit weights are unpacked to FP8/BF16: decode reads fewer bytes, prefill math runs at the wider format's rate"]},
+    {"q": "Quantize four weights from one MXFP4 block whose largest magnitude is 0.9: 0.9, 0.3, 0.05 and 0.02. Show the scale and each result.", "kind": "mechanism", "answer": ["X = 2^(floor(log2 0.9) − 2) = 2^(−1 − 2) = 0.125", "0.9 ÷ 0.125 = 7.2 → clipped to 6 → 0.75", "0.3 → 2.4 → 2 → 0.25; 0.05 → 0.4 → 0.5 → 0.0625; 0.02 → 0.16 → 0 → 0", "E2M1 magnitudes are only 0, 0.5, 1, 1.5, 2, 3, 4, 6"]},
+    {"q": "Batch-8 decode at 4,096-token contexts on an H100: compare BF16 weights with FP8 weights (KV cache stays BF16). What speed-up do you get, and why isn't it 2×?", "kind": "tradeoff", "answer": ["KV cache = 8 × 4,096 × 128 KiB ≈ 4.29 GB per step", "BF16: 16.06 + 4.29 = 20.35 GB → 6.08 ms; FP8 weights: 8.03 + 4.29 = 12.32 GB → 3.68 ms", "≈ 1.65×: the KV bytes don't shrink, and at batch 32 (17.18 GB of KV) it falls to ~1.32×"]}
+  ],
+  "compare": [
+    {"with": "perf-3-kernels/matmul-warptiling", "q": "siboehm's best FP32 SIMT kernel vs a tensor-core BF16 kernel on an H100 (Shankhdhar): what changes in the instruction at the bottom of the tiling, which design choice gives the 20×+ gap, and what does the tensor-core kernel then struggle with instead?", "answer": ["SIMT: one FMA per thread per instruction; tensor core: one MMA per warp on a whole tile", "the MMA's peak is 989 TF vs 67 TF of FP32 (and the SIMT-style kernel reached only 32 TF on the H100)", "with math that fast, feeding data becomes the bottleneck: TMA, warp specialization and larger tiles got 317 → 764 TF"]},
+    {"with": "perf-5-engines/quantization-serving", "q": "This card simulates format error on random weights; the serving card chooses quantization schemes for real models. What does the simulation tell you that a serving decision needs, and what does it leave out?", "answer": ["it shows how block size and scale type trade bits for error, and why outliers matter", "it gives the decode ceiling each format allows", "it leaves out model accuracy, calibration methods (AWQ, GPTQ), activation and KV quantization, and kernel support per GPU"]}
+  ],
+  "predict": {"q": "Set the lab's outlier multiplier to 1, so the 1M weights are plain Gaussian. Commit: does the gap between NVFP4 and MXFP4 grow or shrink, and does INT4 with 128-weight groups catch up?", "answer": "The gap shrinks and INT4 catches up. Without outliers, a single scale per block or group fits most values well, so the advantage of small blocks with fractional scales matters less. The card's try-this reports INT4 at 0.118 vs MXFP4 at 0.115 once outliers are gone, against 0.211 vs 0.138 with them."},
+  "apply": {"task": "Run <code>labs/lowprec.py</code>. Then change the worked example: set the outlier w5 to 0.30 instead of 0.15 and recompute (by hand first, then with the lab) the MXFP4 scale and the NVFP4 block-1 scale, and how many of the 32 weights each sends to zero. Finally, compute the batch-8, 4,096-context decode step for BF16 and FP8 weights on an H100.", "done": "You've written down both new scales before running the lab, your zero counts match the lab's, and your decode numbers are 6.08 ms (BF16) and 3.68 ms (FP8), about 1.65×.", "hint": "MXFP4: X = 2^(floor(log2 amax) − 2), so doubling the outlier to 0.30 doubles X from 2^−5 to 2^−4 and more small weights round to zero. NVFP4's tensor scale is amax ÷ (6 × 448), and block 2's scale is set by its own max, so block 2 shouldn't change."},
+  "reflect": [
+    "Which prediction did you get wrong: INT4 catching up, or the size of the NVFP4–MXFP4 gap?",
+    "Could you explain why E4M3's maximum is 448 from the bit pattern alone?",
+    "Which relationship is still fuzzy: bits per weight → decode ceiling, or scale granularity → error?",
+    "Did the batch-32 1.32× result change what you expect from \"2× faster FP8\" claims?",
+    "What will you revisit before the fusion card: which parts of a step don't run on tensor cores?"
+  ],
+  "revisit": ["perf-3-kernels/matmul-naive", "perf-3-kernels/matmul-blocktiling", "perf-2-scaling-book-inference/critical-batch-size"],
+  "prereq": ["perf-3-kernels/matmul-naive"]
+}

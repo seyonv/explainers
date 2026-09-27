@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Checkpoint 3: per-request work, and proving it</title>
+<style>
+:root{
+  --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
+  --text:#1c1f23; --muted:#6b7068; --faint:#b9b9b3;
+  --accent:#4a9d77; --accent-bg:#dcefdf; --accent-border:#8cc79c;
+  --red:#c0492b; --red-bg:#fbeceb;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#15171a; --surface:#1d2024; --surface2:#24282d; --border:#32373d;
+    --text:#e6e8ea; --muted:#9aa1a9; --faint:#4a5057;
+    --accent:#5fb37f; --accent-bg:#1c2b22; --accent-border:#3f7a55;
+    --red:#e57368; --red-bg:#2e1f1e;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text)}
+.card{max-width:820px;margin:0 auto;padding:28px 32px;font-family:-apple-system,"Inter",system-ui,sans-serif;line-height:1.45}
+h1{font-size:26px;font-weight:600;margin:0 0 6px;letter-spacing:-0.01em}
+.sub{font-size:15px;color:var(--muted);margin:0 0 20px}
+h2{font-size:17px;font-weight:600;margin:26px 0 10px}
+p{font-size:15px;margin:0 0 10px}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+
+/* Tables and formulas */
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border)}
+th{font-size:12px;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:none}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+.formula{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin:10px 0;white-space:pre;overflow-x:auto;line-height:1.55}
+
+.foot{margin-top:22px;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+.foot p{font-size:13px;margin:0 0 6px}
+a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+
+/* Checkpoint */
+.how{border:1px solid var(--border);border-radius:10px;padding:10px 16px;background:var(--surface);margin:0 0 8px}
+.how p{font-size:14px;margin:4px 0}
+ol.qs{padding-left:24px;margin:6px 0}
+ol.qs>li{margin:0 0 16px;font-size:15px}
+.tag{display:inline-block;font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:var(--accent);border:1px solid var(--accent-border);border-radius:4px;padding:0 5px;margin-right:6px;vertical-align:1px}
+details.chk{margin:6px 0 0;padding:4px 12px;border-left:3px solid var(--accent-border);background:var(--surface2);border-radius:0 6px 6px 0;font-size:14px}
+details.chk>summary{cursor:pointer;color:var(--accent);font-size:13px;font-weight:600}
+details.chk ul,details.chk ol{margin:6px 0;padding-left:20px}
+details.chk li{margin:3px 0}
+.re{font-size:13px;color:var(--muted);margin:4px 0 6px}
+.tw{overflow-x:auto;margin:8px 0}
+table.cmp{min-width:680px;font-size:13.5px;table-layout:fixed}
+table.cmp th,table.cmp td{vertical-align:top}
+table.cmp td:first-child{font-weight:600;width:19%}
+table.cmp td.blank{height:64px;background:var(--surface);border:1px dashed var(--border)}
+table.fix td{vertical-align:top}
+.proj{border:1px solid var(--accent-border);border-radius:10px;padding:12px 18px;margin:8px 0}
+.proj h3{font-size:15px;margin:12px 0 4px}
+.proj p,.proj li{font-size:14px}
+.proj ol,.proj ul{padding-left:20px;margin:4px 0}
+.proj li{margin:5px 0}
+.card>ul{font-size:15px;padding-left:22px}
+.card>ul li{margin:3px 0}
+.done{background:var(--accent-bg);border:1px solid var(--accent-border);border-radius:8px;padding:8px 12px;font-size:14px;margin:10px 0}
+@media (max-width:560px){.card{padding:22px 16px}th,td{padding:6px 6px}}
+</style>
+</head>
+<body>
+<article class="card">
+<h1>Checkpoint 3: per-request work, and proving it</h1>
+<p class="sub">Ties together <a href="engine-anatomy.html">the anatomy of vLLM and SGLang</a>, <a href="structured-outputs.html">structured outputs inside the engine</a>, <a href="multi-lora.html">serving many LoRA adapters</a>, <a href="benchmarking.html">benchmarking a server</a> and, again, <a href="scheduler.html">the scheduler</a>: the side work every request adds to a step (CPU time, masks, adapter reads), how engines hide it, and how to measure whether they did.</p>
+
+<div class="how">
+<p><b>How to use this page.</b> Close the five cards. Answer each question in writing, in full sentences, <i>before</i> opening its Check. A wrong or shaky answer isn't a failure; it tells you exactly which section to reopen. The questions are mixed on purpose, so you have to work out which idea applies before you can answer.</p>
+</div>
+
+<h2>1 · Mixed retrieval</h2>
+<ol class="qs">
+<li><span class="tag">which concept?</span>After an engine upgrade, a benchmark shows 2× the throughput. The same seeded prompt set was replayed three times against the same running server. Which idea should make you distrust the result, and how would you rerun it?
+<details class="chk"><summary>Check</summary><ul>
+<li>the prefix-cache trap: repeated identical prompts reuse cached KV, so their prefill is nearly free and throughput inflates</li>
+<li>vLLM's docs warn about exactly this for repeated <code>vllm bench serve</code> runs</li>
+<li>vary the seed, restart the server, or measure the cache hit rate on purpose</li>
+</ul><p class="re">Missed it? Reopen <a href="benchmarking.html">benchmarking</a>, "The checklist".</p></details></li>
+
+<li>Why can one batch serve requests for 64 different LoRA fine-tunes without losing the shared weight read, and what does each distinct adapter still cost per step on the running example?
+<details class="chk"><summary>Check</summary><ul>
+<li>adapters stay unmerged: every row multiplies the same base W in one GEMM, and each segment adds its own small (x·A)·B via one SGMV shrink and one expand launch</li>
+<li>each distinct r = 16 adapter adds 27.26 MB of reads: 64 of them are 1.74 GB, 0.52 ms, +10.9% of the 4.79 ms weight read</li>
+<li>requests sharing an adapter share its read, so grouping by adapter helps</li>
+</ul><p class="re">Missed it? Reopen <a href="multi-lora.html">multi-LoRA</a>, sections 2–4.</p></details></li>
+
+<li><span class="tag">which concept?</span>Turning on JSON mode makes TPOT jump from 5 ms to about 70 ms on one backend, while another backend on the same model and GPU adds almost nothing. Which idea explains the gap?
+<details class="chk"><summary>Check</summary><ul>
+<li>the mask is built on the CPU and must be ready before sampling, so a slow mask sits on the critical path</li>
+<li>checking every one of 128k tokens against the grammar takes about 65.8 ms per token (XGrammar's naive baseline), 13.7× a 4.8 ms step</li>
+<li>XGrammar precomputes context-independent tokens (all but about 120 of 128k need no runtime check) and builds the mask during the forward pass: under 40 µs and hidden</li>
+</ul><p class="re">Missed it? Reopen <a href="structured-outputs.html">structured outputs</a>, "Why it's a performance problem".</p></details></li>
+
+<li>Write the serial and the overlapped step formulas for CPU work in the busy loop, and fill them in for 1 ms of CPU per step at batch 1 (4.87 ms GPU step) and batch 238 (23.86 ms).
+<details class="chk"><summary>Check</summary><ul>
+<li>serial: t_GPU + t_CPU; overlapped: max(t_GPU, t_CPU)</li>
+<li>batch 1: 5.87 ms, +20.5%, 205 → 170 tok/s; batch 238: 24.86 ms, +4.2%, 9,973 → 9,574 tok/s</li>
+<li>overlapped: 4.87 and 23.86 ms, no loss while the CPU work is shorter than the step</li>
+</ul><p class="re">Missed it? Reopen <a href="engine-anatomy.html">anatomy</a>, the worked example.</p></details></li>
+
+<li><span class="tag">which concept?</span>A closed-loop load test at concurrency 64 shows a P99 TTFT of a few hundred ms. In production, at the same average request rate, users see multi-second first tokens during busy minutes. Which idea explains the difference, and what test would have caught it?
+<details class="chk"><summary>Check</summary><ul>
+<li>closed loop: the generator waits for answers, so when the server slows, the load backs off and the queue never forms</li>
+<li>production is open-loop and bursty: at the same average, clumps of arrivals queue (at burstiness 0.25, CV 2.0, our draw's busiest second held 15 requests against an average of 1)</li>
+<li>test open loop at swept rates with bursty arrivals, and report goodput at a TTFT SLO</li>
+</ul><p class="re">Missed it? Reopen <a href="benchmarking.html">benchmarking</a>, "Closed loop vs open loop" and "Burstiness".</p></details></li>
+
+<li>The grammar mask for step n + 1 can be built while forward pass n + 1 runs, but SGLang needs "future tokens" to prepare the <i>scheduling</i> for batch n + 1 early. Why the difference?
+<details class="chk"><summary>Check</summary><ul>
+<li>the mask needs only token n, which exists the moment forward pass n + 1 starts, so both begin together</li>
+<li>scheduling batch n + 1 while the GPU is still running batch n means planning before batch n's tokens are sampled</li>
+<li>so the scheduler uses placeholders for tokens that don't exist yet and syncs with CUDA events</li>
+</ul><p class="re">Missed it? Reopen <a href="structured-outputs.html">structured outputs</a>, "Overlap, drawn to scale", and <a href="engine-anatomy.html">anatomy</a>, "SGLang for contrast".</p></details></li>
+
+<li>At concurrency 16 our Mac made 100.2 tok/s. Under an SLO of TTFT ≤ 2 s and TPOT ≤ 100 ms, what is its goodput there, and at which concurrency is goodput highest?
+<details class="chk"><summary>Check</summary><ul>
+<li>at C = 16 the median TTFT is 5.16 s, so no request meets the SLO: goodput 0</li>
+<li>C = 2 (0.77 s, 35.7 ms) gives the best goodput, 48.3 tok/s; C = 4 also passes but at only 36.1 tok/s</li>
+<li>so the throughput peak and the goodput peak are different operating points</li>
+</ul><p class="re">Missed it? Reopen <a href="benchmarking.html">benchmarking</a>, section 3, the goodput row.</p></details></li>
+
+<li>Resident LoRA adapters and the KV cache compete for the same GPU memory. How does S-LoRA let them share it, and what does the scheduler card's block arithmetic say one r = 16 adapter is worth in tokens of context?
+<details class="chk"><summary>Check</summary><ul>
+<li>both are rows of width H, so one paged pool holds KV pages and adapter pages side by side, without fragmentation</li>
+<li>one r = 16 adapter (27.26 MB) weighs as much as about 208 tokens of KV at 131,072 B per token</li>
+<li>so every resident adapter is a short conversation's worth of KV the scheduler can't admit</li>
+</ul><p class="re">Missed it? Reopen <a href="multi-lora.html">multi-LoRA</a>, the adapter-size table and S-LoRA §5.1, and <a href="scheduler.html">the scheduler</a>, "The memory budget".</p></details></li>
+</ol>
+
+<h2>2 · Compare the ways to handle per-request work</h2>
+<p>Fill this in on paper first. Rows are the ways an engine handles work that every request adds to a step; columns ask what's fundamentally different, which design choice causes it, when you'd pick it, and how it fails.</p>
+<div class="tw"><table class="cmp">
+<tr><th>Approach</th><th>Core mechanism</th><th>Design choice that causes the difference</th><th>When to choose it</th><th>How it fails</th></tr>
+<tr><td>Isolated busy loop (vLLM V1)</td><td class="blank"></td><td class="blank"></td><td class="blank"></td><td class="blank"></td></tr>
+<tr><td>Overlap scheduling (SGLang)</td><td class="blank"></td><td class="blank"></td><td class="blank"></td><td class="blank"></td></tr>
+<tr><td>Naive per-step grammar mask</td><td class="blank"></td><td class="blank"></td><td class="blank"></td><td class="blank"></td></tr>
+<tr><td>XGrammar: mask cache + overlap</td><td class="blank"></td><td class="blank"></td><td class="blank"></td><td class="blank"></td></tr>
+<tr><td>One merged model per adapter</td><td class="blank"></td><td class="blank"></td><td class="blank"></td><td class="blank"></td></tr>
+<tr><td>Shared base + SGMV + unified paging (Punica, S-LoRA)</td><td class="blank"></td><td class="blank"></td><td class="blank"></td><td class="blank"></td></tr>
+</table></div>
+<details class="chk"><summary>Check: the filled-in table</summary>
+<div class="tw"><table class="cmp">
+<tr><th>Approach</th><th>Core mechanism</th><th>Design choice that causes the difference</th><th>When to choose it</th><th>How it fails</th></tr>
+<tr><td>Isolated busy loop</td><td>front end (HTTP, tokenize, detokenize, stream) in its own process; the engine loop only schedules and dispatches, with diffs and CUDA graphs</td><td>move CPU work off the loop's process instead of hiding it in time</td><td>always; it's vLLM V1's architecture (up to 1.7× vs V0)</td><td>scheduling and input prep still run between GPU steps</td></tr>
+<tr><td>Overlap scheduling</td><td>prepare batch n + 1 while the GPU runs batch n</td><td>plan ahead with "future tokens"</td><td>small models, fast GPUs, small batches (1 ms is 20.5% of a batch-1 step)</td><td>complexity; little gain once the GPU step dwarfs the CPU work</td></tr>
+<tr><td>Naive mask</td><td>walk every vocabulary token through the grammar each step</td><td>no precomputation</td><td>never for serving; fine as a correctness reference</td><td>65.8 ms per token, 13.7× the step; multiplied by batch size</td></tr>
+<tr><td>XGrammar</td><td>precompute context-independent tokens per grammar node; check the rest against the stack; build the mask during the forward pass</td><td>split tokens by whether they need the stack (about 0.1% do after expansion)</td><td>fixed schemas at high throughput, recursion included</td><td>new schemas per request pay compile time; edge-case grammars can still have slow masks</td></tr>
+<tr><td>Merged per adapter</td><td>W′ = W + AB, served as a plain model</td><td>fold the adapter into the weights</td><td>one fine-tune with enough traffic to fill a GPU</td><td>a 16.06 GB copy per adapter; batches split by adapter (baselines ran at batch 1–3; vLLM-packed OOM at 100 adapters)</td></tr>
+<tr><td>Shared base + SGMV + paging</td><td>one base GEMM; one launch each for shrink and expand over all adapters; adapters paged with KV, catalog in host RAM</td><td>keep adapters unmerged and treat them like KV pages</td><td>many adapters, each too quiet to fill a GPU (2,000 adapters at 7.61 req/s)</td><td>distinct adapters add reads (+10.9% for 64 at r = 16); cold adapters wait on a host copy; resident ones take KV space</td></tr>
+</table></div>
+<p class="re">Shaky rows? Rows 1–2: <a href="engine-anatomy.html">anatomy</a>. Rows 3–4: <a href="structured-outputs.html">structured outputs</a>. Rows 5–6: <a href="multi-lora.html">multi-LoRA</a>.</p>
+</details>
+
+<h2>3 · Project: budget one step of a multi-tenant JSON API, then design the test</h2>
+<div class="proj">
+<p><b>What it reinforces:</b> serial vs overlapped CPU work (<a href="engine-anatomy.html">anatomy</a>), mask cost per request (<a href="structured-outputs.html">structured outputs</a>), per-adapter reads and memory (<a href="multi-lora.html">multi-LoRA</a>), the KV pool (<a href="scheduler.html">the scheduler</a>) and how to prove any of it (<a href="benchmarking.html">benchmarking</a>).</p>
+<p>Llama-3.1-8B in BF16 on one H100, 2k context. Every request brings its own r = 16 adapter (27.26 MB, on q/k/v/o) and its own JSON schema. Use XGrammar's 40 µs per mask on one CPU core, and an illustrative 1 ms of other CPU work (scheduling, input prep) per step.</p>
+<div class="formula">GPU = B·2048·131,072 / 3.35e12 + max(2·8.03e9·B / 989e12, 16.06e9 / 3.35e12)
+      + (distinct adapters)·27.26e6 / 3.35e12
+CPU = B·40 µs + 1 ms
+serial step = GPU + CPU        overlapped step = max(GPU, CPU)</div>
+<ol>
+<li><b>One step at B = 64.</b> Compute GPU, CPU, the serial and the overlapped step, and total tok/s for each. Then redo GPU with all 64 requests sharing one adapter.</li>
+<li><b>The naive mask.</b> What would the CPU term be with 65.776 ms masks?</li>
+<li><b>Capacity at a TPOT target.</b> Find the largest B with step ≤ 20 ms, serial and overlapped, and the total tok/s at each.</li>
+<li><b>Memory.</b> With 64 adapters resident, how many 2k-context sequences still fit in the free 63.9 GB? (Compare with 238 without adapters.)</li>
+<li><b>The test.</b> Write the benchmark that would confirm your overlapped number on a real server: dataset and ISL/OSL, open-loop rates, burstiness (with its CV), a goodput SLO of TPOT ≤ 20 ms plus a TTFT target, warm-ups, seeds, and how you'd make sure the requests really use 64 distinct adapters and schemas.</li>
+</ol>
+<div class="done"><b>Done when:</b> you have the B = 64 step budget (serial and overlapped), the naive-mask CPU time, two capacity rows, a sequence count, and a five-line benchmark plan with one sentence on what a closed-loop run would hide. Then compare with the check.</div>
+<details class="chk"><summary>Check: the numbers (computed with a Python version of this exact model)</summary>
+<ul>
+<li>B = 64: GPU 9.92 + 0.52 = 10.44 ms; CPU 2.56 + 1 = 3.56 ms. Serial 14.00 ms → ≈ 4,570 tok/s; overlapped 10.44 ms → ≈ 6,130 tok/s. With one shared adapter, GPU is 9.93 ms.</li>
+<li>Naive masks: 64 × 65.776 ms + 1 ms ≈ 4,211 ms of CPU per step, over 400× the GPU step.</li>
+<li>TPOT ≤ 20 ms: serial B = 110 (19.90 ms, ≈ 5,530 tok/s); overlapped B = 172 (19.98 ms, ≈ 8,610 tok/s). Hiding the CPU work buys about 56% more users at the same TPOT.</li>
+<li>Memory: 64 × 27.26 MB = 1.74 GB, so (63.9 − 1.74) GB ÷ 268.4 MB ≈ 231 sequences instead of 238.</li>
+<li>One reasonable test: a ShareGPT- or BurstGPT-shaped dataset (state ISL/OSL), <code>--request-rate</code> swept open-loop, <code>--burstiness</code> 1 (CV 1.0) and 0.25 (CV 2.0), <code>--goodput</code> with TPOT ≤ 20 ms and a TTFT target, <code>--num-warmups</code>, a new <code>--seed</code> per run, and a request mix that assigns adapters and schemas round-robin so no two neighbours share one. A closed-loop run would back off when the server slows and hide the queue.</li>
+</ul></details>
+</div>
+
+<h2>4 · Reflect</h2>
+<ul>
+<li>Which link between these cards is still fuzzy: <i>per-request work → CPU or GPU cost</i>, <i>serial → overlapped</i>, or <i>load shape → what the benchmark shows</i>?</li>
+<li>Could you say which of these costs grow with batch size and which stay fixed per step?</li>
+<li>Which question did you answer from the wrong card? That confusion is the comparison to redo.</li>
+<li>In the project, which number would you trust least before measuring it, and why?</li>
+</ul>
+<table class="fix">
+<tr><th>If this is fuzzy</th><th>Reopen</th></tr>
+<tr><td>where each piece of CPU work runs, and what hides it</td><td><a href="engine-anatomy.html">anatomy</a>, the process diagram and "Four ways to keep the GPU fed"</td></tr>
+<tr><td>why most of a grammar mask can be precomputed</td><td><a href="structured-outputs.html">structured outputs</a>, "XGrammar's four ideas"</td></tr>
+<tr><td>why unmerged adapters keep batching intact</td><td><a href="multi-lora.html">multi-LoRA</a>, sections 2 and 3</td></tr>
+<tr><td>how KV blocks and resident data limit admission</td><td><a href="scheduler.html">the scheduler</a>, "The memory budget, as one equation"</td></tr>
+<tr><td>closed vs open loop, burstiness and goodput</td><td><a href="benchmarking.html">benchmarking</a>, sections 2 and 3</td></tr>
+</table>
+
+<div class="foot">
+<p><b>Related:</b> <a href="_overview.html">overview</a> · <a href="engine-anatomy.html">anatomy</a> · <a href="structured-outputs.html">structured outputs</a> · <a href="multi-lora.html">multi-LoRA</a> · <a href="benchmarking.html">benchmarking</a> · <a href="scheduler.html">scheduler</a> · <a href="checkpoint-1.html">checkpoint 1</a> · <a href="../learning-principles/learning-principles.html">learning principles</a></p>
+<p><b>Sources:</b> the five cards above (vLLM V1 docs and blog, SGLang v0.4 blog, XGrammar, Punica, S-LoRA, MLPerf Inference, BurstGPT, vLLM's benchmark docs) and the course's shared facts for Llama-3.1-8B and the H100. The multi-tenant scenario, the 1 ms CPU cost and every number in the project's check are our own (the 1 ms is illustrative), computed with a short Python script.</p>
+</div>
+</article>
+</body>
+</html>

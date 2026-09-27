@@ -1,0 +1,58 @@
+{
+  "prime": {
+    "problem": "An 8B model serves from 16 GB, so it looks like it should train on one 80 GB H100. It doesn't, and without an accounting of what a training step keeps in memory you can't say why, or which fix (sharding, recompute, smaller micro-batches) attacks which part.",
+    "fits": "First training card. Course 1's FLOPs-per-token card gave you 2N per token for a forward pass; this card adds the backward pass (4N) and the optimizer step, and asks what each of them forces the GPU to hold.",
+    "expect": ["forward / backward / optimizer step (2N + 4N)", "16 bytes per parameter: BF16 weights and grads, FP32 master, Adam m and v", "activations: <code>sbh(34 + 5as/h)</code> per layer", "micro-batch vs global batch, gradient accumulation"],
+    "goal": "Split a model's training memory into the fixed part (per parameter) and the moving part (per token), compute both for Llama-3.1-8B, and say which lever shrinks which."
+  },
+  "attend": [
+    "Why does the backward pass cost two matmuls per weight matrix, and what is each one for?",
+    "Of the 16 bytes per parameter, which ones exist only because of Adam, and which only because of mixed precision?",
+    "Why can a run succeed on step 1 and run out of memory on step 2?",
+    "Which part of activation memory grows with s² and what removes it?",
+    "Gradient accumulation raises the global batch without raising memory. What does it cost instead?"
+  ],
+  "core": {
+    "must": [
+      "Backward needs a gradient for the weights (to update them) and for the input (to pass to the layer below) → two matmuls the size of the forward one → 2N + 4N = 6N FLOPs per token, 3× serving's 2N",
+      "Adam gives every weight its own step size from running averages m and v that must persist → 8 bytes; small updates vanish in BF16 → a 4-byte FP32 master copy; plus BF16 weights and grads → 16Ψ bytes, 128.5 GB for the 8B before any activation → it can't fit one 80 GB H100 at any micro-batch",
+      "Backward needs the tensors forward produced → activations are kept per layer and scale with micro-batch × sequence → storing the s×s scores makes them quadratic (380 GB at 8k) → recomputing attention (FlashAttention, selective) drops them to 36.5 GB",
+      "Fixed state per parameter + moving activations per token → shard the fixed part across GPUs (ZeRO) and shrink the moving part (recompute, smaller micro-batch, TP/SP/CP) → each fix targets exactly one term"
+    ],
+    "elevated": [
+      "Gradient accumulation sums micro-batch gradients into a persistent buffer → memory stays flat as the global batch grows, but passes run serially → summing many BF16 gradients loses precision, which is why Llama 3 accumulates in FP32 and the count becomes 20 bytes"
+    ],
+    "reference": ["the Adam update equations and defaults β₁ = 0.9, β₂ = 0.999, ε = 1e-8", "the 10 / 15-byte conventions (Scaling Book, DeepSeek-V3)", "Korthikanti's exact term breakdown behind the 34", "the Playbook's 1B/7B/70B/405B table", "Llama 3 405B's shapes and 16M-token global batch"]
+  },
+  "compress": {
+    "prompt": "Without scrolling up, draw one training step as a timeline (forward, backward, optimizer) with a memory curve under it, and label each block of memory with its bytes per parameter or its formula. Then write in two sentences why the 8B can't train on one H100.",
+    "checklist": [
+      "6N FLOPs per token: 2N forward, 4N backward, optimizer ≈ free",
+      "16Ψ = 2 BF16 weights + 2 grads + 4 master + 4 m + 4 v (20 with FP32 grad accumulation)",
+      "activations rise during forward and are freed layer by layer in backward; Adam state appears after step 1",
+      "activations ∝ micro-batch × sequence, quadratic in s only if scores are stored",
+      "8B: 128.5 GB of state alone exceeds 80 GB, so no micro-batch size fixes it"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why the serving footprint (16 GB) says almost nothing about the training footprint of the same 8B model.", "kind": "concept", "answer": ["serving keeps only weights (2 of 16 bytes) plus a KV cache", "training adds grads, an FP32 master copy and Adam's m, v: 14 more bytes per parameter", "and activations for every layer until backward uses them: 36.5 GB at 8k even with attention recomputed", "total ≈ 165 GB, about 9.6× the serving footprint"]},
+    {"q": "Walk through a step with gradient accumulation 2: what is allocated, freed and kept at each phase, and when the optimizer runs.", "kind": "mechanism", "answer": ["forward 1: activations climb layer by layer", "backward 1: activations freed as they're used; gradients written into a buffer that persists", "forward 2 / backward 2: the same, gradients summed into the buffer", "optimizer: average, update FP32 master and m, v, round to BF16, zero the gradients"]},
+    {"q": "At 32k tokens, activations with attention recomputed are 146 GB for the 8B. Which of the levers from this card would you pull, and what does each cost?", "kind": "tradeoff", "answer": ["full recompute: 8.6 GB, but ~30–40% more time (one extra forward)", "smaller micro-batch can't go below 1 sequence, so it doesn't help here", "split the sequence or hidden dim across GPUs (SP/CP/TP): more communication", "ZeRO doesn't help: it shards only the state"]},
+    {"q": "Compute the Llama-3.1-8B training state under the 16-byte and 20-byte conventions, and say what the extra 4 bytes buy.", "kind": "mechanism", "answer": ["16 × 8.03e9 = 128.5 GB", "20 × 8.03e9 = 160.6 GB", "the extra 4 bytes are an FP32 gradient accumulator, so summing many micro-batch gradients doesn't lose precision"]}
+  ],
+  "compare": [
+    {"with": "perf-2-scaling-book-inference/params-vs-kv", "q": "Serving splits memory into weights + KV cache; training splits it into model state + activations. What is the per-token part in each, why is one kept across steps and the other freed each step, and which one caps the batch?", "answer": ["serving: KV cache per token, kept for the whole request because every decode step re-reads it", "training: activations per token, kept only until backward consumes them, then freed", "both grow with batch × sequence and cap the batch; the fixed part (weights vs 16Ψ state) differs 8×"]},
+    {"with": "perf-7-training-economics/zero-fsdp", "q": "This card finds 128.5 GB of state and 36.5 GB of activations. ZeRO-3 on 8 GPUs attacks one of them. Which, and why can't the same trick shard the other?", "answer": ["ZeRO shards the per-parameter state: 128.5 → 16.1 GB per GPU", "activations belong to each GPU's own data, so every GPU needs its own full set", "activations are split instead by TP/SP/CP or cut by recompute"]}
+  ],
+  "predict": {"q": "Switch Adam for plain SGD with no momentum (no m, no v) but keep BF16 mixed precision with an FP32 master copy. How many bytes per parameter is the state now, and does the 8B fit one 80 GB H100 before activations?", "answer": "2 (BF16 weights) + 2 (grads) + 4 (master) = 8 bytes per parameter: 64.2 GB for 8.03B. It fits, with about 15.8 GB left for activations: enough for a 2k sequence with attention recomputed (9.1 GB from the table), but not 4k (18.3 GB) or 8k (36.5 GB). Adam's two moments are half the state, which is why optimizer choice is a memory decision."},
+  "apply": {"task": "Redo the worked example for Llama-3.1-70B (70.55B parameters; 80 layers, h = 8,192, a = 64) at s = 8,192, micro-batch 1. Compute (1) the state at 16 and 20 bytes per parameter, (2) the activations with scores stored, with attention recomputed (34·sbh·L) and with full recompute (2·sbh·L), (3) the total at 16 bytes with attention recomputed, and how many 80 GB H100s that is by memory alone.", "done": "Your numbers match: state 1,128.8 GB (16 B) and 1,411.0 GB (20 B); 5as/h = 320, activations 1,900.5 / 182.5 / 10.7 GB; total 1,311.3 GB, 16.4 H100s, the card's lab figure for 70B.", "hint": "sbh = 8,192 × 1 × 8,192 = 67.1M bytes per unit; multiply by the constant and by L = 80."},
+  "reflect": [
+    "Which prediction did you get wrong: the SGD byte count, or whether the 8B then fits?",
+    "What couldn't you explain cleanly: why backward is 2× forward, or why the master copy is needed at all?",
+    "Which relationship is still fuzzy: 16Ψ → can't fit one GPU, or activations → quadratic in s?",
+    "Could you say which fix (ZeRO, recompute, TP/SP/CP) targets which of the two memory terms?",
+    "What will you revisit before the ZeRO card?"
+  ],
+  "revisit": ["perf-1-foundations/flops-per-token", "perf-2-scaling-book-inference/params-vs-kv"],
+  "prereq": ["perf-1-foundations/flops-per-token"]
+}

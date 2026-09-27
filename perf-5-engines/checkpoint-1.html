@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Checkpoint 1: keeping the batch full without stalling</title>
+<style>
+:root{
+  --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
+  --text:#1c1f23; --muted:#6b7068; --faint:#b9b9b3;
+  --accent:#4a9d77; --accent-bg:#dcefdf; --accent-border:#8cc79c;
+  --red:#c0492b; --red-bg:#fbeceb;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#15171a; --surface:#1d2024; --surface2:#24282d; --border:#32373d;
+    --text:#e6e8ea; --muted:#9aa1a9; --faint:#4a5057;
+    --accent:#5fb37f; --accent-bg:#1c2b22; --accent-border:#3f7a55;
+    --red:#e57368; --red-bg:#2e1f1e;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text)}
+.card{max-width:820px;margin:0 auto;padding:28px 32px;font-family:-apple-system,"Inter",system-ui,sans-serif;line-height:1.45}
+h1{font-size:26px;font-weight:600;margin:0 0 6px;letter-spacing:-0.01em}
+.sub{font-size:15px;color:var(--muted);margin:0 0 20px}
+h2{font-size:17px;font-weight:600;margin:26px 0 10px}
+p{font-size:15px;margin:0 0 10px}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+
+/* Tables and formulas */
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border)}
+th{font-size:12px;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:none}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+.formula{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin:10px 0;white-space:pre;overflow-x:auto;line-height:1.55}
+
+.foot{margin-top:22px;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+.foot p{font-size:13px;margin:0 0 6px}
+a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+
+/* Checkpoint */
+.how{border:1px solid var(--border);border-radius:10px;padding:10px 16px;background:var(--surface);margin:0 0 8px}
+.how p{font-size:14px;margin:4px 0}
+ol.qs{padding-left:24px;margin:6px 0}
+ol.qs>li{margin:0 0 16px;font-size:15px}
+.tag{display:inline-block;font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:var(--accent);border:1px solid var(--accent-border);border-radius:4px;padding:0 5px;margin-right:6px;vertical-align:1px}
+details.chk{margin:6px 0 0;padding:4px 12px;border-left:3px solid var(--accent-border);background:var(--surface2);border-radius:0 6px 6px 0;font-size:14px}
+details.chk>summary{cursor:pointer;color:var(--accent);font-size:13px;font-weight:600}
+details.chk ul,details.chk ol{margin:6px 0;padding-left:20px}
+details.chk li{margin:3px 0}
+.re{font-size:13px;color:var(--muted);margin:4px 0 6px}
+.tw{overflow-x:auto;margin:8px 0}
+table.cmp{min-width:680px;font-size:13.5px;table-layout:fixed}
+table.cmp th,table.cmp td{vertical-align:top}
+table.cmp td:first-child{font-weight:600;width:19%}
+table.cmp td.blank{height:64px;background:var(--surface);border:1px dashed var(--border)}
+table.fix td{vertical-align:top}
+.proj{border:1px solid var(--accent-border);border-radius:10px;padding:12px 18px;margin:8px 0}
+.proj h3{font-size:15px;margin:12px 0 4px}
+.proj p,.proj li{font-size:14px}
+.proj ol,.proj ul{padding-left:20px;margin:4px 0}
+.proj li{margin:5px 0}
+.card>ul{font-size:15px;padding-left:22px}
+.card>ul li{margin:3px 0}
+.done{background:var(--accent-bg);border:1px solid var(--accent-border);border-radius:8px;padding:8px 12px;font-size:14px;margin:10px 0}
+@media (max-width:560px){.card{padding:22px 16px}th,td{padding:6px 6px}}
+</style>
+</head>
+<body>
+<article class="card">
+<h1>Checkpoint 1: keeping the batch full without stalling</h1>
+<p class="sub">Ties together <a href="orca-iteration-scheduling.html">Orca I</a>, <a href="orca-system.html">Orca II</a>, <a href="sarathi-stalls.html">Sarathi-Serve I</a>, <a href="sarathi-chunked-prefill.html">Sarathi-Serve II</a>, <a href="scheduler.html">the scheduler</a> and <a href="engine-anatomy.html">the anatomy of vLLM and SGLang</a>: how an engine decides, every step, which tokens run, and what that decision costs in latency, memory and CPU time.</p>
+
+<div class="how">
+<p><b>How to use this page.</b> Close the six cards. Answer each question in writing, in full sentences, <i>before</i> opening its Check. A wrong or shaky answer isn't a failure; it tells you exactly which section to reopen. The questions are mixed on purpose, so you have to work out which idea applies before you can answer.</p>
+</div>
+
+<h2>1 · Mixed retrieval</h2>
+<ol class="qs">
+<li><span class="tag">which concept?</span>An operator raises <code>max_num_seqs</code> from 128 to 256 on a workload with short prompts and very long outputs. Peak running requests go up, but throughput drops about 1% and the preemption counter climbs. Which idea explains it, and what should they change?
+<details class="chk"><summary>Check</summary><ul>
+<li>past the point where the KV block pool binds, a higher cap doesn't make a bigger batch</li>
+<li>the extra admitted requests grow into the same blocks and evict each other (latest arrival first), and each victim recomputes its prompt plus output</li>
+<li>in the lab: 250 → 299 preemptions, 6,100 → 6,038 tok/s; lower the cap or the budget, or raise <code>gpu_memory_utilization</code></li>
+</ul><p class="re">Missed it? Reopen <a href="scheduler.html">the scheduler</a>, "Why does raising max_num_seqs sometimes lower throughput?".</p></details></li>
+
+<li>Orca reserves <code>max_tokens</code> KV slots for every new request. On the running example (487,823 slots, <code>max_tokens</code> = 2,048), how many requests can it admit, how much of an average ShareGPT request's reservation is ever written, and what did paging change?
+<details class="chk"><summary>Check</summary><ul>
+<li>⌊487,823 ÷ 2,048⌋ = 238 requests</li>
+<li>an average ShareGPT request writes 499 of its 2,048 slots: 24.4%</li>
+<li>paged allocation takes 32 blocks (512 slots) for the same request, so about 952 fit; overflow is then handled by preemption instead of reservation</li>
+</ul><p class="re">Missed it? Reopen <a href="orca-system.html">Orca II</a>, "Our framing: the reservation is the waste PagedAttention removed".</p></details></li>
+
+<li><span class="tag">which concept?</span>A chat service's median time between tokens is 8 ms, but its P99 is about 80 ms, and the spikes line up with long new prompts arriving. Which idea explains the spikes, and what is the standard fix?
+<details class="chk"><summary>Check</summary><ul>
+<li>a generation stall: a whole prompt in one step pushes it far past the ridge (≈ 295 tokens), so every decoding user waits for that step</li>
+<li>on the running example, 32 users at 7.36 ms per step see 74–78 ms when a 4,096-token prompt is admitted</li>
+<li>fix: chunked prefill with stall-free batching (decodes first, a token budget sized to the TBT SLO)</li>
+</ul><p class="re">Missed it? Reopen <a href="sarathi-stalls.html">Sarathi-Serve I</a>, the worked example, and <a href="sarathi-chunked-prefill.html">Sarathi-Serve II</a>, §4.2.</p></details></li>
+
+<li>Orca runs attention separately for each request but batches every other operation over one flat token list. Why does leaving attention unbatched cost almost nothing?
+<details class="chk"><summary>Check</summary><ul>
+<li>batching pays by reusing one weight read across many tokens</li>
+<li>attention has no weights; each request reads only its own KV cache</li>
+<li>so there's no shared read to reuse, and splitting just before attention loses nothing (modern engines do batch it, but for launch overhead and occupancy)</li>
+</ul><p class="re">Missed it? Reopen <a href="orca-iteration-scheduling.html">Orca I</a>, "S2: selective batching".</p></details></li>
+
+<li><span class="tag">which concept?</span>Llama-3.1-8B at batch 1 on an H100 makes 170 tok/s where the step model says 205. A profiler shows the GPU idle for about 1 ms between steps, and CUDA graphs are already on. Which idea explains it, and which fix targets that gap?
+<details class="chk"><summary>Check</summary><ul>
+<li>CPU work (scheduling, input preparation) runs serially between GPU steps: 4.87 + 1 ms = 5.87 ms per token</li>
+<li>CUDA graphs only speed up the inside of a step, not the work between steps</li>
+<li>overlap (or async) scheduling prepares step n + 1 while the GPU runs step n, so step = max(GPU, CPU) and throughput returns to 205 tok/s</li>
+</ul><p class="re">Missed it? Reopen <a href="engine-anatomy.html">anatomy</a>, "What 1 ms of CPU costs the running example" and "Four ways to keep the GPU fed".</p></details></li>
+
+<li>Walk through what vLLM V1's scheduler decides in step 30 of the card's burst (115 requests decoding, budget 8,192): in what order does it fill the budget, and why does request 120 have to wait?
+<details class="chk"><summary>Check</summary><ul>
+<li>all 115 decodes first, one token each</li>
+<li>then the rest of request 115's ongoing prompt (1,597 tokens), then new prompts 116–118 whole (2,048 each) and the first 336 tokens of 119</li>
+<li>the budget is now used up, so 120 waits even though KV blocks are still free (12,018 left)</li>
+</ul><p class="re">Missed it? Reopen <a href="scheduler.html">the scheduler</a>, "One step, drawn from the lab".</p></details></li>
+
+<li>For the same 4,096-token prompt arriving during 32-user decoding, vLLM V0 gives users a 78.32 ms gap and Orca a 74.04 ms gap. Why are they different, and why is neither acceptable for interactive chat?
+<details class="chk"><summary>Check</summary><ul>
+<li>vLLM V0 runs a prefill-only iteration (70.96 ms) and then a decode iteration (7.36 ms), so users wait for both</li>
+<li>Orca puts the prompt and the decodes in one hybrid iteration (74.04 ms)</li>
+<li>both are about 10× the clean 7.36 ms step; hybrid batching alone doesn't bound how many prompt tokens a step holds</li>
+</ul><p class="re">Missed it? Reopen <a href="sarathi-stalls.html">Sarathi-Serve I</a>, §3.2.</p></details></li>
+
+<li>In the Orca I simulation, iteration-level scheduling gives 1.93× the peak throughput of request-level batching at the same B = 64. Why does it come out at about 2×, and what workload would make the gap bigger?
+<details class="chk"><summary>Check</summary><ul>
+<li>a static batch lives as long as its longest request (≈ 1,000 tokens) while the mean is 513, so about half the slot-iterations compute finished requests (49.1%)</li>
+<li>iteration-level refills each slot as soon as it frees</li>
+<li>longer-tailed output lengths make the longest request even longer relative to the mean, so the gap grows</li>
+</ul><p class="re">Missed it? Reopen <a href="orca-iteration-scheduling.html">Orca I</a>, "Worked example: static vs iteration-level on one H100".</p></details></li>
+</ol>
+
+<h2>2 · Compare the schedulers</h2>
+<p>Fill this in on paper first. Rows are the ways an engine can decide what runs each step; columns ask what's fundamentally different, which design choice causes it, when you'd pick it, and how it fails.</p>
+<div class="tw"><table class="cmp">
+<tr><th>Approach</th><th>Core mechanism</th><th>Design choice that causes the difference</th><th>When to choose it</th><th>How it fails</th></tr>
+<tr><td>Request-level batching (FasterTransformer behind Triton)</td><td class="blank"></td><td class="blank"></td><td class="blank"></td><td class="blank"></td></tr>
+<tr><td>Iteration-level + selective batching, reserve max_tokens (Orca)</td><td class="blank"></td><td class="blank"></td><td class="blank"></td><td class="blank"></td></tr>
+<tr><td>Prefill-only iterations with paged KV (vLLM V0)</td><td class="blank"></td><td class="blank"></td><td class="blank"></td><td class="blank"></td></tr>
+<tr><td>Chunked prefill + stall-free batching (Sarathi-Serve)</td><td class="blank"></td><td class="blank"></td><td class="blank"></td><td class="blank"></td></tr>
+<tr><td>Greedy admission + recompute preemption (vLLM V1)</td><td class="blank"></td><td class="blank"></td><td class="blank"></td><td class="blank"></td></tr>
+<tr><td>Overlap scheduling, one batch ahead (SGLang)</td><td class="blank"></td><td class="blank"></td><td class="blank"></td><td class="blank"></td></tr>
+</table></div>
+<details class="chk"><summary>Check: the filled-in table</summary>
+<div class="tw"><table class="cmp">
+<tr><th>Approach</th><th>Core mechanism</th><th>Design choice that causes the difference</th><th>When to choose it</th><th>How it fails</th></tr>
+<tr><td>Request-level batching</td><td>admit a batch, run it until every request ends, then admit again</td><td>the serving layer talks to the engine only at batch start and end</td><td>offline jobs whose requests all have the same known length</td><td>finished requests keep computing (≈ 49% of slots in our sim), new ones queue; 3,120 vs 6,020 tok/s at B = 64</td></tr>
+<tr><td>Orca</td><td>re-pick the batch every iteration; flatten tokens to [ΣL, H], split only for attention</td><td>scheduler and engine joined per iteration; worst-case KV reservation so nothing deadlocks</td><td>the 2022 answer to mixed arrivals and lengths</td><td>reservation wastes KV (24.4% used), so fewer requests fit; whole prompts in a hybrid iteration stall decodes (74.04 ms)</td></tr>
+<tr><td>vLLM V0</td><td>iteration-level with paged KV; any new prompt that fits gets a prefill-only iteration</td><td>eager prefill: prompts first, decodes wait</td><td>throughput-first serving with no TBT target</td><td>generation stalls: 78.32 ms gaps on our H100, seconds on long prompts; capacity collapses under a P99 TBT SLO</td></tr>
+<tr><td>Sarathi-Serve</td><td>fixed token budget per iteration: decodes first, then prompt chunks</td><td>bounding every iteration's compute so no step exceeds the SLO</td><td>interactive serving with a P99 TBT target</td><td>TTFT rises with small budgets (re-reads, fixed costs, leftover budget only); τ must be profiled per deployment</td></tr>
+<tr><td>vLLM V1</td><td>admit while the next chunk's blocks fit; evict the latest request when the pool is empty; recompute it later</td><td>allocate KV on demand, handle overflow afterwards instead of preventing it</td><td>default for mixed chat traffic: all 200 of the burst running by 7.16 s</td><td>thrashing when caps are too high for the pool (preemptions eat throughput, victims' streams stop)</td></tr>
+<tr><td>SGLang overlap</td><td>CPU prepares batch n + 1 while the GPU runs batch n</td><td>plan with "future tokens" before this batch's tokens exist</td><td>small models, fast GPUs, small batches, where CPU time is a big share of the step</td><td>harder to build and debug; no gain once the GPU step is long compared with the CPU work</td></tr>
+</table></div>
+<p class="re">Shaky rows? Rows 1–2: <a href="orca-iteration-scheduling.html">Orca I</a> and <a href="orca-system.html">Orca II</a>. Rows 3–4: <a href="sarathi-stalls.html">Sarathi I</a> and <a href="sarathi-chunked-prefill.html">Sarathi II</a>. Row 5: <a href="scheduler.html">the scheduler</a>. Row 6: <a href="engine-anatomy.html">anatomy</a>.</p>
+</details>
+
+<h2>3 · Project: a step-level scheduler model for one H100</h2>
+<div class="proj">
+<p><b>What it reinforces:</b> the step formula and the ridge (<a href="sarathi-stalls.html">Sarathi I</a>), stall-free batching and the budget (<a href="sarathi-chunked-prefill.html">Sarathi II</a>), whole-prompt schedulers (<a href="orca-iteration-scheduling.html">Orca I</a>), KV admission (<a href="scheduler.html">the scheduler</a>) and serial vs overlapped CPU work (<a href="engine-anatomy.html">anatomy</a>).</p>
+<p>Llama-3.1-8B in BF16 on one H100. Thirty-two users are decoding at 2,048 tokens of context (hold it fixed). One 4,096-token prompt arrives. Model one iteration with <code>B</code> decodes plus a chunk of <code>c</code> prompt tokens that follows <code>p</code> earlier tokens of the same prompt:</p>
+<div class="formula">t = B·2048·131,072 / 3.35e12                      (decodes' KV reads)
+  + max(2·8.03e9·(B + c) / 989e12, 16.06e9 / 3.35e12)   (math or weight read)
+  + 32·2·c·(2p + c)·4096 / 989e12                (causal attention for the chunk)</div>
+<p>(The chunk's re-reads of its own earlier KV are left out, to keep it short.) In about 40 lines of Python:</p>
+<ol>
+<li><b>Clean step.</b> Compute <code>t(32, 0, 0)</code>. Set a TBT SLO of 5× that clean step, as Sarathi does.</li>
+<li><b>Whole-prompt schedulers.</b> vLLM V0: a prefill-only iteration <code>t(0, 4096, 0)</code>, then a decode iteration; report the worst gap users see and the prompt's TTFT (queueing ignored). Orca: one hybrid iteration <code>t(32, 4096, 0)</code>.</li>
+<li><b>Stall-free.</b> For budgets τ = 512, 1,024 and 2,048: each iteration takes 32 decodes plus a chunk of up to τ − 32 prompt tokens. Report the number of iterations, the worst iteration, and TTFT (the sum of the prompt's iterations). Which budgets meet the SLO?</li>
+<li><b>Admission.</b> With blocks of 16 tokens, how many blocks does the prompt need, and how many do the 32 decoding users hold? Does it fit the 27,437-block pool at <code>gpu_memory_utilization</code> 0.92?</li>
+<li><b>CPU.</b> Add 1 ms of serial CPU work to every iteration (an illustrative cost), then make it overlapped (<code>max</code> instead of sum). What happens to τ = 512's worst gap and TTFT in each case?</li>
+</ol>
+<div class="done"><b>Done when:</b> your program prints one table (policy, iterations, worst gap, TTFT, meets SLO?), the block counts, and the CPU variants, and you can say in one sentence why the largest budget that meets the SLO is the one to pick. Then compare with the check.</div>
+<details class="chk"><summary>Check: the numbers (computed with a Python version of this exact model)</summary>
+<ul>
+<li>Clean step 7.36 ms, so the SLO is 36.8 ms.</li>
+<li>vLLM V0: prefill-only 70.96 ms, worst gap 78.32 ms, TTFT 70.96 ms. Orca: 74.04 ms for both. Both miss the SLO by about 2×.</li>
+<li>Stall-free τ = 512: 9 iterations (8 × 480 + 256), worst 11.79 ms, TTFT 98.83 ms. τ = 1,024: 5 iterations, worst 21.02 ms, TTFT 88.58 ms. τ = 2,048: 3 iterations, worst 39.05 ms, TTFT 83.45 ms, which misses 36.8 ms. So τ = 1,024 is the largest of the three that meets the SLO, and it gives the best TTFT that does.</li>
+<li>Admission: the prompt needs 4,096 ÷ 16 = 256 blocks; the 32 users hold 32 × 128 = 4,096 (plus what they generate). Plenty of room in 27,437, so the budget, not memory, limits this prompt.</li>
+<li>With 1 ms serial CPU, τ = 512's worst gap becomes 12.79 ms and TTFT 107.83 ms (9 iterations × 1 ms more), and even the clean step becomes 8.36 ms. Overlapped, the CPU millisecond hides under every iteration and the numbers return to 11.79 and 98.83 ms.</li>
+</ul></details>
+</div>
+
+<h2>4 · Reflect</h2>
+<ul>
+<li>Which link between these cards is still fuzzy: <i>iteration-level scheduling → mixed batches → stalls</i>, <i>budget → step time → TBT</i>, or <i>KV pool → admission → preemption</i>?</li>
+<li>Could you explain why the largest budget that meets the SLO is the right one, not the smallest?</li>
+<li>Which question did you answer from the wrong card? That confusion is the comparison to redo.</li>
+<li>In the project, did it surprise you that memory wasn't the limit for the new prompt? When would it be?</li>
+</ul>
+<table class="fix">
+<tr><th>If this is fuzzy</th><th>Reopen</th></tr>
+<tr><td>why a full batch is nearly free, and why static batches waste slots</td><td><a href="orca-iteration-scheduling.html">Orca I</a>, "Why it matters on an H100" and the worked example</td></tr>
+<tr><td>reservation vs paging, and what 36.9× really measures</td><td><a href="orca-system.html">Orca II</a>, §4.2 and §6.2</td></tr>
+<tr><td>why prompt tokens stall decodes past the ridge</td><td><a href="sarathi-stalls.html">Sarathi I</a>, §3.1 and the worked example</td></tr>
+<tr><td>how the budget is packed and chosen</td><td><a href="sarathi-chunked-prefill.html">Sarathi II</a>, §4.2 and §4.3</td></tr>
+<tr><td>when preemption starts and what it costs</td><td><a href="scheduler.html">the scheduler</a>, the burst worked example</td></tr>
+<tr><td>where CPU time goes and what hides it</td><td><a href="engine-anatomy.html">anatomy</a>, the worked example and "Four ways to keep the GPU fed"</td></tr>
+</table>
+
+<div class="foot">
+<p><b>Related:</b> <a href="_overview.html">overview</a> · <a href="orca-iteration-scheduling.html">Orca I</a> · <a href="orca-system.html">Orca II</a> · <a href="sarathi-stalls.html">Sarathi I</a> · <a href="sarathi-chunked-prefill.html">Sarathi II</a> · <a href="scheduler.html">scheduler</a> · <a href="engine-anatomy.html">anatomy</a> · <a href="../learning-principles/learning-principles.html">learning principles</a></p>
+<p><b>Sources:</b> the six cards above (Orca, OSDI '22; Sarathi-Serve, OSDI '24; vLLM V1 docs and blog; SGLang v0.4 blog) and the course's shared facts for Llama-3.1-8B and the H100. The project's scenario, its simplified attention term and every number in its check are our own, computed with a short Python script; the 1 ms CPU cost is illustrative.</p>
+</div>
+</article>
+</body>
+</html>

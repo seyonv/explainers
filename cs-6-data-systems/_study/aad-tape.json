@@ -1,0 +1,67 @@
+{
+  "prime": {
+    "problem": "A pricer that needs sensitivities to 500 market parameters by bumping each one pays 501 full valuations, with a step size that trades truncation error against rounding error. Doing that for thousands of contracts is too slow and too noisy.",
+    "fits": "Last case-study card. It builds on cs-3's topological sort (the backward pass visits nodes in reverse topological order) and answers the source's interview prompt with a design; cs-10's Monte Carlo and Greeks cards are where the pricer lives.",
+    "expect": ["bump-and-reprice: 1 + N valuations", "the tape and the adjoint rule", "reverse topological order", "segmented tapes and √n checkpointing", "pathwise vs likelihood-ratio Greeks"],
+    "goal": "Build and run a reverse-mode tape by hand on a small function, explain why one backward pass gives every sensitivity, and trade tape memory for recomputation."
+  },
+  "attend": [
+    "Why does one backward pass give ∂f/∂x for every input at once, while bumping needs one extra valuation per input?",
+    "Why must adjoints accumulate with <code>+=</code>, and where does that show up in f(x, y) = x·y + sin x?",
+    "Why does the backward pass have to visit nodes in reverse topological order, and why is that just reverse recording order on a tape?",
+    "What does keeping only √n checkpoints cost, and why is √n the best segment length?",
+    "Why does a digital payoff give Delta = 0 through the tape, and what are the two fixes?"
+  ],
+  "core": {
+    "must": [
+      "Record each operation and its local derivatives on the forward pass → seed the output's adjoint at 1 → walk the tape backwards, adding adjoint × local derivative into each input → every ∂f/∂input from one backward pass, about the cost of one forward pass",
+      "A value used by several operations receives an adjoint from each → adjoints must be summed (+=), not assigned → x in x·y + sin x gets 3 + cos 2 = 2.583853",
+      "Every intermediate value must stay alive until the backward pass reads it → memory O(ops) → keep one checkpoint per segment and recompute segments on the way back → n/s + s values, minimal at s = √n (10,001 → 200 values for one extra forward pass)",
+      "A pathwise tape differentiates the payoff along each path → a step payoff has slope 0 almost everywhere → Delta = 0 → smooth the step or differentiate the density instead (likelihood ratio)"
+    ],
+    "elevated": [
+      "A doubly linked list of fixed-size segments → O(1) append, drop-oldest and cut-after → fits the prompt's sliding window, barrier cut and checkpoint boundaries better than one flat array",
+      "Inside a custom <code>torch.autograd.Function.forward</code> history tracking is off → a list built there is invisible to autograd → build it from ordinary tensor ops, or save tensors and write backward yourself"
+    ],
+    "reference": [
+      "the exact finite-difference errors (2.4e-11, 2.8e-10)",
+      "the digital-call Monte Carlo figures",
+      "<code>torch.utils.checkpoint</code> and Chen et al. 2016",
+      "the SegTape class API"
+    ]
+  },
+  "compress": {
+    "prompt": "Close the card. Draw the tape for f(x, y) = x·y + sin x at (2, 3) with local derivatives, then the backward pass with running adjoints. Finish with the adjoint rule in one line and the √n memory formula.",
+    "checklist": [
+      "nodes x, y, a = x·y, b = sin x, f = a + b with their local derivatives",
+      "seed f̄ = 1; ā = b̄ = 1; x̄ += cos 2; x̄ += 3; ȳ += 2",
+      "∂f/∂x = 2.583853, ∂f/∂y = 2",
+      "v̄ᵢ = Σ over children v̄ⱼ · ∂vⱼ/∂vᵢ, visited in reverse order",
+      "checkpoints: n/s + s stored, minimum at s = √n, about one extra forward pass"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why reverse mode wins when there is one output and many inputs, and loses when there are few inputs and many outputs.", "kind": "concept", "answer": ["one backward pass per output gives all input sensitivities", "forward mode needs one pass per input", "one portfolio value, 500 parameters: reverse; one parameter feeding thousands of prices: forward"]},
+    {"q": "Walk through the backward pass for f = x·y + sin x at (2, 3), node by node, with the running adjoints.", "kind": "mechanism", "answer": ["f: seed 1 → ā = 1, b̄ = 1", "b = sin x: x̄ += 1 · cos 2 = −0.416147", "a = x·y: x̄ += 1 · 3 → 2.583853; ȳ += 1 · 2 = 2", "x and y are inputs: nothing more to push"]},
+    {"q": "A 10,000-step chain won't fit its tape in GPU memory. Compare full tape, √n checkpoints and recomputing everything, in values stored and forward steps.", "kind": "tradeoff", "answer": ["full tape: 10,001 values, 10,000 forward steps", "√n = 100 segments: 200 values, 19,900 forward steps (about one extra forward pass)", "storing only the input: 1 value, but the backward pass must recompute each earlier prefix, about n²/2 forward steps"]}
+  ],
+  "compare": [
+    {"with": "cs-3-graphs-dp-math/toposort", "q": "The backward pass is a topological sort in reverse. What does the DFS post-order guarantee here, and what goes wrong if a node's adjoint is pushed before all its children have finished?", "answer": ["post-order lists every node after all nodes it depends on", "reversed, each node is processed after every node that used it", "pushing early sends a partial adjoint to its parents, so some gradients come out too small"]},
+    {"with": "cs-10-financial-math/monte-carlo-pricing", "q": "Monte Carlo pricing and AAD together: bumping the whole simulation vs a pathwise tape through it. What does each cost for N Greeks, and where does each give a wrong answer?", "answer": ["bumping: 1 + N full simulations (2N central), noisy unless the random numbers are reused", "tape: one simulation forward and one backward for all N", "the tape gives 0 for discontinuous payoffs (digitals); bumping gives high-variance estimates there; likelihood ratio fixes both"]}
+  ],
+  "predict": {"q": "A risk system needs each of 1,000 contracts' own sensitivities to the same 2 parameters (not the portfolio total). Commit first: reverse mode, forward mode or bumping, and how many passes does each take?", "answer": "Forward mode: 2 passes, one per parameter, each carrying derivatives for all 1,000 outputs at once. Reverse mode needs a backward pass per output: 1,000. One-sided bumping needs 1 + 2 = 3 valuations, cheap here but approximate. Reverse mode's advantage flips when outputs outnumber inputs."},
+  "apply": {
+    "task": "Record and run the tape for g(x, y) = sin(x·y) at (2, 3) by hand: the nodes, their local derivatives, and the backward pass. Then check with <code>Var</code>, <code>sin</code> and <code>backward</code> in <code>code/aad-tape.py</code>. Second part: for a 40,000-step chain, give the checkpoint count, the values stored and the forward steps with s = √n.",
+    "done": "Nodes x = 2, y = 3, m = x·y = 6, g = sin 6 ≈ −0.279415; backward: m̄ = cos 6 ≈ 0.960170, x̄ = 3 cos 6 ≈ 2.880511, ȳ = 2 cos 6 ≈ 1.920341, matching the code. Chain: s = 200, stored 40,000/200 + 200 = 400 values, forward 40,000 + 200 × 199 = 79,800 steps.",
+    "hint": "∂ sin(m)/∂m = cos m, and ∂(x·y)/∂x = y."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: which mode for 1,000 outputs and 2 inputs?",
+    "What couldn't you explain cleanly: why the += is essential rather than a detail?",
+    "Which relationship is still fuzzy: tape length → memory, or segment length → recompute cost?",
+    "Could you explain to a quant why a digital's pathwise Delta is 0 and which fix you'd use?",
+    "Looking back over the course: which other card also trades memory for recomputation?"
+  ],
+  "revisit": ["cs-3-graphs-dp-math/toposort", "cs-6-data-systems/log-structured-memory"],
+  "prereq": ["cs-3-graphs-dp-math/toposort"]
+}

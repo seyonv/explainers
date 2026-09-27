@@ -1,0 +1,122 @@
+{
+  "prime": {
+    "problem": "Moving 20 from Bob to Carol touches two partitions. Two plain writes lose money if the process crashes between them; a distributed transaction blocks when its coordinator dies; and retries after a crash or a timeout can debit twice. You need every transfer applied exactly once to both accounts, with no step waiting on another partition.",
+    "fits": "Builds on the I-confluence card: withdrawals need coordination, deposits don't. This design confines the coordination to one partition per account and makes everything else replay-safe with request ids, the same end-to-end idea the retries card uses over HTTP.",
+    "expect": [
+      "one append to a request log commits the transfer",
+      "a debit stream and a credit stream, partitioned by account",
+      "request_id carried on every instruction",
+      "the seen set: result stored with the id, in the same local write",
+      "at-least-once delivery, exactly-once effect"
+    ],
+    "goal": "Trace a transfer through the log, a crash and three kinds of replay, show why the total stays at 150 with dedup and drops to 130 without it, and state the three conditions that make the effect exactly-once."
+  },
+  "attend": [
+    "At what moment is the transfer committed, and why doesn't that step need to talk to Bob's or Carol's partition?",
+    "Why does the processor send the credit only after an ok debit?",
+    "In the naive replay, why does r3 flip from rejected to ok, and how does storing the result with the id prevent that?",
+    "Why must <code>seen</code> be written in the same local write as the balance?",
+    "Why can Bob's partition check \"balance ≥ 0\" on its own, even though that rule fails I-confluence?"
+  ],
+  "core": {
+    "must": [
+      "Commit = one append of (request_id, from, to, amount) to the log → a processor turns it into a debit on the payer's partition and a credit on the payee's → no step waits on two partitions at once, and no locks span them",
+      "The processor can crash and replay; clients can retry → the same instruction can arrive twice (at-least-once) → each partition records request_id → result → a repeat returns the stored result and changes nothing → the effect is exactly-once",
+      "All debits to one account go through that account's partition in log order → the balance check is local and serial there → the non-confluent rule (withdrawal, balance ≥ 0) is enforced by a single owner; credits only add, which merges safely",
+      "Store the <i>result</i>, not just \"seen\" → a replayed rejected debit stays rejected → without it, r3 is re-checked against newer balances and flips to ok"
+    ],
+    "elevated": [
+      "Exactly-once holds only if the client picks the id (so client retries are caught), the processor is deterministic (replays emit the same instructions) and seen commits atomically with the balance → drop any one and duplicates come back"
+    ],
+    "reference": [
+      "Bayou's tentative vs committed writes and primary commit",
+      "log truncation and full-state transfer for laggards (Petersen et al.)",
+      "Manhattan (Twitter) as a multi-tenant log example",
+      "the source's mis-numbered footnote [^01] vs [^08]"
+    ]
+  },
+  "compress": {
+    "prompt": "Draw the three boxes (request log, debit stream, credit stream) from memory with the seven steps, then mark where a crash can happen and what the replay does at each partition. One line for the three conditions.",
+    "checklist": [
+      "one log append commits; the ack goes back at once",
+      "debit first, credit only after ok",
+      "every instruction carries request_id; partitions remember id → result",
+      "replays and client retries become no-ops; the total stays 150",
+      "the balance rule is enforced by the payer's single partition",
+      "conditions: client-chosen id, deterministic processor, seen and balance in one write"
+    ]
+  },
+  "retrieve": [
+    {
+      "q": "Explain how this design gets an exactly-once <i>effect</i> over at-least-once <i>delivery</i>.",
+      "kind": "concept",
+      "answer": [
+        "delivery can repeat: processor restarts replay the log, clients resend",
+        "each apply is idempotent: a partition that has seen the id returns the stored result",
+        "so any number of deliveries has the effect of one"
+      ]
+    },
+    {
+      "q": "Walk through the crash in r2: what Bob's and Carol's partitions hold after the crash, after the restart from r2, and why the total is 150 again.",
+      "kind": "mechanism",
+      "answer": [
+        "after r1: alice 70, bob 80, carol 0",
+        "r2's debit applies (bob 60, seen r2 = ok), then the crash: total 130, 20 in flight",
+        "restart from r2 (checkpoint after r1): debit r2 is seen → returns ok, bob stays 60",
+        "credit r2 to carol → 20: total 150"
+      ]
+    },
+    {
+      "q": "Both accounts live in one PostgreSQL database. Should you still use the log-and-dedup design? And when is this design the wrong tool even across partitions?",
+      "kind": "tradeoff",
+      "answer": [
+        "one database: no, a local ACID transaction is simpler and atomic",
+        "wrong when the caller needs the money moved before the reply (it gets \"committed\", then waits for final status)",
+        "wrong when the rule spans accounts (\"these two together stay above 1,000\"), which needs coordination across them"
+      ]
+    }
+  ],
+  "compare": [
+    {
+      "with": "cs-5-distributed-systems/compaction-xa",
+      "q": "2PC and this log design both make a two-partition change all-or-nothing in the end. What is fundamentally different about when each partition can act, what each blocks on, and how each fails?",
+      "answer": [
+        "2PC: both partitions prepare, hold locks and wait for one coordinator's decision",
+        "log: the append is the decision; each partition applies its half independently, later",
+        "2PC fails by blocking (in-doubt locks while the coordinator is down); the log fails by lag (a slow partition applies late) and by duplicates if dedup is missing"
+      ]
+    },
+    {
+      "with": "cs-5-distributed-systems/idempotency-retries",
+      "q": "The retries card's server stores (key → request, reply); this card's partition stores (request_id → result). What is the same, and what extra check does the HTTP version make that this one doesn't need?",
+      "answer": [
+        "same: remember the id with its outcome, and replay the outcome on a repeat",
+        "the HTTP version also compares the request body (same key, different amount → 422) and handles in-progress duplicates (409)",
+        "here the log is the single source of each request, so an id can't arrive with a different amount"
+      ]
+    }
+  ],
+  "predict": {
+    "q": "After the card's r1–r4 (alice 60, bob 60, carol 30), append r5 carol→bob 30. The processor crashes right after r5's debit and restarts at r5. What are the final balances with dedup, and without it? Commit first.",
+    "answer": "With dedup: the debit left carol at 0; the replayed debit is seen and returns ok, so the credit runs: bob 90, carol 0, alice 60, total 150. Without dedup: the replayed debit is checked again against carol's 0, is rejected, and so no credit is sent. Bob stays 60 and carol 0: total 120. The first debit's 30 has vanished. The naive system didn't just double-charge; it lost money and never finished the transfer."
+  },
+  "apply": {
+    "task": "Reproduce the predict in <code>code/exactly-once-transfer.py</code>: append <code>(\"r5\", \"carol\", \"bob\", 30)</code> to the log, run r1–r4, then <code>process(LOG, accts, start=4, crash_at=\"r5\")</code> followed by <code>process(LOG, accts, start=4)</code>, once with <code>dedup=True</code> and once with <code>dedup=False</code>. Then add one line of your own: a <code>final_status</code> map that marks a transfer <i>partial</i> when its debit is ok but its credit hasn't been applied yet, and check it right after the crash.",
+    "done": "Dedup ends at alice 60, bob 90, carol 0 (total 150); naive ends at 60, 60, 0 (total 120) with r5 reported rejected; right after the crash your status map shows r5 as partial.",
+    "hint": "The naive restart's status for r5 comes back 'rejected' because carol's balance is already 0 when the duplicate debit arrives."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: that the naive replay loses money rather than duplicating it?",
+    "Could you list the three conditions for exactly-once without looking?",
+    "Which relationship is still fuzzy: at-least-once delivery → idempotent apply → exactly-once effect, or single owner → local balance check?",
+    "Where in a system you know is a result recomputed on retry instead of replayed?",
+    "What will you reopen before the compaction and XA card?"
+  ],
+  "revisit": [
+    "cs-5-distributed-systems/i-confluence",
+    "cs-5-distributed-systems/end-to-end-argument"
+  ],
+  "prereq": [
+    "cs-5-distributed-systems/i-confluence"
+  ]
+}

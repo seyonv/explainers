@@ -1,0 +1,58 @@
+{
+  "prime": {
+    "problem": "GQA shrinks the cache by giving up K/V heads, and quality falls with it (MMLU 45.2 → 41.2 → 37.9 for MHA → GQA-8 → MQA in DeepSeek's 7B ablation). DeepSeek-V3's shape as plain MHA would cache 3.81 MiB per token. MLA asks for a small cache without losing heads.",
+    "fits": "Second card on bytes per token. It builds on GQA's accounting (KV elements per token) and on attention's per-head Q, K, V from perf-1, and replaces \"fewer K/V heads\" with \"one compressed latent per token\".",
+    "expect": ["latent c^KV (512 dims) + RoPE key k^R (64)", "down- and up-projections W^DKV, W^UK, W^UV", "weight absorption (associativity)", "decoupled RoPE", "decode FLOPs per KV byte"],
+    "goal": "Compute MLA's KV per token, explain how absorption means per-head K and V are never built, and say why RoPE needs its own small key."
+  },
+  "attend": [
+    "If every head's K and V can be rebuilt from one 512-number latent, what stops decode from paying to rebuild them for every past token at every step?",
+    "Why does RoPE on the compressed keys break absorption, and how does a separate 64-dim key fix it?",
+    "Why is query compression irrelevant to serving, even though the paper spends a subsection on it?",
+    "MLA's cache is larger than MQA's. What is DeepSeek actually claiming, then?",
+    "Why does MLA move decode attention from ~4 to ~242 FLOPs per byte on V3, and why is that good news?"
+  ],
+  "core": {
+    "must": [
+      "Down-project each token to a latent c^KV (512) → cache only c and a shared 64-dim RoPE key → (d_c + d_h^R)·l elements per token → V3: 35,136 elements = 68.6 KiB vs 3.81 MiB as MHA (1.76%); same size as GQA with 2.25 groups",
+      "Scores are q_iᵀ W_i^UK c_j and outputs are W^O W^UV Σ p c → matrix multiplication is associative → fold W^UK into the query side and W^UV into W^O → attend directly over the cached latents → per-head K and V are never built at inference",
+      "RoPE inserts a position-dependent rotation R(j) between q and W^UK c_j → it can't be folded into one matrix for all positions → keep RoPE on a separate small key k^R shared by all heads → content part stays absorbable, position part stays tiny",
+      "All 128 heads reuse the same 1,152 cached bytes per token and do 576-dim work on them → decode FLOPs per KV byte ≈ 242 on V3, close to the 295 ridge → fewer bytes are paid for with FLOPs that decode had to spare"
+    ],
+    "elevated": [
+      "The 5.76× throughput and −93.3% KV headline combine MLA (−82.2% in elements), ~6-bit KV quantization and MoE → MLA alone is not the whole headline"
+    ],
+    "reference": ["the V2 vs V3 dimensions (d = 5120 vs 7168, 60 vs 61 layers)", "d_c′ = 1536 query latent", "the WQ vs WUQ naming quirk", "YaRN applied to k^R", "App D's per-benchmark scores"]
+  },
+  "compress": {
+    "prompt": "Draw one MLA layer from memory: h → c^KV (cached) → per-head K, V (training only), plus the k^R path. Then write the two absorbed products in one line each and a final line for what is cached per token.",
+    "checklist": [
+      "c^KV = W^DKV h, 512 dims, cached",
+      "k^R, 64 dims, RoPE applied, shared by heads, cached",
+      "score: (W_i^UKᵀ q_i)ᵀ c_j, so W^UK moves to the query side",
+      "output: (W_i^O W_i^UV) Σ_j p_ij c_j, so W^UV merges into W^O",
+      "cache = (d_c + d_h^R) × layers; RoPE can't be absorbed, hence the separate key"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain where MLA's KV saving comes from if all heads' keys and values are still used in attention.", "kind": "concept", "answer": ["the cache holds 576 numbers per token per layer instead of 2 × 128 × 128", "the up-projections are weights, shared by all tokens, not per-token state", "absorption means attention runs in the 512-dim latent space, so full K, V are never materialised at inference"]},
+    {"q": "Walk through why putting RoPE on the compressed keys forces recomputing all prefix keys at inference.", "kind": "mechanism", "answer": ["the score becomes q_iᵀ R(j) W_i^UK c_j", "R(j) differs for every past position j and sits between the query side and W^UK", "matrix multiplication isn't commutative, so no single merged matrix works", "you would have to rebuild k_j for every prefix token each step, which decoupled RoPE avoids"]},
+    {"q": "A serving team wants MLA's cache for Llama-3.1-8B. Why can't they just switch, and what does a hypothetical MLA Llama buy in capacity?", "kind": "tradeoff", "answer": ["MLA is decided in pretraining; converting needs retraining or uptraining that isn't measured", "hypothetical: (512 + 64) × 32 × 2 B = 36 KiB/token, 3.56× smaller than GQA-8", "59 → 211 sequences of 8k on one H100; their real levers are KV quantization and paging"]},
+    {"q": "Under tensor parallelism, why does MLA's cache not split across GPUs the way GQA's does?", "kind": "mechanism", "answer": ["GQA's cache is per KV head, so splitting heads splits the cache", "MLA's single latent is shared by all heads", "every GPU holding some heads needs the whole latent (the card's inference)"]}
+  ],
+  "compare": [
+    {"with": "perf-4-attention-kv/kv-quantization", "q": "MLA and KV quantization both cut bytes per token. What does each change (the number of cached values vs bits per value), when can a serving team use each, and how did DeepSeek-V2 stack them?", "answer": ["MLA reduces how many numbers are cached; quantization reduces bits per number", "MLA is a training-time architecture; FP8/KIVI are serving-time switches", "DeepSeek-V2 cached the MLA latent and quantized it to ~6 bits on average, which is how −82.2% became −93.3%"]},
+    {"with": "perf-6-scaling-out/deepseek-v3-architecture", "q": "Course 6 treats DeepSeek-V3 as an architecture built for serving. Which of V3's serving properties come from MLA, and which come from other choices?", "answer": ["MLA gives the 68.6 KiB/token cache and high decode intensity", "MoE (37B active of 671B) sets the per-token compute and the need for expert parallelism", "FP8 training and MTP are separate choices; MLA is the KV part"]}
+  ],
+  "predict": {"q": "Absorption is described only for inference. During prefill of a 4,000-token prompt, is it better to absorb (work in latent space for every query) or to rebuild K and V once per token? Commit, then reveal.", "answer": "Rebuilding once per token is likely cheaper in prefill: every query meets every key, so the up-projection cost is amortised over many queries, while absorption multiplies per-query work in the 512-dim latent space. Absorption pays in decode, where one new query meets thousands of cached tokens and rebuilding them all every step would cost 120.8× more FLOPs. The paper doesn't discuss prefill; this is the card's inference."},
+  "apply": {"task": "Two tasks. (1) Run labs/mla.py and confirm explicit vs absorbed scores and outputs agree; switch to float64 and note the new difference. (2) By hand, compute DeepSeek-V2-Lite's cached elements per token (27 layers, d_c = 512, d_h^R = 64), its bytes in BF16, and what plain MHA with its 16 heads × 128 would cache. What percentage of MHA is it, and which App D row does that match?", "done": "The lab's diffs are ~1e-7 (float32) and ~1e-16 (float64), and your V2-Lite numbers are written out with the percentage and the matching row.", "hint": "V2-Lite: 27 × 576 = 15,552 elements = 31,104 B ≈ 30.4 KiB. MHA: 2 × 16 × 128 × 27 = 110,592 elements. 15,552 / 110,592 = 14.1%, the App D small-MoE row (110.6K → 15.6K, \"14% of MHA's KV\"). Our arithmetic."},
+  "reflect": [
+    "Which prediction did you get wrong: absorb or rebuild in prefill?",
+    "Could you explain absorption as \"move the matrix to the other side of the dot product\" to someone else?",
+    "Which relationship is still fuzzy: latent cache → small bytes, or RoPE → separate key?",
+    "Can you say why MQA is smaller than MLA but still the worse choice?",
+    "What will you look for in KV quantization: how it stacks with a small cache like MLA's?"
+  ],
+  "revisit": ["perf-4-attention-kv/gqa", "perf-2-scaling-book-inference/attention-intensity", "perf-2-scaling-book-inference/sharding-kv-cache"],
+  "prereq": ["perf-4-attention-kv/gqa"]
+}

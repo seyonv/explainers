@@ -1,0 +1,58 @@
+{
+  "prime": {
+    "problem": "Two engines can both guarantee your schema and still differ 10× in latency, because they spend their time in different places: once per schema (compile) or on every token. Until you separate the two, you can't tell whether the fix is caching, a different backend, or shorter answers.",
+    "fits": "First card of part 3. The FSM card showed the cost of precomputing everything; the fast-masks card showed the per-token tricks. This card puts both on one clock, GCT, TTFT and TPOT, and extends the latency law from the llm-latency course.",
+    "expect": ["GCT, TTFT, TPOT", "<code>T = GCT + t_prefill + (n − 1)·TPOT</code>", "amortising compile over k reuses", "compile hidden behind prefill (XGrammar)", "pathological schemas"],
+    "goal": "Compute an engine's time for an answer from its three numbers, and decide when compile time matters (new schemas) and when per-token time dominates (long answers, cached schemas)."
+  },
+  "attend": [
+    "Which of the three costs does a grammar cache remove, and which one can't it touch?",
+    "Why is Outlines' TTFT almost exactly its GCT plus a few tenths of a second?",
+    "How can Guidance's time per token be <i>lower</i> than with no grammar at all?",
+    "On GitHub-Hard, why does LM-only edge out Guidance on an 80-token answer despite Guidance's faster tokens?",
+    "Why did the paper find grammar caching useless, when production systems rely on it?"
+  ],
+  "core": {
+    "must": [
+      "Precompile the whole automaton → a long compile per new schema (Outlines 8.05 s on GitHub-Medium) → cheap only when amortised over k reuses (12.06 s per call at k = 1 → 4.09 s at k = 100) → schemas built per request never amortise",
+      "Caching removes GCT, not TPOT → per-token cost is paid on every token of every answer → for long answers or cached schemas TPOT decides (cached Outlines 4.01 s vs Guidance 1.14 s for 80 tokens)",
+      "XGrammar compiles during prefill → TTFT ≈ max(GCT, t_prefill) → a short compile disappears into the time already spent reading the prompt",
+      "Mask work that isn't hidden (llama.cpp GBNF: 29.08 vs 16.68 ms, +74%) or steps that are skipped (Guidance: 7.57 ms, below no-grammar) → TPOT differs by engine → a 10.6× spread between best and worst at 80 tokens"
+    ],
+    "elevated": [
+      "Pathological schemas (Outlines on <code>minItems</code>, <code>maxItems</code>, <code>enum</code>, arrays: 40 s to 10 min; XGrammar edge schemas at tens to hundreds of ms per mask) → medians hide them → time each new schema on your own engine before trusting a table"
+    ],
+    "reference": ["per-dataset GCT/TTFT/TPOT values in Tables 2, 3 and 13", "engine versions (Guidance 0.2.0rc, Outlines 0.1.8, Llamacpp 0.3.2, XGrammar 0.1.6)", "the Ollama M3 setup timings (0.164 / 0.206 / 0.237 s)"]
+  },
+  "compress": {
+    "prompt": "From memory, write <code>T = …</code> and under each term name one engine for which that term dominates. Then write one sentence on what caching fixes and what it doesn't.",
+    "checklist": [
+      "GCT is paid once per schema and amortised by reuse",
+      "prefill reads the prompt; XGrammar hides its compile inside it",
+      "(n − 1) × TPOT is paid on every token of every answer",
+      "caching removes GCT only",
+      "Outlines: GCT dominates when fresh, TPOT still dominates when cached",
+      "Guidance: tiny GCT, and TPOT below no-grammar because it skips forced tokens"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why \"the fastest constrained-decoding engine\" has no single answer, using the three terms and one number for each.", "kind": "concept", "answer": ["GCT matters per new schema: 0.01 s Guidance vs 8.05 s Outlines", "TPOT matters per token: 7.57 ms Guidance, 29.08 ms Llamacpp, 46.57 ms Outlines", "so the ranking depends on how often the schema is reused (k) and how long the answer is (n)"]},
+    {"q": "Compute Outlines' average time per call on GitHub-Medium for an 80-token answer at k = 1 and at k = 10, showing each term.", "kind": "mechanism", "answer": ["k = 1: 8.05 + 0.33 + 79 × 46.57 ms (3.68 s) = 12.06 s", "k = 10: 0.805 + 0.33 + 3.68 = 4.81 s", "at k = 10 the per-token term is already about three quarters of the total"]},
+    {"q": "A product builds a schema from each user's CSV header and answers in about 40 tokens. Which term dominates, and which engine family fits?", "kind": "tradeoff", "answer": ["k = 1 every time, so GCT is paid on every call", "with ~40 tokens, a multi-second compile dwarfs the writing time", "pick near-zero compile: llguidance (0.00–0.02 s) or llama.cpp (0.05–0.06 s), or prompt-only with a validator"]}
+  ],
+  "compare": [
+    {"with": "llm-latency/grammar-compilation", "q": "The latency course's grammar-compilation card also covers GCT. What does this card add to it, and does the advice change?", "answer": ["that card treats GCT as a TTFT term paid once per new schema, then cached", "this card adds the per-token side: an engine with near-zero GCT can still lose on TPOT, and caching can't fix TPOT", "the advice sharpens: pick by schema reuse and answer length together, not by compile time alone"]},
+    {"with": "structured-outputs/regex-fsm", "q": "The FSM card found a break-even near 75 reuses for Outlines vs Llamacpp on GlaiveAI, yet on GitHub-Medium and GitHub-Hard Outlines never breaks even. What decides whether reuse can ever pay back a compile?", "answer": ["reuse only removes GCT, so the cached engine must also be at least as fast per call", "on GlaiveAI the two TPOTs are nearly equal (30.33 vs 29.98 ms), so the 0.05 s Llamacpp compile per call is what Outlines wins back", "on GitHub-Medium (46.57 vs 29.08 ms) and GitHub-Hard (81.22 vs 28.17 ms) cached Outlines is slower per call, so no amount of reuse helps"]}
+  ],
+  "predict": {"q": "Keep the GitHub-Medium numbers and a cached schema, but make the answer 400 tokens instead of 80. Does Guidance's lead over cached Outlines grow, shrink or stay the same as a ratio? Commit before revealing.", "answer": "It grows: about 3.5× at 80 tokens (4.01 vs 1.13 s) becomes about 5.3× at 400 tokens (18.91 vs 3.55 s). The fixed prefill matters less as the answer grows, so the ratio heads toward the TPOT ratio, 46.57 / 7.57 ≈ 6.2×. Long answers are where per-token cost decides everything."},
+  "apply": {"task": "Write the engine chooser as a 15-line script or a spreadsheet. Inputs: GCT, TTFT, TPOT, answer length n and reuses k, with per call = GCT/k + (TTFT − GCT) + (n − 1) × TPOT. Fill in the four GitHub-Medium rows (llama.cpp backend) and find, for n = 80: (a) each engine's time per call at k = 1 and at k = 100; (b) the k at which cached Outlines would beat Llamacpp, if any; (c) on GitHub-Hard, the answer length n at which Guidance overtakes LM-only (TTFT 1.18 vs 0.51 s, TPOT 8.36 vs 16.18 ms).", "done": "Your script reproduces the card's 12.06 s (Outlines) and 1.14 s (Guidance) at k = 1, and you have answers for (b) and (c), each with the line of arithmetic that decides it.", "hint": "For (b), compare Outlines' per-call time as k → ∞ with Llamacpp's. For (c), set the two totals equal and solve for n − 1. Check afterwards: (a) k = 1 / k = 100: LM-only 1.52 / 1.52, Guidance 1.14 / 1.13, Llamacpp 2.60 / 2.54, Outlines 12.06 / 4.09 s. (b) Never: even at infinite k Outlines costs 4.01 s against Llamacpp's 2.54 s. (c) n − 1 = 0.67 s ÷ 7.82 ms ≈ 86, so from about 87 tokens Guidance is faster."},
+  "reflect": [
+    "Which prediction did you get wrong: whether the ratio grows with longer answers?",
+    "What couldn't you explain cleanly: why caching can't rescue a slow per-token engine?",
+    "Which relationship is still fuzzy: schema reuse → amortised GCT, or answer length → TPOT dominance?",
+    "Is your own workload a fixed schema, a per-request schema, or both? Which term is your bill?",
+    "What will you look for in the fast-forward card: how skipping steps pushes TPOT below no-grammar?"
+  ],
+  "revisit": ["structured-outputs/regex-fsm", "structured-outputs/fast-masks", "llm-latency/ttft", "llm-latency/grammar-compilation"],
+  "prereq": ["llm-latency/ttft"]
+}

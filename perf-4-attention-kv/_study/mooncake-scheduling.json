@@ -1,0 +1,56 @@
+{
+  "prime": {
+    "problem": "Once KV lives in a shared pool, where a request should run depends on where its KV is, how busy each node is and how long a transfer takes. Load-only balancing throws away cache hits; cache-only placement piles work onto busy nodes; and under overload, prefill work done for requests that are later rejected is wasted.",
+    "fits": "Second Mooncake card, and the cluster-scale version of cache-aware scheduling (RadixAttention II). It uses card 1's store and transfer arithmetic to choose, per request, the prefill node that gives the earliest first token.",
+    "expect": ["chunked pipeline parallelism (CPP)", "layer-wise prefill overlapping KV loads", "Conductor: TTFT = transfer + queue + prefill", "hot-spot replication", "early rejection with predicted load"],
+    "goal": "Compute each candidate node's estimated TTFT with Algorithm 1, explain why the global choice beats random, load-only and local cache-aware placement, and why rejection must use predicted load."
+  },
+  "attend": [
+    "Why does a busy node that holds most of the prompt's KV sometimes lose to an idle node with none?",
+    "Why does Mooncake split long prefills across nodes by chunks instead of by tensor or sequence parallelism?",
+    "How do hot blocks end up replicated on almost every prefill node without anyone predicting popularity?",
+    "Why is rejecting a request after its prefill worse than rejecting it at arrival?",
+    "Why did early rejection based on current decode load make the two pools oscillate?"
+  ],
+  "core": {
+    "must": [
+      "For each prefill node: TTFT = time to pull the missing prefix + queued work + prefill of the uncached part → pick the minimum → combines cache hits with idle GPUs → beats random, load-only and local cache-aware placement (FAST: 19.65 / 5.27 / 3.58 / 3.07 s average TTFT)",
+      "If the chosen node pulls a remote prefix, it keeps a copy → popular blocks spread to many nodes as a side effect of placement → hot keys end up replicated almost everywhere; cold ones stay single",
+      "Prefill and decode are separate pools → a request refused by decode after prefill wastes that prefill → check max(prefill load, decode load) at arrival → but current decode load lags by one prefill → anti-phase oscillation → predict decode load at prefill-finish time → fewer rejections (4,183 → 3,589)"
+    ],
+    "elevated": [
+      "Chunked pipeline parallelism hands off only activations at stage boundaries (16.4 MB per 1,000 tokens for LLaMA3-70B) → vs two cross-node all-reduces per layer for TP (160 per forward pass) → easy to overlap, and short prompts are just one chunk"
+    ],
+    "reference": ["the kvcache_balancing_threshold (set manually, value unpublished)", "256- vs 512-token block sizes in the two papers", "the HTTP 429 response", "per-trace statistics in Table 2", "the arXiv vs FAST'25 result numbers"]
+  },
+  "compress": {
+    "prompt": "From memory, write Algorithm 1 in four lines (hash the prompt, match, estimate TTFT per node, choose or reject), then one line each for hot-spot replication and prediction-based rejection.",
+    "checklist": [
+      "prefix-chained block hashes → longest match per node",
+      "TTFT_i = T_transfer + T_queue + T_prefill(n, p_i), take the argmin",
+      "reject at arrival if even the best misses TTFT or the decode node misses TBT",
+      "pulling a remote prefix leaves a replica: hot blocks spread",
+      "rejection uses predicted decode load, not current, to avoid oscillation"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why \"send the request to the node with the longest cached prefix\" is not optimal in a cluster.", "kind": "concept", "answer": ["that node may have a long queue because everyone wants its cache", "an idle node can pull the prefix over RDMA in a few ms and start sooner", "TTFT depends on queue and transfer, not only on hits"]},
+    {"q": "Walk through the card's 6,000-token example for instance B: what does it pull, what does it compute, and what TTFT does Algorithm 1 estimate?", "kind": "mechanism", "answer": ["B has no local hit; A holds 4,000 tokens, ratio ∞ > threshold, so B pulls them", "transfer 4,000 × 128 KiB = 524 MB at 25 GB/s = 21.0 ms", "queue 40 ms, prefill of the last 2,000 tokens 32.5 ms", "TTFT 93.4 ms, the best of the three, and B keeps the copy"]},
+    {"q": "Under sustained overload, why reject early instead of queueing, and when is queueing the better answer?", "kind": "tradeoff", "answer": ["arrivals outpace capacity, so the queue grows and waiting requests miss the SLO anyway", "rejecting after prefill wastes GPU time that could serve someone else", "for a brief spike, a queue absorbs it; rejecting throws away demand you could serve a second later"]}
+  ],
+  "compare": [
+    {"with": "perf-4-attention-kv/cache-aware-scheduling", "q": "LSPF reorders one GPU's queue to reuse cached prefixes; the Conductor places requests across a pool. What is the same idea, and what does the cluster version add because KV can move?", "answer": ["same: prefer work whose prefix is already cached to avoid recomputation", "cluster: a transfer term, so a cache can be used from another node", "and a queue term per node, so reuse is balanced against load"]},
+    {"with": "perf-6-scaling-out/distserve-interference", "q": "DistServe separates prefill and decode because they interfere on shared GPUs. Which of Mooncake's scheduling problems exist only because of that separation?", "answer": ["choosing a decode node and streaming KV to it", "overload: prefill work wasted when decode rejects afterwards", "the anti-phase oscillation between two pools reacting to each other's load"]}
+  ],
+  "predict": {"q": "In the card's example, instance A's queue drops from 150 ms to 20 ms. Which instance does Algorithm 1 pick now? And separately, if the balancing threshold were 2.5 instead of 1.5, what would C's estimate become? Commit first.", "answer": "A: 20 + 32.5 = 52.5 ms, beating B's 93.4 and C's 103.0, so A wins: with a short queue the cache holder is best. With threshold 2.5, C's ratio 4,000 / 2,000 = 2 is below it, so C doesn't pull and recomputes 4,000 tokens: 60 + 65.0 = 125.0 ms (our arithmetic)."},
+  "apply": {"task": "Build a 20-line Python version of Algorithm 1's selection step using the card's inputs (A: 4,000 cached, 150 ms queue; B: 0, 40 ms; C: 2,000, 60 ms; 6,000-token prompt; prefill 2 × 8.03e9 × k / 989e12; transfer k × 131,072 B / 25 GB/s; threshold 1.5). Reproduce the card's 182.5 / 93.4 / 103.0 ms, then add a TTFT SLO and find the largest SLO that rejects this request.", "done": "Your script prints the three estimates matching the card, picks B, and you've stated the rejection boundary (any TTFT SLO below 93.4 ms rejects it).", "hint": "Remember the pull rule: if best_len / local_len > threshold, pull best_len − local_len tokens and prefill only the rest; otherwise recompute from the local prefix. B's local length is 0, so the ratio is infinite."},
+  "reflect": [
+    "Which prediction did you get wrong: A with a short queue, or C under a higher threshold?",
+    "Could you explain the anti-phase oscillation with a traffic-light analogy?",
+    "Which relationship is still fuzzy: transfer + queue + prefill → placement, or placement → replication?",
+    "Can you say why CPP suits both short and long prompts?",
+    "What will you look for in the long-context card: what happens when one sequence's KV doesn't fit on one GPU at all?"
+  ],
+  "revisit": ["perf-4-attention-kv/mooncake-store", "perf-4-attention-kv/cache-aware-scheduling", "perf-1-foundations/serving-metrics"],
+  "prereq": ["perf-4-attention-kv/mooncake-store"]
+}

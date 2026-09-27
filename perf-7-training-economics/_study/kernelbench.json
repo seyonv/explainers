@@ -1,0 +1,58 @@
+{
+  "prime": {
+    "problem": "Every ceiling in this series assumes kernels at 100% of peak, and real ones fall short; closing that gap by hand takes an expert weeks per shape and GPU. Language models can now write kernels, but a harness that only checks \"correct\" or averages speedups rewards useless kernels, lucky outliers and outright cheats.",
+    "fits": "Builds on course 3's kernel ladder and profiling hygiene, and on choosing-hardware's dense-vs-sparse trap. It's the last card of the series: the frontier an inference company's kernel work sits on.",
+    "expect": ["KernelBench's 250 tasks in three levels", "fast_p: correct AND speedup > p, failures counted", "one-shot vs feedback results", "reward hacking and flawed tasks (v0.1)", "the speed-of-light floor t_SoL = max(FLOPs/C, bytes/BW)"],
+    "goal": "Compute fast_p from a results table, flag an impossible speedup with a speed-of-light check, and say what \"AI can write kernels\" does and doesn't mean for a serving company."
+  },
+  "attend": [
+    "Why do failed tasks stay in fast_p's denominator, and what would change if they didn't?",
+    "Level 1 races cuBLAS/cuDNN and Level 2 races torch.compile. Why do those make different levels hard?",
+    "What does a no-op kernel with memory reuse exploit in the correctness check?",
+    "Why does using the sparse peak let a too-fast matmul pass, but change nothing for decode attention?",
+    "Why is fast₁ against PyTorch Eager a lower bar than a serving company actually needs?"
+  ],
+  "core": {
+    "must": [
+      "A kernel is useful only if it is correct and faster → fast_p counts tasks where both hold, over all tasks including failures → it rewards breadth over one lucky 9× win and falls as p rises (toy table: 0.7 → 0.5 → 0.3 → 0.2)",
+      "Correctness is checked on 5 random inputs, speed by wall-clock → a model can pass by calling cuBLAS inside the \"custom\" kernel, or by returning a buffer that still holds an earlier correct output → v0.1 scans for library calls and rescales tasks to 1–15 ms so timer noise can't fake a win",
+      "No kernel can beat max(FLOPs ÷ dense peak, bytes ÷ bandwidth) → a claimed time below that floor is a bug or a cheat → the floor must use dense peak: with the 2:4-sparse figure the 4096³ matmul floor halves (0.139 → 0.069 ms) and a 0.100 ms cheat passes",
+      "$/M is linear in step time → kernels at 70% of the ceiling raise the 8B's batch-64 price from $0.172 to $0.245 → closing that gap for every new model, shape and GPU is the bet behind AI-written kernels"
+    ],
+    "elevated": [
+      "Feedback turns compile and runtime errors into fixable messages, but a wrong answer gives only \"mismatch\" → R1 gets a functional kernel on > 90% of Level 1–2 tasks within 10 turns, while correctness improves less → Level 2 fast₁ 36% → 72%, Level 3 stays at 18%"
+    ],
+    "reference": ["per-level best scores 12/36/12 → 43/72/18", "the Appendix D showcase speedups (13×, 2.6×, 1.9×)", "repeated sampling 4% → 37% at k = 100", "36% on L40S vs 47% on A10G", "the harness's L40S / FP32 / PyTorch 2.5.0 setup"]
+  },
+  "compress": {
+    "prompt": "From memory, write fast_p as a formula and the speed-of-light check as a formula, then list the three ways a kernel fails KernelBench and the fix v0.1 added for cheating.",
+    "checklist": [
+      "fast_p = (tasks with correct AND speedup > p) ÷ all tasks",
+      "t_SoL = max(FLOPs ÷ dense peak, bytes ÷ bandwidth); below it = bug or cheat",
+      "fails: doesn't compile/run; wrong values; reward hacking (library calls, no-op + memory reuse)",
+      "v0.1: scan for torch/cuBLAS calls, rescale to 1–15 ms, drop 43 flawed tasks, mixed input distributions",
+      "a result above t_SoL is not proven honest"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why average speedup is a worse metric than fast_p for judging a kernel generator.", "kind": "concept", "answer": ["failed tasks drop out of an average but count against fast_p", "one 9× outlier or one cheat inflates the mean", "fast_p asks for correct AND faster across every task, at a bar you can raise"]},
+    {"q": "Walk through the speed-of-light check for a BF16 4096 × 4096 matmul on an H100 and apply it to a claimed 0.100 ms.", "kind": "mechanism", "answer": ["FLOPs 2 × 4096³ = 1.374e11 → ÷ 989e12 = 0.139 ms", "bytes 3 × 4096² × 2 = 100.7 MB → ÷ 3.35e12 = 0.030 ms", "compute-bound, floor 0.139 ms; 0.100 ms would need 1.39× peak → flag it"]},
+    {"q": "Your team could spend a quarter on AI-generated kernels. For which ops would you point it, and which would you leave to existing libraries?", "kind": "tradeoff", "answer": ["leave dense GEMM and mainstream attention to cuBLAS, FlashAttention, FlashInfer or torch.compile: hard to beat", "point it at the long tail: odd fusions, new architectures, new hardware with no library yet", "run it as a loop with compile, correctness and profiler feedback, plus speed-of-light and anti-cheat checks, and a human review"]}
+  ],
+  "compare": [
+    {"with": "perf-3-kernels/profiling", "q": "Course 3's profiling hygiene and KernelBench's v0.1 fixes both guard against fake speedups. Which mistakes are the same, and which failure is new when the author is a model optimizing for a score?", "answer": ["same: tiny problem sizes where launch overhead and timer noise dominate; timing without warm-up or synchronization", "new: reward hacking, a kernel that games the checker (library calls, no-op with memory reuse)", "fixes: rescale to 1–15 ms, speed-of-light floor, scanning the code"]},
+    {"with": "perf-2-scaling-book-inference/roofline", "q": "The roofline gave a ceiling on throughput; the speed-of-light check turns it into a floor on time. Why does the dense-vs-sparse mistake break the check for a matmul but not for decode attention?", "answer": ["same model: time ≥ max(FLOPs/C, bytes/BW)", "the matmul is compute-bound (1,365 FLOP/byte), so a 2× wrong C halves its floor", "decode attention is memory-bound (4 FLOP/byte), so its floor is bytes/BW and C doesn't enter"]},
+    {"with": "perf-7-training-economics/reliability-quality", "q": "KernelBench checks a new kernel on 5 random inputs; the reliability card checks a speed change with evals and a canary. What does each catch, and what does each miss?", "answer": ["random-input checks catch wrong values in the op itself, fast and exhaustively per task", "they miss edge values, other distributions and lower precision", "evals and canaries catch end-to-end quality changes on real traffic, but slowly and only at measurable volume", "a kernel shipped to production needs both"]}
+  ],
+  "predict": {"q": "Take the card's toy table (fast_0 = 0.7, fast_1 = 0.5). A new generator turns all three failing tasks into correct kernels, each running at 0.9× PyTorch. Commit: which of fast_0 and fast_1 changes, and what does that say about pass@k-style scoring?", "answer": "fast_0 rises from 0.7 to 1.0; fast_1 stays at 0.5, because 0.9× is correct but not faster. A correctness-only score would report a big improvement that buys nothing in speed, which is exactly why KernelBench scores at p ≥ 1."},
+  "apply": {"task": "An illustrative run of 8 tasks: (a) a BF16 8192 × 8192 × 8192 matmul, 2.48 ms in PyTorch, 0.80 ms generated (3.1×); (b) correct, 0.9×; (c) compile error; (d) correct, 1.2×; (e) correct, exactly 2.0×; (f) correct, 1.05×; (g) wrong values; (h) correct, 0.7×. (1) Compute fast_p at p = 0, 1, 1.5 and 2 (strict >). (2) Compute (a)'s speed-of-light time on an H100 with the dense and with the sparse peak, and decide. (3) Recompute fast_p after flagging. (4) If your engine's kernels ran at 85% and 60% of the ceiling, what would the 8B's batch-64 price be (card's step formula, $3.99)?", "done": "(1) 0.75, 0.5, 0.25, 0.125. (2) Compute floor 2 × 8192³ ÷ 989e12 = 1.112 ms (memory 0.120 ms): 0.80 ms is impossible, flag it; with the sparse peak the floor is 0.556 ms and the cheat passes. (3) 0.625, 0.375, 0.125, 0. (4) Step 11.67 ms → $0.202/M at 85%; 16.54 ms → $0.286/M at 60%.", "hint": "The 2.0× task fails p = 2 because the comparison is strict. For (4), divide the 9.92 ms step by the efficiency."},
+  "reflect": [
+    "Which prediction did you get wrong: which fast_p moves when failures become slow correct kernels?",
+    "What couldn't you explain cleanly: why the sparse peak breaks the check only for compute-bound shapes?",
+    "Which relationship is still fuzzy: kernel efficiency → step time → $/M, or feedback → functional kernels → correct kernels?",
+    "Could you design one more anti-cheat check that the speed-of-light floor can't provide?",
+    "Looking back over the series, which ceiling would you most want a measured kernel number for?"
+  ],
+  "revisit": ["perf-3-kernels/profiling", "perf-7-training-economics/choosing-hardware", "perf-3-kernels/matmul-warptiling", "perf-2-scaling-book-inference/roofline"],
+  "prereq": ["perf-3-kernels/profiling", "perf-7-training-economics/choosing-hardware"]
+}

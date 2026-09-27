@@ -1,0 +1,68 @@
+{
+  "prime": {
+    "problem": "Putting a cache in front of a database raises two questions that, answered wrong, give you stale data or lost writes: who fills the cache on a read, and what happens to it on a write.",
+    "fits": "Second memory card. The previous card said where memory speed comes from; this one keeps a small, fast copy in front of a slow store. It reuses cs-1's LRU and LFU structures and cs-5's idempotency; the anti-caching card then inverts the idea.",
+    "expect": ["cache-aside, write-through, write-back, write-around", "LRU vs LFU vs TTL", "hit ratio under a Zipf workload", "thundering herd and request coalescing", "delete-on-write invalidation"],
+    "goal": "Choose a caching pattern and eviction policy for a workload, predict its hit ratio's ceiling, and explain the races that invalidation must survive."
+  },
+  "attend": [
+    "In cache-aside, why does the writer <i>delete</i> the key rather than set the new value? What race does setting create?",
+    "Which pattern can lose a write the user was told succeeded, and what property of that pattern causes it?",
+    "Why does LFU beat LRU on the card's Zipf(1.0) stream, and what kind of traffic would reverse that?",
+    "What is the hit-ratio ceiling for a cache of 100 entries over 10,000 Zipf keys, and why can't any policy beat it?",
+    "When a hot key expires, why do 100 requests become 100 database queries, and what does coalescing change?"
+  ],
+  "core": {
+    "must": [
+      "Cache-aside keeps the database as the only truth → the cache is filled lazily on a miss and deleted on a write → the cache can crash or evict freely → the first read of each key always pays cache trip + DB trip",
+      "Setting the cache on write lets two writers' sets land in the opposite order to their commits → an old value stays cached with no end → deleting is idempotent and order-safe, with a TTL as a safety net",
+      "Write-back acknowledges a write once it's in the cache → the store gets it only on eviction → a cache crash before the flush loses acknowledged writes → only safe where the cache is durable (CPU, battery-backed controller)",
+      "Under skewed traffic a small cache absorbs a large share → the best possible hit ratio is the top-k keys' share (H(100)/H(10,000) = 53%) → LRU spends slots on one-off keys (38.9%), LFU tracks stable popularity (49.6%)"
+    ],
+    "elevated": [
+      "Delete-on-write still races: a reader misses, reads the old row, the writer commits and deletes, then the reader sets the old row → Facebook's lease token, invalidated by the delete, makes that late set fail",
+      "OrderedDict is a hash map threaded with a doubly linked list → move-to-end and evict-oldest are O(1) → LRU costs no scan per request"
+    ],
+    "reference": [
+      "AWS, Facebook and Wikipedia naming of the four patterns",
+      "the 17K/s → 1.3K/s lease numbers",
+      "the seed and sizes of the Zipf simulation (seed 42, 200,000 requests)",
+      "SingleFlight as the coalescing helper's name"
+    ]
+  },
+  "compress": {
+    "prompt": "Close the card and draw cache-aside as numbered arrows: the read path on a miss and the write path. Next to it, write one line each on what write-through, write-back and write-around change, and one line on why delete beats set.",
+    "checklist": [
+      "read: cache → miss → DB → fill cache",
+      "write: DB first, then delete the key",
+      "write-through also writes the cache; write-around skips it; write-back writes only the cache and flushes later",
+      "delete is idempotent and can't install an old value; set can",
+      "a TTL bounds staleness when an invalidation is lost"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why cache-aside with delete-on-write is the common default, in terms of which copy is the truth.", "kind": "concept", "answer": ["the database stays authoritative", "the cache holds only disposable copies, so eviction or a crash loses nothing", "a duplicate delete is harmless"]},
+    {"q": "Trace an LRU of 3 entries on <code>A B C A D B A E</code>: which requests hit, what is evicted, and what does the final chain look like?", "kind": "mechanism", "answer": ["hits: the second and third A (2 of 8 = 25%)", "D evicts B, the least recent; B comes straight back and evicts C", "A hits and moves to the recent end; E evicts D", "final chain, least to most recent: B A E"]},
+    {"q": "A product's reads are 99% of traffic but a stale read for a few seconds is harmful for account balances. Choose a pattern and eviction rule, and say what you'd give up.", "kind": "tradeoff", "answer": ["cache-aside with delete on write (or skip caching balances entirely)", "leases or versioned sets to close the delete race", "a short TTL as backstop; accept more misses and DB load"]},
+    {"q": "Walk through what coalescing does when 100 threads miss the same hot key at once.", "kind": "mechanism", "answer": ["the first miss registers itself as the loader", "the other 99 wait on its result instead of querying", "1 DB query instead of 100; the cost is waiting and one more moving part"]}
+  ],
+  "compare": [
+    {"with": "cs-6-data-systems/in-memory-db-anticaching", "q": "A cache in front of a database vs an anti-caching in-memory database: where does each row live, what must be kept in sync, and how does each fail when the data is 8× RAM?", "answer": ["cache: the row lives in the DB, with a disposable copy in the cache; app keeps them in sync", "anti-caching: a row lives in exactly one place, RAM or an evicted block", "cache fails with stale sets, herds and two round trips per miss", "anti-caching fails when skew drops and many transactions touch evicted rows (aborts)"]},
+    {"with": "cs-1-data-structures/lfu-cache", "q": "The cs-1 LFU card builds the O(1) structure; this card simulates it. What does the structure make cheap, and what does the simulation show it can't fix?", "answer": ["the structure: O(1) get, put and evict using per-count buckets", "the simulation: LFU wins only while popularity is stable", "stale fame: old counts keep yesterday's hot keys cached; needs ageing or a TTL"]}
+  ],
+  "predict": {"q": "The 100 hottest keys suddenly go cold and 100 new keys become the hottest. Commit first: which cache recovers its hit ratio faster, LRU or LFU, and roughly how long does the faster one take?", "answer": "LRU recovers fast: the new hot keys get touched and move to the recent end, and the old ones fall out within about a cache's worth of requests. LFU keeps the old keys' large counts, so the new keys keep being evicted while their counts are still small: the stale-fame failure. It recovers only when counts are aged or decayed, or a TTL expires the old entries."},
+  "apply": {
+    "task": "By hand, run LRU and LFU caches of 3 entries on <code>A B C A B D A E B A</code>. For LFU, evict the key with the fewest hits and break ties by oldest. Mark each request hit or miss and each eviction, then check with the <code>LRU</code> and <code>LFU</code> classes in <code>code/cache-patterns.py</code>.",
+    "done": "LRU gets 4 hits (A, B, A, A; D evicts C, E evicts B, B's return evicts D); LFU gets 5 hits (A, B, A, B, A; D evicts C, E evicts D) because A and B build counts that protect them.",
+    "hint": "LFU after <code>A B C A B</code>: counts A 2, B 2, C 1, so C is the one to go."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: how fast LRU recovers after a popularity shift?",
+    "What couldn't you explain cleanly: the exact interleaving that makes set-on-write leave an old value cached?",
+    "Which relationship is still fuzzy: skew → hit-ratio ceiling, or policy → how close it gets?",
+    "Which of your own caches uses a TTL as its only invalidation, and what staleness does that allow?",
+    "What will you look for in the anti-caching card: what disappears when there is only one copy of each row?"
+  ],
+  "revisit": ["cs-1-data-structures/lfu-cache", "cs-5-distributed-systems/idempotency-retries"],
+  "prereq": []
+}

@@ -1,0 +1,56 @@
+{
+  "prime": {
+    "problem": "Training needs P a second time, in the backward pass. Keeping it costs 4.29 GB per layer for Llama-3.1-8B at 8k (137 GB for 32 layers, more than an H100 holds), and the usual fix, checkpointing, makes every step slower.",
+    "fits": "Card 3 of 3 on FlashAttention. Card I introduced recomputation in one sentence; this card derives the backward pass that uses it (Algorithm 4) and then shows what the speed and memory bought: faster training, longer context, and Path-X.",
+    "expect": ["dV = PᵀdO, dP = dO Vᵀ, dS = P∘(dP − D)", "D_i = do_iᵀo_i (a length-d dot product)", "rebuild P from stored (m, ℓ)", "dK, dV on chip, dQ read-modify-written", "linear memory vs quadratic time"],
+    "goal": "Explain how the backward pass avoids storing P and the N-length row sum, and read the paper's results as memory-limited vs time-limited wins."
+  },
+  "attend": [
+    "The softmax gradient needs a sum over a whole row of N entries. What identity turns it into a dot product of length d that is already in memory?",
+    "Which gradients can accumulate in SRAM for a whole K, V column, and which one must go back to HBM at every step? Why the difference?",
+    "Rabe & Staats also tile and recompute. What single difference in goal makes FlashAttention faster while theirs is about the same speed as standard attention?",
+    "In Table 11, FlashAttention's memory doubles per doubling of N while its time quadruples. What does that say about which limit it removed?",
+    "Why did the long-context results (Path-X, Path-256) depend on memory more than on speed?"
+  ],
+  "core": {
+    "must": [
+      "Backward needs P for dV and dS → storing it is N×N per head (4.29 GB per layer at 8k) → store only (m, ℓ) per row and rebuild each tile of P on chip as exp(S − m)/ℓ → +13% FLOPs, 9× fewer bytes → the backward pass gets faster and smaller",
+      "The softmax Jacobian needs Σ_j P_ij·dP_ij over a whole row → since o_i = Σ_j P_ij v_j, that equals do_iᵀo_i → D_i is a length-d dot product computed once → no N-length row has to fit in SRAM",
+      "Memory becomes linear in N (209 → 418 → 836 MB per doubling) → sequences that ran out of memory now fit (PyTorch OOM at 8k on 40 GB) → but FLOPs stay O(N²), so time still quadruples per doubling → long context became possible, not cheap"
+    ],
+    "elevated": [
+      "Outer loop over K, V columns → dK_j, dV_j depend only on column j and stay in SRAM → dQ_i collects from every column → read-modify-write in HBM each step (FA2 later turns this into atomic adds when it parallelizes)"
+    ],
+    "reference": ["the dropout RNG-state trick (regenerate Z per tile)", "the per-benchmark tables (BERT 17.4 min, GPT-2 days, LRA accuracies)", "the 1.7× vs 1.8× Megatron discrepancy", "Apex FMHA's per-length timings", "which GPUs today's FlashAttention supports"]
+  },
+  "compress": {
+    "prompt": "From memory, write the backward pass as five lines (dV, dP, D, dS, dQ/dK) and mark which matrices are N×N and never stored. Then one sentence on why training memory stopped being quadratic.",
+    "checklist": [
+      "dV = PᵀdO; dP = dO Vᵀ; D_i = do_iᵀo_i; dS = P∘(dP − D); dQ = dS K, dK = dSᵀQ",
+      "P, dP and dS are N×N per head and exist only one tile at a time in SRAM",
+      "P is rebuilt from the stored m and ℓ",
+      "the stored state is 2 numbers per row, so memory grows linearly in N",
+      "FLOPs are still quadratic"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why FlashAttention's backward pass is faster than storing P, even though it does more arithmetic.", "kind": "concept", "answer": ["storing P means writing and re-reading N×N elements through HBM, which is memory-bound", "recomputing P tile by tile costs extra matmul FLOPs, which the GPU has to spare", "on GPT-2 medium: 75.2 vs 66.6 GFLOPs, 4.4 vs 40.3 GB, 7.3 vs 41.7 ms"]},
+    {"q": "Walk through one inner step of Algorithm 4: what is loaded, what is recomputed, which gradients update where?", "kind": "mechanism", "answer": ["load Q_i, O_i, dO_i, dQ_i, m_i, ℓ_i (and D_i) for the current row block; K_j, V_j are already on chip", "recompute S_ij = Q_i K_jᵀ and P_ij from m, ℓ", "dV_j += PᵀdO_i and dK_j += dSᵀQ_i accumulate in SRAM", "dQ_i += dS K_j is written back to HBM"]},
+    {"q": "Whole-layer checkpointing and FlashAttention's recomputation both trade FLOPs for memory. Why does one slow training down and the other speed it up?", "kind": "tradeoff", "answer": ["whole-layer checkpointing reruns every FLOP of the layer and still builds N×N in HBM during the rerun", "FlashAttention recomputes only S and P, on chip, and never writes them", "so it saves traffic as well as memory; checkpointing saves memory only"]}
+  ],
+  "compare": [
+    {"with": "perf-4-attention-kv/flashattention-2-algorithm", "q": "FA2's backward keeps one number per row instead of FA1's two. What is that number, what does it save per score, and what does it not change?", "answer": ["the logsumexp L = m + log ℓ", "P = exp(S − L) takes 2 ops per score instead of 3 (exp(S − m)/ℓ)", "the IO bound, the loop structure and dQ's read-modify-write are unchanged"]},
+    {"with": "perf-7-training-economics/precision-recompute", "q": "Course 7 treats activation checkpointing as a general training dial. How is FlashAttention's recomputation a special case, and why is it one you never turn off?", "answer": ["both drop stored activations and recompute them in backward", "FlashAttention targets the one quadratic activation (P) and recomputes it where it is cheap: on chip, inside the kernel", "it is faster as well as smaller, so there is no trade-off to tune"]}
+  ],
+  "predict": {"q": "Prefill runs only the forward pass, so there is no backward. Does FlashAttention still help prefill of an 8,192-token prompt on Llama-3.1-8B, and does it help the decode steps that follow? Commit first.", "answer": "It helps prefill: the forward pass still has an N×N score matrix per head (4.29 GB of P per layer at 8k, just transient), and the forward kernel keeps it on chip. It doesn't help decode: each decode step has one query row against the KV cache, so there's no N×N matrix to avoid, and the step is bound by reading the cache (≈ 4 FLOPs/byte with GQA-4)."},
+  "apply": {"task": "Two checks. (1) In numpy, build random P (softmax rows), V and dO for N = 6, d = 4. Compute Σ_j P_ij·dP_ij with dP = dO Vᵀ, and separately do_iᵀo_i with O = PV. (2) Extend the card's memory table to a 16,384-token training sequence on Llama-3.1-8B (32 heads, 32 layers): P per layer in BF16, P for all layers, (m, ℓ) per layer in FP32, and the ratio.", "done": "Your two row-sum vectors agree to about 1e-15, and you have four memory numbers with their arithmetic.", "hint": "The identity holds because o_i = Σ_j P_ij v_j, so Σ_j P_ij (do_i·v_j) = do_i·o_i. Memory at 16k: 32 × 16,384² × 2 B = 17.18 GB per layer; × 32 = 550 GB; 2 × 32 × 16,384 × 4 B = 4.19 MB; ratio N/4 = 4,096× (our arithmetic)."},
+  "reflect": [
+    "Which prediction did you get wrong: prefill, decode, or both?",
+    "Could you explain the D_i trick without the chain rule, as \"the row sum is already hiding in O\"?",
+    "Which relationship is still fuzzy: recomputation → fewer bytes, or fewer bytes → faster backward?",
+    "Can you say why linear memory didn't make 64k training cheap?",
+    "What will you look for in FA2 I: what else in the loop costs time out of proportion to its FLOPs?"
+  ],
+  "revisit": ["perf-4-attention-kv/flashattention-tiling", "perf-4-attention-kv/flashattention-io"],
+  "prereq": ["perf-4-attention-kv/flashattention-tiling"]
+}

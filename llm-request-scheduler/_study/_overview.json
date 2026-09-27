@@ -1,0 +1,66 @@
+{
+  "prime": {
+    "problem": "An LLM server that runs one request at a time reads all 16.06 GB of weights to make a single token, so a GPU worth thousands of tokens a second delivers about 205. Without a map of <i>why</i> that happens, you tune the wrong thing: more FLOPs for a bandwidth problem, a smarter queue order for a memory problem, more replicas for a batching problem.",
+    "fits": "This is the map of the whole course. It assumes only that a model makes one token per forward step. Every later card is one box or one term on this page: group 1 explains the terms of the formula, group 2 fills the step, group 3 builds the loop, groups 4 and 5 scale it out.",
+    "expect": [
+      "<code>tok/s ≈ B ÷ (max(math, weight read) + KV read + t_cpu)</code>",
+      "one loop, three limits: token budget, seats, KV blocks",
+      "throughput levers vs latency levers",
+      "the three concept questions in one line each"
+    ],
+    "goal": "Place every card of the course on one causal map, and say which term of the step formula a given change attacks, and whether it moves throughput or only who waits."
+  },
+  "attend": [
+    "Which of the three limits (budget, seats, KV blocks) binds first on the running example, and what number shows it?",
+    "At B = 238 the KV read is 80% of the step. What does that predict about which levers still pay off at a full batch?",
+    "Why are the SJF, priority and fairness rows marked as latency levers even though their bars are the longest on the page?",
+    "Continuous batching (≈ 10×) and a bigger batch (49×) are both listed. Why can't you multiply them?",
+    "When the card says \"when this doesn't apply\", which assumption of the formula breaks in each case?"
+  ],
+  "core": {
+    "must": [
+      "Decode reads every weight once per step → one token per sequence per read → batch 1 wastes the read (205 tok/s) → put many requests' tokens in the step → throughput rises almost with B until the KV read and KV memory take over",
+      "Each request carries its own KV (128 KiB per token) → it must fit in the 63.9 GB left after weights and be read every step → KV capacity caps the batch (238 at 2k) and KV reads dominate a full step (80%) → the scheduler's real job is managing KV memory",
+      "The scheduler decides, every step, which tokens run under three limits → continuous batching keeps seats full, chunking caps the step length, paging and preemption keep memory full without running out → policies only reorder who waits",
+      "Past one GPU: many replicas behind a router that trades cache affinity against load, plus separate prefill and decode pools at scale → the outer layers keep the inner loop full and shed load before queues break the SLO"
+    ],
+    "elevated": [
+      "Throughput levers multiply only when they attack different terms → FP8 KV stacks with batching (KV read is 80% of the step), 8-bit weights mostly don't (+4% at B = 238)"
+    ],
+    "reference": [
+      "the exact bar lengths and log-scale convention of the ranked table",
+      "the list of source links in \"Where to look it up\"",
+      "the alias list (iteration-level scheduling, in-flight batching, stall-free batching)"
+    ]
+  },
+  "compress": {
+    "prompt": "Close the card and draw the whole course as one causal map: arrivals → waiting queue (policy) → step() under three limits → GPU step (math vs weight read + KV read + CPU) → tokens out → blocks freed. Mark on it where each of the five groups of cards lives, and write the step formula underneath from memory.",
+    "checklist": [
+      "decode is bound by the weight read at small batch; batching shares that read",
+      "the KV cache is per request, 128 KiB per token, and it binds first (238 at 2k)",
+      "step() respects a token budget, a seat cap and free KV blocks, running requests first",
+      "continuous batching, chunked prefill and paging are the one-GPU core; policies change who waits",
+      "routing, P/D pools and admission control are what the fleet adds"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain, using the step formula, why the same H100 gives 205 tok/s to one user and 9,973 tok/s to 238 users at 2k context.", "kind": "concept", "answer": ["one step reads the 16.06 GB of weights (4.79 ms) whatever the batch", "at B = 1 that read makes one token; at B = 238 it makes 238", "the step grows to 23.9 ms because each request adds its own KV read (19.07 ms in total), so throughput rises 49× while each user drops to 42 tok/s"]},
+    {"q": "Walk through what the scheduler does between two forward steps, naming the three limits it checks and the order it serves requests in.", "kind": "mechanism", "answer": ["finished requests leave and free their blocks", "running requests go first: one decode token each, or their next prompt chunk", "if a running request can't get a block, the newest is preempted", "waiting requests are admitted in policy order while the token budget, the seat cap and the free blocks allow"]},
+    {"q": "At 60 req/s continuous batching gives 9,102 tok/s but only 41% of requests meet the SLO. Which row of the lever table do you reach for, and which rows would not help?", "kind": "tradeoff", "answer": ["the replica is past capacity (40 req/s): the queue, not the step, is the problem", "reordering levers (SJF, priority) only move who waits; under sustained overload they can't restore the SLO for everyone", "admission control with 429s, or more replicas behind a KV-aware router, are what help"]}
+  ],
+  "compare": [
+    {"with": "llm-request-scheduler/explain-it-back", "q": "This card and the explain-it-back card both answer the three big questions. What does each do that the other can't, and which would you use the night before explaining the system to a colleague?", "answer": ["the overview gives the formula and the ranking in one place: a map for placing new facts", "explain-it-back makes you produce the answers out loud and adds follow-ups and a quiz", "the night before: explain-it-back for retrieval, then check against this card's ranking"]},
+    {"with": "perf-5-engines/_overview", "q": "Course 5's overview frames serving as a throughput–latency frontier; this one frames it as one loop with three limits. What does each framing make easy to see?", "answer": ["the frontier shows that every knob trades per-user speed for total tok/s", "the loop shows where that trade is decided: which tokens enter each step, under which limit", "both agree: goodput under an SLO, not raw tok/s, is the target"]}
+  ],
+  "predict": {"q": "Swap the running example for a model with MQA (16 KiB of KV per token) on the same H100 at 2k context. Before computing anything: which limit now binds first, and does the weight read or the KV read dominate a full step?", "answer": "KV per token shrinks 8×, so about 8× as many sequences fit (roughly 1,900 at 2k), which pushes the batch past the ≈ 295-token critical batch size: the math term now overtakes the weight read before memory runs out. At that batch the KV read per step is about the same 63.9 GB if memory is full, so KV read still matters, but compute starts to bind. The broader point is the one the card's caveat makes: with a tiny KV cache, weight bandwidth and then compute dominate for much longer."},
+  "apply": {"task": "Use the formula as a calculator. With P = 8.03e9, W = 16.06 GB, C = 989 TFLOPS, BW = 3.35 TB/s and 128 KiB of KV per token, compute the step time and tok/s for (a) B = 128 at 2k context and (b) B = 32 at 8k context. For each, name the largest term. Then say which one lever from the ranked table you would try first for each case.", "done": "You get (a) about 15.05 ms and 8,505 tok/s (matching E1's 15.1 ms) and (b) about 15.05 ms and 2,126 tok/s, and you can say the KV read is the largest term in both (10.26 ms of (b)), so an FP8 KV cache is the first lever for both.", "hint": "KV read = B × context × 131,072 B ÷ 3.35 TB/s. The math term (2·P·B ÷ C) stays under the 4.79 ms weight read at these batch sizes."},
+  "reflect": [
+    "Which prediction did you get wrong: which limit binds first, or which term dominates the step?",
+    "What couldn't you explain cleanly: why the policies are latency levers, or why levers don't all multiply?",
+    "Which relationship is still fuzzy: KV size → batch cap, or batch size → KV read → step time?",
+    "Which group of cards do you expect to need most, given what you already know from the Fast LLM inference series?",
+    "Which number on this page would you want to re-derive before trusting it?"
+  ],
+  "revisit": ["perf-0-map/stack", "perf-2-scaling-book-inference/step-time"],
+  "prereq": []
+}

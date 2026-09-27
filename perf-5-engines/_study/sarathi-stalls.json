@@ -1,0 +1,64 @@
+{
+  "prime": {
+    "problem": "Iteration-level schedulers admit new prompts eagerly to keep batches big. But a whole prompt in one step makes that step as long as the prompt's math, so every user who is streaming tokens freezes. Schedulers of the time either accepted these stalls for throughput or avoided them and lost throughput.",
+    "fits": "First Sarathi card. It builds on Orca's mixed iterations and course 2's roofline: decode steps are memory-bound, prefill is compute-bound. It diagnoses the stall; Sarathi II is the fix.",
+    "expect": ["TTFT, TBT and capacity", "decode-prioritizing vs prefill-prioritizing schedulers", "the ridge (≈ 295 tokens on the H100)", "piggybacking prompt tokens into decode steps", "pipeline bubbles PB1–PB3"],
+    "goal": "Compute how much a prompt of P tokens stretches a decode step, explain from the roofline why the first few hundred prompt tokens are nearly free, and place each scheduler on the throughput–latency trade-off."
+  },
+  "attend": [
+    "Why does a decode step for 32 users take about the same time as a decode step for 1?",
+    "What exactly changes when prompt tokens push a step past the ridge, and who pays for it?",
+    "Why do vLLM and Orca stall users differently (78.32 vs 74.04 ms) for the same prompt?",
+    "Why does the paper's measured ratio (1 decode ≈ 128 prefill tokens on an A100) differ from the theoretical one?",
+    "How can two pipeline micro-batches with different prefill content leave a GPU idle for ≈ 950 ms?"
+  ],
+  "core": {
+    "must": [
+      "A decode step's linear layers are set by the weight read (4.79 ms) while its math is tiny (0.52 ms for 32 tokens) → spare math → up to about 295 − 32 = 263 prompt tokens ride along almost free → piggybacking",
+      "Past the ridge every extra prompt token costs 2N/C ≈ 16.2 µs → a 4,096-token prompt makes the step 74.04 ms → every one of the 32 users waits 10× longer for their next token → a generation stall",
+      "Decode-prioritizing (FasterTransformer) protects TBT but lets batches shrink and new prompts wait; prefill-prioritizing (Orca, vLLM) keeps batches big but stalls → both sit on a throughput–latency trade-off → the way out is bounding prompt work per step",
+      "With pipeline parallelism each stage waits for the previous one → micro-batches with very different compute (prefill vs decode) → idle stages (bubbles) → uniform-compute batches are needed"
+    ],
+    "elevated": [
+      "Linear layers are over 80% of step time even at long sequence lengths → attention's quadratic cost isn't the stall's main cause → the token count in the step is what matters"
+    ],
+    "reference": [
+      "the paper's GPU/model setups (Mistral-7B, Yi-34B, LLaMA2-70B, Falcon-180B on A100s)",
+      "Algorithm 1 and 2 pseudocode",
+      "the strict/relaxed SLO multipliers (5×, 25×)",
+      "the Falcon-180B 1,150/200/950 ms stage times"
+    ]
+  },
+  "compress": {
+    "prompt": "Draw the step-time curve from memory: linear time vs tokens in the step, flat at the weight read, then rising. Mark the ridge, where 32 decodes sit, and where a 4,096-token prompt lands. Under it, write the one-sentence trade-off each scheduler family makes.",
+    "checklist": [
+      "flat at W/BW (4.79 ms) until ≈ 295 tokens, then 16.2 µs per token",
+      "32 decodes sit far left: room for ≈ 263 free prompt tokens",
+      "a whole 4k prompt is far right: 74.04 ms step, 10× TBT",
+      "decode-prioritizing: smooth TBT, poor throughput and TTFT",
+      "prefill-prioritizing: high throughput, stalls",
+      "stalls come from how many tokens a step holds, not from decode vs prefill as such"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why decode tokens don't slow each other down but prefill tokens do, in terms of what bounds the step.", "kind": "concept", "answer": ["below the ridge the step is set by the weight read, shared by everyone", "decode tokens add only their own KV reads and hidden math", "a big prompt pushes the math past the weight read, so the step becomes math-bound and every token in it waits"]},
+    {"q": "Walk through what each running user sees under vLLM's Algorithm 2 when a 4,096-token prompt arrives during 32-user decoding on the H100, step by step.", "kind": "mechanism", "answer": ["the scheduler admits the prompt and runs a prefill-only iteration (≈ 70.96 ms)", "no decode happens in it, so the 32 users get nothing", "the next iteration is a decode step (7.36 ms)", "each user's gap between tokens is ≈ 78.32 ms instead of 7.36"]},
+    {"q": "You serve an offline batch job (no one watches the stream) and an interactive chat product on the same hardware. Which scheduler family fits each, and what metric decides it?", "kind": "tradeoff", "answer": ["offline: prefill-prioritizing is fine; TBT doesn't matter, throughput does", "chat: stalls ruin P99 TBT, so bound prompt work per step (Sarathi's fix)", "if TTFT SLOs are strict at cluster scale, disaggregation may win"]},
+    {"q": "At B = 128 decodes instead of 32, how many prompt tokens are nearly free, and why does a bigger decode batch shrink the room for piggybacking?", "kind": "mechanism", "answer": ["295 − 128 = 167 tokens", "each decode is itself one token of the step's math budget", "near B ≈ 295 decodes, the step is already at the ridge and any prompt token costs full price"]}
+  ],
+  "compare": [
+    {"with": "perf-5-engines/orca-iteration-scheduling", "q": "Orca introduced hybrid prefill+decode iterations; Sarathi says hybrid batching alone isn't enough. What does Orca's selective batching already solve, what does it leave broken, and which design choice would fix it?", "answer": ["solved: prompts and decodes can share one iteration and one weight read", "broken: nothing limits how many prompt tokens join, so the iteration can be 10× a decode step", "fix: a per-iteration token budget with prompts cut into chunks (Sarathi II)"]},
+    {"with": "perf-6-scaling-out/distserve-interference", "q": "Sarathi removes prefill–decode interference inside one GPU; disaggregation removes it by putting the phases on different GPUs. What does each pay, and when does each fail?", "answer": ["Sarathi pays some TTFT (chunks re-read KV, get only leftover budget)", "disaggregation pays a KV transfer per request and two pools to size", "Sarathi struggles when TTFT SLOs are strict and prompts huge; disaggregation struggles without fast interconnects"]}
+  ],
+  "predict": {"q": "Before reading Sarathi II: if you cap each step at 512 tokens total (32 decodes + 480 prompt tokens), how much longer than 7.36 ms is each step on the H100 model, roughly, and how many steps does a 4,096-token prompt now take? Commit to numbers.", "answer": "About 11 ms per step instead of 7.36 (our recomputation gives 10.9–11.8 ms, rising as later chunks attend to more earlier tokens), and 9 steps (8 × 480 + 256). The worst gap any user sees drops from 74–78 ms to about 12 ms, and the prompt's TTFT grows from about 71 ms to about 99 ms."},
+  "apply": {"task": "Use the worked example's model, step ≈ B·S·kv/BW + max(2N(B + P)/C, W/BW) + L·2·P²·D/C, with B = 32 users at S = 2,048 on the H100. Compute the step time and the TBT multiplier for P = 2,048. Then set B = 128 and compute the clean step and the step with P = 512. For each, say whether the prompt tokens were free, partly free, or full price.", "done": "Three step times with multipliers and a free/partly/full verdict for each, before checking.", "hint": "Check after trying (our recomputation): B = 32, P = 2,048 → 37.45 ms, 5.09× the 7.36 ms step (full price beyond the first ≈ 263 tokens). B = 128 clean → 15.05 ms; + 512 → 20.72 ms (only 167 tokens were free, the rest full price)."},
+  "reflect": [
+    "Which prediction did you get wrong: the chunked step time or the number of steps?",
+    "Could you explain the stall without the words 'prefill' and 'decode', only in terms of tokens per step and the ridge?",
+    "Which relationship is still fuzzy: tokens in step → compute-bound, or compute-bound step → every user's TBT?",
+    "Why does the theoretical ridge (≈ 200 on A100) sit below the measured one (500–600)? Could you explain it to someone?",
+    "What will you look for in Sarathi II: how the budget is chosen?"
+  ],
+  "revisit": ["perf-5-engines/orca-iteration-scheduling", "perf-2-scaling-book-inference/critical-batch-size", "perf-1-foundations/serving-metrics"],
+  "prereq": ["perf-2-scaling-book-inference/critical-batch-size"]
+}

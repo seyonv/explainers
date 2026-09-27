@@ -1,0 +1,62 @@
+{
+  "prime": {
+    "problem": "Kernel 3 cached tiles on-chip but stalled anyway: every multiply-add needed two shared-memory loads, so the load pipe, not the math, set the speed. You need each loaded value to feed several multiply-adds, which means each thread must own more than one result.",
+    "fits": "Third matmul card. It is Volkov's \"more outputs per thread\" from the occupancy card, applied to siboehm's kernel 3. It introduces the loads-per-result formula at two levels (block tile and thread tile), which tensor cores and Triton's tile sizes reuse.",
+    "expect": ["results per thread (thread coarsening)", "register cache and the outer product", "block tile BM × BN vs thread tile TM × TN", "square beats column", "SMEM loads per FMA"],
+    "goal": "Compute GMEM and SMEM loads per result for any (BM, BN, TM, TN), explain why a square thread tile beats a column, and say what stops you growing it forever."
+  },
+  "attend": [
+    "In kernel 4, which value is loaded once and reused 8 times, and why does the loop order <code>dotIdx</code>-outer matter on paper?",
+    "siboehm tried the obvious loop order and saw no difference. What did the compiler do?",
+    "Why does a TM × TN tile need TM + TN inputs per step of K, and why is that smallest for a square?",
+    "Kernel 5's 64 accumulators are 64 independent chains. Which occupancy-card idea does that bring back?",
+    "What would break if you pushed the thread tile to 16 × 16?"
+  ],
+  "core": {
+    "must": [
+      "One result per thread → 2 SMEM loads per FMA → MIO throttle → give each thread a column of 8 results that reuse one B value from a register → 9 loads for 8 FMAs (1.125 per FMA) → 2.84×",
+      "A TM × TN thread tile reads TM + TN values per step of K for TM·TN results → for fixed results, TM + TN is smallest when square → 8 × 8 needs 16 loads for 64 FMAs (0.25 per FMA) vs 65 for a 64 × 1 column → another 1.88×",
+      "The same rule sets both levels: GMEM loads per result = K·(BM + BN)/(BM·BN) through the block tile, SMEM loads per result = K·(TM + TN)/(TM·TN) through the thread tile → kernel 5 squares both (K/64 and K/4) → 68.7% of cuBLAS",
+      "Bigger thread tiles → more accumulators in registers → fewer resident threads, and past 255 registers they spill to local memory → tile size is bounded by registers, occupancy and edge waste, which is why it's autotuned"
+    ],
+    "elevated": [
+      "Loop counts are compile-time constants → nvcc unrolls both loops and removes the repeated loads, and emits <code>LDS.128</code> where a thread reads contiguously → the hand reordering changed nothing, and transposing As (kernel 6) is what lets both operands vectorize"
+    ],
+    "reference": [
+      "kernel 4's settings (BM = BN = 64, BK = 8, TM = 8, 512 threads, 4 KB) and kernel 5's (128, 8, 8 × 8, 256 threads, 8 KB)",
+      "the SASS offsets and the likely swapped As/Bs labels",
+      "the text-vs-table rounding (\"~8600 GFLOPs, 2.2x\")",
+      "the 80-register lower bound for kernel 5"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw kernel 5's inner step as an outer product: regM (8), regN (8), the 8 × 8 accumulator grid. Write the SMEM loads per FMA for kernels 3, 4 and 5 under it, and the one inequality that makes the square win.",
+    "checklist": [
+      "load 8 values of As into regM and 8 of Bs into regN, then 64 FMAs",
+      "loads per FMA: 2 → 1.125 → 0.25",
+      "inputs per step = TM + TN, results = TM·TN; for fixed TM·TN the sum is smallest when square",
+      "the block tile does the same job one level up (K/16 → K/32 → K/64 GMEM loads per result)",
+      "the limit is registers per thread, then occupancy and edge waste"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why computing a square of results per thread beats a column of the same size, using inputs per step of K.", "kind": "concept", "answer": ["a TM × TN tile needs TM values of A and TN of B per step", "each A value feeds a whole row of results and each B value a whole column", "64 × 1 needs 65 inputs, 8 × 8 needs 16: 4× fewer loads for the same 64 results"]},
+    {"q": "Walk through one <code>dotIdx</code> step of kernel 5 for one thread: what it loads, from where, and what it computes.", "kind": "mechanism", "answer": ["8 LDS from its column of As into regM", "8 LDS from its row of Bs into regN", "64 FMAs: <code>threadResults[m][n] += regM[m] · regN[n]</code>", "16 loads for 64 FMAs = 0.25 per FMA"]},
+    {"q": "siboehm's autotuner later picked TM = TN = 4 on an A100, not 8 × 8. Give two reasons a smaller thread tile can win even though its SMEM loads per FMA are higher.", "kind": "tradeoff", "answer": ["4 × 4 = 16 results needs 8 loads: 0.5 per FMA, twice kernel 5's", "fewer accumulators and registers per thread let more warps stay resident to hide latency", "smaller block and thread tiles give more blocks to spread across SMs and less edge waste; the best point differs per GPU"]}
+  ],
+  "compare": [
+    {"with": "perf-3-kernels/tensor-cores-low-precision", "q": "Kernel 5's thread tile and a WMMA 16 × 16 × 16 tile are the same outer-product idea at different grains. Compare multiply-adds per input value in each, and say what the hardware takes over from you in the MMA case.", "answer": ["kernel 5 thread: 64 FMAs from 16 inputs, 4 per input", "one WMMA: 4,096 multiply-adds from 512 inputs, 8 per input, for a whole warp", "the MMA instruction owns the inner tile and its operand distribution across lanes; you still choose block and warp tiles"]},
+    {"with": "perf-3-kernels/occupancy", "q": "Volkov's 8-outputs-per-thread matmul (485 Gflop/s at 33% occupancy) and kernel 5 (64 outputs per thread). What is the same mechanism, and why could kernel 5 go to 64 when Volkov stopped at 8?", "answer": ["both reuse values from registers and give each thread many independent FMA chains", "Fermi allowed only about 64 registers per thread; kernel 5 needs at least 80", "newer GPUs allow up to 255 registers per thread, so bigger thread tiles fit"]}
+  ],
+  "predict": {"q": "siboehm's kernel 10 uses an 8 × 4 thread tile inside each of 4 warp subtiles, so each thread holds 8 × 16 = 128 results. Commit: if its inner loop loads regM for the 8 rows and regN for the 16 columns per step, how many SMEM loads per FMA is that, and is it better or worse than kernel 5?", "answer": "8 + 16 = 24 loads for 8 × 16 = 128 FMAs = 0.1875 per FMA (our arithmetic from the card's settings, assuming the same outer-product inner loop). That is lower than kernel 5's 0.25: the warp-tile loop makes each thread's effective register tile bigger without growing the block, which is part of why warptiling adds another 1.10×."},
+  "apply": {"task": "Run <code>labs/matmul-loads.py</code> and reproduce kernels 3–5. Then use its try-this to set kernel 5's thread tile to 4 × 4, 8 × 4 and 16 × 16 in turn. For each, record SMEM loads per FMA, results per thread and accumulators, and decide whether it fits under 255 registers per thread (at least TM·TN + TM + TN floats).", "done": "Your table has 4 × 4 → 0.5 loads per FMA (16 results), 8 × 4 → 0.375 (32), 8 × 8 → 0.25 (64) and 16 × 16 → 0.125 (256), with 16 × 16 marked as over the register limit before counting indices.", "hint": "Loads per FMA = (TM + TN) ÷ (TM·TN). 16 × 16 needs 256 + 32 = 288 floats for accumulators and operands alone, above 255 registers."},
+  "reflect": [
+    "Which prediction did you get wrong: kernel 10's loads per FMA?",
+    "Could you explain the square-vs-column argument with only a pencil sketch?",
+    "Which relationship is still fuzzy: thread tile → SMEM loads, or thread tile → registers → occupancy?",
+    "Did the compiler-reordering sidenote change how much you trust hand-optimizing loop order?",
+    "What will you revisit before matmul IV: why kernel 5 still stalls on the memory pipeline?"
+  ],
+  "revisit": ["perf-3-kernels/matmul-coalescing-smem", "perf-3-kernels/occupancy"],
+  "prereq": ["perf-3-kernels/matmul-coalescing-smem"]
+}

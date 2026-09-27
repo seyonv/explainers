@@ -1,0 +1,56 @@
+{
+  "prime": {
+    "problem": "FlashAttention launched one thread block per (sequence, head). A single 8k-token Llama prefill is then 32 blocks on a 132-SM H100, so 100 SMs sit idle. Inside each block, warps split K and had to add partial outputs through shared memory every iteration.",
+    "fits": "Second FA2 card. The previous card made each tile cheaper and swapped the loops so every Q row block is independent; this card spreads those row blocks over the GPU and changes how warps inside a block share the work.",
+    "expect": ["thread blocks, SMs and waves", "sequence parallelism: one block per row block", "split-K vs split-Q warps", "atomic adds for dQ in backward", "Flash-Decoding: split the KV for decode"],
+    "goal": "Count thread blocks and waves for a given batch, sequence and GPU, explain why split-Q removes warp-to-warp traffic, and say why decode needs a different split."
+  },
+  "attend": [
+    "Why does FA1's one-block-per-head grid work fine in training but leave most SMs idle for one long prompt?",
+    "Why are forward row blocks \"embarrassingly parallel\" while backward column blocks must use atomic adds?",
+    "In split-K, what exactly must four warps write, synchronize and add every iteration, and why does split-Q need none of it?",
+    "Why does a decode step launch the same number of blocks under FA2 as under FA1, and what axis is left to split?",
+    "Why did the same FA2 code reach 65% of an A100 but only 34% of an H100?"
+  ],
+  "core": {
+    "must": [
+      "FA1 grid = batch × heads blocks → a single long prompt makes too few (32 on 132 SMs, 24% busy) → FA2 adds one block per row block of Q (B·h·⌈N/B_r⌉ = 2,048) → 15.5 waves, ~97% average SM use → the win is for long prompts at small batch",
+      "Split-K: each warp owns a K/V slice → each produces partial outputs for all rows → write to shared memory, sync, add every iteration (8–16× the tile's bytes in our model) → split-Q: each warp owns whole query rows and reads all of K, V → its rows are final → no exchange in the forward pass",
+      "Decode has one query row per sequence → ⌈1/B_r⌉ = 1 row block → FA2 launches FA1's 32 blocks → the long axis is the KV → Flash-Decoding splits the KV into chunks across blocks and merges them with log-sum-exp (online softmax's ⊕)"
+    ],
+    "elevated": [
+      "Split-Q is not a law: it wins when there are many independent rows → with few rows (decode) splitting over K, now across blocks, is the only parallelism left"
+    ],
+    "reference": ["the benchmark figure labels (FA1 72–83, FA2 151–203 TFLOP/s)", "block-size choices {64, 128} × {64, 128}", "Table 1's GPT-3 training TFLOP/s", "the Megatron FLOP-count formula", "the 227 KB / 163 KB shared-memory limits"]
+  },
+  "compress": {
+    "prompt": "Draw two pictures from memory: the grid (who gets a thread block, FA1 vs FA2) and one block (how 4 warps split the tile, split-K vs split-Q). Add one arrow to Flash-Decoding for the case neither handles.",
+    "checklist": [
+      "FA1: one block per (sequence, head)",
+      "FA2: one block per (sequence, head, Q row block); backward: per K/V column block with atomic dQ",
+      "split-K: partial outputs per warp, then shared-memory reduce every iteration",
+      "split-Q: each warp owns rows and finishes them alone",
+      "decode: one row, so split the KV across blocks and merge by log-sum-exp"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why sequence parallelism helps a single long prefill but barely helps a batched training run.", "kind": "concept", "answer": ["the paper's threshold is ≥ 80 blocks on a 108-SM A100", "training batches (32 × 16 = 512 blocks) already fill every SM", "one long prompt makes only B·h blocks, so splitting rows is what fills the GPU; with a full grid it only smooths the last wave (97.0% → 99.3% in our model)"]},
+    {"q": "Walk through the block count for Llama-3.1-8B prefill at batch 1, N = 8,192, B_r = 128 on an H100, for FA1 and FA2.", "kind": "mechanism", "answer": ["FA1: 1 × 32 = 32 blocks → 24.2% of 132 SMs", "FA2: 32 × 8,192/128 = 2,048 blocks", "2,048 / 132 = 15.52 waves: 15 full + 68 blocks", "average SM use 2,048 / (16 × 132) = 97.0%"]},
+    {"q": "When would you choose split-K over split-Q inside or across blocks, despite the reduction cost?", "kind": "tradeoff", "answer": ["when there are too few query rows to keep warps or SMs busy, as in decode", "Flash-Decoding pays one extra scalar per chunk and a final merge", "it bought up to 8× faster decoding on long sequences (CodeLlama-34B)"]}
+  ],
+  "compare": [
+    {"with": "perf-3-kernels/occupancy", "q": "perf-3 treated occupancy as keeping enough warps resident to hide latency. FA2's problem is keeping enough blocks to occupy SMs at all. What design choice creates each problem, and which fix belongs to which?", "answer": ["occupancy: registers and shared memory per block limit resident warps on one SM", "FA2's issue: the grid shape (batch × heads) gives too few blocks for the SMs", "occupancy is fixed by resource tuning; empty SMs are fixed by splitting more work into blocks (sequence parallelism)"]},
+    {"with": "perf-3-kernels/matmul-warptiling", "q": "Warptiling in matmul also divides a block's tile among warps. Why can matmul warps split the output without any reduction, and why was attention's split-K different?", "answer": ["matmul warps each own a sub-tile of C, and the full K dimension is looped inside each warp", "attention's split-K gave each warp a slice of the reduction axis (keys), so outputs were partial", "split-Q makes attention look like matmul warptiling: each warp owns output rows"]}
+  ],
+  "predict": {"q": "A decode batch of 16 sequences on Llama-3.1-8B, each with 8k tokens of KV, on an H100. How many blocks do FA1 and FA2 launch, and is Flash-Decoding still needed? Commit first.", "answer": "Both launch 16 × 32 = 512 blocks (one row block per sequence and head), 3.88 waves on 132 SMs: the GPU is reasonably full, so splitting the KV is much less urgent than at batch 1 (32 blocks, 0.24 waves). Flash-Decoding matters most at small batch and very long context; the step is still memory-bound either way, bound by reading the cache."},
+  "apply": {"task": "Run labs/fa2-occupancy.py with Br = 128 and change the prefill to batch 2 at N = 4,096. Before running, predict FA1's blocks and SM use and FA2's blocks and waves. Then set up Flash-Decoding for one 32k-token decode (batch 1, 32 heads) with 512-token chunks: how many blocks and waves?", "done": "Your predictions match the lab (or you can explain the mismatch), and you have the Flash-Decoding count with its arithmetic.", "hint": "FA1: 2 × 32 = 64 blocks, 48.5% of SMs. FA2: 2 × 32 × 32 = 2,048 blocks, 15.52 waves (same total tokens as batch 1 at 8k). Flash-Decoding at 32k: 32,768 / 512 = 64 chunks × 32 heads = 2,048 blocks, 15.52 waves (our arithmetic)."},
+  "reflect": [
+    "Which prediction did you get wrong: how full the GPU is at decode batch 16?",
+    "Could you explain split-K vs split-Q with the exam-grading analogy, without looking?",
+    "Which relationship is still fuzzy: loop swap → independent row blocks, or row blocks → full SMs?",
+    "Why did FA2 leave two-thirds of the H100's tensor cores unused, and which card fixes it?",
+    "What will you check in FA3/FA4: what Hopper's asynchronous units change?"
+  ],
+  "revisit": ["perf-4-attention-kv/flashattention-2-algorithm", "perf-4-attention-kv/online-softmax", "perf-3-kernels/occupancy", "perf-3-kernels/execution-model"],
+  "prereq": ["perf-4-attention-kv/flashattention-2-algorithm"]
+}

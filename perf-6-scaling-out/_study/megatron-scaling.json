@@ -1,0 +1,64 @@
+{
+  "prime": {
+    "problem": "Megatron I showed where tensor parallelism's all-reduces go. Without a cost model you can't answer the serving question: does going from TP4 to TP8 to TP16 keep making a 70B decode step faster, and at what price per GPU?",
+    "fits": "Third card, second half of Megatron-LM. It finishes the paper (vocab-parallel embedding, fused loss, GPU groups, the V100 scaling results) and then builds the step-time model that the pipeline card, the sizing card and the overview all reuse.",
+    "expect": ["vocab-parallel embedding and the fused cross-entropy", "model-parallel vs data-parallel groups", "weak vs strong scaling (77% and 2.98×)", "T_step = weights/(n·BW) + 160 × (latency + bandwidth)", "why TP16 across nodes barely pays"],
+    "goal": "Build a 70B decode step time for any TP degree and batch from its three terms, and explain why TP stops paying at one NVLink node even when the bandwidth math says it could go further."
+  },
+  "attend": [
+    "Why does sending per-token losses instead of logits cut Megatron's traffic by a factor equal to the vocabulary slice size?",
+    "Why does repeating layernorm and dropout on every GPU beat computing them once and broadcasting?",
+    "In the step-time formula, which term shrinks as 1/n and which stays fixed, or grows, as n rises?",
+    "Why does throughput per GPU fall from TP2 to TP8 even though latency improves?",
+    "Why does the TP16-vs-TP8 verdict hinge on one number that nobody publishes?"
+  ],
+  "core": {
+    "must": [
+      "Split the vocabulary rows across GPUs → each GPU owns a slice of the logits → compute the loss on the slices and exchange only per-token scalars (max, sum-exp, target logit) → b·s values instead of b·s·v, 51,200× less traffic in Megatron's runs",
+      "TP divides the weight read by n → but every layer still does 2 all-reduces of a B × D message whose size doesn't depend on n → the communication term stays fixed (its latency part grows with 2(n−1) hops) while the term it's added to shrinks → diminishing returns: TP2 → TP8 is 21.39 → 7.52 ms at batch 1, with 30% of TP8's step in all-reduces",
+      "Across two nodes each all-reduce pays cross-node latency and 9× less bandwidth → TP8 → TP16 saves only 2.63 ms of weight read but adds 160 cross-node latencies → with the illustrative 28 µs it wins 5% at batch 1 and loses at batch 256 → TP stays inside one NVLink node",
+      "More TP means each GPU does less useful work per step for the same all-reduce overhead → tokens per GPU fall (5,596 at TP2, 3,164 at TP8, 1,404 at TP16, batch 256) → TP buys one user's latency with GPUs, the serving echo of Table 8's 82% → 37% per GPU"
+    ],
+    "elevated": [
+      "At batch 1 the message (16 kB) is far below the latency-bound line (≈ 450 kB at 450 GB/s) → only the per-call fixed cost matters → the α value (illustrative 1 µs per hop) decides whether TP16 beats TP8: break-even ≈ 30.4 µs cross-node at B = 1"
+    ],
+    "reference": [
+      "vocab padding to multiples of 128 × TP (50,257 → 51,200)",
+      "the model-parallel RNG details (App B.2)",
+      "Table 1's configurations and the 76% vs 74% abstract/figure discrepancy",
+      "the Scaling Book's F/2200 and F/2475 limits",
+      "the exact TP16 modelling (reduce-scatter, cross-node all-reduce, all-gather)"
+    ]
+  },
+  "compress": {
+    "prompt": "Write the decode step-time formula from memory with its three terms, then in 3–4 sentences explain what happens to each term as TP goes 2 → 4 → 8 → 16, and what that means for latency vs tokens per GPU.",
+    "checklist": [
+      "weight read W/(n·BW) shrinks as 1/n",
+      "160 all-reduces per step at every n; latency 2(n−1)·α grows with n, bandwidth term ≈ constant",
+      "latency improves with diminishing returns; per-GPU throughput falls",
+      "crossing nodes swaps in cross-node latency and IB bandwidth, so TP16 gains ≈ nothing",
+      "only activations and scalars cross GPUs; cheap ops are repeated, not broadcast"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why Megatron's fused cross-entropy needs three tiny all-reduces rather than none, and why that is still a huge saving.", "kind": "concept", "answer": ["each GPU holds only a vocabulary slice of the logits", "an exact softmax needs the global max, the global sum of exponentials and the target token's logit", "each is one value per token (b × s), vs gathering b × s × v logits: 8,192 values instead of 419M in Megatron's runs"]},
+    {"q": "Build the TP8, batch-1 decode step for Llama-3.1-70B term by term and give tokens per second per user.", "kind": "mechanism", "answer": ["weights 141.1 GB ÷ 8 ÷ 3.35 TB/s = 5.27 ms", "latency 160 × 14 hops × 1 µs (illustrative) = 2.24 ms", "bandwidth 160 × 1.75 × 16 kB ÷ 450 GB/s ≈ 0.01 ms", "total 7.52 ms → about 133 tok/s, not the 190 the weight read alone allows"]},
+    {"q": "A product team wants the lowest cost per token for 70B at batch 256 and is choosing TP2, TP4 or TP8. What does the model say, and what caveat about memory changes the answer?", "kind": "tradeoff", "answer": ["tok/s per GPU at B = 256: TP2 5,596, TP4 4,662, TP8 3,164, so smaller TP is cheaper per token", "but in BF16 TP2 leaves only 18.8 GB for KV (≈ 57k tokens, ~224 per sequence at B = 256)", "so either FP8 weights or a bigger TP group is needed before TP2's throughput is real"]},
+    {"q": "Why do Megatron's weak-scaling efficiencies (77% at 8 GPUs) look so much better than its strong-scaling ones (2.98× on 8 GPUs, 37% per GPU)?", "kind": "concept", "answer": ["weak scaling grows the model with the GPU count, so each GPU keeps a big GEMM", "strong scaling keeps the model fixed, so each GPU's share shrinks while communication doesn't", "decode serving is the strong-scaling case"]}
+  ],
+  "compare": [
+    {"with": "perf-6-scaling-out/pipeline-data-parallel", "q": "To go past one 8-GPU node with 70B, compare TP16 over IB with TP8 × PP2. Which design choice makes one sensitive to the cross-node latency and the other almost immune, and which wins at a big batch?", "answer": ["TP16 does 160 all-reduces per step across nodes; PP2 sends one activation per stage boundary", "so TP16's batch-1 time hinges on α_cross (break-even ≈ 30 µs), PP's doesn't", "at a big batch TP16 loses on memory: 8 KV heads can't split 16 ways, so it holds 212 sequences vs 424, and serves 6,811 vs 13,717 tok/s on 16 GPUs"]},
+    {"with": "perf-2-scaling-book-inference/serving-llama-70b", "q": "Course 2 served 70B on 8 H100s with a bandwidth-only model. What does adding the all-reduce latency term change about the batch-1 and batch-256 conclusions?", "answer": ["at batch 1 it adds ~2.24 ms to a 5.27 ms step (30% of the total), which bandwidth-only models miss", "at batch 256 the bandwidth part (2.61 ms) grows but the weight and KV reads dominate more", "so the latency term matters most exactly where TP is sold: small-batch, low-latency serving"]}
+  ],
+  "predict": {"q": "Triple the hop latency to 3 µs. Does TP8 still beat TP4 at batch 1 for 70B, and by how much? Commit before revealing.", "answer": "Yes, but barely. TP8: 5.27 + 160 × 14 × 3 µs (6.72 ms) + 0.01 = 12.00 ms. TP4: 10.53 + 160 × 6 × 3 µs (2.88 ms) + 0.01 = 13.42 ms. TP8's edge shrinks from 11.50 vs 7.52 ms (1.53×) to 1.12×, and the latency term is now over half of TP8's step. That's the card's \"try this\" with 3 µs."},
+  "apply": {"task": "Run labs/tp-latency.py with its default α, then with 3 µs per hop (python3 labs/tp-latency.py 3 2). For TP2, TP4 and TP8 at batch 1, write the three terms and the total. Then answer as an engineer: at what hop latency would TP8 stop being faster than TP4 at batch 1?", "done": "Your table matches the lab's (TP4 11.50 ms and TP8 7.52 ms at 1 µs), and you have a break-even α with its derivation.", "hint": "TP8 − TP4 = (5.27 − 10.53) + 160 × (14 − 6) × α = −5.26 ms + 1.28 ms per µs of α. They tie at α ≈ 4.1 µs per hop; above that TP4 is faster at batch 1 (bandwidth terms are ≈ 0.01 ms and can be ignored)."},
+  "reflect": [
+    "Which prediction did you get wrong: how much the 3 µs hop costs TP8, or where the break-even sits?",
+    "Can you explain why the all-reduce message size doesn't depend on n without looking at the formula?",
+    "Which relationship is still fuzzy: TP degree → weight read, or TP degree → all-reduce latency?",
+    "Could you defend \"TP stays inside one node\" to someone who shows you F/2200 ≈ 13-way?",
+    "What will you check on the pipeline card: how PP crosses nodes without 160 cross-node all-reduces?"
+  ],
+  "revisit": ["perf-6-scaling-out/megatron-mlp-attention", "perf-6-scaling-out/collectives", "perf-2-scaling-book-inference/step-time"],
+  "prereq": ["perf-6-scaling-out/megatron-mlp-attention"]
+}

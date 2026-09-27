@@ -1,0 +1,65 @@
+{
+  "prime": {
+    "problem": "Llama-3.1-70B is 141.1 GB in BF16 and an H100 has 80 GB, so one model must span GPUs. Split the matrices the naive way and the GPUs have to sync inside every block, or the non-linearity comes out wrong.",
+    "fits": "Second card. The collectives card priced an all-reduce; this card shows where tensor parallelism needs one, and why Megatron's ordering of splits gets it down to one per block. Megatron II then turns those all-reduces into milliseconds.",
+    "expect": ["column-parallel then row-parallel linear layers", "why GeLU/SwiGLU forces column first", "the f and g operators", "head-parallel attention (and GQA's constraint)", "2 all-reduces per layer when serving"],
+    "goal": "Explain why column-then-row needs exactly one all-reduce per block, slice a 70B layer for any TP degree, and say what limits TP for a GQA model."
+  },
+  "attend": [
+    "Why does splitting the first MLP matrix by rows force a sync before the GeLU, while splitting it by columns doesn't?",
+    "Which GPU's rows of the second matrix match which GPU's columns of the first, and why does that make the second matmul communication-free?",
+    "Why does f do nothing going forward but all-reduce going backward, and which of f and g does a serving engine keep?",
+    "How does grouped-query attention (8 KV heads) constrain which query heads can share a GPU, and what happens at TP16?",
+    "What exactly is the all-reduce message after a block, and how does its size compare to the weights each GPU reads?"
+  ],
+  "core": {
+    "must": [
+      "GeLU (or SiLU) is non-linear → GeLU of a partial sum ≠ sum of GeLUs → split the first matrix by columns so each GPU has complete pre-activations for its own columns → the elementwise function runs locally with no sync",
+      "Y is split by columns → the second matrix split by rows needs exactly those columns → each GPU computes a full-size partial Z → one all-reduce (g) sums them at the end of the block → attention does the same with heads as the columns → 2 all-reduces per layer forward, 160 per 70B decode step",
+      "Serving has no backward pass → f (the backward all-reduce) disappears → only the g all-reduces remain → the message is tokens × D × 2 bytes (16 kB at batch 1), tiny next to the 213.9 MB each GPU reads per layer → at small batch the per-call latency, not the bytes, is the cost",
+      "GQA shares one KV head among 8 query heads → heads that share a KV head must live on one GPU → 70B's 8 KV heads give exactly 1 per GPU at TP8 → beyond TP8 KV heads (and their cache) must be replicated → a practical reason 70B stops at TP8"
+    ],
+    "elevated": [
+      "SwiGLU has three matrices; gate and up are both column-parallel with the same split → column j of gate and up land on the same GPU → SiLU(gate)⊙up stays local, so Llama keeps Megatron's one-sync-per-block property",
+      "The row-first split would all-reduce the F-wide activation (57,344 B per token for 70B) instead of the D-wide one → 3.5× the bytes → the order of splits, not just the fact of splitting, sets the communication"
+    ],
+    "reference": [
+      "Code 1's exact autograd implementation",
+      "the per-matrix slice shapes at TP8 (q 8192×1024, gate/up 8192×3584, down 3584×8192)",
+      "the Scaling Book's Case 1–4 names and the {U_Y} notation",
+      "the lab's numeric error values (6.0e-15 etc.)",
+      "the ReduceScatter + AllGather variant between blocks"
+    ]
+  },
+  "compress": {
+    "prompt": "Draw one transformer layer split across 2 GPUs: which matrices are column-split, which row-split, where the one sync per block sits, and what crosses it. Then write the chain that ends in \"160 all-reduces per decode step\".",
+    "checklist": [
+      "first matrix of each block by columns, second by rows",
+      "the non-linearity (and each head's attention) stays local",
+      "one all-reduce after attention, one after the MLP: 2 per layer when serving",
+      "the message is tokens × D × 2 bytes, independent of the TP degree",
+      "80 layers × 2 = 160 per decode step for 70B",
+      "KV heads cap how far the head split can go"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain, with one number, why Megatron can't split the first MLP matrix by rows and then apply GeLU on each GPU.", "kind": "concept", "answer": ["row split leaves each GPU with a partial pre-activation that must be summed first", "GeLU isn't linear: GeLU(1.0 − 0.5) = 0.3457 but GeLU(1.0) + GeLU(−0.5) = 0.6869", "so you'd need an all-reduce before GeLU, of the F-wide activation"]},
+    {"q": "Walk one token through a TP8 attention block of Llama-3.1-70B: what each GPU computes, what it stores in its KV cache, and when the GPUs first talk.", "kind": "mechanism", "answer": ["each GPU projects q for its 8 query heads and k, v for its 1 KV head (column-parallel)", "it runs RoPE, scores, softmax and the weighted sum for those heads locally, and caches only its KV head (40,960 B per token)", "its row-parallel slice of o_proj produces a full-size partial output", "the first communication is the all-reduce that sums those partial outputs"]},
+    {"q": "Your team wants TP16 for Llama-3.1-70B to cut latency. Using what this card shows about heads and messages, what do you gain and what do you pay?", "kind": "tradeoff", "answer": ["gain: each GPU reads half as many weight bytes per layer", "pay: 8 KV heads can't be split 16 ways, so KV heads and their cache are replicated on 2 GPUs", "the all-reduce message stays the same size and the ring gets more hops, so the fixed cost per step grows", "and 16 GPUs means leaving one NVLink node"]}
+  ],
+  "compare": [
+    {"with": "perf-6-scaling-out/pipeline-data-parallel", "q": "Tensor parallelism vs pipeline parallelism for one 70B replica: what does each GPU hold, which design choice makes TP shorten a token and PP not, and how does each fail?", "answer": ["TP: a slice of every matrix; PP: a contiguous block of whole layers", "TP makes all GPUs work on the same token at once (each reads 1/n of the weights); PP runs stages one after another, so a token still visits every stage", "TP fails on slow links (160 all-reduces per step) and past the KV-head count; PP fails on latency (no speedup) and on bubbles from uneven micro-batches"]},
+    {"with": "perf-2-scaling-book-inference/sharding-prefill-generation", "q": "Course 2 described sharded matmuls by which dimension is split. Map Megatron's MLP onto those cases and say which case the row-first split would fall into.", "answer": ["column-parallel is Case 1: contracting dimension D not split, no communication", "row-parallel is Case 3: both sides split on F, so the output is a partial sum that needs an AllReduce", "row-first is also Case 3, but of the F-wide activation before the non-linearity: more bytes, and a sync inside the block"]}
+  ],
+  "predict": {"q": "Megatron's 8.3B scaling configuration (Table 1) has 32 attention heads and no GQA. Llama-3.1-70B has 64 query heads but only 8 KV heads. At TP8, which model's per-GPU KV cache is a larger fraction of its full KV cache, and what breaks first if you go to TP32 on Llama?", "answer": "Both give each GPU 1/8 of the KV cache at TP8: 32 heads ÷ 8 = 4 per GPU for the paper's model, 8 KV heads ÷ 8 = 1 for Llama. At TP32 the paper's model still splits cleanly (1 head per GPU), but Llama has only 8 KV heads for 32 GPUs, so each KV head and its cache is replicated on 4 GPUs: KV memory per GPU stops shrinking past TP8."},
+  "apply": {"task": "Slice Llama-3.1-70B for TP4 by hand: for q_proj, k_proj, gate_proj and down_proj give the per-GPU shape, and give query heads and KV heads per GPU. Then compute weights per GPU (transformer layers at 855.6M params each, plus the vocab-split embeddings and LM head, 2 × 128,256 × 8,192 params in BF16) and the KV bytes per token each GPU stores.", "done": "You have four slice shapes, heads per GPU, a weights-per-GPU total within 0.1 GB of the hint, and the per-GPU KV bytes per token.", "hint": "q_proj 8192 × 2048 (16 query heads), k_proj 8192 × 256 (2 KV heads), gate_proj 8192 × 7168, down_proj 7168 × 8192. Per layer 855.6M ÷ 4 = 213.9M params = 427.8 MB; × 80 = 34.22 GB; embeddings + head ÷ 4 = 1.05 GB; total ≈ 35.27 GB (141.1 ÷ 4 = 35.3 ✓). KV per GPU = 327,680 ÷ 4 = 81,920 B per token."},
+  "reflect": [
+    "Which prediction did you get wrong: the head arithmetic at TP8, or what breaks at TP32?",
+    "Could you explain why the second matmul needs no communication without drawing the matrices?",
+    "Which link is still fuzzy: non-linearity → column split, or column split → one all-reduce per block?",
+    "Did you remember that serving drops the f operator? What does that change in the all-reduce count?",
+    "What will you want Megatron II to answer: how much of a decode step those 160 all-reduces take?"
+  ],
+  "revisit": ["perf-6-scaling-out/collectives", "perf-4-attention-kv/gqa"],
+  "prereq": ["perf-6-scaling-out/collectives"]
+}

@@ -1,0 +1,62 @@
+{
+  "prime": {
+    "problem": "A load takes hundreds of cycles, and a warp can't use a result until it lands. If too few independent operations are in flight, the SM idles however good your memory pattern is. The usual advice is \"maximise occupancy\", but NVIDIA's own faster libraries ran at lower occupancy, so that advice alone misleads you.",
+    "fits": "The execution model gave you resident warps per SM; coalescing and shared memory made each access efficient. This card asks how <i>many</i> accesses and operations must be in flight at once, and shows the two ways to supply them: more warps or more work per thread. It sets up the reduction cascade and matmul kernels 4–5.",
+    "expect": ["Little's law: in flight = latency × throughput", "TLP vs ILP", "theoretical vs achieved occupancy", "the resource-limited occupancy calculator", "registers vs shared memory bandwidth"],
+    "goal": "Compute the parallelism an SM needs from Little's law, compute a kernel's theoretical occupancy from its resources, and argue when trading occupancy for registers and ILP wins."
+  },
+  "attend": [
+    "Little's law gives a number of operations in flight. Where does that number come from, and why doesn't it care whether they come from different warps or the same thread?",
+    "In Volkov's ILP experiment, why does 4 independent chains per thread reach the same peak with 192 threads instead of 576?",
+    "Why is shared memory not \"as fast as registers\", and how does that turn more outputs per thread into a speed-up?",
+    "For siboehm's kernel 3 on the A6000, which two of the four limits cap the SM at one block, and why does the same kernel score 100% on a T4?",
+    "When does low occupancy really hurt, and what would the profiler show in that case?"
+  ],
+  "core": {
+    "must": [
+      "Needed parallelism = latency × throughput (Little's law) → fewer ops in flight than that means idle cycles → any mix of warps (TLP) and independent instructions per thread (ILP) can supply them → occupancy is one source, not the goal",
+      "More work per thread → more registers per thread → fewer threads fit, so occupancy falls → but each loaded value is reused from registers, cutting shared-memory traffic → matmul went 242 → 485 Gflop/s as occupancy fell 67% → 33%",
+      "Registers deliver ~8.1 TB/s of operands on Fermi, shared memory ~1.3 TB/s → a kernel that reads operands from shared memory for every FMA is bounded by it → the fix is reuse from registers, not more warps",
+      "Theoretical occupancy = blocks per SM × warps per block ÷ max warps, with blocks = min(threads, registers, shared memory, block-slot limits) → the tightest limit decides → the same kernel scores 66.7% on an A6000, 100% on a T4 and 50% on an H100"
+    ],
+    "elevated": [
+      "Loads don't stall a thread, only the first use of their result does → issuing several loads before using any (or float4 loads) keeps many bytes in flight per thread → 8 × float4 per thread reached 87% of bandwidth at 8% occupancy on the GTX480"
+    ],
+    "reference": [
+      "per-CC limit tables (threads, warps, registers, shared memory, blocks per SM)",
+      "the 256-register allocation granularity per warp and the 1 KB per-block reserve on CC 8.x/9.0",
+      "Volkov's G80/GF100/GF104 latency tables",
+      "the Luo et al. Hopper latency (478.8 cycles on an H800 PCIe)"
+    ]
+  },
+  "compress": {
+    "prompt": "In 3–5 sentences from memory, explain why Volkov's faster kernels ran at <i>lower</i> occupancy. Your answer must use Little's law, ILP, and the register-vs-shared-memory gap.",
+    "checklist": [
+      "the SM needs latency × throughput operations in flight to hit peak",
+      "those can come from many warps or from independent instructions within a thread",
+      "more outputs per thread use more registers, so fewer threads fit",
+      "values reused from registers avoid slow shared-memory reads",
+      "occupancy is a means to hide latency; low occupancy only hurts when there isn't enough independent work"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why \"higher occupancy is always better\" is wrong, using one of Volkov's measurements.", "kind": "concept", "answer": ["occupancy only supplies parallelism through extra warps", "ILP supplies it too: 192 threads at ILP = 4 reach the same peak as 576 at ILP = 1 on the GTX480", "fewer threads leave more registers each, and register reuse is what fed matmul's 242 → 485 Gflop/s at 67% → 33%"]},
+    {"q": "Compute the theoretical occupancy of a kernel with 256-thread blocks, 64 registers per thread and 16 KB of shared memory per block on a T4 and on an H100, naming the limiting resource on each.", "kind": "mechanism", "answer": ["T4: threads 1,024 ÷ 256 = 4; registers 65,536 ÷ (64 × 256) = 4; shared memory 64 ÷ 16 = 4 → 4 blocks × 8 warps = 32 of 32 = 100%", "H100: threads 8; registers 4; shared memory 228 ÷ 17 = 13; block slots 32 → 4 blocks × 8 = 32 of 64 = 50%, limited by registers", "at 32 registers per thread the H100 would fit 8 blocks, 100%"]},
+    {"q": "Using the card's H100 recomputation (≈ 6.9 KB in flight per SM), compare one float per thread with one float4 per thread: how many warps each needs, and what each design costs.", "kind": "tradeoff", "answer": ["one float: ~1,731 threads = 54 warps = ~85% occupancy", "one float4: ~433 threads = 13.5 warps = ~21%", "float4 needs aligned, contiguous data but frees occupancy for registers; one-float code only works if nearly every warp slot is filled"]}
+  ],
+  "compare": [
+    {"with": "perf-3-kernels/matmul-blocktiling", "q": "Volkov's \"more outputs per thread\" and siboehm's kernels 4–5 are the same move. What does each measure as the win, what does each pay in resources, and when would the move backfire?", "answer": ["both give a thread several independent accumulators fed from registers", "Volkov: 242 → 485 Gflop/s at 3× the registers and half the occupancy; siboehm: shared-memory loads per FMA fall 2 → 1.125 → 0.25", "backfires past the register limit (255 per thread): spills to local memory, and too few warps if each thread also has dependent chains"]},
+    {"with": "perf-3-kernels/profiling", "q": "Theoretical occupancy from this calculator vs achieved occupancy from Nsight Compute: what does each measure, and what does a big gap between them tell you that the calculator never could?", "answer": ["theoretical: the resource-limited maximum of resident warps", "achieved: the average actually resident while the kernel runs", "a big gap means imbalance (a partial last wave, uneven blocks), not a resource limit, so changing registers or block size won't close it"]}
+  ],
+  "predict": {"q": "Under load the H100's memory latency doubles from the card's 273 ns to about 546 ns. Commit: how many bytes must each SM keep in flight now, and with one float4 load per thread, what occupancy does that take?", "answer": "In flight doubles with latency: 546 ns × 3.35 TB/s ≈ 1.83 MB for the chip, ≈ 13.8 KB per SM. At 16 B per thread that is ≈ 865 threads ≈ 27 warps ≈ 42% occupancy, up from 21%. One float per thread would now need about 3,460 threads per SM, more than the 2,048 an SM can hold: only ILP or wider loads can cover it."},
+  "apply": {"task": "Run <code>labs/occupancy.py</code> and reproduce the 66.7% / 100% / 50% row for kernel 3. Then add a kernel of your own: 256-thread blocks, 16 KB of shared memory, and registers per thread of 32, 64 and 96. Predict the occupancy on the T4 and the H100 for each before running, and name the limiting resource. Finally, set the latency to 2× (the lab's try-this) and check the warps needed for 4-byte and 16-byte loads.", "done": "Your predictions match the lab for all six (GPU, registers) pairs, and you can state which register count first makes each GPU register-limited.", "hint": "Registers per block = regs × 32 rounded up to 256 per warp, × 8 warps. At 64 registers: 16,384 per block, so 4 blocks on either GPU. The T4 holds only 32 warps, so 4 blocks already fill it; the H100 needs 8."},
+  "reflect": [
+    "Which prediction did you get wrong: the in-flight bytes, or the occupancy it implies?",
+    "Could you explain why fewer threads can be faster without using the word \"occupancy\"?",
+    "Which relationship is still fuzzy: latency × throughput → ops in flight, or registers per thread → blocks per SM?",
+    "Did the T4's 100% for kernel 3 surprise you? What does it say about comparing occupancy across GPUs?",
+    "What will you revisit before reduction II: how ILP hides latency when each thread sums many elements?"
+  ],
+  "revisit": ["perf-3-kernels/execution-model", "perf-3-kernels/shared-memory-transpose"],
+  "prereq": ["perf-3-kernels/execution-model"]
+}

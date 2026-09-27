@@ -1,0 +1,64 @@
+{
+  "prime": {
+    "problem": "Without a method, kernel tuning is guesswork: you try tricks at random and can't tell whether a 2× win is possible or whether you are already at the hardware's floor. The course's 16 cards are a pile of tricks until you can say which bound each one attacks.",
+    "fits": "This is the course map. It builds on perf-1's roofline (a kernel is limited by math or by bytes) and adds the third cost that roofline hides: idle time from launches, stalls and unhidden latency. Every later card is one move inside this loop.",
+    "expect": ["<code>T ≥ max(F/C, Q/W) + T_idle</code>", "the four levers: fewer bytes, faster math, hide latency, cut overhead", "measure → place → fix → re-measure", "the power law of effort"],
+    "goal": "Look at any kernel's numbers, name which bound it sits at, pick the family of fixes that can move it, and predict roughly how much there is left to gain."
+  },
+  "attend": [
+    "In <code>T ≥ max(F/C, Q/W) + T_idle</code>, which term is fixed by the problem and which ones does the kernel's design choose?",
+    "siboehm's 4092² matmul has a 4.57 ms math floor and a 0.35 ms byte floor, yet the naive kernel takes 0.444 s. Which term of the formula is it losing to?",
+    "Why does the overview put occupancy, ILP and more work per thread in their own bucket, separate from both memory-bound and compute-bound fixes?",
+    "The lever table's rows don't multiply to the ladder's 75×. What does that say about applying levers one after another?",
+    "When would an inference engineer at a serving company never write any of these kernels, and what would they still need from this course?"
+  ],
+  "core": {
+    "must": [
+      "A kernel's time ≥ max(math floor F/C, byte floor Q_moved/W) + idle time → F is fixed by the problem, but Q_moved and T_idle are set by the kernel's design → almost every optimization shrinks Q_moved or T_idle, not F",
+      "Intensity F/Q_moved vs the ridge C/W → below the ridge, fewer bytes is the only lever (coalesce, tile, fuse, lower precision) → above it, only faster math units help (tensor cores, FP8) → so you must place the kernel before choosing a fix",
+      "Neither DRAM nor math saturated → the GPU is waiting on latency or issuing overhead instructions → the fix is more independent work in flight (warps, ILP, more outputs per thread) or less bookkeeping (unrolling, cascading), not fewer bytes",
+      "Many small kernels → launch gaps rival each kernel's own time (~2 µs per launch vs a 3.8 µs vector add on an H100) → fusion and CUDA graphs remove launches → this bound matters most at batch-1 decode",
+      "Structural steps (launch enough threads, coalesce, tile, reuse from registers) close most of the gap → the last 20% costs twice the effort and doesn't transfer between GPUs → the power law of effort"
+    ],
+    "elevated": [
+      "Nsight Compute stall reasons separate latency (long_scoreboard) from bandwidth (memory throughput near peak) → the same low GB/s can mean opposite fixes, which is why you profile before choosing"
+    ],
+    "reference": [
+      "the lever table's individual speed-ups and which GPU each was measured on",
+      "Hopper vocabulary: TMA, thread-block clusters (8 portable, 16 opt-in), warp specialization, tcgen05",
+      "the source quirks (268 vs 278 MB, 30 vs 38.7 TF, the A100 slip, T4 at 300 vs 320 GB/s)"
+    ]
+  },
+  "compress": {
+    "prompt": "Draw the whole course's causal map from memory: the time formula in the middle, the four bounds around it (memory, compute, latency/instruction, overhead), and for each bound the cards whose tricks attack it. Then add one arrow for the loop: measure → place → fix → re-measure.",
+    "checklist": [
+      "time floor = max(math, bytes actually moved) + idle, and only the math term is fixed by the problem",
+      "placing the kernel (intensity vs ridge, plus stall reasons) decides which family of fixes can help",
+      "memory-bound: coalescing, shared-memory tiling, fusion, lower precision",
+      "compute-bound: tensor cores and lower-precision math",
+      "latency/instruction-bound: occupancy, ILP, more outputs per thread, unrolling and cascading",
+      "overhead-bound: fusion and CUDA graphs; tuning after the structural steps gives diminishing, GPU-specific returns"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why the same 4092² matmul can be described as compute-bound and yet a kernel for it can run at 1% of peak, using the two floors and the bytes the kernel actually moves.", "kind": "concept", "answer": ["the problem's floors: 4.57 ms of math vs 0.35 ms of minimum bytes on the A6000, so a good kernel is compute-bound", "the naive kernel's design moves up to 548 GB (2,046× the minimum), so its own byte term dwarfs the math", "compute-bound describes the problem; the kernel's Q_moved decides where the kernel actually sits"]},
+    {"q": "Walk through the loop on a kernel you've never seen: what do you run first, what do you read off it, and how does that choose between coalescing, tensor cores, more warps and CUDA graphs?", "kind": "mechanism", "answer": ["nsys timeline: where the time goes, which kernel is on top, whether there are launch gaps", "ncu on the top kernel: % of peak FLOP/s and GB/s, intensity vs ridge, stall reasons", "high GB/s, low FLOP/s → fewer bytes; high FLOP/s → faster math; neither → latency/instruction fixes; gaps → graphs or fusion", "re-measure after each fix, because the bound moves"]},
+    {"q": "siboehm's first four steps give 51.7× in two weekends and the last four give 1.46× in four more. At a kernel company, when is chasing the last 1.46× worth it, and what do you give up?", "kind": "tradeoff", "answer": ["worth it for kernels that dominate fleet time (the main GEMMs, attention) where 5–10% is real money", "the tuned configs don't transfer: the A6000's best is 0.95× of the best on an A100", "you give up time and portability; for most kernels, pick a library kernel and fuse around it"]},
+    {"q": "Which bound does each of these live at, and which card's fix applies: a batch-1 decode step of 323 small kernels, the naive transpose, siboehm's kernel 3, and a BF16 prefill GEMM on an H100?", "kind": "mechanism", "answer": ["decode step: overhead (launch gaps a real share of the 4.79 ms floor) → fusion and CUDA graphs", "naive transpose: memory, 12.5% sector efficiency on writes → stage through shared memory", "kernel 3: shared-memory instruction throughput (MIO throttle) → more results per thread", "BF16 prefill GEMM: compute → tensor cores, then FP8"]}
+  ],
+  "compare": [
+    {"with": "perf-1-foundations/roofline-intuition", "q": "perf-1's roofline has two floors; this course's formula adds <code>T_idle</code> and separates <i>minimum</i> bytes from bytes <i>moved</i>. What does each addition let you explain that the plain roofline can't, and how would the plain roofline mislead you on a naive kernel?", "answer": ["bytes moved vs minimum explains why a compute-bound problem can have a memory-bound kernel (548 GB vs 268 MB)", "T_idle explains decode steps where neither roof is reached because the GPU waits on launches", "the plain roofline would place the naive matmul at intensity 512 and predict compute-bound speed it never gets"]},
+    {"with": "perf-2-scaling-book-inference/step-time", "q": "perf-2 models a whole decode step's time from weights and KV bytes; this course models one kernel. Where do the two models meet, and what does kernel-level work change in perf-2's step-time estimate?", "answer": ["both are max(math, bytes) floors, at different granularity", "perf-2 assumes kernels run near their roofs; this course is about closing the gap to those roofs", "kernel work changes the achieved fraction of the floor (and launch overhead), not the floor itself; lower precision changes the floor"]}
+  ],
+  "predict": {"q": "A Llama-3.1-8B decode step at batch 1 on an H100 has a 4.79 ms byte floor. You swap every GEMM for a kernel that runs twice as fast at the same bytes. Commit: roughly how much faster does the step get, and why?", "answer": "Almost not at all. At batch 1 every GEMM is a matrix-vector product with intensity about 1 FLOP/B, so its time is set by reading the weights, not by math. A kernel that is \"2× faster\" in compute moves the same 16.06 GB, so the floor stays 4.79 ms. What can move the step is fewer bytes (FP8 weights: 209 → 417 tok/s ceiling) or less idle time (graphs and fusion shaving the launch gaps)."},
+  "apply": {"task": "Place five kernels on the two ridges without looking anything up, then check. Ridges: T4 FP32 ≈ 25 FLOP/B, H100 BF16 ≈ 295. Kernels: (1) FP32 vector add (1 add per 12 bytes), (2) the reduction sum (1 add per 4 bytes), (3) the naive matmul counted with no cache (0.25 FLOP/B), (4) a well-tiled 4092² FP32 matmul at its minimum traffic, (5) the batch-1 Llama up-projection GEMV (1.0 FLOP/B). For each, name the bound on each GPU and the one card whose fix you'd reach for first.", "done": "You have a 5-row table with intensity, bound on T4, bound on H100 and the card to open, and only kernel 4 is on the compute side of either ridge.", "hint": "Intensities: 1/12 ≈ 0.083, 0.25, 0.25, 137.1 GFLOP ÷ 267.9 MB ≈ 512, and 1.0. Only 512 clears 25 and 295. Kernel 3's fix is reuse (matmul II/III), kernels 1, 2 and 5 are memory-bound whatever you do, so the fix is fewer bytes or batching (for 5)."},
+  "reflect": [
+    "Which prediction did you get wrong: the decode step, or one of the five placements?",
+    "What couldn't you explain cleanly: why bytes <i>moved</i> differs from minimum bytes, or why latency-bound is its own bucket?",
+    "Which relationship is still fuzzy: intensity → bound, or bound → which card's fix?",
+    "Which of the four levers have you actually seen measured on a card, and which only as a claim?",
+    "What will you revisit before the matmul cards: the lower-bound arithmetic, or the stall reasons?"
+  ],
+  "revisit": ["perf-1-foundations/roofline-intuition", "perf-1-foundations/gpu-machine"],
+  "prereq": ["perf-1-foundations/roofline-intuition"]
+}

@@ -1,0 +1,114 @@
+{
+  "prime": {
+    "problem": "Training has one goal: tokens per second per chip. Serving has three that pull against each other (throughput, time to first token, per-token latency), and optimising the wrong one wastes chips or loses users. Without a clear objective, every later trick is a solution looking for a problem.",
+    "fits": "Second card. It builds on perf-1's serving metrics and the prefill/generation split from the KV cache card, then names the three regimes and the three kinds of operation the rest of the chapter analyses one at a time.",
+    "expect": ["throughput, TTFT, per-token latency", "offline, chat and edge regimes", "the latency–throughput trade-off", "linear ops vs dot-product attention vs everything else"],
+    "goal": "Pick the right objective for a workload, justify it with the reading-speed arithmetic, and say which kind of operation dominates a decode step at short and at long context."
+  },
+  "attend": [
+    "Which metric does each regime ignore, and what does ignoring it let you do with the batch?",
+    "How does the card turn human reading speed into a per-token latency budget, and which input to that is only a rule of thumb?",
+    "Why does a bigger batch help cost per token but not the experience of any single chat user?",
+    "In the per-layer FLOP split, which share stays fixed as context grows and which one grows, and why?",
+    "Why does the chapter analyse linear ops and attention separately instead of as one forward pass?"
+  ],
+  "core": {
+    "must": [
+      "Throughput sets cost per token; TTFT is set by queueing plus prefill; per-token latency is one decode step → a bigger batch raises throughput but slows every user's step → the regime decides which constraint binds",
+      "Offline jobs are blind to per-sample latency → pack the batch until memory runs out; chat must beat reading speed (≈ 5.2 tokens/s ≈ 194 ms/token) with low TTFT → batch as far as that budget allows; edge serves one user → batch 1, fit the model, quantize",
+      "Linear ops' FLOPs and weight bytes don't depend on context, while attention's FLOPs and KV bytes grow with S → at batch 1 linear ops are 96.2% of a layer's FLOPs at S = 1,024 but only 76.3% at 8,192 → and KV bytes aren't shared across a batch → so the chapter treats linear ops and attention separately"
+    ],
+    "elevated": [
+      "The batch-1 ceiling is bandwidth ÷ weight bytes (209 tok/s for Llama-3.1-8B on H100) → it is about 40× reading speed → that headroom is what a chat service spends on batching other users"
+    ],
+    "reference": [
+      "238 words/min (Brysbaert 2019) and the 1.3 tokens/word assumption",
+      "the per-layer FLOP breakdown (Q 33.6, K+V 16.8, O 33.6, MLP 352.3 MFLOP)",
+      "the v5e and M3 batch-1 rows",
+      "Kiely's advice to run separate latency and throughput deployments"
+    ]
+  },
+  "compress": {
+    "prompt": "Make a 3 × 3 grid from memory: rows are offline, chat and edge; columns are throughput, TTFT and per-token latency. Mark each cell <i>matters</i> or <i>ignored</i>, and write under it the one batching decision each regime implies. Then one line on why attention's share of a layer grows with context.",
+    "checklist": [
+      "offline: only throughput matters → largest batch that fits",
+      "chat: all three, with per-token latency under ≈ 194 ms → batch within the latency budget",
+      "edge: lowest latency for one user → batch 1, fit the model",
+      "throughput and per-token latency trade off through the batch size",
+      "linear ops are fixed per token; attention FLOPs and KV bytes grow with context"
+    ]
+  },
+  "retrieve": [
+    {
+      "q": "Explain why maximising MFU, the right target in training, can make a chat product worse.",
+      "kind": "concept",
+      "answer": [
+        "higher MFU at inference comes from bigger batches",
+        "a bigger batch makes each decode step longer, so every user waits longer per token",
+        "training has no per-sample latency, so it never pays this cost; the book says utilisation doesn't translate to better experience for individual users"
+      ]
+    },
+    {
+      "q": "Walk through the reading-speed budget: from 238 words per minute to a per-token latency limit, and then to the headroom on an H100 at batch 1.",
+      "kind": "mechanism",
+      "answer": [
+        "238 ÷ 60 × 1.3 tokens/word ≈ 5.2 tokens/s",
+        "1000 ÷ 5.2 ≈ 194 ms per token keeps up with a reader",
+        "H100 batch-1 ceiling 3.35e12 ÷ 16.06e9 ≈ 209 tok/s (4.8 ms/step)",
+        "209 ÷ 5.2 ≈ 40× headroom, an upper bound because real engines don't reach the ceiling"
+      ]
+    },
+    {
+      "q": "An agent calls the same model in a loop and feeds each answer straight into the next call. Which metric matters most, and does beating reading speed still mean <i>fast enough</i>?",
+      "kind": "tradeoff",
+      "answer": [
+        "total response time (TTFT plus all decode steps) matters most, because a machine waits for the whole answer",
+        "reading speed is irrelevant: faster streaming keeps paying off when a machine consumes the tokens",
+        "so the batch must be smaller than a chat service would choose, at a higher cost per token"
+      ]
+    }
+  ],
+  "compare": [
+    {
+      "with": "perf-1-foundations/serving-metrics",
+      "q": "perf-1 defines TTFT, TPOT and throughput; this card adds regimes. What does knowing the regime change about how you use the same three numbers?",
+      "answer": [
+        "the metrics are the same; the regime decides which one is the objective and which are constraints",
+        "offline: minimise cost, no latency constraint; chat: minimise cost subject to TTFT and TPOT limits; edge: minimise latency",
+        "the same server config can be right for one regime and wrong for another"
+      ]
+    },
+    {
+      "with": "perf-2-scaling-book-inference/step-time",
+      "q": "This card sketches the latency–throughput curve qualitatively; the step-time card computes it. What causes the curve to flatten, and at which batch does it hit its end on one H100 at 2k context?",
+      "answer": [
+        "early: the fixed weight read is shared, so throughput rises steeply",
+        "later: every extra sequence adds its own KV read, so throughput flattens toward bandwidth ÷ KV bytes per sequence",
+        "at 2k it ends when HBM is full: 238 sequences, 9,973 tokens/s, 41.9 tokens/s per user"
+      ]
+    }
+  ],
+  "predict": {
+    "q": "Push the per-layer FLOP split to a 32,768-token context at batch 1 (Llama-3.1-8B). Commit: is attention now under or over half of a layer's FLOPs?",
+    "answer": "Over half. Attention matmuls are 4 × 32 × 128 × 32,768 = 536.9 MFLOP plus about 5.2 MFLOP of softmax, 542.1 MFLOP against a fixed 436.2 MFLOP of linear ops: about 55%. Linear ops don't change with context; attention grows linearly with it. And the bytes tell the same story harder: that layer reads 134 MB of KV against 436 MB of weights, a share that grows with every sequence in the batch."
+  },
+  "apply": {
+    "task": "Classify three workloads into a regime and pick a batching policy for each, with one number to justify it: (a) scoring 50,000 benchmark prompts overnight with Llama-3.1-8B on one H100; (b) a support chatbot on the same GPU; (c) a 4-bit model on a 24 GB laptop for one person. Then recompute the per-layer attention share at S = 32,768 to see how long context shifts the balance.",
+    "done": "Each workload has a regime, a batch policy and a justifying number (for example 63.9 GB free ≈ 59 sequences at 8k for (a); ≈ 194 ms/token budget for (b); batch 1 and ≈ 15 tok/s measured on the M3 for (c)), and your attention share at 32k is about 55%.",
+    "hint": "Attention at 32k per layer: 4·N·H·S = 4 × 32 × 128 × 32,768 = 536.9 MFLOP, plus ≈ 5 FLOP × N × S ≈ 5.2 MFLOP of softmax. Divide by that plus 436.2 + 0.13."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: whether attention passes half the FLOPs at 32k?",
+    "Could you explain why a faster stream stops mattering for a human reader but not for an agent?",
+    "Which relationship is still fuzzy: batch → cost per token, or batch → per-user latency?",
+    "Could you rebuild the 194 ms budget without looking, and say which step is an assumption?",
+    "Before the next cards, which operation type are you less sure is memory-bound in decode: linear ops or attention?"
+  ],
+  "revisit": [
+    "perf-1-foundations/serving-metrics",
+    "perf-2-scaling-book-inference/kv-cache-sampling"
+  ],
+  "prereq": [
+    "perf-1-foundations/serving-metrics"
+  ]
+}

@@ -1,0 +1,142 @@
+{
+  "prime": {
+    "problem": "A large model writes one token per full pass over its weights, and at small batch each pass mostly waits on memory while the compute units sit idle. Without a way to get more than one token out of a pass, the only speed levers are a smaller model (worse answers) or lower precision (changed answers).",
+    "fits": "A single card that builds on the memory-bound picture of decoding: reading the weights, not the math, sets the time per token. It turns that idle compute into extra tokens. The perf-5 engine cards then walk the paper's exact acceptance rule and the draft-free variants (Medusa, EAGLE).",
+    "expect": [
+      "draft model vs target model",
+      "one parallel verification pass over γ drafted tokens",
+      "acceptance rate α",
+      "cost ratio <code>c</code> (draft step ÷ target step)",
+      "<code>(1 − α^(γ+1)) / (1 − α)</code> tokens per pass"
+    ],
+    "goal": "Explain why checking γ guesses costs about one target pass, compute tokens per pass and speedup from α, γ and c, and say when speculation stops paying."
+  },
+  "attend": [
+    "Why can the big model check four drafted tokens for roughly the price of generating one, and which hardware fact makes that true?",
+    "In the <code>is_even</code> example the fourth guess is wrong, yet the step still emits 4 tokens. Where does the fourth token come from?",
+    "What does the rejection rule protect that \"just use the small model\" throws away?",
+    "In the α table, going from 0.8 to 0.9 adds more tokens per pass than going from 0.6 to 0.7. Why does a higher α pay off more than linearly?",
+    "Which two situations remove the idle compute or the agreement that speculation relies on?"
+  ],
+  "core": {
+    "must": [
+      "Small-batch decode is memory-bound → each pass streams all the weights while compute idles → scoring γ + 1 positions in one pass costs about the same as scoring 1 → the target can verify a whole draft for roughly one pass",
+      "The draft proposes γ tokens → the target keeps the longest run it agrees with and replaces the first rejected token with its own → every pass yields between 1 and γ + 1 tokens → never fewer tokens per target pass than plain decoding",
+      "Acceptance is a rejection rule against the target's own distribution → wrong guesses are discarded, not kept → the output is distributed exactly as the target alone would produce → speed changes, quality doesn't (unlike a smaller model or heavy quantization)",
+      "Speedup = tokens per pass ÷ cost per pass (γ·c + 1) → it needs high α (predictable text) and low c (cheap draft) → at low α, high temperature or large batch the draft work isn't repaid and it can be slower than plain decoding"
+    ],
+    "elevated": [
+      "Tokens per pass is a geometric series <code>1 + α + α² + … + α^γ</code> → each extra draft token is worth less, and the total is capped at <code>1/(1 − α)</code> → past a point a longer draft only adds draft cost (the γ·c term)"
+    ],
+    "reference": [
+      "the closed forms <code>(1 − α^(γ+1)) / (1 − α)</code> and <code>÷ (γ·c + 1)</code> (Leviathan et al. 2023)",
+      "the reported 2–3× on T5-XXL and 2–2.5× on Chinchilla 70B",
+      "the variant names: Medusa heads, EAGLE, n-gram lookup drafting",
+      "the illustrative c = 0.05 and γ = 4 used in the table"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw one speculative step as a chain: draft proposes → target verifies → accept/reject → output. Then write two sentences: why the verification is nearly free, and why the output is still the big model's.",
+    "checklist": [
+      "decode is memory-bound, so one target pass can score γ + 1 positions for about the price of one",
+      "the target keeps the agreeing prefix and substitutes its own token at the first rejection",
+      "each pass gives 1 to γ + 1 tokens, never fewer than plain decoding",
+      "the rejection rule keeps the output distribution identical to the target alone",
+      "speedup depends on α (agreement) and c (draft cost); low α or large batch kills it"
+    ]
+  },
+  "retrieve": [
+    {
+      "q": "Explain to someone who knows only plain decoding why adding a <i>second</i> model to the loop can make generation faster, not slower.",
+      "kind": "concept",
+      "answer": [
+        "plain decoding pays one full target pass per token, and that pass is limited by reading weights, not by math",
+        "the draft is cheap (small c), so γ draft steps cost a fraction of one target step",
+        "one target pass verifies all γ guesses in parallel, so every accepted guess is a token without its own target pass"
+      ]
+    },
+    {
+      "q": "Walk through the <code>def is_even(n): return n</code> step: what the draft sends, what the target computes in its one pass, and exactly which 4 tokens are appended.",
+      "kind": "mechanism",
+      "answer": [
+        "the draft proposes <code>%</code>, <code>2</code>, <code>==</code>, <code>1</code> (γ = 4)",
+        "the target scores all four positions in one forward pass",
+        "<code>%</code>, <code>2</code>, <code>==</code> are accepted; <code>1</code> is rejected",
+        "the target's own token <code>0</code> replaces it: output <code>% 2 == 0</code>, 4 tokens for 1 target pass"
+      ]
+    },
+    {
+      "q": "Using the card's table (γ = 4, c = 0.05), what does α = 0.6 buy compared with α = 0.9, and what kind of workload would you expect at each end?",
+      "kind": "tradeoff",
+      "answer": [
+        "α = 0.6: 2.31 tokens per pass, 1.92× speedup; α = 0.9: 4.10 tokens per pass, 3.41×",
+        "high α: code, boilerplate, predictable text where the draft agrees",
+        "low α: high-temperature or creative sampling, where the gain shrinks and can vanish"
+      ]
+    },
+    {
+      "q": "A team serves at large batch sizes and asks whether to add speculative decoding. What do you tell them, and what would you check first?",
+      "kind": "tradeoff",
+      "answer": [
+        "at large batch the GPU is already compute-bound, so there is little idle compute for verification",
+        "the draft also costs memory, which competes with batch and KV cache",
+        "check whether decode is memory-bound at their batch size and what α their traffic gets before expecting 2–3×"
+      ]
+    }
+  ],
+  "compare": [
+    {
+      "with": "perf-5-engines/spec-decoding-math",
+      "q": "This card says the rejection rule keeps the output identical to the target. That card gives the rule: keep with probability min(1, p/q), else resample from max(0, p − q). What does this card's simplified picture hide, and when would the hidden part change your answer?",
+      "answer": [
+        "this card shows accept/reject as agree/disagree; the real rule is probabilistic under sampling",
+        "a draft token is sometimes rejected even when the target gives it some probability (when q &gt; p)",
+        "the replacement is drawn from the leftover mass, not the target's top token",
+        "under greedy decoding the two pictures coincide: accept exactly when the tokens match"
+      ]
+    },
+    {
+      "with": "perf-5-engines/medusa",
+      "q": "Both speculate and verify in one target pass. What design choice separates a separate draft model from Medusa heads, and how does each one fail?",
+      "answer": [
+        "separate draft: a second small model, which has to be found, kept aligned with the target and served (memory, deployment)",
+        "Medusa: extra heads on the target's last hidden state, so nothing extra to serve, and a tree of candidates checked with tree attention",
+        "a draft fails when it drifts from the target (low α) or is too expensive (high c)",
+        "Medusa needs its heads trained per model, and heads further ahead guess less accurately"
+      ]
+    },
+    {
+      "with": "structured-outputs/fast-forward",
+      "q": "Fast-forwarding and speculative decoding both emit several tokens per model step. Why does one need a verification pass and the other not, and what limits each?",
+      "answer": [
+        "fast-forward appends tokens the grammar forces, so there is nothing to guess and nothing to verify",
+        "speculation guesses tokens the model actually chooses, so the target must check them",
+        "fast-forward is limited by how much of the output is forced; speculation by α and c",
+        "they can stack: forced spans skip sampling, chosen spans can still be drafted"
+      ]
+    }
+  ],
+  "predict": {
+    "q": "Set temperature to 0 (greedy) for both models. Does the acceptance test get simpler, and would you expect α to rise or fall compared with temperature 1? Commit, then reveal.",
+    "answer": "Simpler: under greedy both distributions are one-hot, so the test reduces to \"accept if the draft's token equals the target's top token\". α usually rises, because a sharper distribution is easier to guess. In Leviathan et al.'s Table 3 the T5 drafts all accept more often at temp 0 (T5-small on EnDe: 0.75 vs 0.62), though for their tiny GPT-like target the two are about equal (0.88 vs 0.89). The spec-decoding-practice card has the table."
+  },
+  "apply": {
+    "task": "Tune the draft length with the card's formulas. Fix c = 0.05. (1) For α = 0.8, compute the speedup for γ = 1, 2, 4, 8 and name the best of the four. (2) Repeat for α = 0.6 with γ = 2, 4, 8. (3) Explain from the two formulas why the best γ moves when α drops. (4) At γ = 4, find roughly the α below which speculation is slower than plain decoding.",
+    "done": "(1) 1.71×, 2.22×, 2.80×, 3.09×: γ = 8 wins, with diminishing returns (tokens per pass is capped at 1/(1 − 0.8) = 5). (2) 1.78×, 1.92×, 1.77×: γ = 4 wins, and 8 is worse. (3) Lower α makes later draft tokens less likely to be used, while each still costs c. (4) Break-even is α ≈ 0.17 (speedup 1.04× at α = 0.2).",
+    "hint": "Tokens per pass = (1 − α^(γ+1)) / (1 − α); speedup = that ÷ (γ·c + 1). At break-even, 1 + α + α² + α³ + α⁴ = 1.2."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: how greedy decoding changes the test, or which way α moves?",
+    "What couldn't you explain cleanly: why verifying γ tokens costs about one pass, or why the output stays exactly the target's?",
+    "Which relationship is still fuzzy: memory-bound decode → free verification, or α → tokens per pass?",
+    "Could you tell a team with large-batch traffic why they may see no gain, without quoting the formula?",
+    "What will you look for in the spec-decoding-math card: the probabilistic accept rule this card simplified?"
+  ],
+  "revisit": [
+    "perf-1-foundations/roofline-intuition",
+    "nucleus-sampling/nucleus-sampling"
+  ],
+  "prereq": [
+    "llm-latency/memory-bandwidth"
+  ]
+}

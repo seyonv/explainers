@@ -1,0 +1,122 @@
+{
+  "prime": {
+    "problem": "Forcing valid JSON means giving the sampler a yes/no mask over all 128,256 tokens at every step, built on the CPU from the grammar's state. Done naively that is 128k tiny parser runs per request per step, and the sampler can't start until they finish, in a loop whose GPU step is under 5 ms.",
+    "fits": "An engine-level view of the structured-outputs course. It places the grammar mask in the busy loop from the anatomy card and applies the same serial-vs-overlapped arithmetic to it.",
+    "expect": [
+      "where the mask sits: after logits, before sampling",
+      "context-independent vs context-dependent tokens",
+      "the adaptive token-mask cache and context expansion",
+      "persistent stack",
+      "CPU/GPU overlap"
+    ],
+    "goal": "Compute what a mask of a given cost does to TPOT at batch 1 and batch 64, and explain the two ideas that make XGrammar's mask nearly free: precompute most tokens, and hide the rest under the forward pass."
+  },
+  "attend": [
+    "Why must the mask be ready before sampling, and why can it be built while the forward pass runs?",
+    "What makes a token 'context-independent' at a grammar node, and why can its answer be stored offline?",
+    "How does context expansion shrink the context-dependent tokens further, from 1,134 to 120?",
+    "Why does the same 40 µs mask matter more at batch 64 than at batch 1, and more on an H100 than on the M3?",
+    "Why is the 80× end-to-end claim more about the baselines than about XGrammar?"
+  ],
+  "core": {
+    "must": [
+      "The mask depends only on the tokens so far, and so does the next forward pass → build the mask on the CPU while the GPU runs → sync before sampling → step = max(GPU, masks) instead of the sum → a mask shorter than the step costs ≈ 0",
+      "Most tokens are accepted or rejected before they leave the current rule → their answer depends only on the node on top of the stack → precompute them per node → only the few that close the rule into its parent (under 1%) need the stack at run time → per-token mask time 38.280 → 0.154 ms in the ablation",
+      "Mask work scales with batch while the GPU step grows slowly → 64 × 40 µs = 2.56 ms is 25.8% of a 9.92 ms step if serial → faster GPUs and bigger batches make the CPU side matter more → overlap is essential, not optional"
+    ],
+    "elevated": [
+      "Masks are nearly all-accept or all-reject → store the smaller side plus the dependent list, not a full bitset → cache memory 160 MB → 0.46 MB"
+    ],
+    "reference": [
+      "XGrammar's Table 1–3 numbers and test hardware",
+      "the persistent stack's tree structure",
+      "the 16 KB bitmask size for 128,256 tokens",
+      "which backend each engine uses (where-it-runs card)"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw the decode loop with the grammar engine beside it, then write the two step formulas (serial and overlapped). Under them, one line each for the cache, context expansion, persistent stack and overlap.",
+    "checklist": [
+      "scheduler → forward pass → logits → masked sampler → token → grammar engine advances and builds the next mask",
+      "serial: t_GPU + B·t_mask; overlapped: max(t_GPU, B·t_mask)",
+      "cache: per-node precomputed answers for context-independent tokens",
+      "context expansion: reject more tokens offline using what can follow a rule",
+      "persistent stack: branching and rollback as pointer moves",
+      "overlap: the mask hides under the forward pass while it's shorter"
+    ]
+  },
+  "retrieve": [
+    {
+      "q": "Explain why a pushdown-automaton grammar can still have almost all of its mask precomputed, even though its stack can grow without limit.",
+      "kind": "concept",
+      "answer": [
+        "a token's legality usually depends only on the current node, not on what's deeper in the stack",
+        "those context-independent answers are stored per node offline",
+        "only tokens that finish the rule and continue into the parent need the stack: under 1% (about 120 of 128k after expansion)"
+      ]
+    },
+    {
+      "q": "Walk through one decode step with XGrammar overlapped, from the moment token n is sampled to the moment token n + 1 is sampled.",
+      "kind": "mechanism",
+      "answer": [
+        "token n goes to both the next forward pass (GPU) and the grammar engine (CPU)",
+        "the grammar engine advances the automaton and builds the next mask from the cache plus a few runtime checks",
+        "the forward pass produces logits; sync",
+        "the sampler sets masked tokens to −∞ and samples token n + 1"
+      ]
+    },
+    {
+      "q": "A service gives every request a brand-new JSON schema and wants 40 tokens back. Is XGrammar's per-token speed the thing to optimise, and what would you pick?",
+      "kind": "tradeoff",
+      "answer": [
+        "no: with a new schema per request, compile time dominates over per-token time",
+        "XGrammar's cache has to be built per schema (overlapped with prefill, but still paid)",
+        "a backend with no precompute such as llguidance may fit better (compile vs per-token card)"
+      ]
+    }
+  ],
+  "compare": [
+    {
+      "with": "structured-outputs/fast-masks",
+      "q": "The fast-masks card compares four ways to compute masks; this card follows one of them inside an engine. What does the engine view add that the library view doesn't, and how does XGrammar fail if you only look at library benchmarks?",
+      "answer": [
+        "the engine view adds batch size and overlap: B masks per step, hidden or not under the GPU step",
+        "a mask that looks fast alone (40 µs) is 25.8% of the step at batch 64 if run serially on one core",
+        "edge-case schemas with slow masks stall every step, and the GPU waits"
+      ]
+    },
+    {
+      "with": "perf-5-engines/engine-anatomy",
+      "q": "The grammar mask and the scheduler are both CPU work in the busy loop. Why can the mask be overlapped with the current forward pass, while the scheduler needs SGLang's 'future tokens' trick to do the same?",
+      "answer": [
+        "the mask for step n + 1 needs token n, which exists when forward pass n + 1 starts",
+        "scheduling batch n + 1 ahead of time must happen before batch n's tokens are sampled",
+        "so the scheduler must plan with placeholders for tokens it hasn't seen"
+      ]
+    }
+  ],
+  "predict": {
+    "q": "At batch 16 on the H100 (6.08 ms step at 2k), what share of the step would 16 serial XGrammar masks take, and how long would 16 naive masks take? Commit to rough numbers.",
+    "answer": "Our recomputation: 16 × 40 µs = 0.64 ms, about +10.5% if serial and 0 once overlapped. Naive masks: 16 × 65.776 ms ≈ 1,052 ms per step, about 173× the GPU step. That is the whole case for both precomputation and overlap: one fixes the size of the CPU job, the other hides what's left."
+  },
+  "apply": {
+    "task": "Run labs/token-mask.py, then try V = 50000 as the card suggests and note how the naive checks and the cache's runtime checks change. Then compute, for the H100 at 2k context, the serial overhead of XGrammar's 40 µs masks at B = 1, 16, 64 and 238 (steps 4.87, 6.08, 9.92 and 23.86 ms). Does the serial single-core mask time ever catch up with the GPU step as B grows, given that each extra request adds about 0.08 ms of KV reads to the step?",
+    "done": "Your lab observation in one sentence, three overhead percentages, and a crossover batch, before checking.",
+    "hint": "Check the arithmetic after trying (our recomputation): +0.8% at B = 1, +10.5% at B = 16, +25.8% at B = 64, +39.9% at B = 238 (9.52 of 23.86 ms). It never catches up: each request adds 0.04 ms of mask but about 0.08 ms of step, so the serial tax climbs toward 50% but stays below it. A slower mask (say 1 ms, the card's illustrative case) passes the step at once. Either way, overlap turns the tax into zero while the masks stay shorter than the step."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: the serial share at batch 16, or the naive time?",
+    "Could you explain 'context-independent token' with a concrete JSON example?",
+    "Which relationship is still fuzzy: node → precomputed answer, or batch → CPU share → need for overlap?",
+    "When would you choose a compile-free backend over XGrammar, and what would you measure first?",
+    "What will you look for on the multi-LoRA card: another per-request cost that grows with the batch?"
+  ],
+  "revisit": [
+    "perf-5-engines/engine-anatomy",
+    "structured-outputs/token-masking",
+    "structured-outputs/cfg-pda"
+  ],
+  "prereq": [
+    "perf-5-engines/engine-anatomy"
+  ]
+}

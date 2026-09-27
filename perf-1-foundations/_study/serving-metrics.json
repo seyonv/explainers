@@ -1,0 +1,60 @@
+{
+  "prime": {
+    "problem": "A model that's fast for one user can still be too expensive to serve, and a server with huge throughput can still feel slow to every user. Without TTFT, TPOT, percentiles and goodput you can't tell which one you have, or price a GPU-hour in good requests.",
+    "fits": "Last card of the course. It prices the two phases you just measured: prefill becomes TTFT and decode becomes TPOT. It then uses the roofline's max() to show how batching trades per-user speed for total throughput, which perf-2's step-time formula makes rigorous.",
+    "expect": ["TTFT, TPOT / ITL, E2E", "per-user vs total tok/s", "goodput under SLOs", "P50 / P95 / P99", "step(B) = KV reads + max(math, weight reads)"],
+    "goal": "Compute TTFT, TPOT and E2E floors for a request, find the batch at which an SLO starts to bind, and explain why goodput, not raw throughput or mean latency, sets the cost."
+  },
+  "attend": [
+    "For the same model on the same chip, why is TTFT set by compute and TPOT by memory?",
+    "In the batch table per-user speed falls while total throughput rises. What is shared across the batch, and what isn't?",
+    "At B = 443 total tok/s is highest, yet goodput is 0. Which limit did it break?",
+    "Why does the mean TTFT (79 ms) hide what 1 request in 100 experiences?",
+    "When is raw throughput per dollar the right target instead of goodput?"
+  ],
+  "core": {
+    "must": [
+      "E2E = queue + prefill (TTFT) + (n_out − 1) × TPOT → prefill is compute-bound (16.2 ms for 1,000 tokens), each decode step memory-bound (4.84 ms) → for long outputs decode dominates (962.6 of 979 ms)",
+      "One weight read serves every sequence in the batch → total tok/s rises with B (207 → 12,050 at B = 120) → but every sequence's KV cache is also read each step → TPOT grows (4.84 → 9.96 ms) → per-user speed falls",
+      "An SLO caps TPOT → B ≤ (SLO × W − weight bytes) ÷ KV bytes per sequence (120 at 10 ms) → past it throughput still rises (+40% at B = 443) but no request meets the SLO → goodput = 0 → goodput is what sets cost per good request",
+      "Latency distributions are right-skewed (queues, bursts) → the mean sits above the median yet far below the tail (79 ms mean, ≈ 1 s P99 TTFT) → SLOs are set on percentiles, not on means"
+    ],
+    "elevated": [
+      "Past B_crit ≈ 295 the weight math (2BN/C) outgrows the weight read → the step switches from the memory term to the math term (B = 443: 7.19 vs 4.79 ms)",
+      "TPOT averages away stalls (a ~10 s stall barely moves it) → Etalon proposes per-token deadlines (fluidity-index) instead"
+    ],
+    "reference": ["Etalon's D_d targets (25 / 50 / 100 ms)", "the DistServe goodput quote", "the synthetic run's percentile table and 88.9% attainment", "the B200, TPU v5e and M3 floor table"]
+  },
+  "compress": {
+    "prompt": "Write E2E as a formula from memory and label which resource bounds each term. Then sketch per-user tok/s and total tok/s against batch size on one plot, with a horizontal TPOT SLO line. Finish with two sentences: what goodput counts, and why a provider sells it.",
+    "checklist": [
+      "E2E = queue + prefill + (n − 1) × TPOT; prefill is compute-bound, decode memory-bound",
+      "batching shares the weight read: total tok/s up, per-user tok/s down",
+      "each sequence adds its KV read to every step, so TPOT grows with B",
+      "the SLO sets the largest usable batch (120 at 10 ms here); memory sets another cap (443)",
+      "goodput counts only requests meeting the TTFT and TPOT targets, so it can't be gamed by either extreme",
+      "tails, not means, decide whether SLOs are met"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why goodput can't be gamed from either side, while raw throughput and mean latency can.", "kind": "concept", "answer": ["raw throughput rises by making everyone wait (a bigger batch)", "mean latency hides the tail", "goodput counts only work that met both the TTFT and TPOT targets for the agreed share of requests, so neither trick raises it"]},
+    {"q": "Compute the floors for a 1,000-token prompt and 200 output tokens at batch 1 on an H100: TTFT, TPOT, E2E, and the average output rate.", "kind": "mechanism", "answer": ["TTFT = 2 × 8.03e9 × 1,000 ÷ 989e12 = 16.2 ms (compute beats the 4.79 ms weight read)", "TPOT = (16.06 GB + ~1,100 × 131,072 B) ÷ 3.35 TB/s = 4.84 ms", "E2E = 16.2 + 199 × 4.84 ≈ 979 ms", "≈ 207 tok/s"]},
+    {"q": "With about 1,100 tokens of context per sequence and a 10 ms TPOT SLO, what batch do you run, what throughput do you sell, and what would filling HBM buy and cost?", "kind": "tradeoff", "answer": ["B = 120 (the SLO cut, 9.96 ms per step), 12,050 tok/s", "filling HBM (B = 443) gives 16,870 tok/s, +40%", "but each user drops to 38 tok/s and misses the SLO, so goodput falls to 0"]},
+    {"q": "Which metric would you put first on the dashboard for a chat app, an agent making tool calls, and an overnight eval job, and why?", "kind": "tradeoff", "answer": ["chat: TTFT, plus a TPOT faster than reading speed", "agent: end-to-end latency per call, since tokens aren't useful one at a time", "offline evals: raw throughput per dollar; a loose SLO makes goodput equal to it"]}
+  ],
+  "compare": [
+    {"with": "perf-1-foundations/roofline-intuition", "q": "The roofline card swept batch for one matmul; this card sweeps batch for a whole decode step. What is fundamentally different, which term causes it, and what limit shows up here that didn't there?", "answer": ["the matmul's time was flat until the ridge: its only bytes were one shared weight read", "a decode step also reads each sequence's KV cache, which isn't shared, so time grows with B even below B_crit", "that growing term is what the SLO cuts (B = 120) and what fills HBM (B = 443)", "both switch to the math term near B ≈ 295"]},
+    {"with": "perf-2-scaling-book-inference/step-time", "q": "This card's step(B) is a special case of perf-2's step-time formula. What does the full formula keep that this card simplifies, and when would the simplification mislead you?", "answer": ["both: step ≈ KV reads + max(weight reads, weight math)", "this card assumes one H100, a fixed ~1,100 tokens of context and decode only, with prefill and attention FLOPs left out", "it misleads at long context (the KV term dominates sooner), when prefill shares the step, and when the model spans several chips"]}
+  ],
+  "predict": {"q": "Keep the 10 ms TPOT SLO but raise every sequence's context from about 1,100 to 8,192 tokens. Before computing: roughly what batch meets the SLO now, and does memory or the SLO bind first? What if the SLO were Etalon's strict 25 ms?", "answer": "Each sequence now reads 1.07 GB per step. The SLO allows B ≤ (0.010 × 3.35e12 − 16.06e9) ÷ 1.07e9 ≈ 16, at 9.92 ms and about 1,613 tok/s, well below the memory cap of 59. At 25 ms the SLO would allow about 63, so memory binds first at 59 (23.7 ms, ≈ 2,489 tok/s). All computed with the card's step formula. Long context makes the SLO bite far sooner."},
+  "apply": {"task": "Write <code>step(B, S) = B·S·131,072 ÷ W + max(2·B·N ÷ C, 16.06e9 ÷ W)</code> for the H100. Reproduce the card's rows for B = 1, 64, 120 and 443 at S ≈ 1,100. Then, for S = 8,192, find the memory-limited batch and the batch that meets a 10 ms TPOT, with total tok/s for each.", "done": "Your rows read 4.84, 7.55, 9.96 and 26.26 ms. At 8k: memory caps B at 59 (23.7 ms, ≈ 2,489 tok/s), and the 10 ms SLO allows B = 16 (9.92 ms, ≈ 1,613 tok/s), all computed.", "hint": "The memory cap is (80 − 16.06) GB ÷ (S × 131,072 B). Total tok/s = B ÷ step."},
+  "reflect": [
+    "Which prediction did you get wrong: the batch the SLO allows at 8k, or which limit binds first?",
+    "Could you explain why goodput drops to 0 at B = 443 without using the word 'SLO'?",
+    "Which relationship is still fuzzy: batch → shared weight read → throughput, or batch → KV reads → TPOT?",
+    "Which metric would you have chosen for an agent product before reading this card?",
+    "What will you reopen before perf-2's step-time card: the batch table, or the percentile table?"
+  ],
+  "revisit": ["perf-1-foundations/prefill-vs-decode-mac", "perf-1-foundations/roofline-intuition", "perf-1-foundations/attention"],
+  "prereq": ["perf-1-foundations/roofline-intuition"]
+}

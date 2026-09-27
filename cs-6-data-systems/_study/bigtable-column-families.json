@@ -1,0 +1,67 @@
+{
+  "prime": {
+    "problem": "A web crawl stores, per page, its contents, a few versions of it, and one column per site that links to it. A fixed relational schema can't hold an unbounded, per-row set of columns, and a hashed key-value store scatters a site's pages across the cluster.",
+    "fits": "Third storage card. It builds on sorted keys and range scans from the B-tree card and on the SSTables of the LSM card, and it meets cs-5's partitioning question: sorted row ranges (tablets) rather than hashed keys.",
+    "expect": ["(row, family:qualifier, timestamp) → bytes", "column families as the unit of settings", "per-family version GC", "reversed-domain row keys", "tablets"],
+    "goal": "Model a sparse, versioned dataset as a Bigtable table, design its row key for the scans you need, and say when the model is the wrong choice."
+  },
+  "attend": [
+    "Why are families few and declared up front while qualifiers are unlimited and made up at write time? What does each one carry?",
+    "Why does <code>com.example.www/</code> keep a site together when <code>www.example.com/</code> doesn't, given that rows are stored sorted?",
+    "The source files this under ‘distributed hash table’. What in the model is sorted rather than hashed, and why does that matter for scans?",
+    "When t30 arrives in a family that keeps 2 versions, which cell disappears and what decides that?",
+    "Why is Bigtable a row store with flexible columns rather than a true column store?"
+  ],
+  "core": {
+    "must": [
+      "Rows are kept sorted by key and split into contiguous tablets → keys that share a prefix sit together → reversing the hostname makes one site one range scan (example.com: 3 blocks → 1)",
+      "Families are few and declared → settings attach to them (access control, versions kept, locality group) → qualifiers stay free-form, so one row can hold thousands of anchor columns while most rows leave them empty at no cost",
+      "Each cell keeps timestamped versions, newest first → a plain read returns the newest → per-family GC drops versions past the limit, so history costs only what the family allows",
+      "Cells are ordered by row, then column → a whole page reads in one go → but aggregating one field across all rows touches every row, which is a column store's job"
+    ],
+    "elevated": [
+      "Locality groups store chosen families in separate files → a scan of <code>anchor</code> can skip the heavy <code>contents</code> bytes → the one column-store-like feature of the model",
+      "Atomicity is promised only within one row → multi-row invariants need the application or another system"
+    ],
+    "reference": [
+      "the Webtable row and column names",
+      "timestamps as 64-bit microseconds or app-set",
+      "HBase and Cassandra as descendants; Cassandra hashes the partition key",
+      "the source's mislabelled language family (corrected on the card)"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, write the Bigtable map signature and draw the Webtable row <code>com.example.www/</code> with its three families. Then explain in three sentences why the row key is reversed and what a family controls that a qualifier doesn't.",
+    "checklist": [
+      "(row string, family:qualifier, int64 timestamp) → uninterpreted bytes",
+      "families declared, few; qualifiers free, unlimited; empty cells cost nothing",
+      "families carry versions kept, access control and locality",
+      "rows stored sorted → reversed domain clusters a site into one range",
+      "row-level atomicity only"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why Webtable can't be a fixed relational table with one column per linking site, and how column families solve it.", "kind": "concept", "answer": ["the set of linking sites is unbounded and different per page", "anchor is one family; each linking site is a qualifier made up at write time", "missing cells take no space, and the family carries the shared settings"]},
+    {"q": "Walk through what happens in the toy <code>Table</code> when <code>contents:</code> gets t10, t20 and t30 for the same row, and then when someone writes <code>pagerank:</code>.", "kind": "mechanism", "answer": ["each put appends and sorts versions newest first", "the contents family keeps 2, so after t30 the list is (t30, t20) and t10 is dropped", "pagerank isn't a declared family, so the put raises KeyError"]},
+    {"q": "Clustering by reversed domain makes a site one range. What does that same choice cost when one site is crawled heavily, and how would you soften it?", "kind": "tradeoff", "answer": ["all of that site's writes go to one tablet: a hot spot", "salting or splitting the hot range spreads load but breaks the single range scan", "it's the range vs hash partitioning trade from cs-5"]}
+  ],
+  "compare": [
+    {"with": "cs-6-data-systems/database-indexes", "q": "A relational table with secondary indexes vs a Bigtable table for Webtable: what does each let you query cheaply, which design choice causes it, and where does each fail?", "answer": ["relational: fixed columns, joins, many secondary indexes, cross-row transactions", "Bigtable: one sorted key, free-form qualifiers, versions per family", "relational fails on an unbounded per-row column set; Bigtable fails on queries not keyed by row, joins and cross-row transactions"]},
+    {"with": "cs-5-distributed-systems/consistent-hashing", "q": "Tablets are sorted row ranges; a DHT hashes keys around a ring. What does each make cheap, and what problem does each create?", "answer": ["ranges make prefix and site scans one sequential read", "ranges risk hot spots when adjacent keys are all busy", "hashing spreads load evenly and moves little data on membership change", "hashing turns ‘all pages of a site’ into a full scan"]}
+  ],
+  "predict": {"q": "You add a new family <code>links</code> holding outgoing links, and a job needs only <code>anchor</code> for every row. Commit first: without locality groups, does the scan read the <code>contents</code> bytes too? And with a separate locality group for <code>contents</code>?", "answer": "Without locality groups the families of a row are stored together, so scanning anchor over every row also drags the large contents values off disk. With contents in its own locality group, its bytes live in separate files, so the anchor scan reads only the small anchor and links data. That's the model's one concession to column-oriented storage."},
+  "apply": {
+    "task": "Take six URLs: <code>www.example.com/</code>, <code>api.example.com/</code>, <code>www.other.net/</code>, <code>blog.other.net/</code>, <code>mail.example.com/</code>, <code>cdn.other.net/</code>. Sort them by plain hostname and by reversed hostname, and count how many contiguous blocks each site forms in each order. Then check with <code>row_key</code> and <code>runs</code> from <code>code/bigtable-column-families.py</code>.",
+    "done": "Plain order gives 2 blocks for example.com and 2 for other.net; reversed order gives 1 block each, with the keys com.example.api/, com.example.mail/, com.example.www/, net.other.blog/, net.other.cdn/, net.other.www/.",
+    "hint": "In plain order, ‘api’, ‘blog’, ‘cdn’, ‘mail’ and ‘www’ sort by subdomain first, interleaving the two sites."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: whether an anchor-only scan reads contents bytes?",
+    "What couldn't you explain cleanly: why the model is sorted, not hashed, despite the source's title?",
+    "Which relationship is still fuzzy: row-key order → tablet → scan cost, or family → settings?",
+    "For a dataset you know (logs, user events), what would you pick as the row key and why?",
+    "What will you look for in the in-memory cards: whether keeping everything in RAM changes the row-key trade-off at all?"
+  ],
+  "revisit": ["cs-6-data-systems/lsm-trees", "cs-5-distributed-systems/sharding-hot-keys"],
+  "prereq": ["cs-6-data-systems/database-indexes"]
+}

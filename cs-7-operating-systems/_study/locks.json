@@ -1,0 +1,120 @@
+{
+  "prime": {
+    "problem": "Threads share the heap, so two of them can read the same counter, both add 1 and both write back: one increment vanishes with no error. The bug depends on timing, so it appears only sometimes and hides from tests. Something has to make the read-to-write stretch run one thread at a time.",
+    "fits": "First card of the Synchronization part. It takes the shared heap from the threads card and shows its price; mutexes, semaphores and monitors (next) are all refinements of the lock introduced here.",
+    "expect": [
+      "race condition and lost update",
+      "critical section",
+      "atomic operations (compare-and-swap)",
+      "why <code>+=</code> survived with the GIL, and why that's luck"
+    ],
+    "goal": "Reproduce a lost-update race, explain it from an interleaving, fix it with a lock, and say why relying on the GIL is not a fix."
+  },
+  "attend": [
+    "In the two-thread trace, at exactly which step does thread 2's value become stale, and why doesn't it notice?",
+    "Why did the <code>sleep(0)</code> version lose 75% of its updates, while plain <code>c[\"n\"] += 1</code> lost none on 3.10?",
+    "What makes a lock's own acquire safe from the same race that a plain <code>busy</code> flag suffers?",
+    "Which three ways of avoiding a lock does the card suggest, and what does each give up?",
+    "Why is \"it passed my tests\" weak evidence that code without a lock is correct?"
+  ],
+  "core": {
+    "must": [
+      "Read-modify-write is several steps → a switch between read and write lets another thread write in between → the late writer overwrites with a stale value → lost update (100,096 of 400,000 kept)",
+      "A lock makes the read-to-write stretch a critical section → only one thread inside at a time → the interleaving can't split it → all 400,000 kept",
+      "The GIL hands off only at certain bytecode points (loop back-edges, function calls) → the eight bytecodes of <code>+=</code> ran whole → no losses on 3.10 → but a call or I/O between read and write, or no GIL at all (3.14t: 72.9% lost), brings the race back",
+      "A lock must itself be taken atomically → built on a hardware instruction like compare-and-swap → a software flag's check-then-set is two steps and races exactly like the counter"
+    ],
+    "elevated": [
+      "Uncontended acquire+release is 58 ns → cheap enough to use freely → the real cost is contention, which serialises the critical section (the mutexes card)"
+    ],
+    "reference": [
+      "the eight bytecode names of <code>c[\"n\"] += 1</code> on 3.10",
+      "the 263,642 of 800,000 run with a 1 µs switch interval",
+      "OSTEP section numbers 28.5 and 28.6",
+      "<code>dis</code> output formatting"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw the four-row no-lock interleaving that turns two increments into c = 1, then redraw it with a lock. In one sentence each, explain why the GIL hid the bug for plain <code>+=</code> and why that is not a guarantee.",
+    "checklist": [
+      "both threads read the same old value before either writes",
+      "the second write overwrites the first: one update lost",
+      "a lock makes read + write one indivisible critical section",
+      "the lock itself relies on an atomic instruction",
+      "the GIL happens not to switch inside <code>+=</code>, an implementation detail that 3.14t removes"
+    ]
+  },
+  "retrieve": [
+    {
+      "q": "Explain what a critical section is, using the card's counter, and why a lock around only the write is not enough.",
+      "kind": "concept",
+      "answer": [
+        "the critical section is the whole read-to-write stretch on shared state",
+        "if only the write is locked, two threads can still read the same value before either writes",
+        "both then write v + 1, one overwrites the other: the update is still lost"
+      ]
+    },
+    {
+      "q": "Walk through why the <code>sleep(0)</code> version kept about a quarter of the updates, step by step for four threads.",
+      "kind": "mechanism",
+      "answer": [
+        "each thread reads c, then sleep(0) releases the GIL",
+        "the others run and read the same c before anyone writes",
+        "all four then write the same c + 1, so four increments count as one",
+        "the card flags this as a reading of the ~25% survival, not a measurement"
+      ]
+    },
+    {
+      "q": "A teammate says: \"CPython has a GIL, so our counters don't need locks.\" Give the two counter-examples from the card and the cheapest correct alternative.",
+      "kind": "tradeoff",
+      "answer": [
+        "any call or I/O between the read and the write lets the GIL change hands (the sleep(0) run lost 75%)",
+        "free-threaded 3.14t has no GIL: plain <code>+=</code> kept 1,082,391 of 4,000,000",
+        "a Lock costs 58 ns uncontended; or avoid sharing: per-thread counters summed at the end, or a queue"
+      ]
+    }
+  ],
+  "compare": [
+    {
+      "with": "cs-7-operating-systems/modern-concurrency",
+      "q": "A lock vs a compare-and-swap retry loop for the same counter: what happens to the stale write in each, which design choice causes the difference, and how does each fail under heavy contention?",
+      "answer": [
+        "lock: nobody else reads until the holder writes, so no stale value exists",
+        "CAS: the stale write is attempted, detected (the value changed) and redone",
+        "lock waiters sleep; CAS losers spin on retries (3,385 retries for 40,000 increments in the demo)",
+        "locks fail by contention and deadlock; CAS fails by burning CPU and by ABA on pointers"
+      ]
+    },
+    {
+      "with": "cs-5-distributed-systems/idempotency-retries",
+      "q": "A lost update here and a double charge there both come from two actors acting on stale knowledge. What does each course use to make the second attempt harmless?",
+      "answer": [
+        "here: mutual exclusion, so the second thread reads only after the first has written",
+        "there: an idempotency key, so a repeated request is recognised and not applied twice",
+        "a lock needs shared memory and a cheap atomic; across machines you can't lock cheaply, so you make repeats safe instead"
+      ]
+    }
+  ],
+  "predict": {
+    "q": "In asyncio, one coroutine does <code>v = c[\"n\"]</code>, then <code>await asyncio.sleep(0)</code>, then <code>c[\"n\"] = v + 1</code>, and 4 tasks run it 10⁵ times each. There is only one thread and no GIL hand-off between tasks. Do updates get lost? Commit before revealing.",
+    "answer": "Yes, and for the same reason as the <code>sleep(0)</code> thread version: the <code>await</code> is a switch point between the read and the write, so another task reads the same value first. The card says so directly: a read, then an await, then a write still races. Remove the await between them and no task can interleave, so nothing is lost without a lock."
+  },
+  "apply": {
+    "task": "Break and fix <code>code/locks.py</code> three ways and record the final count each time (4 threads × 10⁵): (1) put the lock around the write only; (2) remove <code>sleep(0)</code> from the unlocked version but call a tiny Python function <code>def g(v): return v</code> between the read and the write; (3) drop sharing entirely: give each thread its own counter and sum at the end.",
+    "done": "Run 1 and run 2 lose updates (count below 400,000), run 3 gives exactly 400,000 with no lock, and you can say for each which step of the interleaving explains it.",
+    "hint": "The card's own run with a Python call between read and write kept 263,642 of 800,000 at a 1 µs switch interval; at the default 5 ms your losses may be much smaller, so run it a few times or lower <code>sys.setswitchinterval</code>."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: the asyncio race, or which of your three breaks lost updates?",
+    "Can you explain the lost update from the interleaving, without saying \"threads are unsafe\"?",
+    "Which relationship is still fuzzy: GIL hand-off points → why <code>+=</code> survived, or atomic instruction → why a lock is safe?",
+    "How would you now test code for a race it only shows sometimes?",
+    "What will you look for in the mutexes card: what a lock costs when it's contended rather than free?"
+  ],
+  "revisit": [
+    "cs-7-operating-systems/threads"
+  ],
+  "prereq": [
+    "cs-7-operating-systems/threads"
+  ]
+}

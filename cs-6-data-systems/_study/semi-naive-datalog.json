@@ -1,0 +1,66 @@
+{
+  "prime": {
+    "problem": "A recursive query like ‘everything reachable from here’ is computed by applying rules until nothing new appears. Done naïvely, each round re-derives every fact it already knows, so most of the work is repetition.",
+    "fits": "Last card of the batch and queries part. It builds on the previous card (fixpoint queries are PTIME) and on the graph-navigation card; it is the same idea as SQL's WITH RECURSIVE and relates to cs-3's BFS and Floyd–Warshall.",
+    "expect": ["EDB vs IDB, and fixpoints", "naïve vs semi-naïve evaluation", "δ: the facts new last round", "delta rules for rules with several recursive atoms", "the precedence graph and its SCCs"],
+    "goal": "Evaluate a recursive query round by round with and without semi-naïve deltas, count the derivations, and write the delta rules for a non-linear rule."
+  },
+  "attend": [
+    "Why must any genuinely new fact in round i+1 use at least one fact that was new in round i?",
+    "On the 6-node chain both methods take 6 rounds. Where do naïve's extra 55 derivations come from?",
+    "For a rule with two recursive atoms, why does one atom read δ, the ones before it the new p and the ones after it the old p?",
+    "Why is a Datalog fixpoint guaranteed to arrive, and within how many facts?",
+    "When is building the full closure the wrong way to answer the question?"
+  ],
+  "core": {
+    "must": [
+      "Datalog only adds facts → a round that adds nothing is the fixpoint → with n constants an arity-k predicate has at most n<sup>k</sup> facts → the loop ends in polynomially many rounds (fixpoint queries are PTIME)",
+      "A fact derivable only from old facts was already derived last round → every new fact needs at least one new input → join only δ, last round's new facts → 15 derivations for 15 facts instead of 70",
+      "Rule with several IDB atoms → one delta rule per atom, δ in that position, new p before it, old p after it → each combination of facts is joined once → 25 instead of 81 on the non-linear rule",
+      "Naïve and semi-naïve do the same rounds but naïve re-joins all of tc each time → work Θ(n³) vs n(n−1)/2 on an n-chain → the gap doubles as n doubles (4.7×, 8.7×, 16.7×, 32.7×)"
+    ],
+    "elevated": [
+      "With negation, evaluate one SCC of the precedence graph at a time in dependency order → a predicate is complete before anything negates it (stratification)"
+    ],
+    "reference": [
+      "the source's typos in the update rule (corrected on the card)",
+      "PostgreSQL's ‘working table’ name",
+      "magic sets and delete-and-rederive as names",
+      "Warshall's V³ = 216 steps on 6 nodes"
+    ]
+  },
+  "compress": {
+    "prompt": "Close the card. Write the two tc rules, then the round-by-round table for the 6-node chain: new facts, naïve derivations, semi-naïve derivations. Finish with the update rule p[i+1] = p[i] ∪ δ and one sentence on why joining only δ is enough.",
+    "checklist": [
+      "tc(x,y) :- edge(x,y). tc(x,y) :- tc(x,z), edge(z,y).",
+      "new facts per round 5, 4, 3, 2, 1, 0; 15 facts",
+      "naïve 5 + 9 + 12 + 14 + 15 + 15 = 70; semi-naïve 5 + 4 + 3 + 2 + 1 + 0 = 15",
+      "δ = Δ − p: what's really new this round",
+      "a new fact must use a new fact, so old × old joins are wasted"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why semi-naïve evaluation reaches the same fixpoint as naïve evaluation while skipping most joins.", "kind": "concept", "answer": ["the rules are monotone, and every fact is kept", "a combination of only old facts was already joined in an earlier round", "so joining only combinations that contain a δ fact finds every new fact"]},
+    {"q": "Walk through round 3 on the 6-node chain for both methods: what each joins, how many derivations it makes, and what's new.", "kind": "mechanism", "answer": ["naïve re-runs the base rule (5) and joins all 9 known tc facts with edge (7 matches, since paths ending at 6 can't extend): 12 derivations", "semi-naïve joins round 2's δ (1→3, 2→4, 3→5, 4→6) with edge: 3 derivations", "both find 1→4, 2→5, 3→6 new; tc grows to 12"]},
+    {"q": "You need one actor's Bacon number, not the whole co-star closure. Argue for BFS over semi-naïve closure, and what each costs.", "kind": "tradeoff", "answer": ["BFS from one start visits each reachable node once and each edge twice: Ω(V + E)", "the full closure can hold up to V² facts", "semi-naïve is the right baseline only when you need every derived fact"]}
+  ],
+  "compare": [
+    {"with": "cs-3-graphs-dp-math/bellman-ford-floyd", "q": "Semi-naïve iteration vs Warshall's matrix closure for reachability: what does each loop over, what sets its cost, and on which graphs does each win?", "answer": ["semi-naïve: rounds of joins driven by new facts; cost follows derived facts × edges (≤ V·E)", "Warshall: a ‘direct’ triple loop, V³ whatever the graph (216 on 6 nodes)", "semi-naïve wins on sparse graphs and arbitrary rules; Warshall on small dense graphs"]},
+    {"with": "cs-6-data-systems/mapreduce-model", "q": "Running each round of the closure as a MapReduce job vs a Datalog engine's in-memory loop: what does each pay per round?", "answer": ["MapReduce: a job start, a full shuffle of the joined relations, a DFS write per round", "Datalog engine: an in-memory join of δ with edge", "feeding only δ into each job keeps the semi-naïve saving, but not the per-round overhead"]}
+  ],
+  "predict": {"q": "Add the edge 6 → 1 to the chain, making a 6-cycle. Commit first: how many tc facts does the fixpoint hold now, how many rounds does it take, and does semi-naïve still make exactly one derivation per fact?", "answer": "Every node reaches every node, itself included: 6 × 6 = 36 facts, in 7 rounds. Semi-naïve makes 6 derivations every round, 42 in total, so not one per fact: the last round's 6 derivations are re-derivations of known facts, found only to learn that δ is empty. Naïve makes 168. On a cycle, paths wrap around, so ‘new input’ doesn't guarantee ‘new output’."},
+  "apply": {
+    "task": "Run both methods by hand on the 4-cycle 1 → 2 → 3 → 4 → 1. For each round write δ, the naïve derivation count and the semi-naïve count, until the fixpoint. Then check with <code>naive</code> and <code>semi_naive</code> in <code>code/semi-naive-datalog.py</code>.",
+    "done": "16 facts (every pair, including each node to itself) in 5 rounds; naïve makes 4 + 8 + 12 + 16 + 20 = 60 derivations, semi-naïve 4 + 4 + 4 + 4 + 4 = 20. You can say why semi-naïve's last 4 derive nothing new.",
+    "hint": "Each round, every path gets one edge longer. After 4 rounds every path length 1–4 exists, so round 5 only re-derives."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: the 6-cycle's fact count, or its derivation count?",
+    "What couldn't you explain cleanly: why the delta rules read new p before δ and old p after it?",
+    "Which relationship is still fuzzy: monotonicity → termination, or δ → no wasted joins?",
+    "Could you rewrite the closure as SQL WITH RECURSIVE and point at its working table?",
+    "What will you look for in the scheduling cards: another place where only the change since last time needs work?"
+  ],
+  "revisit": ["cs-6-data-systems/query-complexity-classes", "cs-3-graphs-dp-math/bfs-layers"],
+  "prereq": ["cs-6-data-systems/query-complexity-classes"]
+}

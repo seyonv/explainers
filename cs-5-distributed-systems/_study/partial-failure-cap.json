@@ -1,0 +1,118 @@
+{
+  "prime": {
+    "problem": "On one machine a call either works or everything dies. Across a network, a caller that sees a timeout can't tell whether the write never arrived, crashed mid-way or landed with its reply lost. And when the link between two replicas drops, each must decide alone whether to answer or refuse.",
+    "fits": "Builds on the correlated-failure card's point that parts fail in unexpected ways. This card names the two consequences the whole course deals with: partial failure (you don't know what happened) and CAP (during a partition, choose consistency or availability). The next card applies that choice subsystem by subsystem.",
+    "expect": [
+      "partial failure: three faults, one timeout",
+      "linearizable (CAP's C) vs every non-failing node answers (A)",
+      "the CP and AP traces of a plan upgrade",
+      "<code>t<sub>write</sub> ≥ RTT ≥ 2d / v<sub>fibre</sub></code>",
+      "PACELC: latency vs consistency when there is no partition"
+    ],
+    "goal": "Explain why a timeout says nothing about whether a write happened, trace what a CP and an AP pair of replicas each return during a partition, and put a round-trip price on coordinating a write."
+  },
+  "attend": [
+    "In the partial-failure table, which row makes a blind retry dangerous, and why?",
+    "During the partition, the CP replica B is perfectly healthy yet returns an error. Which CAP definition does that break?",
+    "In the AP trace, the write finished before the read began, yet the read missed it. Which property is that a violation of?",
+    "Why can't a coordinated write be acknowledged in less than one round trip, and what sets the floor on that round trip?",
+    "When the network is healthy, is there still a trade-off? What is it?"
+  ],
+  "core": {
+    "must": [
+      "Request lost, server crashed mid-way, reply lost → all three look like the same timeout → the caller can't know whether the write happened → a retry must be safe to repeat",
+      "Partition between replicas → a write at A can't reach B → B must either refuse (C: never wrong, but a healthy node errors) or answer stale (A: always answers, not linearizable) → it can't do both, and \"CA\" just means undefined behaviour when a partition comes",
+      "A write another replica must see → can't be acked before one round trip to it → light in fibre (~200,000 km/s) sets the floor → 8 ms nearby, 83 ms across the Atlantic, 265 ms to Australia (53% of a 500 ms budget)",
+      "CAP bites only during a partition → otherwise the everyday trade-off is latency vs consistency (PACELC) → choose per subsystem: coordinate only where a wrong answer costs more than no answer"
+    ],
+    "elevated": [
+      "CAP's A demands an answer from <i>every</i> non-failing node → a 2-node CP pair must refuse on both sides → with 3 nodes the majority side keeps working and still counts as CP → this is why real \"highly available\" consensus systems are CP in CAP terms"
+    ],
+    "reference": [
+      "the Gilbert and Lynch (2002) proof citation",
+      "the full Azure RTT table and dates",
+      "the Washington ↔ Amsterdam 6,190 km approximation",
+      "the <code>TwoReplicas</code> class's toy \"A wins\" merge"
+    ]
+  },
+  "compress": {
+    "prompt": "In three lines from memory: (1) why a timeout is ambiguous, (2) what a replica must choose during a partition and what each choice costs, (3) what coordination costs when there is no partition. Include one number for (3).",
+    "checklist": [
+      "lost request, crash and lost reply all look like a timeout",
+      "so retries must be idempotent",
+      "partition: refuse (C, errors from healthy nodes) or answer stale (A, not linearizable)",
+      "CA doesn't exist because partitions happen",
+      "a coordinated write waits ≥ 1 RTT: e.g. 83 ms East US → West Europe",
+      "no partition: latency vs consistency (PACELC)"
+    ]
+  },
+  "retrieve": [
+    {
+      "q": "Explain what \"you can't choose CA\" means in terms of the two-replica plan-upgrade scenario.",
+      "kind": "concept",
+      "answer": [
+        "partitions happen whether you choose them or not",
+        "when one does, B either answers from its copy (breaks C) or refuses (breaks A)",
+        "a system that claims both just behaves unpredictably in that moment"
+      ]
+    },
+    {
+      "q": "Walk through the CP and AP traces step by step: what does each replica return for the write at A and the read at B during the partition, and after the heal?",
+      "kind": "mechanism",
+      "answer": [
+        "CP: write plan=pro → error; read at B → error; after heal, B reads free (client must retry the upgrade)",
+        "AP: write → ok at A only; read at B → free (stale); after heal, B reads pro",
+        "CP gives up availability; AP gives up linearizability, then converges"
+      ]
+    },
+    {
+      "q": "A product team wants every profile write coordinated across East US and Japan East \"so users never see stale data\". What does each write cost, and what do you propose instead?",
+      "kind": "tradeoff",
+      "answer": [
+        "≥ 162 ms per write, 32.4% of the 500 ms p99 budget, about 6.2 sequential writes/s per client",
+        "and during a partition those writes must be refused",
+        "coordinate only the fields where a stale answer costs more than no answer (e.g. plan changes that gate billing); let the rest be eventually consistent"
+      ]
+    }
+  ],
+  "compare": [
+    {
+      "with": "cs-5-distributed-systems/network-unreliability",
+      "q": "This card has three faults behind one timeout; the unreliable-network card has six. What does the longer list add, and does it change the conclusion about retries?",
+      "answer": [
+        "it adds the queued request, the paused (GC) worker and the delayed reply: cases where the work ran or will run later",
+        "4 of 6 silent cases ran the work anyway, so the ambiguity is even worse",
+        "same conclusion: silence tells you nothing, so retries must be idempotent"
+      ]
+    },
+    {
+      "with": "cs-5-distributed-systems/consensus-raft",
+      "q": "Raft keeps working through a partition on the side with a majority. Is it CP or AP, and why doesn't that contradict this card's 2-node trace that refused on both sides?",
+      "answer": [
+        "CP: the minority side refuses writes, so not every non-failing node answers",
+        "with 2 nodes neither side has a majority, so both refuse",
+        "with 3 or 5, the majority side keeps committing: highly available in practice, CP in CAP's narrow terms"
+      ]
+    }
+  ],
+  "predict": {
+    "q": "You rebuild the CP example with three replicas A, B, C, and the partition cuts A off from B and C. The write plan=pro arrives at B, the read arrives at A. What does each return, and is the system CP or AP? Commit first.",
+    "answer": "B and C are a majority (2 of 3), so the write at B commits with C's ack and returns ok. A is alone and can't reach a majority, so its read must return an error (or it would risk serving free after pro committed). That's still CP: A is a non-failing node that refused. But the majority side stayed available, which is the difference a third replica makes."
+  },
+  "apply": {
+    "task": "Extend <code>TwoReplicas</code> in <code>code/partial-failure-cap.py</code> into a three-replica CP store: a write or read succeeds only if the node it lands on can reach a majority (itself included). Model the partition as a set of groups, e.g. <code>[{\"A\"}, {\"B\", \"C\"}]</code>. Run the predict scenario, then a second one with the partition <code>[{\"A\"}, {\"B\"}, {\"C\"}]</code>. Finally, compute the sequential writes/s one client gets if the majority must include a replica 69 ms away.",
+    "done": "Your traces show ok at B and an error at A for the first partition, errors everywhere for the second, and 1000 ÷ 69 = 14.5 writes/s for the last question.",
+    "hint": "Majority of 3 is 2: <code>len(group_of(node)) >= 2</code>. Keep the data per node and, on a successful write, copy it to every node in the writer's group."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: whether the majority side keeps answering?",
+    "Can you say which CAP definition a healthy node returning an error violates, without looking?",
+    "Which relationship is still fuzzy: timeout → unknown outcome → idempotent retry, or distance → RTT → latency budget?",
+    "In a system you know, which data would you put on the C side, and which on the A side?",
+    "What will you reopen before the consistency-per-subsystem card?"
+  ],
+  "revisit": [
+    "cs-5-distributed-systems/correlated-failure"
+  ],
+  "prereq": []
+}

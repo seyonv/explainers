@@ -1,0 +1,66 @@
+{
+  "prime": {
+    "problem": "An 8-GPU job at the head of the queue waits for GPUs to free up, and the free ones sit idle meanwhile. And a distributed job placed one pod at a time can end up holding GPUs while waiting for the rest of itself, with nothing training at all.",
+    "fits": "Second case-study card. It builds on the fair-share card (whose task-at-a-time model breaks for big jobs) and on cs-7's deadlock conditions; the next card turns these waits into something a user can understand.",
+    "expect": ["FCFS vs EASY backfilling", "the shadow time and extra GPUs", "conservative backfilling", "gang (all-or-nothing) placement", "temporary deadlock from partial gangs"],
+    "goal": "Run EASY backfilling by hand on a small queue, compute waits and idle GPU-hours, and explain why gang placement prevents hoarding deadlocks."
+  },
+  "attend": [
+    "What is the shadow time, and why is it computed from when running jobs end rather than from the queue?",
+    "Why does J2 backfill at t = 0 while J3, which also needs only 2 GPUs, has to wait?",
+    "Why does the greedy policy have the best average wait on this example, yet the card rejects it?",
+    "In the four-machine example, which Coffman conditions for deadlock are present when every job holds one learner?",
+    "Why does backfilling depend on users' runtime estimates, and what happens when they're wrong?"
+  ],
+  "core": {
+    "must": [
+      "The head job can't fit → reserve its earliest start (the shadow time, when running jobs free enough GPUs) → a later job may start now only if it ends by the shadow time or uses GPUs the head won't need → holes are filled without delaying the head",
+      "Without a reservation, anything that fits starts → small jobs keep taking freed GPUs → the big job slips (J1 4 → 6 h here) and may starve under steady small arrivals",
+      "A distributed job needs all its learners at once → placing pods one at a time can give every job half → all GPUs held, no job trains, until timeouts (hold-and-wait) → gang placement starts a whole job or none",
+      "Gang placement makes a big job wait for a large free block → GPUs idle while it accumulates → backfilling is what fills that gap"
+    ],
+    "elevated": [
+      "Decisions use submitted time limits → a job that runs past its limit is killed → padded estimates still work (early finishes open new holes), per Mu'alem and Feitelson"
+    ],
+    "reference": [
+      "EASY vs conservative naming and Slurm's backfill wording",
+      "FfDL's 60-GPU, 20-run deadlock figures",
+      "the sweep-depth cap in real schedulers",
+      "the O(q·r log r) pass cost"
+    ]
+  },
+  "compress": {
+    "prompt": "Close the card. Write the EASY rule with shadow and extra, then the waits table for FCFS, EASY and greedy on J1–J4 with average waits and idle GPU-hours before t = 4. One sentence on what gang placement prevents.",
+    "checklist": [
+      "shadow = when enough GPUs free for the head; extra = GPUs free then minus the head's need",
+      "start j now if it fits and (ends by shadow or fits in extra)",
+      "FCFS 5.5 h / 16 idle GPU-h; EASY 4.0 h / 10; greedy 2.5 h / 2, but J1 slips to t = 6",
+      "the head job still starts at its reservation under EASY",
+      "gang: all learners or none, so no partial holds and no temporary deadlock"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain what EASY backfilling protects and what it doesn't, compared with conservative backfilling.", "kind": "concept", "answer": ["EASY protects only the head job's reserved start", "conservative protects every job ahead of the candidate", "EASY fills more holes; conservative gives more jobs predictable starts"]},
+    {"q": "Walk through the EASY decisions at t = 0 and t = 3 for the card's queue.", "kind": "mechanism", "answer": ["t = 0: 4 free; J1 needs 8, reserve at shadow t = 4, extra 0", "J2: 2 ≤ 4 free and 0 + 3 ≤ 4, starts", "J3: 0 + 6 > 4 and 2 > extra, waits; J4 needs 4, only 2 left", "t = 3: J2 ends; J4 would end at 5 > 4 and J3 at 9 > 4, both wait; J1 starts at 4"]},
+    {"q": "Your cluster runs mostly long training jobs with unknown runtimes. Argue how much backfilling will help, and what you'd do instead or in addition.", "kind": "tradeoff", "answer": ["backfilling needs estimates to know what ends by the shadow time", "with unknown or very long runtimes few jobs qualify, so little is filled", "require time limits, reserve and gang-place, and prefer checkpointable jobs for preemption"]}
+  ],
+  "compare": [
+    {"with": "cs-6-data-systems/gpu-fair-share", "q": "Fair share decides <i>who</i> gets the next GPUs; backfilling decides <i>which job</i> may use idle ones now. How do the two interact, and what goes wrong if you use only one?", "answer": ["fair share orders the queue by users' entitlements", "backfill fills holes left by a blocked head without delaying it", "only fair share: big jobs block and GPUs idle", "only backfill: one user's small jobs can dominate the holes"]},
+    {"with": "cs-7-operating-systems/deadlock", "q": "The partial-gang deadlock and cs-7's lock deadlock: which Coffman conditions appear in each, and which one does gang placement remove?", "answer": ["both: mutual exclusion, hold-and-wait, no preemption, and a wait cycle (each job waits on GPUs another holds)", "gang placement removes hold-and-wait: a job holds nothing until it gets everything", "lock ordering removes the cycle instead"]}
+  ],
+  "predict": {"q": "J2 said 3 hours but actually runs 5, and this scheduler doesn't kill jobs at their limit. Commit first: when does J1 start under EASY, and what does that say about enforcing time limits?", "answer": "J1 needs all 8 GPUs. At t = 4, J0 frees its 4, but J2 still holds 2 until t = 5, so J1 starts at t = 5, one hour past its reservation. Backfilling is only safe for the head job if backfilled jobs can't overrun, which is why schedulers kill at the time limit (or preempt)."},
+  "apply": {
+    "task": "Change J2's estimate to 5 hours (still 2 GPUs) and rerun EASY by hand: which job backfills at t = 0 now, when does each job start, the average wait, and the idle GPU-hours before t = 4. Check by editing <code>QUEUE</code> in <code>code/backfill-gang-scheduling.py</code>.",
+    "done": "J2 no longer fits the window (0 + 5 > 4), but J4 does: 4 GPUs free and 0 + 2 ≤ 4, so J4 starts at 0. Starts: J1 4, J2 6, J3 6, J4 0; average wait 16/4 = 4.0 h; idle GPU-hours before t = 4: 32 − 16 − 4 × 2 = 8.",
+    "hint": "Check every queued job behind the head at t = 0, not just the next one."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: J1's start when J2 overruns?",
+    "What couldn't you explain cleanly: why greedy's better average wait is still the wrong goal?",
+    "Which relationship is still fuzzy: shadow time → which jobs may jump, or partial placement → deadlock?",
+    "Could you run conservative backfilling on the same queue and say which decision changes?",
+    "What will you look for in the scheduler-as-product card: how to explain to J1's owner why it's waiting?"
+  ],
+  "revisit": ["cs-6-data-systems/gpu-fair-share", "cs-7-operating-systems/deadlock"],
+  "prereq": []
+}

@@ -1,0 +1,123 @@
+{
+  "prime": {
+    "problem": "Splitting data over machines needs a rule every client can compute. Split by range and new timestamps all land on the last shard; split by hash and range scans hit every shard. And neither can split a single key: if one user sends 13% of the traffic, one shard carries that 13% whatever you do.",
+    "fits": "Builds on consistent hashing (which spreads keys evenly) and the consumers card's partitions (where one slow key blocks its partition). This card separates spreading keys from spreading load, and shows salting for the key that no placement scheme can split.",
+    "expect": [
+      "range vs hash sharding and the queries each keeps on one shard",
+      "Zipf traffic: <code>p(k) ∝ k<sup>−s</sup></code>",
+      "hot key vs hot shard",
+      "salting: 8 sub-keys, 8× read fan-out",
+      "scatter-gather"
+    ],
+    "goal": "Choose range or hash sharding from the queries you need, compute how much load the hottest shard carries under skewed traffic, and decide which keys to salt and what reads then cost."
+  },
+  "attend": [
+    "Which query stays on one shard under range sharding but fans out to all 16 under hash, and the other way round?",
+    "Why does range sharding on a timestamp put 100% of new writes on one shard?",
+    "Why can't going from 16 to 256 shards get the hottest shard below 13.47%?",
+    "User 1's 8 salts landed on only 5 distinct shards. Why, and what did that cost?",
+    "Why did salting the top 10 users do slightly worse than salting the top 2?"
+  ],
+  "core": {
+    "must": [
+      "Range sharding keeps neighbouring keys together → scans stay on one shard → but sequential keys (timestamps, auto-increment) send every new write to the last range → a hot shard by construction",
+      "Hash sharding spreads keys evenly → no sequential hot spot → but scans scatter to every shard (a 1,000-id range hits all 16) → pick the scheme by which queries must stay local",
+      "Traffic is skewed (Zipf s = 1.1: user 1 = 13.47%) → a key lives on exactly one shard → that shard carries the key's share whatever the scheme or shard count → 18.62% on shard 12, 2.98× fair",
+      "Salting splits one hot key into 8 sub-keys on (up to) 8 shards → writes spread (user 1's 13.47% becomes 1.68% per sub-key) → every read of that key must fetch and combine all 8 → salt only the few hot keys (top 2: 18.62% → 9.07%)"
+    ],
+    "elevated": [
+      "Salts land on shards at random → collisions are likely (8 salts over 16 shards: expected 6.45 distinct, got 5) → so salting more keys eventually stacks sub-keys on the same shards (top 10: 9.93%, worse than top 2)"
+    ],
+    "reference": [
+      "md5 vs Python's per-run randomised <code>hash()</code> (PYTHONHASHSEED)",
+      "the Zipf normaliser (Σ j<sup>−1.1</sup> = 7.4222 for 100,000 keys)",
+      "the seeded 1,000,000-request sample (186,068 on shard 12)",
+      "Cassandra's compound-key layout"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw a 2 × 4 table: range vs hash across point lookup, range scan, timestamp key, one hot key. Under it, write the salting chain (split → writes spread → reads fan out) with its two numbers.",
+    "checklist": [
+      "point lookup: 1 shard either way",
+      "range scan: 1 shard with range, all shards with hash",
+      "timestamps: 100% on the last range vs spread by hash",
+      "one hot key: 1 shard either way",
+      "salting user 1 and 2: hottest 18.62% → 9.07%, reads of those keys 8×",
+      "salt only write-heavy hot keys whose values add up"
+    ]
+  },
+  "retrieve": [
+    {
+      "q": "Explain why \"just add shards\" can't fix a hot key, with the card's numbers.",
+      "kind": "concept",
+      "answer": [
+        "the hot key's traffic always goes to one shard",
+        "hottest share: 18.62% on 16 shards, 15.51% on 32, 13.60% on 256",
+        "it can never fall below user 1's own 13.47%; only splitting the key helps"
+      ]
+    },
+    {
+      "q": "Walk through a salted write and a salted read of user 1's usage counter.",
+      "kind": "mechanism",
+      "answer": [
+        "write: pick a random suffix i in 0–7, route <code>user1#i</code> by its hash, add to that sub-counter",
+        "each sub-key gets about 13.47% / 8 = 1.68% of the traffic",
+        "read: fetch all 8 sub-keys (up to 8 shards, 5 distinct here) and sum them",
+        "the read now waits for the slowest of those shards"
+      ]
+    },
+    {
+      "q": "A celebrity's profile is read 1,000× more than it's written. Salt it, cache it, or add read replicas? Why?",
+      "kind": "tradeoff",
+      "answer": [
+        "don't salt: every read would become 8 reads, making the hot path 8× dearer",
+        "cache it or add read replicas: reads spread without splitting the value",
+        "salting suits write-heavy keys whose values add up (counters, logs)"
+      ]
+    }
+  ],
+  "compare": [
+    {
+      "with": "cs-5-distributed-systems/consistent-hashing",
+      "q": "Consistent hashing with 100 virtual nodes got the busiest server to 1.14× the mean for uniform keys; here the hottest shard is 2.98× fair. Which input differs, and why can no placement scheme fix it?",
+      "answer": [
+        "consistent hashing's test keys each carried equal traffic",
+        "here traffic per key is Zipf-skewed, and one key carries 13.47%",
+        "placement moves whole keys; balancing a single key needs splitting it (salting) or copying it (replicas)"
+      ]
+    },
+    {
+      "with": "cs-6-data-systems/mapreduce-execution",
+      "q": "MapReduce routes intermediate keys with hash(key) mod R. What does a Zipf-skewed key do to a MapReduce job, and what is the MapReduce equivalent of salting?",
+      "answer": [
+        "one reducer gets the hot key's whole value list and becomes the straggler; the job waits for it",
+        "combine partial results before the shuffle (a combiner), or split the key into sub-keys and merge in a second step",
+        "same trade: more work at merge time in exchange for spreading the hot key"
+      ]
+    }
+  ],
+  "predict": {
+    "q": "Salt user 1 into 16 sub-keys instead of 8. Does the hottest shard drop well below 12.57%, and how many distinct shards do you expect the 16 salts to land on? Commit, then run <code>shard_loads(p, salted={1}, salts=16)</code>.",
+    "answer": "Only a little: the hottest shard becomes shard 11 at 11.73% (from 12.57%). Expected distinct shards = 16 × (1 − (15/16)<sup>16</sup>) ≈ 10.3; this run got 10. Doubling the salts halves user 1's per-sub-key share, but the hottest shard is now dominated by its <i>other</i> traffic (user 2 alone is 6.29%), and every read of user 1 now costs 16 fetches instead of 8."
+  },
+  "apply": {
+    "task": "Using <code>code/sharding-hot-keys.py</code>, find the smallest set of top users to salt (8 salts each) that brings the hottest of 16 shards under 2× fair (12.5%), and the set that gets it closest to fair. For each, report the hottest shard's share and the read cost: how many user reads (by Zipf share) now pay 8×.",
+    "done": "You find that salting user 1 alone gives 12.57% (just over 2× fair, so not enough); top 2 through top 5 all give 9.07%, the best in the range; and it creeps back up to 9.93% at top 10. So top 2 is both the smallest set and the best, and the share of read traffic that pays 8× is p(1) + p(2) = 13.47% + 6.29% = 19.76%.",
+    "hint": "Loop <code>top</code> over 1…10 calling <code>shard_loads(p, salted=set(range(1, top + 1)))</code> and take <code>max(load.values())</code>. The read share assumes reads follow the same Zipf skew as writes (our assumption)."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: how little 16 salts helped over 8?",
+    "Could you explain \"spreading keys is not spreading load\" with one example?",
+    "Which relationship is still fuzzy: Zipf skew → hot shard, or salting → read fan-out?",
+    "Which key in a system you know is hot, and is it read-heavy or write-heavy?",
+    "What will you reopen before the idempotency and retries card?"
+  ],
+  "revisit": [
+    "cs-5-distributed-systems/consistent-hashing",
+    "cs-5-distributed-systems/load-balancing-consumers",
+    "cs-5-distributed-systems/backpressure-metrics"
+  ],
+  "prereq": [
+    "cs-5-distributed-systems/consistent-hashing"
+  ]
+}

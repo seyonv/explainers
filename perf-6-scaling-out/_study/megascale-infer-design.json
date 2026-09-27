@@ -1,0 +1,65 @@
+{
+  "prime": {
+    "problem": "In MoE decode each expert gets only top-k/E of a replica's batch, so its matmuls stay memory-bound and the GPU's compute idles. Growing the batch to fix it runs into the TBT SLO and KV memory, and attention, which can't be fixed by batching, is stuck on the same GPUs.",
+    "fits": "First MegaScale-Infer card. It combines two earlier ideas: expert parallelism (pool tokens for experts) and DistServe's disaggregation (give each part its own GPUs), and applies the second inside decode: attention on one pool, experts on another. DeepSeek's decode unit is the colocated contrast.",
+    "expect": ["the FFN utilization formulas (dense vs MoE)", "attention nodes (DP, hold KV) vs expert nodes (EP, one expert each)", "the batch identity and the balance rule for n_a", "heterogeneous hardware: H20 for attention, L40S for experts", "M2N/N2M instead of all-to-all"],
+    "goal": "Compute an expert's utilization for a given batch and GPU, size the number of attention nodes that feed the experts, and explain why each side wants a different GPU."
+  },
+  "attend": [
+    "Why does batching help the FFN but not attention in decode?",
+    "Why does the MoE utilization curve sit to the right of the dense one by exactly #expert/topk?",
+    "What does each attention node hold that an expert node doesn't, and why does that make attention data-parallel?",
+    "In n_a = b_e·E/(b_a·K), which side's micro-batch does the balance rule really choose?",
+    "Why is a GPU with cheap FLOPs (L40S, ops:byte ≈ 419) only a good expert node when many attention nodes feed it?"
+  ],
+  "core": {
+    "must": [
+      "Decode attention reads each request's own KV → batching can't share it → attention stays memory-bound; FFN weights are shared by every token → a big enough batch makes the FFN compute-bound → but the router gives each expert only topk/#expert of the batch (Mixtral at b = 156 on an A100: 39 tokens, 25% MFU)",
+      "Put attention on DP nodes (each with its own requests and KV) and experts on EP nodes (one expert per node) → many attention nodes' tokens pool at each expert → b_e = b_a·n_a·K/E grows with n_a → experts reach F/B (5 A100 attention nodes give Mixtral 160 tokens per expert, 100%) without any single replica's batch growing",
+      "Split sides can be sized and bought separately → attention wants memory capacity and bandwidth per cost (H20: 51.9 GB and 2,214 GB/s per unit cost), experts want FLOPs per cost (L40S: 335 TFLOPS per unit cost) → heterogeneous deployment → 1.86× decode throughput per cost vs TensorRT-LLM on H20",
+      "The two sides must finish a micro-batch at the same time → fit T_a = k1·b_a + k2, T_e = k3·b_e + k4 → choose n_a = k1·E/(k3·K) → any mismatch leaves one pool idle, which is what the ping-pong pipeline (next card) must also hide"
+    ],
+    "elevated": [
+      "Cheap-FLOP GPUs have very high ops:byte (L40S ≈ 419 vs H20 ≈ 36) → each expert needs b_e ≥ 419 tokens to be compute-bound → Mixtral on L40S experts needs 14 attention nodes at b_a = 128 → heterogeneity only pays because disaggregation supplies a large pooled batch",
+      "One expert per node suits coarse experts (Mixtral 33.8 GB each) but wastes whole nodes on fine-grained ones (V3's 2.55 GB per expert) → fine-grained MoEs lean toward colocated large EP"
+    ],
+    "reference": [
+      "Table 3's per-GPU prices and specs",
+      "the paper's symbol clashes (B as bandwidth vs batch, K as top-k vs a cost)",
+      "Infinite-LLM as prior work",
+      "the §7.3 196,608 B message example",
+      "Mixtral 8×22B shapes (hidden 6,144, FFN 16,384, 56 layers)"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw one runtime instance: attention nodes on one side, expert nodes on the other, arrows for M2N and N2M. Next to it write the two utilization formulas and one chain from \"router splits the batch\" to \"attention–FFN disaggregation\".",
+    "checklist": [
+      "attention: memory-bound at any batch because each request has its own KV",
+      "MoE FFN utilization = min(topk/#expert · b/(F/B), 1): the dense curve shifted right by E/K",
+      "attention DP with KV, experts EP (one per node), TP only inside a node",
+      "pooling from n_a attention nodes raises tokens per expert",
+      "n_a chosen so T_a ≈ T_e",
+      "each side on its cheapest GPU for its bottleneck"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why attention and experts want different GPUs once they are split, naming the bottleneck and the Table 3 metric for each.", "kind": "concept", "answer": ["attention is memory-bound and holds the KV cache: it wants GB and GB/s per unit cost (H20)", "pooled experts are compute-bound: they want TFLOPS per unit cost (L40S)", "on one GPU type you'd overpay for whichever resource the other side doesn't use"]},
+    {"q": "Size a Mixtral 8×22B instance on the A100 roofline (F/B = 156) with b_a = 128 and m = 3: attention nodes, tokens per expert, global batch, and utilization with and without pooling.", "kind": "mechanism", "answer": ["n_a = ⌈156 × 8 / (2 × 128)⌉ = ⌈4.88⌉ = 5", "b_e = 128 × 5 × 2/8 = 160 tokens → 100% utilization", "B = 128 × 3 × 5 = 1,920 tokens in flight", "one node alone: 384 × 2/8 = 96 tokens per expert → 61.5%"]},
+    {"q": "Why not just grow one colocated replica's batch until DeepSeek-V3's experts are compute-bound on an H100? Give the number and the three limits.", "kind": "tradeoff", "answer": ["it would need 295 × 256/8 = 9,440 tokens in one replica's step", "a bigger batch slows every step and breaks the TBT SLO", "every sequence's KV must fit, and big MoEs leave little memory", "spreading the model over more GPUs to make room adds communication"]}
+  ],
+  "compare": [
+    {"with": "perf-6-scaling-out/deepseek-v3-infrastructure", "q": "DeepSeek's decode unit (attention DP80 and EP320 on the same 320 GPUs) vs MegaScale-Infer's attention nodes + expert nodes: both pool tokens for experts. What is fundamentally different, and when would you pick each?", "answer": ["DeepSeek runs attention and experts on every GPU; MegaScale-Infer puts them on separate pools", "separate pools can be sized (n_a vs E) and bought (H20 vs L40S) independently; colocated units grow both together", "colocated large EP suits fine-grained experts (V3: 2.55 GB each, one per GPU is fine); AFD suits coarse experts and heterogeneous fleets", "AFD fails if M2N traffic isn't hidden; colocated EP fails by straggler experts and all-to-all latency"]},
+    {"with": "perf-6-scaling-out/distserve-interference", "q": "P/D disaggregation vs attention–FFN disaggregation: what does each split, what crosses the network and how often, and what does each let you size separately?", "answer": ["P/D splits a request by phase; AFD splits each decode step by layer type", "P/D moves each request's KV once; AFD moves activations twice per MoE layer, every step", "P/D sizes the prefill:decode ratio; AFD sizes n_a vs E and the GPU type of each", "MegaScale-Infer does both: P/D first, then AFD inside decode"]}
+  ],
+  "predict": {"q": "Swap Mixtral for DBRX (top-4 of 16 experts) on the same A100 roofline with b_a = 128. How many attention nodes does it take to make each expert compute-bound, and what is one node's utilization on its own? Commit first.", "answer": "E/K = 16/4 = 4, the same ratio as Mixtral's 8/2, so n_a = ⌈156 × 16 / (4 × 128)⌉ = ⌈4.875⌉ = 5 and one node alone gives 384 × 4/16 = 96 tokens per expert = 61.5%. Only E/K matters for this sizing, not E itself. It changes on an H100 (F/B 295): ⌈9.2⌉ = 10 attention nodes."},
+  "apply": {"task": "Run labs/afd-util.py. Then size three cases by hand with b_a = 128: (1) DBRX on the H100 roofline (F/B = 295); (2) Mixtral with L40S expert nodes (ops:byte 419); (3) DeepSeek-V3 on H100 with b_a = 64. For each give n_a and b_e. Then explain in two sentences why case (3) is a bad fit for one expert per node.", "done": "You have n_a and b_e for three cases and a two-sentence argument that uses the per-expert size.", "hint": "(1) ⌈295 × 16/(4 × 128)⌉ = 10, b_e = 128 × 10 × 4/16 = 320. (2) ⌈419 × 8/(2 × 128)⌉ = 14, b_e = 448. (3) The card: b_a = 64 needs 148 attention nodes (b_e = 64 × 148 × 8/256 = 296). A V3 expert is 2.55 GB in FP8 across all layers, so one expert per node leaves nearly all of each node's memory empty; colocated large EP is the usual choice there."},
+  "reflect": [
+    "Which prediction did you get wrong: that DBRX sizes like Mixtral on an A100?",
+    "Could you explain why attention can't be fixed by batching, in one sentence?",
+    "Which relationship is still fuzzy: n_a → tokens per expert, or ops:byte → which GPU suits experts?",
+    "Can you say when colocated large EP beats AFD?",
+    "What will you look for on part II: how the two pools avoid waiting for each other?"
+  ],
+  "revisit": ["perf-6-scaling-out/expert-parallel", "perf-6-scaling-out/distserve-interference", "perf-6-scaling-out/moe-basics", "perf-6-scaling-out/deepseek-v3-infrastructure", "perf-2-scaling-book-inference/critical-batch-size"],
+  "prereq": ["perf-6-scaling-out/expert-parallel", "perf-6-scaling-out/distserve-interference"]
+}

@@ -1,0 +1,56 @@
+{
+  "prime": {
+    "problem": "Older servers reserved one contiguous slab of KV per request, sized for the longest possible answer. Only 20.4–38.2% of KV memory held real tokens, so the batch, and with it throughput, was a fraction of what the GPU could hold.",
+    "fits": "First card on managing the KV pool. The previous cards shrank bytes per token; this one raises the share of the pool that holds real tokens (u in the overview's formula), borrowing virtual memory from operating systems.",
+    "expect": ["reserved, internal and external fragmentation", "KV blocks of B tokens (vLLM: 16)", "logical vs physical blocks, block table", "allocate on demand", "attention summed block by block"],
+    "goal": "Name the three kinds of waste, trace a block table through a few decode steps, and compute how many requests fit with reserve-max versus paged allocation."
+  },
+  "attend": [
+    "Why did existing systems reserve memory for the maximum output length in the first place?",
+    "Which of the three wastes can only be known once a request finishes?",
+    "What does a block table map from and to, and what does the #filled field let the allocator skip?",
+    "Why does the attention math not change at all, and what does change for the kernel?",
+    "Why is waste per request bounded by one block, whatever the output length?"
+  ],
+  "core": {
+    "must": [
+      "Output length is unknown and frameworks want contiguous tensors → reserve a max-length slab per request → reserved slots locked, the unused tail wasted, gaps between slabs → only 20–38% of KV memory holds tokens → the batch is small",
+      "Cut each request's KV into fixed B-token blocks → place blocks anywhere, map logical → physical in a per-request block table → allocate a block only when the last is full → waste < 1 block per request → 96% (paper), 97.7% (our Llama sim) of KV holding tokens",
+      "Once padding is gone, the batch is limited by KV memory → paging lets many more requests fit (59 → 851 in our H100 sim) → throughput rises 2–4× even though the paged attention kernel is 20–26% slower"
+    ],
+    "elevated": [
+      "Block size is a trade → small blocks waste less per request but give the kernel less contiguous work → vLLM's default 16 tokens (2 MiB for Llama-3.1-8B across all layers) is \"large enough … small enough\""
+    ],
+    "reference": ["the OS analogy table (page/byte/process)", "OPT-13B's 800 KB/token and 1.6 GB per 2,048-token request", "per-layer, per-head block layout footnote", "the Fig 2 per-system percentages", "the simulation's synthetic lognormal lengths"]
+  },
+  "compress": {
+    "prompt": "Draw from memory: one contiguous reserve-max slab with its three kinds of waste labelled, and next to it the same request as blocks with a block table. Add one line on why waste is now under one block.",
+    "checklist": [
+      "reserved: slots for future tokens, locked for the request's life",
+      "internal: slots past the request's real end",
+      "external: allocator gaps between slabs",
+      "paged: fixed blocks anywhere, block table logical → physical, new block only when the last is full",
+      "so only the last block's empty tail is wasted"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why paging raises throughput even though it makes the attention kernel slower.", "kind": "concept", "answer": ["serving throughput comes from batch size, and the batch is limited by KV memory", "paging stops reserving and fragmenting, so far more requests fit", "only attention pays the 20–26% indirection cost; the linear layers don't change", "net 2–4× higher throughput at the same latency"]},
+    {"q": "Walk through Fig 6: the 7-token prompt \"Four score and seven years ago our\" with B = 4, then two decode steps (\"fathers\", \"brought\"). What does the block table hold after each step?", "kind": "mechanism", "answer": ["prefill: logical 0 → a physical block holding 4 tokens, logical 1 → another holding 3 (the paper's 7 and 1)", "\"fathers\" fills the 4th slot of logical block 1", "\"brought\" finds no free slot, so a new physical block (3) is allocated for logical 2 with 1 filled", "table: 0→7 (4), 1→1 (4), 2→3 (1)"]},
+    {"q": "When does paging buy little or nothing, per §8 and §6.2?", "kind": "tradeoff", "answer": ["training: shapes are static and allocation can be planned", "compute-bound serving (non-LLM models): better memory use buys nothing, indirection costs", "OPT-175B with short Alpaca requests: so many fit anyway that the run is compute-bound"]}
+  ],
+  "compare": [
+    {"with": "perf-4-attention-kv/kv-quantization", "q": "KV quantization and paging both let more requests fit. Which term of the capacity formula does each change, and why do their gains multiply?", "answer": ["quantization cuts bytes per token", "paging raises the share of the pool that holds real tokens (u)", "they're independent terms, so a smaller per-token KV in a paged pool gets both gains"]},
+    {"with": "perf-2-scaling-book-inference/params-vs-kv", "q": "perf-2 computed how many sequences fit from free HBM ÷ KV per sequence. What assumption in that calculation does PagedAttention I show real servers violated?", "answer": ["perf-2 assumes every byte of the pool holds a token (u = 1)", "reserve-max servers held tokens in only 20–38% of it", "so the real batch was 3–5× smaller than the formula predicted until paging"]}
+  ],
+  "predict": {"q": "A 1,000-token Llama-3.1-8B request with B = 16. How many blocks does it hold, how many slots are empty, and how much memory would a reserve-8,192 server waste on it instead? Commit first.", "answer": "⌈1,000 / 16⌉ = 63 blocks; the last holds 1,000 − 62 × 16 = 8 tokens, so 8 slots (1 MiB) are empty. Reserve-8,192 wastes 7,192 slots × 128 KiB = 0.94 GB on the same request (our arithmetic)."},
+  "apply": {"task": "Run labs/paged-allocator.py. Then change B to 128 and to 4 (one at a time) and record concurrent requests and the % of KV holding tokens for the paged allocator. Before running, predict which direction each change moves them and why.", "done": "You have three rows (B = 4, 16, 128) for the paged allocator and a one-line explanation of the trend in terms of the empty tail of the last block.", "hint": "At B = 16 the lab gives 851 requests and 97.7% holding tokens. Larger blocks mean a bigger average empty tail per request (up to B − 1 slots), so fewer requests fit; smaller blocks waste less but make the kernel's reads less contiguous, which the simulation doesn't model."},
+  "reflect": [
+    "Which prediction did you get wrong: the empty slots, or the reserve-max waste?",
+    "Could you explain the three wastes with a restaurant booking analogy?",
+    "Which relationship is still fuzzy: unknown output length → reservation, or paging → larger batch → throughput?",
+    "Why does the paged simulation still preempt 644 times, and which card handles that?",
+    "What will you look for in PagedAttention II: how a block table lets two sequences share KV?"
+  ],
+  "revisit": ["perf-2-scaling-book-inference/params-vs-kv", "perf-2-scaling-book-inference/inference-engine-design"],
+  "prereq": ["perf-2-scaling-book-inference/params-vs-kv"]
+}

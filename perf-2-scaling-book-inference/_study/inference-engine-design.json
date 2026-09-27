@@ -1,0 +1,117 @@
+{
+  "prime": {
+    "problem": "Prefill wants big compute-bound batches; generation wants many small memory-bound steps with a steady rhythm. Run them in lockstep and TTFT waits on the whole batch, finished slots sit idle, and one long prompt freezes every user mid-sentence. The formulas are right, but the scheduling around them decides what users feel.",
+    "fits": "Twelfth card, the book's <i>Designing an effective inference engine</i>. It takes the step-time formula's prefill-vs-decode contrast and asks how an engine should feed both, then sizes a disaggregated fleet with Part 8's numbers.",
+    "expect": ["batched vs interleaved vs disaggregated serving", "continuous batching (refill slots every step)", "prefix caching in a trie, with affinity routing", "sizing prefill : generate servers (P ≈ 3G)", "JetStream's prefill / insert / generate"],
+    "goal": "Pick an engine design for a workload, explain the latency cost of each option from the prefill-vs-step ratio, and size a disaggregated pipeline by matching rates."
+  },
+  "attend": [
+    "How many decode steps does one prefill cost on the running example, and who pays for that stall?",
+    "Which of the book's four problems with batched prefill does continuous batching fix, and which does it leave?",
+    "Why is interleaving great for evals but jittery for chat?",
+    "What does disaggregation cost, and why is that <i>another motivation for reducing KV cache size</i>?",
+    "Why does prefix caching need affinity routing, and what does that do to load balancing?"
+  ],
+  "core": {
+    "must": [
+      "Prefill of T tokens takes ≈ 2·N·T/C and a decode step reads weights plus KV → one 8k prefill of Llama-3.1-8B (133 ms) costs 13.4 decode steps at batch 32 → if they share a GPU, every decoding user freezes for that long → TPOT jitter",
+      "Static batching waits for the longest member and pads prompts → slots idle, TTFT balloons (7.3 s mean in the lab at 8 req/s) → continuous batching refills a freed slot at the next step → the batch never waits for its slowest sequence",
+      "Interleaving prefills at batch 1 on the decode GPU → good TTFT and throughput, but other users' prefills stall decode (P99 gap 63.8 ms) → disaggregation moves prefill to its own servers and ships the KV cache → no stalls, independent scaling and per-phase sharding, at the cost of transfers and more hardware",
+      "A token's KV depends only on the tokens before it → a shared prefix's KV can be reused exactly → prefill only what's past the deepest match (a trie with LRU) → but the cache lives on one replica → follow-ups must be routed there (hit rate 55.9% random vs 80.4% affinity in the lab)"
+    ],
+    "elevated": [
+      "Keep a disaggregated pipeline saturated by equating rates: P / T<sub>prefill</sub> = B·G / (T<sub>step</sub>·n<sub>decode</sub>) → 8k prompts, 512-token answers and 70B on v5e give P ≈ 3G → long prompts with short answers need more prefill hardware than generate hardware"
+    ],
+    "reference": [
+      "JetStream's three threads and its prefill / insert / generate Engine interface",
+      "the lab's full simulator table (TTFT, gaps, tokens/s per GPU)",
+      "the 96 tokens-evicted-per-step arithmetic",
+      "Kiely's disaggregation thresholds (10⁸–10⁹ tokens/day, ≥ 100B params, prefill-heavy)",
+      "128 GiB HBM vs ~450 GiB host DRAM for the prefix cache"
+    ]
+  },
+  "compress": {
+    "prompt": "Draw the three timelines (batched, interleaved, disaggregated) from memory as four decode slots over time, marking where prefill runs, where slots idle, and where users stall. Under each write one line: who it's right for. Then write the P ≈ 3G balance equation.",
+    "checklist": [
+      "batched: TTFT waits for the batch, finished slots idle, padding; fine for edge or a first version",
+      "interleaved: good TTFT and throughput, jittery decode; right for bulk evals",
+      "disaggregated: no stalls, ships KV, needs scale; right for latency-sensitive high-volume chat",
+      "continuous batching refills slots every step",
+      "P / T<sub>prefill</sub> = B·G / (T<sub>step</sub>·n<sub>decode</sub>)"
+    ]
+  },
+  "retrieve": [
+    {
+      "q": "Explain why a single long prompt hurts every other user on an interleaved server, in terms of the step-time formula.",
+      "kind": "concept",
+      "answer": [
+        "prefill is compute-bound and takes 2·N·T/C: 133 ms for 8k tokens of Llama-3.1-8B",
+        "a decode step at batch 32, 4k context is ≈ 9.9 ms",
+        "while the GPU prefills, no decode step runs, so all 32 users wait ≈ 13 steps"
+      ]
+    },
+    {
+      "q": "Walk a request through a continuous-batching engine built from JetStream's interface, from arrival to its last token.",
+      "kind": "mechanism",
+      "answer": [
+        "the orchestrator queues it until a decode slot is free",
+        "prefill(tokens) builds its KV cache and the first token",
+        "insert(kv, decode_state) places that cache in the free slot",
+        "generate(decode_state) runs one step for every active slot, appending one KV each, until EOS frees the slot for the next request"
+      ]
+    },
+    {
+      "q": "A mid-size team serves an 8B model at modest volume with short prompts. Someone proposes disaggregated prefill. What does the lab and Kiely's rule of thumb say, and what would you do instead?",
+      "kind": "tradeoff",
+      "answer": [
+        "disaggregation removed stalls in the lab, but halved per-GPU throughput at small scale (1,917 vs 959 per GPU)",
+        "Kiely: only for very high volume, ≥ 100B models, and prefill-heavy traffic",
+        "instead: continuous batching with chunked prefill, and prefix caching with affinity routing"
+      ]
+    }
+  ],
+  "compare": [
+    {
+      "with": "perf-5-engines/sarathi-chunked-prefill",
+      "q": "Disaggregation and chunked prefill both attack the interleaving stall. What does each change, and when does each fail?",
+      "answer": [
+        "disaggregation moves prefill to other GPUs, so decode never runs a prefill",
+        "chunked prefill splits a long prompt into pieces that ride along with decode steps, so no single step freezes for the whole prompt",
+        "disaggregation fails at small scale (wasted hardware, KV transfer cost); chunking still slows the steps that carry chunks and adds some prefill overhead"
+      ]
+    },
+    {
+      "with": "perf-5-engines/orca-iteration-scheduling",
+      "q": "The book's continuous batching is Orca's iteration-level scheduling. What is the unit of scheduling in each design, and why does the smaller unit fix the static batch's idle slots?",
+      "answer": [
+        "static: the whole batch, from first prefill to last token",
+        "iteration-level: one decode step; after each step the scheduler can drop finished sequences and add new ones",
+        "a slot freed at step 5 is refilled at step 6 instead of waiting for the longest sequence"
+      ]
+    }
+  ],
+  "predict": {
+    "q": "Keep the book's 70B pipeline (0.91 s prefill of 8k, 19 ms steps, B = 32) but make answers 2,048 tokens instead of 512. Commit first: more or fewer prefill servers than generate servers?",
+    "answer": "Fewer. P = 0.91 × 32 / (0.019 × 2,048) × G ≈ 0.75 G. Each generate server now holds each sequence 4× longer, so it finishes 4× fewer per second and needs 4× less prefill feeding it. The ratio is the prefill time divided by the decode time per sequence, scaled by batch: long answers shift hardware toward generate."
+  },
+  "apply": {
+    "task": "Using <code>labs/inference-engine-design.py</code> part 1's formulas, compute the stall a 4,096-token prompt causes on an interleaved H100 serving Llama-3.1-8B (in decode steps at batch 32 with 2k context and with 4k context). Then redo part 2's P:G balance for 2,048-token answers, and for 256-token answers, keeping the book's 0.91 s, 19 ms and B = 32. Say which workload most needs disaggregation.",
+    "done": "The 4k prefill takes ≈ 66.5 ms, a stall of ≈ 9.0 steps at 2k (7.4 ms steps) and ≈ 6.7 at 4k (9.9 ms); P ≈ 0.75 G for 2,048-token answers and ≈ 6.0 G for 256-token answers, and you conclude short answers after long prompts need the most prefill hardware.",
+    "hint": "Prefill = 2 × 8.03e9 × 4,096 / 989e12. P/G = 0.91 × 32 / (0.019 × n<sub>decode</sub>)."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: the direction of the P:G shift?",
+    "Could you explain continuous batching to someone who only knows static batching, with one timeline?",
+    "Which relationship is still fuzzy: prefill time → decode stall, or cache locality → routing → load balance?",
+    "Did you assume disaggregation always wins? What in the lab changed your mind?",
+    "Before Part 8: which numbers from this card will you need to size a 70B deployment?"
+  ],
+  "revisit": [
+    "perf-2-scaling-book-inference/step-time",
+    "perf-2-scaling-book-inference/what-we-optimize",
+    "perf-2-scaling-book-inference/kv-tricks"
+  ],
+  "prereq": [
+    "perf-2-scaling-book-inference/step-time"
+  ]
+}

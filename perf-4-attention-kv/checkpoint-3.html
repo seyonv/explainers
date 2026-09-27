@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Checkpoint 3: reuse, move and stretch the KV cache</title>
+<style>
+:root{
+  --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
+  --text:#1c1f23; --muted:#6b7068; --faint:#b9b9b3;
+  --accent:#4a9d77; --accent-bg:#dcefdf; --accent-border:#8cc79c;
+  --red:#c0492b; --red-bg:#fbeceb;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#15171a; --surface:#1d2024; --surface2:#24282d; --border:#32373d;
+    --text:#e6e8ea; --muted:#9aa1a9; --faint:#4a5057;
+    --accent:#5fb37f; --accent-bg:#1c2b22; --accent-border:#3f7a55;
+    --red:#e57368; --red-bg:#2e1f1e;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text)}
+.card{max-width:820px;margin:0 auto;padding:28px 32px;font-family:-apple-system,"Inter",system-ui,sans-serif;line-height:1.45}
+h1{font-size:26px;font-weight:600;margin:0 0 6px;letter-spacing:-0.01em}
+.sub{font-size:15px;color:var(--muted);margin:0 0 20px}
+h2{font-size:17px;font-weight:600;margin:26px 0 10px}
+p{font-size:15px;margin:0 0 10px}
+ul{font-size:15px;margin:0 0 10px;padding-left:20px}
+.cap{font-size:13px;color:var(--muted);margin:8px 0 0}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+
+/* Tables and formulas */
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border)}
+th{font-size:12px;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:none}
+.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.hi{color:var(--accent);font-weight:600} .lo{color:var(--red)} .mu{color:var(--muted)}
+.formula{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin:10px 0;white-space:pre;overflow-x:auto;line-height:1.55}
+
+.foot{margin-top:22px;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+.foot p{font-size:13px}
+.foot a{color:var(--muted)}
+a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+
+/* Checkpoint */
+.how{border:1px solid var(--border);border-radius:10px;padding:10px 16px;background:var(--surface);margin:0 0 8px}
+.how p{font-size:14px;margin:4px 0}
+ol.qs{padding-left:24px;margin:6px 0}
+ol.qs>li{margin:0 0 16px;font-size:15px}
+.tag{display:inline-block;font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:var(--accent);border:1px solid var(--accent-border);border-radius:4px;padding:0 5px;margin-right:6px;vertical-align:1px}
+details.chk{margin:6px 0 0;padding:4px 12px;border-left:3px solid var(--accent-border);background:var(--surface2);border-radius:0 6px 6px 0;font-size:14px}
+details.chk>summary{cursor:pointer;color:var(--accent);font-size:13px;font-weight:600}
+details.chk ul,details.chk ol{margin:6px 0;padding-left:20px}
+details.chk li{margin:3px 0}
+.re{font-size:13px;color:var(--muted);margin:4px 0 6px}
+.tw{overflow-x:auto;margin:8px 0}
+table.cmp{min-width:680px;font-size:13.5px;table-layout:fixed}
+table.cmp th,table.cmp td{vertical-align:top}
+table.cmp td:first-child{font-weight:600;width:19%}
+table.cmp td.blank{height:64px;background:var(--surface);border:1px dashed var(--border)}
+table.fix td{vertical-align:top}
+.proj{border:1px solid var(--accent-border);border-radius:10px;padding:12px 18px;margin:8px 0}
+.proj h3{font-size:15px;margin:12px 0 4px}
+.proj p,.proj li{font-size:14px}
+.proj ol,.proj ul{padding-left:20px;margin:4px 0}
+.proj li{margin:5px 0}
+.card>ul{font-size:15px;padding-left:22px}
+.card>ul li{margin:3px 0}
+.done{background:var(--accent-bg);border:1px solid var(--accent-border);border-radius:8px;padding:8px 12px;font-size:14px;margin:10px 0}
+@media (max-width:560px){.card{padding:22px 16px}}
+</style>
+</head>
+<body>
+<article class="card">
+<h1>Checkpoint 3: reuse, move and stretch the KV cache</h1>
+<p class="sub">Ties together <a href="radixattention.html">RadixAttention I</a>, <a href="cache-aware-scheduling.html">RadixAttention II</a>, <a href="mooncake-store.html">Mooncake I</a>, <a href="mooncake-scheduling.html">Mooncake II</a> and <a href="long-context.html">long context</a>: keeping KV after a request ends, deciding which request runs where so the cache actually hits, and what to do when one sequence's KV is too long to keep.</p>
+
+<div class="how">
+<p><b>How to use this page.</b> Close the five cards. Answer each question in writing, in full sentences, <i>before</i> opening its Check. A wrong or shaky answer isn't a failure; it tells you exactly which section to reopen. The questions are mixed on purpose, so you have to work out which idea applies before you can answer.</p>
+</div>
+
+<h2>1 · Mixed retrieval</h2>
+<ol class="qs">
+<li><span class="tag">which concept?</span>Prefix caching is on, yet a few-shot service recomputes its 1,500-token templates over and over. Traffic mixes 8 templates, arrivals are first-come, first-served, and the cache holds about 3 templates. Which idea explains it, and what is the cheapest fix?
+<details class="chk"><summary>Check</summary><ul>
+<li>cache thrashing: FCFS interleaves templates, so LRU evicts each one just before its next request</li>
+<li>fix the order, not the cache: longest-shared-prefix-first runs each template's requests back to back</li>
+<li>on the card's 64-request batch: 30.2% → 84.7% hit rate, the optimum, with no extra memory</li>
+</ul><p class="re">Missed it? Reopen <a href="cache-aware-scheduling.html">RadixAttention II</a>, "The problem" and the worked example.</p></details></li>
+
+<li>A new chat arrives that shares only the system prompt with a cached chat, whose system prompt and first turn sit on one edge of the radix tree. Walk through what the tree does, and why the system prompt later survives when memory runs short.
+<details class="chk"><summary>Check</summary><ul>
+<li>the match walks the edge and diverges after the system prompt, so the edge is split: a system-prompt node with two children</li>
+<li>only the new chat's own tokens are prefilled</li>
+<li>eviction takes least-recently-used <i>leaves</i> with reference count 0; the system prompt is an ancestor of every chat, so it goes only after everything below it</li>
+</ul><p class="re">Missed it? Reopen <a href="radixattention.html">RadixAttention I</a>, steps 3–5 of the replay and the four rules.</p></details></li>
+
+<li><span class="tag">which concept?</span>A cluster could load a cached 2,000-token Llama-3.1-8B prefix from another machine over a 25 Gbps link (about 3.1 GB/s), or recompute it on the H100. Which idea decides it, and which wins?
+<details class="chk"><summary>Check</summary><ul>
+<li>store vs recompute: load wins only above B<sub>min</sub> = 2sG / (gqa · (a p + b d)), about 8.6 GB/s here</li>
+<li>0.262 GB at 3.1 GB/s ≈ 84 ms vs ≈ 30 ms to recompute (Eq 1 at 100% of 989 TF): recompute wins</li>
+<li>at 100 Gbps (12.5 GB/s) loading takes ≈ 21 ms and wins, though only narrowly (our arithmetic)</li>
+</ul><p class="re">Missed it? Reopen <a href="mooncake-store.html">Mooncake I</a>, "More storage for less computation" and "When is storing KV a bad deal?".</p></details></li>
+
+<li>Why is longest-shared-prefix-first provably optimal for a fixed batch, and what is the smallest cache the proof needs?
+<details class="chk"><summary>Check</summary><ul>
+<li>every edge of the batch's request tree must be computed at least once, so Σ|e| is a lower bound</li>
+<li>a depth-first order finishes an edge's whole subtree while it is cached, so each edge is computed exactly once</li>
+<li>LSPF picks the deepest branch-off point, which is DFS; the cache only has to hold the longest single request</li>
+</ul><p class="re">Missed it? Reopen <a href="cache-aware-scheduling.html">RadixAttention II</a>, "Theorem 3.1".</p></details></li>
+
+<li>In Mooncake II's example, instance A holds 4,000 of a 6,000-token prompt but has 150 ms of queued work; idle B holds nothing. If A's queue drops to 20 ms, where does Algorithm 1 send the request, and why did B win before?
+<details class="chk"><summary>Check</summary><ul>
+<li>estimated TTFT = transfer + queue + prefill of the uncached part</li>
+<li>before: A 150 + 32.5 = 182.5 ms; B pulls 4,000 tokens (21.0 ms) + 40 + 32.5 = 93.4 ms, so B</li>
+<li>with A's queue at 20 ms: 20 + 32.5 = 52.5 ms, so A wins; with a short queue the cache holder is best</li>
+</ul><p class="re">Missed it? Reopen <a href="mooncake-scheduling.html">Mooncake II</a>, "Worked example: one 6,000-token request".</p></details></li>
+
+<li><span class="tag">which concept?</span>A lab is pretraining a new model for 128k-token contexts. It wants decode to read far fewer bytes per step, but any old token must stay reachable directly. Sliding window, ring attention or NSA: which fits, and what does it still cost?
+<details class="chk"><summary>Check</summary><ul>
+<li>NSA: compressed, selected and window branches read s/16 + 1,536 tokens: 9,728 at 128k, 13.5× fewer bytes, and the selection branch can pick any old block</li>
+<li>a sliding window cuts storage too but reaches far tokens only indirectly; ring attention keeps attention exact but doesn't cut bytes read, it splits them across devices</li>
+<li>NSA still stores the full cache (3 sequences of 128k per H100) and must be trained in</li>
+</ul><p class="re">Missed it? Reopen <a href="long-context.html">long context</a>, section 3 and "All three on the running example".</p></details></li>
+
+<li>Mooncake's first version of early rejection used the decode pool's current load and made the prefill and decode pools oscillate. Why, and what fixed it?
+<details class="chk"><summary>Check</summary><ul>
+<li>a request admitted now reaches decode only after its prefill, so current decode load is the wrong signal: it lags by one prefill</li>
+<li>the pools took turns being busy while the other sat idle (anti-phase)</li>
+<li>predict decode load at the time prefill will finish, and admit on that: rejections fell 3,771 → 3,589 (baseline 4,183)</li>
+</ul><p class="re">Missed it? Reopen <a href="mooncake-scheduling.html">Mooncake II</a>, "Overload: reject early, and predict".</p></details></li>
+
+<li>Ring attention splits a 1M-token prefill over 8 hosts. Why is the result exact even though every host sees the KV blocks in a different order, and when does the communication stop hiding behind compute?
+<details class="chk"><summary>Check</summary><ul>
+<li>each host keeps running (m, ℓ, O) for its query block and merges each arriving KV block with online softmax, which is exact in any order</li>
+<li>it hides only if a block's compute outlasts its transfer: c ≥ F/B tokens, with about 6c tokens per host</li>
+<li>A100 NVLink: c ≈ 1K; A100 InfiniBand: ≈ 25K, so about 150K tokens per host</li>
+</ul><p class="re">Missed it? Reopen <a href="long-context.html">long context</a>, section 2.</p></details></li>
+</ol>
+
+<h2>2 · Compare the strategies</h2>
+<p>Fill this in on paper first. Rows are the ways to deal with KV that repeats across requests or grows too long; columns ask what's fundamentally different, which design choice causes it, when you'd pick it, and how it fails.</p>
+<div class="tw"><table class="cmp">
+<tr><th>Approach</th><th>Core mechanism</th><th>Design choice that causes the difference</th><th>When to choose it</th><th>How it fails</th></tr>
+<tr><td>Radix-tree prefix cache (one GPU)</td><td class="blank"></td><td class="blank"></td><td class="blank"></td><td class="blank"></td></tr>
+<tr><td>Cache-aware scheduling (LSPF)</td><td class="blank"></td><td class="blank"></td><td class="blank"></td><td class="blank"></td></tr>
+<tr><td>Pooled KV store + KV-centric placement (Mooncake)</td><td class="blank"></td><td class="blank"></td><td class="blank"></td><td class="blank"></td></tr>
+<tr><td>Sliding window</td><td class="blank"></td><td class="blank"></td><td class="blank"></td><td class="blank"></td></tr>
+<tr><td>Ring attention</td><td class="blank"></td><td class="blank"></td><td class="blank"></td><td class="blank"></td></tr>
+<tr><td>Native sparse attention (NSA)</td><td class="blank"></td><td class="blank"></td><td class="blank"></td><td class="blank"></td></tr>
+</table></div>
+<details class="chk"><summary>Check: the filled-in table</summary>
+<div class="tw"><table class="cmp">
+<tr><th>Approach</th><th>Core mechanism</th><th>Design choice that causes the difference</th><th>When to choose it</th><th>How it fails</th></tr>
+<tr><td>Radix-tree prefix cache</td><td>keep finished requests' KV in a tree keyed by tokens; match any prefix; evict LRU leaves</td><td>KV depends only on the prefix, and a tree finds shared prefixes at token granularity</td><td>repeated system prompts, few-shot examples, chat histories, sampling</td><td>0% on prompts that share nothing; capacity shared with the batch in HBM; FCFS order thrashes</td></tr>
+<tr><td>LSPF scheduling</td><td>run the waiting request with the longest cached match first</td><td>order the batch as a depth-first walk of its request tree</td><td>whenever the cache is smaller than the working set</td><td>starves requests that share nothing; no optimality online; guards cost hit rate</td></tr>
+<tr><td>Mooncake store + Conductor</td><td>pool every node's DRAM/SSD as one KV store; place each request by transfer + queue + prefill</td><td>loading beats recomputing above a few GB/s, and KV can move to an idle node</td><td>large clusters with long, repetitive prompts and RDMA networks</td><td>slow links, short prefixes or low reuse; overload needs predicted-load rejection</td></tr>
+<tr><td>Sliding window</td><td>each layer attends to the last W tokens; rolling W-slot cache</td><td>cap what each layer keeps, so storage and reads stop growing</td><td>a model trained with it (Mistral 7B) serving long contexts cheaply</td><td>far tokens reachable only through stacked layers; adding it after training is untested</td></tr>
+<tr><td>Ring attention</td><td>shard the sequence over hosts, rotate KV blocks, merge with online softmax</td><td>exact attention distributed across devices, overlapping transfer with compute</td><td>training and prefill of very long sequences on many fast-linked GPUs</td><td>needs c ≥ F/B per block; doesn't cut decode bytes, only splits them</td></tr>
+<tr><td>NSA</td><td>compressed, selected and window branches mixed by learned gates</td><td>trained-in block sparsity with contiguous, GQA-shared block loads</td><td>a new model where decode reads dominate at long context</td><td>must be pretrained in; still stores the whole cache</td></tr>
+</table></div>
+<p class="re">Shaky rows? Rows 1–2: <a href="radixattention.html">RadixAttention I</a> and <a href="cache-aware-scheduling.html">II</a>. Row 3: <a href="mooncake-store.html">Mooncake I</a> and <a href="mooncake-scheduling.html">II</a>. Rows 4–6: <a href="long-context.html">long context</a>.</p>
+</details>
+
+<h2>3 · Project: trace a few-shot service, then give it a store</h2>
+<div class="proj">
+<p><b>What it reinforces:</b> prefix reuse and LRU eviction (<a href="radixattention.html">RadixAttention I</a>), request order and the Σ|e| bound (<a href="cache-aware-scheduling.html">RadixAttention II</a>), store vs recompute (<a href="mooncake-store.html">Mooncake I</a>), per-request placement cost (<a href="mooncake-scheduling.html">Mooncake II</a>), and what long contexts do to the plan (<a href="long-context.html">long context</a>).</p>
+<p>Setting: Llama-3.1-8B on one H100. Three few-shot templates T0, T1, T2 of 1,000 tokens, each followed by three different 50-token questions: 9 requests, arriving round-robin T0, T1, T2, T0, T1, T2, T0, T1, T2. The GPU's prefix cache holds two templates with their questions (2,100 token slots), LRU on leaves. Use the course's prefill floor, 2 × 8.03e9 × tokens ÷ 989e12, and 128 KiB of KV per token.</p>
+<ol>
+<li><b>FCFS.</b> Simulate the cache in about 40 lines (a dict of templates and question leaves with last-use times is enough). Count computed prompt tokens, the hit rate and the prefill floor.</li>
+<li><b>LSPF.</b> Re-sort the same 9 requests longest-cached-prefix-first and rerun. Compare the computed tokens with the lower bound Σ|e|.</li>
+<li><b>Add a store.</b> Back to FCFS order, but now every template computed once is also kept in a remote DRAM store reachable at 12.5 GB/s. On a local miss, load it if that's faster than recomputing. How much prefill time does FCFS need now? At what link speed would loading stop being worth it for a 1,000-token template?</li>
+<li><b>Stretch the context.</b> Suppose each conversation instead grows to 128k tokens. How many full-attention sequences fit on the H100, how many with a 4,096-token window, and how many tokens would an NSA-style model read per decode step?</li>
+</ol>
+<div class="done"><b>Done when:</b> you have computed tokens, hit rate and prefill floor for FCFS, LSPF and FCFS + store, the break-even link speed, and the three step-4 numbers, and you can say in one sentence why the store helps FCFS but LSPF doesn't need it here.</div>
+<details class="chk"><summary>Check: the numbers (computed with a Python version of this exact project)</summary>
+<ul>
+<li>FCFS: every template is evicted just before its next use, so all 9 × 1,050 = 9,450 prompt tokens are computed: 0% hit rate, 153.5 ms of prefill floor.</li>
+<li>LSPF: Σ|e| = 3 × 1,000 + 9 × 50 = 3,450 tokens, 63.5% hit rate (the optimum), 56.0 ms.</li>
+<li>FCFS + store: the 3 first-time templates and all 9 questions are computed (3,450 tokens, 56.0 ms) and the 6 repeat templates are loaded: 0.131 GB each at 12.5 GB/s = 10.5 ms, so 62.9 ms of transfer, about 118.9 ms in all if nothing overlaps. Loading beats recomputing a 1,000-token template (16.2 ms) above 0.131 GB ÷ 16.2 ms ≈ 8.1 GB/s by this floor; Mooncake's Eq 2 gives about 8.9 GB/s at p = 1,000. LSPF already meets the bound locally, so it has nothing to load.</li>
+<li>128k: full attention 17.18 GB per sequence, 3 fit; a 4,096 window keeps 0.54 GB per sequence at any length, 119 fit; NSA-style reads 131,072 / 16 + 1,536 = 9,728 tokens per step but still stores all 17.18 GB.</li>
+</ul></details>
+</div>
+
+<h2>4 · Reflect</h2>
+<ul>
+<li>Which link between these cards is still fuzzy: <i>prefix → reusable KV</i>, <i>order → hit rate</i>, <i>bandwidth → store beats recompute</i>, or <i>stores less vs reads less</i>?</li>
+<li>Can you say when to fix the order, when to add a store, and when neither helps?</li>
+<li>Which question did you answer from the wrong card? That confusion is the comparison to redo.</li>
+<li>In the project, did FCFS + store beat LSPF? What does that tell you about fixing order before buying infrastructure?</li>
+</ul>
+<table class="fix">
+<tr><th>If this is fuzzy</th><th>Reopen</th></tr>
+<tr><td>why KV can be reused exactly, and how the tree finds it</td><td><a href="radixattention.html">RadixAttention I</a>, "Why the KV can be reused at all" and the replay</td></tr>
+<tr><td>why order changes the hit rate, and the optimality proof</td><td><a href="cache-aware-scheduling.html">RadixAttention II</a>, Theorem 3.1</td></tr>
+<tr><td>when loading beats recomputing</td><td><a href="mooncake-store.html">Mooncake I</a>, Eq 1–2 and the Llama table</td></tr>
+<tr><td>how a request's node is chosen, and why rejection predicts</td><td><a href="mooncake-scheduling.html">Mooncake II</a>, Algorithm 1 and §7</td></tr>
+<tr><td>which long-context method cuts which cost</td><td><a href="long-context.html">long context</a>, "The three costs" and the comparison table</td></tr>
+</table>
+
+<div class="foot"><p>Related: <a href="_overview.html">overview</a> · <a href="radixattention.html">radix I</a> · <a href="cache-aware-scheduling.html">radix II</a> · <a href="mooncake-store.html">mooncake I</a> · <a href="mooncake-scheduling.html">mooncake II</a> · <a href="long-context.html">long-context</a> · <a href="paged-sharing.html">paged II</a> · <a href="../learning-principles/learning-principles.html">learning principles</a><br>
+Sources: the five cards above and their papers (Zheng et al., SGLang; Qin et al., Mooncake FAST'25 and the arXiv report; Jiang et al., Mistral 7B; Liu et al., Ring Attention; Yuan et al., NSA). The project's workload is made up for this checkpoint, and its numbers were computed with a short Python script from the course facts.</p></div>
+</article>
+</body>
+</html>

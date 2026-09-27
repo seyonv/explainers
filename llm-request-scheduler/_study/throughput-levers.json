@@ -1,0 +1,67 @@
+{
+  "prime": {
+    "problem": "There are dozens of ways to raise throughput, and a list of all of them doesn't tell you which one to try first. Some are worth 49×, some +4%, some help only at a small batch and some only at a large one, and some cancel each other. Without tying each to a term of the step formula you can't predict which.",
+    "fits": "First card of group 4, answering the course's third big question. It regroups every lever you have met (batching, paging, chunking, prefix caching, overlap) plus the ones outside the scheduler (quantization, speculation, parallelism) under the term of the step formula each attacks.",
+    "expect": [
+      "throughput = tokens per step ÷ step time",
+      "five kinds: more tokens, fewer bytes, less work, less overhead, more hardware",
+      "which levers stack and which overlap",
+      "from tok/s to $ per million tokens",
+      "throughput vs latency levers by load and SLO"
+    ],
+    "goal": "Rank the levers for a given setup by the term they attack, predict which combinations multiply, and turn a throughput into a cost per million tokens."
+  },
+  "attend": [
+    "Why does FP8 KV give 1.67× at B = 238 but almost nothing at B = 1, while 8-bit weights do the opposite?",
+    "Why aren't continuous batching's 10× and a full batch's 49× independent multipliers?",
+    "Why does speculative decoding's gain fall as the batch grows?",
+    "Chunked prefill's throughput gain is ≈ 1.01×. Why is it still on the list?",
+    "Why is \"more replicas\" N× total but 1× per GPU?"
+  ],
+  "core": {
+    "must": [
+      "Throughput = T_out ÷ (max(math, W/BW) + KV/BW + t_cpu) → every lever raises the numerator or shrinks one denominator term → it helps only if that term is large right now",
+      "At B = 1 the weight read is 98% of the step, at B = 238 only 20% (KV read 80%) → weight quantization is a small-batch lever, KV quantization a large-batch lever → FP8 KV stacks with batching (9,973 → 16,609), 8-bit weights barely do (+4%)",
+      "Speculative decoding spends idle math for extra tokens per weight read → a big batch has already spent that math → its gain falls (1.96× → 1.21×) and it fights batching",
+      "Past capacity, more tok/s can mean less goodput → pick levers by where you sit: loose vs tight SLO, low vs high load"
+    ],
+    "elevated": [
+      "Cost per million output tokens = GPU price per second ÷ tok/s × 10⁶ → the 49× batching gain is a 49× cost cut ($3.39 → $0.070 at an illustrative $2.50/h)"
+    ],
+    "reference": [
+      "DeepSeek's day-6 economics ($87,072/day, ≈ 1,072 tok/s per GPU)",
+      "the published figures for Sarathi-Serve, Splitwise, Perplexity TP",
+      "the illustrative $2.50 per H100-hour"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, write the throughput formula with its labelled terms, then place at least eight levers under the term each attacks. Draw a ✓ between two that stack and a ✗ between two that overlap, with the numbers.",
+    "checklist": [
+      "more tokens per step: bigger batch (49×), continuous batching (10×), speculation (≤ 1.96×)",
+      "fewer bytes: GQA (4×), FP8 KV (1.67× at full batch), 8-bit weights (2× at B = 1 only)",
+      "less work: prefix caching, shorter contexts, prefix-aware routing",
+      "less overhead: overlap, CUDA graphs; more hardware: P/D, TP, replicas",
+      "levers multiply only when they attack different terms"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain, using the terms of the formula, why a lever's gain depends on the batch size you run at.", "kind": "concept", "answer": ["each lever shrinks one term or raises T_out", "which term dominates changes with B: weights at small B, KV at large B", "so the same lever can be 2× at B = 1 and +4% at B = 238"]},
+    {"q": "Walk through computing tok/s at B = 238 with FP8 KV: each term, the new step time and the gain over BF16.", "kind": "mechanism", "answer": ["math 3.86 ms vs weights 4.79 ms: max 4.79", "KV 238 × 2,048 × 65,536 B ÷ 3.35 TB/s ≈ 9.5 ms (was 19.07)", "step ≈ 14.33 ms → 238 ÷ 14.33 ms ≈ 16,609 tok/s, 1.67× over 9,973"]},
+    {"q": "Low load, tight latency SLO: which levers do you pick, and which do you skip?", "kind": "tradeoff", "answer": ["pick: 8-bit weights, speculative decoding, tensor parallelism, a small token budget", "skip: chasing a bigger batch; there isn't the traffic to fill it", "cost: quantization's accuracy risk, speculation's draft model, TP's all-reduce and NVLink"]}
+  ],
+  "compare": [
+    {"with": "llm-request-scheduler/bottlenecks", "q": "The bottlenecks card and this one use the same formula. When a server is slow, which card do you start from, and how does one lead to the other?", "answer": ["start from bottlenecks: find the largest term for your phase and batch", "then this card: pick the lever that shrinks that term", "e.g. KV read dominates at a full batch → FP8 KV or GQA, not 8-bit weights"]},
+    {"with": "perf-5-engines/quantization-serving", "q": "Course 5 covers quantization in a real engine. What does that card add that this card's cost model leaves out, and how does it change the 8-bit-weights row?", "answer": ["real FP8 also doubles an H100's peak math, which our model leaves out", "kernel support and dequantization overhead decide the real gain", "so our +4% at B = 238 is a floor; the direction (small-batch lever) still holds"]}
+  ],
+  "predict": {"q": "You apply both 8-bit weights and FP8 KV at B = 64, 2k context. Before computing: is the combined gain roughly the product of the two separate gains, or less?", "answer": "Close to additive in time, not multiplicative in gain. Alone, 8-bit weights take the step from 9.92 to 7.53 ms (1.32×) and FP8 KV to 7.36 ms (1.35×). Together they remove both savings from one 9.92 ms step, about 4.96 ms, giving about 12,900 tok/s (2.0×) versus 1.78× if you multiplied. At B = 64 the two reads are similar in size, so both levers pay; the real product-vs-overlap rule is about which terms each one cuts."},
+  "apply": {"task": "At B = 64 and 2k context, compute tok/s for BF16, 8-bit weights only, FP8 KV only and both, with CostModel.raw (weight_bytes = 8.03e9 for 8-bit weights, kv_bytes_per_token = 65,536 for FP8 KV). Then compute the cost per million output tokens for BF16 and for both, at an illustrative $2.50 per H100-hour.", "done": "BF16 6,450 tok/s; 8-bit weights 8,505; FP8 KV 8,698; both about 12,900. Cost: $0.000694 per second ÷ 6,450 × 10⁶ ≈ $0.108 per M vs ÷ 12,900 × 10⁶ ≈ $0.054 per M.", "hint": "The 64-decode KV read at BF16 is 5.13 ms and the weight read 4.79 ms; each lever halves one of them."},
+  "reflect": [
+    "Which prediction did you get wrong: whether the two quantizations multiply?",
+    "Could you explain \"levers multiply only when they attack different terms\" with one pair that stacks and one that doesn't?",
+    "Which relationship is still fuzzy: batch size → dominant term, or dominant term → lever?",
+    "For your own workload, which quadrant of the load × SLO grid are you in?",
+    "What will you revisit before the disaggregation card: why prefill–decode interference isn't on the throughput side of the table?"
+  ],
+  "revisit": ["llm-request-scheduler/bottlenecks", "llm-request-scheduler/why-batch", "llm-request-scheduler/continuous-batching", "llm-request-scheduler/prefix-caching"],
+  "prereq": ["llm-request-scheduler/bottlenecks"]
+}

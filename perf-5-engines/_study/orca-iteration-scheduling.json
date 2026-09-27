@@ -1,0 +1,120 @@
+{
+  "prime": {
+    "problem": "A language model answers by running once per output token, and requests need very different numbers of runs. If the server hands the GPU a fixed batch and waits for all of it, finished requests keep occupying slots and new ones can't start, so most of each expensive weight read is wasted.",
+    "fits": "First paper card. Course 2's step formula showed that one decode step reads every weight once, so a full batch is nearly free. This card is the scheduling idea that keeps the batch full, plus the batching trick that makes such a mixed batch runnable.",
+    "expect": [
+      "request-level vs iteration-level scheduling",
+      "initiation (prefill) and increment (decode) phases",
+      "the three shape cases that block batching (C2)",
+      "selective batching: flatten to [ΣL, H], split only for attention",
+      "wasted slots"
+    ],
+    "goal": "Explain why re-choosing the batch every iteration needs selective batching to work, and estimate the waste of request-level batching from a set of output lengths."
+  },
+  "attend": [
+    "In Fig 3, which two separate costs does request-level batching impose on x2 and on the late joiner x3?",
+    "Why does iteration-level scheduling immediately create the problem of batching requests at different points in their life?",
+    "Which operations in a layer care which request a token belongs to, and why is attention the only one?",
+    "Why does leaving attention unbatched cost almost nothing, according to Orca's own argument about weight reads?",
+    "Why is the simulated gain about 2× when outputs are uniform on 1–1,024, and what would change it?"
+  ],
+  "core": {
+    "must": [
+      "The serving system hears back only when a whole batch ends → finished requests keep being computed and new ones wait → about half of all slot-iterations are wasted when a batch lives as long as its longest request (49% in our sim) → iteration-level scheduling returns and admits requests after every iteration",
+      "Re-picking the batch each iteration mixes prefills and decodes at different token indices → their tensors have different shapes → naive batching needs same phase and same length, which gets exponentially rarer as B grows → selective batching flattens all tokens to [ΣL, H] for every weight op and splits only for attention",
+      "Weight ops reuse one weight read across all tokens → batching them is the whole point; attention has no weights and each request reads its own KV → running it per request loses no reuse → splitting just before attention costs almost nothing"
+    ],
+    "elevated": [
+      "Modern engines keep Orca's flat token batch but run one ragged attention kernel over all requests via a block table → same idea, but launch overhead and occupancy improve (FlashInfer's ragged tensors)"
+    ],
+    "reference": [
+      "the Fig 2 two-layer stack names (Triton, FasterTransformer)",
+      "the simulator's parameters (3,000 requests, Poisson, B_MAX = 64, seed 0)",
+      "the exact TTFT table values at 5 and 8 req/s",
+      "Llama-3.1-8B's fused QKV width of 6,144"
+    ]
+  },
+  "compress": {
+    "prompt": "Without scrolling up, write three sentences: what goes wrong with request-level batching, what iteration-level scheduling changes, and why that change forces selective batching. Then draw the Fig 5 layer as boxes and mark which ones are batched.",
+    "checklist": [
+      "a batch runs until its longest request ends, so early finishers waste slots and late arrivals queue",
+      "the scheduler picks the batch before every iteration, so requests leave and join one token at a time",
+      "the mixed batch has different shapes (phase, length, token index)",
+      "flatten all tokens for Linear, LayerNorm, GeLU, Add; split per request only for attention",
+      "attention has no weights to share, so running it per request costs nothing in reuse"
+    ]
+  },
+  "retrieve": [
+    {
+      "q": "Explain why iteration-level scheduling alone, without selective batching, would leave an H100 stuck at tiny batches.",
+      "kind": "concept",
+      "answer": [
+        "requests picked at different points in their life have different phases, lengths or token indices",
+        "tensor batching needs identical shapes, which becomes exponentially less likely as B grows",
+        "so only a few matching requests could run together, the regime where the H100 makes about 205 tok/s"
+      ]
+    },
+    {
+      "q": "Trace the Fig 5 iteration: x1 and x2 decoding, x3 and x4 prefilling 2 and 3 tokens. What shape enters QKV Linear, what happens at Split, and where do x1's earlier keys and values come from?",
+      "kind": "mechanism",
+      "answer": [
+        "1 + 1 + 2 + 3 = 7 tokens, so [7, H] in and [7, 3H] out",
+        "Split gives each request its own slice; each runs attention separately",
+        "x1 and x2 fetch cached K/V from the Attention K/V manager; x3 and x4 have none yet",
+        "Merge rebuilds [7, H] for Attn Out Linear and the MLP"
+      ]
+    },
+    {
+      "q": "When would you still choose static request-level batching today, and what does iteration-level scheduling not decide for you?",
+      "kind": "tradeoff",
+      "answer": [
+        "offline jobs whose requests all have the same known length: no waste, simpler",
+        "it doesn't decide which requests fit in KV memory; that's the scheduler and paging",
+        "packing whole prompts into a decode iteration makes that iteration long (the generation stall)"
+      ]
+    }
+  ],
+  "compare": [
+    {
+      "with": "perf-5-engines/sarathi-stalls",
+      "q": "Orca's hybrid iteration and vLLM's prefill-only iteration both admit new prompts eagerly. What does Orca's design get right that makes its iterations mixed, and what problem does that same design create for running users?",
+      "answer": [
+        "selective batching lets prompt tokens and decode tokens share one weight read",
+        "but a whole prompt in the iteration makes it compute-bound and long",
+        "every decoding user waits for it: 74.04 ms instead of 7.36 in the running example",
+        "Sarathi fixes it by bounding the prompt tokens per iteration"
+      ]
+    },
+    {
+      "with": "perf-2-scaling-book-inference/inference-engine-design",
+      "q": "Course 2's engine-design sim showed static batching's TTFT collapsing (7,314 ms → 46 ms interleaved). What in this card explains the collapse mechanistically, and what did the course-2 sim abstract away?",
+      "answer": [
+        "static batching makes new requests wait for the whole running batch to drain",
+        "iteration-level scheduling bounds that wait at one iteration",
+        "the course-2 sim assumed mixed batches just work; Orca shows they need selective batching to be runnable"
+      ]
+    }
+  ],
+  "predict": {
+    "q": "Real chat outputs are long-tailed: most answers are short, a few run to thousands of tokens. Compared with the card's uniform 1–1,024 outputs, does request-level batching waste more or less, and does the 1.93× gap grow or shrink? Commit first.",
+    "answer": "More waste, bigger gap. A static batch lives as long as its longest member, and a long tail makes the longest member much longer than the mean, so a larger share of slot-iterations computes finished requests. The card says as much: longer-tailed real traffic wastes more. With Orca's own short outputs (up to 128) the waste and the gap would be smaller."
+  },
+  "apply": {
+    "task": "By hand: a static batch of four requests needs 3, 10, 5 and 2 output tokens. (a) How many iterations does the batch run, how many slot-iterations exist, and what share is wasted? (b) Under iteration-level scheduling, at which iteration does each slot free up? (c) Now three requests decoding and two new prompts of 5 and 4 tokens share one iteration: what is ΣL, and what is the QKV output shape for Llama-3.1-8B (32 query heads + 2 × 8 KV heads, head dim 128)?",
+    "done": "You wrote the waste as a fraction, the four free-up iterations, and the [ΣL, width] shape, before checking.",
+    "hint": "Check after trying: (a) 10 iterations × 4 slots = 40 slot-iterations; 3 + 10 + 5 + 2 = 20 are used, so 50% are wasted. (b) The slots free after iterations 2, 3, 5 and 10, and a waiting request can take each one at the next iteration. (c) 3 + 5 + 4 = 12 tokens, so the QKV output is [12, 6,144]."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: the direction of the tail effect, or its size?",
+    "Could you explain cleanly why attention is split but the MLP is not, without saying 'because attention is different'?",
+    "Which relationship is still fuzzy: early finishers → wasted slots, or mixed phases → shape mismatch → selective batching?",
+    "What will you check on Orca II: how the scheduler decides which requests fit in memory?"
+  ],
+  "revisit": [
+    "perf-2-scaling-book-inference/step-time",
+    "perf-2-scaling-book-inference/inference-engine-design"
+  ],
+  "prereq": [
+    "perf-2-scaling-book-inference/step-time"
+  ]
+}

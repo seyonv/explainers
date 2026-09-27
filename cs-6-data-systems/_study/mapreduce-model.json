@@ -1,0 +1,66 @@
+{
+  "prime": {
+    "problem": "Once data is bigger than one machine, every job (counting words, building an index, sorting) needs splitting, moving data to the right place, retries and dead machines handled. Writing that plumbing per job is where distributed programs go wrong.",
+    "fits": "First card of the batch part. It builds on hashing (cs-1) and on partitioning by key (cs-5); the next card shows how a cluster actually runs the two functions you write here.",
+    "expect": ["map: (k1, v1) → list(k2, v2)", "the shuffle: group by key", "reduce: (k2, list(v2)) → list(v2)", "word count and the inverted index", "the six classic jobs"],
+    "goal": "Express a job as map and reduce, trace its intermediate pairs by hand, and say when a dict or SQL GROUP BY is the better tool."
+  },
+  "attend": [
+    "Why must map and reduce share no state with other calls, and what does the library get to do because of that?",
+    "What does the shuffle do that neither function does, and why is it the only part that moves data between machines?",
+    "Why does the inverted-index map emit 10 pairs where word count emits 11 on the same three documents?",
+    "Two of the six classic jobs have a pass-through reduce. What is the job really doing, then?",
+    "Why does a very common key like ‘the’ make one reducer the slow one?"
+  ],
+  "core": {
+    "must": [
+      "map sees one record and emits (k2, v2) pairs → the library groups every value by k2 (the shuffle) → reduce sees one key with all its values → the answer per key needs no coordination between calls",
+      "Calls share no state and are deterministic → any call can run on any machine and be rerun after a failure → the output equals a failure-free sequential run",
+      "All values of a key go to one reduce call → a skewed key (‘the’) lands on one reducer → that reducer finishes last; a map-side pre-sum (combiner) softens it only when reduce is associative",
+      "Each job writes its full output to the distributed file system → chained or iterative jobs pay a disk round trip per pass → Spark and Flink keep data between steps instead"
+    ],
+    "elevated": [
+      "The shuffle delivers keys in sorted order → distributed sort needs only an identity map and reduce → partitioning plus key order does all the work"
+    ],
+    "reference": [
+      "the paper's pseudocode with string counts (\"1\", ParseInt)",
+      "the six-job table's exact wording",
+      "the <code>run_mapreduce</code> helper's signature",
+      "Hadoop and GFS naming"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, write the types of map and reduce, and draw word count on <code>d1: the cat sat</code>, <code>d2: the cat ate the fish</code>, <code>d3: a dog sat</code>: the pairs each map emits, the groups after the shuffle, and the reduced output. Then one sentence on why the model tolerates failures.",
+    "checklist": [
+      "map: (k1, v1) → list(k2, v2); reduce: (k2, list(v2)) → list(v2)",
+      "3 + 5 + 3 = 11 pairs → 7 keys",
+      "the: [1, 1, 1] → 3; cat and sat → 2; the rest → 1",
+      "no shared state and deterministic functions → rerun any failed call",
+      "the shuffle, not user code, moves data to where its key lives"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why ‘workers all do <code>count[w] += 1</code> on one shared store’ fails where MapReduce succeeds.", "kind": "concept", "answer": ["the shared store needs locking or suffers lost updates", "after a crash you can't tell which increments landed, so a rerun double-counts", "MapReduce's calls have no shared state, so a rerun just replaces lost output"]},
+    {"q": "Walk through the inverted index on the three documents: what map emits for d2, what the shuffle produces for ‘sat’, and what reduce returns.", "kind": "mechanism", "answer": ["map(d2) emits (the, d2), (cat, d2), (ate, d2), (fish, d2): ‘the’ once, because map dedups per document", "shuffle: sat → [d1, d3] in arrival order, which nothing guarantees", "reduce sorts the ids and emits (sat, [d1, d3])"]},
+    {"q": "Your data is 3 GB and the job is a per-customer total. Argue whether to use MapReduce, and what would change your mind.", "kind": "tradeoff", "answer": ["3 GB fits on one machine: a dict or SQL GROUP BY does map-group-reduce with no cluster", "a cluster adds job start-up, a full shuffle and DFS writes", "switch when the data or the reading bandwidth outgrows one machine"]}
+  ],
+  "compare": [
+    {"with": "cs-6-data-systems/mapreduce-execution", "q": "This card is the contract you program against; the next is how it runs. Which guarantee in the model depends on which mechanism in the execution, and what breaks if a function isn't deterministic?", "answer": ["‘group by key’ is implemented by hash(key) mod R partitions pulled by each reducer", "‘rerun any failed call’ relies on local map output and atomic renames of reduce output", "non-deterministic functions make reruns disagree; the paper then promises only weaker semantics"]},
+    {"with": "cs-6-data-systems/semi-naive-datalog", "q": "A recursive query needs many passes. Compare running each pass as a MapReduce job with a Datalog engine's semi-naïve loop: what does each re-read per pass, and why?", "answer": ["MapReduce re-reads its whole input from the DFS and writes all output every pass", "semi-naïve joins only last round's new facts (δ)", "a chained MapReduce can mimic semi-naïve by feeding only δ forward, but still pays a job and a DFS write per round"]}
+  ],
+  "predict": {"q": "Suppose ‘the’ is 5% of all words in a 1 TB corpus and the job has R = 4,000 reducers with no combiner. Commit first: how does the load on the reducer that gets ‘the’ compare to the average reducer's?", "answer": "The average reducer gets 1/4,000 = 0.025% of the pairs; the one with ‘the’ gets at least 5%, so at least 5% ÷ 0.025% = 200× the average, and the job waits for it. A combiner collapses each map task's ‘the’ pairs into one partial count, so that reducer receives one pair per map task instead of billions. Keys whose reduce isn't associative (a median) can't be fixed that way."},
+  "apply": {
+    "task": "Write map and reduce for a word-length histogram (how many words have each length) on the card's three documents. Predict the number of intermediate pairs and distinct keys, and the output, before running it through <code>run_mapreduce</code> in <code>code/mapreduce-model.py</code>.",
+    "done": "Map emits (len(w), 1): 11 pairs over 3 keys, and the output is {1: 1, 3: 9, 4: 1}. You can say why the key space is tiny here and what that means for how many reducers can do useful work.",
+    "hint": "Only ‘a’ has length 1 and only ‘fish’ has length 4; every other word has 3 letters."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: the 200× reducer, or whether a combiner fixes it?",
+    "What couldn't you explain cleanly: why no shared state is what makes reruns safe?",
+    "Which relationship is still fuzzy: map output keys → which reducer, or reducer load → job finish time?",
+    "Which of the six classic jobs could you rewrite from memory, and which would you have to look up?",
+    "What will you look for in the execution card: where the shuffle's bytes actually go and what a failure costs?"
+  ],
+  "revisit": ["cs-1-data-structures/hash-buckets", "cs-5-distributed-systems/sharding-hot-keys"],
+  "prereq": []
+}

@@ -1,0 +1,56 @@
+{
+  "prime": {
+    "problem": "Parallel samples, beams and requests with the same system prompt all hold identical KV for their shared history. With one private buffer per sequence, four samples store the prompt four times, and beam search keeps copying whole caches between beams.",
+    "fits": "Second PagedAttention card. The block table from card I is just a list of pointers, so two sequences can point at the same physical block; this card adds reference counts, copy-on-write, preemption and the multi-GPU layout.",
+    "expect": ["reference counts per physical block", "fork = copy the block table", "copy-on-write on the shared last block", "all-or-nothing eviction, sequence groups", "swap vs recompute"],
+    "goal": "Count blocks with and without sharing for samples and beams, trace copy-on-write, and choose between swap and recompute when memory runs out."
+  },
+  "attend": [
+    "When a request forks into four samples, what is copied and what isn't?",
+    "Why is only the partly filled last prompt block ever copied, and never a full one?",
+    "Why does beam search save more than parallel sampling at the same number of sequences?",
+    "Why does vLLM evict all of a sequence's blocks or none, unlike an OS that evicts single pages?",
+    "What does swapping cost that recomputation doesn't, and vice versa?"
+  ],
+  "core": {
+    "must": [
+      "A block table is a list of pointers → forks copy the table and bump reference counts → samples share the prompt's physical blocks → the first write into a block with ref > 1 triggers copy-on-write of just that block → 4 samples of a 1,000-token prompt: 328 → 142 blocks (−56.7%)",
+      "Full blocks are never written again → only the last, partly filled block is ever copied → at most one copy per fork → beam search, whose sharing pattern changes every step, copies 23 blocks (48 MB) instead of 3.36 GB in our k = 4 run",
+      "Every decode step reads all of a sequence's blocks → evicting part of a sequence stalls it and wastes the rest → evict whole sequences (and whole sequence groups, which share blocks) → bring back by swapping over PCIe or recomputing in one prefill pass"
+    ],
+    "elevated": [
+      "Swap vs recompute depends on block size → small blocks mean many small PCIe transfers far below peak bandwidth → recompute wins at small blocks, swap at large, about equal at 16–64 (§7.3)"
+    ],
+    "reference": ["the Fig 8 and Fig 9 physical block numbers", "the paper's per-dataset saving percentages", "the synthetic beam survival probabilities", "PCIe 64 GB/s per direction (our assumption)", "the TP = 2 per-GPU block slice sizes"]
+  },
+  "compress": {
+    "prompt": "From memory, write the four operations (reference count, fork, copy-on-write, free) as a chain for one request with 2 samples, then one sentence on why eviction is all-or-nothing.",
+    "checklist": [
+      "prompt blocks computed once, ref = number of sequences",
+      "fork copies the table, bumps refs, copies no KV",
+      "first write into a shared partial block: allocate, copy, decrement, write",
+      "free decrements refs; blocks at 0 return to the free list",
+      "all blocks are read every step, so partial eviction only wastes memory"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why sharing blocks is safe even though each sample generates different text.", "kind": "concept", "answer": ["shared blocks hold only the common history, which is identical", "a sample writes only into its last block", "if that block is shared, copy-on-write gives the writer a private copy first"]},
+    {"q": "Walk through what happens to reference counts in Fig 9's beam step when candidates 0 and 3 drop out and the new top 4 all come from candidates 1 and 2.", "kind": "mechanism", "answer": ["the dropped candidates' blocks are decremented", "blocks 2, 4, 5 and 8 reach 0 and are freed", "new candidates fork from 1 and 2, bumping shared blocks' refs", "new blocks 9–12 are allocated for the new tokens"]},
+    {"q": "A 1,300-token Llama-3.1-8B sequence must be preempted on an H100. Compare swapping and recomputation as ideal floors, and say why the paper still found them about equal at B = 16.", "kind": "tradeoff", "answer": ["swap: 170.4 MB at 64 GB/s, ≥ 2.66 ms each way, needs CPU RAM, blocks new admissions", "recompute: ≥ 21.1 ms of prefill at 100% MFU, no CPU memory", "small blocks make swapping many small transfers far below peak PCIe, so measured costs converge"]}
+  ],
+  "compare": [
+    {"with": "perf-4-attention-kv/radixattention", "q": "PagedAttention shares a prefix only when the provider lists it (or within one request); RadixAttention finds shared prefixes across arbitrary requests automatically. What data structure makes the difference, and what does each do with finished requests' KV?", "answer": ["vLLM's §4.4 uses reserved blocks for provider-chosen prefixes; a radix tree keys cached KV by token sequence", "the radix tree matches any prefix, at token granularity", "PagedAttention frees a finished request's blocks; RadixAttention keeps them as an LRU cache"]},
+    {"with": "perf-2-scaling-book-inference/sharding-kv-cache", "q": "Under tensor parallelism vLLM gives every GPU the same block IDs but only its heads' slice of each block. How does that relate to perf-2's ways of sharding the KV cache, and when does it stop working?", "answer": ["it is head sharding: each GPU holds its KV heads for every position", "one central block manager suffices because every shard needs the same positions", "it stops working when there are fewer KV heads than GPUs, which is perf-2's topic"]}
+  ],
+  "predict": {"q": "Same 1,000-token prompt, 300-token outputs, but n = 3 samples. How many blocks with and without sharing, the saving, and how many copy-on-write copies at the first step? Commit first.", "answer": "Without sharing 3 × 82 = 246 blocks (515.9 MB); with sharing 62 + 3 × 20 = 122 blocks (255.9 MB), saving 50.4%. The last prompt block (8 tokens) is shared by 3 writers: 2 copy it, the third writes in place, so 2 copies (our arithmetic, same formula as the card)."},
+  "apply": {"task": "Run labs/paged-cow.py, then set P = 20 (an Alpaca-length prompt) and rerun the n = 2, 4, 6 table. Before running, predict whether the saving goes up or down and roughly to what range. Then set the beam drop-out probability to 0 and check that beam search collapses to the parallel-sampling numbers.", "done": "You have both reruns recorded next to your predictions, and one sentence each on why a short prompt shrinks the saving and why beams without drop-out share only the prompt.", "hint": "With a 20-token prompt the shared part is a tiny share of each sequence, so the saving falls to the paper's single digits (Alpaca: 6.1–9.8%). With no drop-out every beam keeps its own history, so only the prompt is shared: exactly parallel sampling."},
+  "reflect": [
+    "Which prediction did you get wrong: the saving at n = 3, or the number of copies?",
+    "Could you explain copy-on-write with the Unix fork() analogy?",
+    "Which relationship is still fuzzy: block table → sharing, or sharing → larger batch?",
+    "Why is all-or-nothing eviction the right call here but not for an OS?",
+    "What will you look for in PagedAttention III: what the fused kernels do to hide the indirection?"
+  ],
+  "revisit": ["perf-4-attention-kv/paged-memory", "perf-2-scaling-book-inference/sharding-kv-cache"],
+  "prereq": ["perf-4-attention-kv/paged-memory"]
+}

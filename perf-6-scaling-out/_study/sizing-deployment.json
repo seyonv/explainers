@@ -1,0 +1,63 @@
+{
+  "prime": {
+    "problem": "\"Which layout?\" has no answer until you know how many users must be held at once, at what context and speed. Size by weights alone and a 70B model \"fits on one H100\" with room for two chats; size by total tokens per second and you miss memory and failures entirely.",
+    "fits": "Last card of the course, the capstone. It reuses the pipeline card's step-time model and layout throughputs, expert parallelism's big units, and DeepSeek-V3's deployment sizes, and adds memory budgets, traffic, failure and dollars.",
+    "expect": ["VRAM math: n·u·M ≥ W + A + U·c·b_kv", "minimum GPUs per model, precision and GPU type", "users held at once set the replica count; TPOT rarely binds for chat", "blast radius: MTBF ÷ group size", "$ per million tokens per layout"],
+    "goal": "Size a deployment for a given model, precision, GPU, user count, context and speed target in four passes (memory, traffic, layout, failure) and price it."
+  },
+  "attend": [
+    "Why is \"the weights fit\" never the answer to how many GPUs you need?",
+    "In the 500-user example, which constraint sets the GPU count, memory or the 50 ms TPOT?",
+    "Why does TP4 × 4 survive a GPU failure so much better than TP8 × 2 on the same 16 GPUs?",
+    "Why is the H200 cheaper per token here despite a higher hourly price?",
+    "When is \"smallest TP × many replicas\" the wrong answer?"
+  ],
+  "core": {
+    "must": [
+      "Every resident user's KV must fit next to the weights in the usable memory (u = 0.92) → KV room = n·u·M − W decides users per replica → users held at once ÷ users per replica = replicas → for chat, memory (not speed) sets the GPU count: 500 users of 70B FP8 at 4k need 16 H100s or 8 H200s",
+      "Each replica's step must stay under the per-user TPOT → bigger batches make steps slower → the batch is min(what fits, what meets the TPOT) → at 20 tok/s every layout has room; at 40 tok/s TP8's batch must drop from 386 to 333 → speed targets start deciding the layout around there",
+      "A TP or EP group runs in lockstep → one dead GPU stops the whole group → group MTBF ≈ 50,000 GPU-hours ÷ group size (TP4 ≈ 521 days, EP320 ≈ 6.5 days) → smaller replicas lose less capacity per failure (TP4 × 4 keeps 99.6%, TP8 × 2 77%) and make an N+1 spare cheaper",
+      "$ per token = $/hour ÷ tokens per hour → when memory binds, a GPU with more HBM holds more users per dollar → 8 H200s at $4.59/GPU-hr ≈ $1.02 per million vs 16 H100s at $1.77 → price the constraint, not the peak FLOPs"
+    ],
+    "elevated": [
+      "Kiely's headroom rule (KV room ≥ ½ W) and his note that KV often takes 80%+ of post-weight VRAM → a model that barely fits serves almost no one → minimum-fit tables are lower bounds, pass 2 is the real count"
+    ],
+    "reference": [
+      "vLLM's gpu_memory_utilization default (0.92, older 0.9) and max_num_batched_tokens",
+      "the minimum-GPU grid values",
+      "Lambda and RunPod prices on the fetch date",
+      "the h100x8-tp-nccl.sh steps and cost",
+      "sizing.py's command-line flags"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, write the four passes as a numbered list with one arrow chain each (memory → users per replica, traffic → replicas, layout → TP/PP/EP, failure → spare). Then write the VRAM inequality and the $/M-token formula.",
+    "checklist": [
+      "n·u·M ≥ W + activations + users × context × KV bytes per token",
+      "replicas = users held at once ÷ users per replica, checked against the TPOT",
+      "TP inside a node for speed, replicas for capacity, PP/EP only when one copy must span nodes",
+      "group MTBF ≈ 50,000 h ÷ GPUs; add one spare replica",
+      "$ per M tokens = $/hr ÷ (tok/s × 3,600 ÷ 10⁶)"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why \"users held at once\" rather than \"total tokens per second\" sets the GPU count for a chat service, with the card's 500 vs 250-user example.", "kind": "concept", "answer": ["each resident user needs their KV in GPU memory for the whole conversation", "10,000 tok/s is both 500 users × 20 tok/s and 250 × 40 tok/s", "the first needs KV for 500 users (16 H100s), the second for 250 (8 H100s as TP4 × 2), even at the same throughput"]},
+    {"q": "Walk through pass 1 and pass 2 for one TP4 replica of Llama-3.1-70B in FP8 on H100s at 4k context: KV pool, users per replica, step time, and replica count for 500 users.", "kind": "mechanism", "answer": ["pool = 4 × 0.92 × 80 − 70.6 = 223.8 GB; 4k context = 1.342 GB per user → 166 users", "step ≈ (17.6 + 166 × 1.342 ÷ 4) GB ÷ 3.35 TB/s = 21.89 ms + 2.41 ms of all-reduces = 24.30 ms ≤ 50 ms", "⌈500 ÷ 166⌉ = 4 replicas = 16 H100s"]},
+    {"q": "Your team must choose between TP8 × 2 and TP4 × 4 on 16 H100s for the 500-user workload. Compare them on latency, failure and the cost of an N+1 spare, and choose.", "kind": "tradeoff", "answer": ["both pass the 50 ms TPOT at full load (TP8 28.1 ms with 386 users per replica, TP4 24.3 ms with 166); at batch 1 TP8 is faster (7.62 vs 11.70 ms)", "one GPU failure: TP4 × 4 keeps 498 users (99.6%), TP8 × 2 keeps 386 (77%)", "N+1 costs 4 GPUs for TP4, 8 for TP8 ($79.80 vs $95.76 per hour)", "choose TP4 × 4 unless per-user speed is the product"]}
+  ],
+  "compare": [
+    {"with": "perf-6-scaling-out/pipeline-data-parallel", "q": "The pipeline card ranked layouts by throughput at 8k with every sequence packed in; this card sizes for a user count. Why can the two answers differ, and which question does each answer?", "answer": ["the pipeline card asks how many tokens a fixed set of GPUs can produce (a ceiling)", "this card asks how few GPUs hold a given set of users at a TPOT target", "at 8k one TP8 weight copy leaves the most KV room, so it wins throughput; for 500 users at 4k, TP4 × 4 uses the same 16 GPUs and fails more gracefully"]},
+    {"with": "perf-6-scaling-out/deepseek-v3-infrastructure", "q": "DeepSeek's 144-GPU decode unit vs this card's small-replica advice: what does each optimise, and what is the failure cost of each?", "answer": ["DeepSeek optimises per-expert batch size, so it needs a big EP group", "this card optimises memory per user and graceful degradation for a dense model", "EP144's group MTBF is ≈ 347 h (≈ 14.5 days) and a failure takes 18 nodes out; a TP4 replica's is ≈ 521 days and costs half a node", "huge MoEs at high volume accept the exposure; dense models usually shouldn't"]}
+  ],
+  "predict": {"q": "Change the pass-2 workload to 300 users at 8k context (70B FP8, H100 TP4, 20 tok/s). How many replicas and GPUs, including one spare, and does the TPOT bind? Commit first.", "answer": "An 8k user needs 2.68 GB of KV, so a 223.8 GB pool holds 83 users; ⌈300 ÷ 83⌉ = 4 replicas = 16 H100s, 20 with a spare. The step at 83 users is ≈ (17.64 + 83 × 2.68 ÷ 4) ÷ 3.35 ≈ 21.9 ms + ≈ 1.7 ms of all-reduces ≈ 23.6 ms, well under 50 ms: memory still binds. Doubling context halved users per replica, so it took the same GPUs as 500 users at 4k."},
+  "apply": {"task": "Run python3 labs/sizing.py --model llama-70b --prec fp8 --gpu h100 --users 300 --tok-s 20 --ctx 8192 and check it against your hand answer to the predict question. Then run the same with --gpu h200 and compare two layouts by hand: H200 TP1 (usable 0.92 × 141 GB) and H200 TP2. For each give users per replica, replicas, GPUs, and the MTBF of one replica.", "done": "The lab's H100 answer matches your hand calculation, and you have users per replica, replica count, GPU count and replica MTBF for both H200 layouts.", "hint": "H200 TP1: 0.92 × 141 − 70.6 = 59.1 GB → 22 users of 2.68 GB → ⌈300/22⌉ = 14 replicas = 14 GPUs, MTBF 50,000 h ≈ 5.7 years each. H200 TP2: 2 × 129.7 − 70.6 = 188.8 GB → 70 users → 5 replicas = 10 GPUs, MTBF 25,000 h ≈ 1,042 days. TP2 needs fewer GPUs because it holds one weight copy per 2 GPUs."},
+  "reflect": [
+    "Which prediction did you get wrong: that 300 users at 8k need the same GPUs as 500 at 4k?",
+    "Could you explain why memory, not speed, usually sets the count for chat?",
+    "Which relationship is still fuzzy: context → KV per user → users per replica, or group size → MTBF?",
+    "Would you now trust a vendor's \"fits on N GPUs\" claim? What would you ask first?",
+    "Which number here would you most want the rented-node script to measure, and why?"
+  ],
+  "revisit": ["perf-6-scaling-out/pipeline-data-parallel", "perf-6-scaling-out/megatron-scaling", "perf-6-scaling-out/expert-parallel", "perf-6-scaling-out/deepseek-v3-infrastructure", "perf-5-engines/scheduler", "perf-2-scaling-book-inference/serving-llama-70b"],
+  "prereq": ["perf-6-scaling-out/pipeline-data-parallel", "perf-6-scaling-out/expert-parallel"]
+}

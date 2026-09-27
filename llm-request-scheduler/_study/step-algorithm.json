@@ -1,0 +1,121 @@
+{
+  "prime": {
+    "problem": "Everything the course has built so far (continuous batching, the token budget, KV blocks, preemption, policy order) has to happen in one function, before every forward pass, in well under a millisecond. Get the order of its phases wrong and you stall decodes, readmit the request you just evicted, or let big requests starve.",
+    "fits": "Third card of group 3, the heart of the build. It uses the counters and containers from the data-structures card and calls a BlockManager whose internals come on the next card; here you only need can_allocate and allocate.",
+    "expect": [
+      "phase 1: running requests first, n = min(remaining, budget)",
+      "out of blocks → preempt running.pop() (the newest)",
+      "no admission in a step that preempted",
+      "phase 2: admit in policy order; head-of-line blocking",
+      "finish_step: advance counters, emit, free"
+    ],
+    "goal": "Execute step() and finish_step() by hand on a small trace, justify each of its four rules, and state its invariants and its O(R + A·log W + B_new) cost."
+  },
+  "attend": [
+    "Why are victims always taken from behind the loop cursor, and what does that guarantee about the current step?",
+    "What goes wrong on the toy trace if you delete the \"not preempted\" test, and what doesn't change?",
+    "What does breaking at a blocked head buy, and what does skipping ahead buy instead?",
+    "In finish_step, what exactly makes a token come out, and why does a mid-prompt chunk emit nothing?",
+    "Why does reserving up front fix thrashing but cost TTFT?"
+  ],
+  "core": {
+    "must": [
+      "Serve running requests first → they already hold KV and have paid for their prompt → finishing them frees blocks and keeps TPOT short → a newcomer is refused before a request that is 90% done",
+      "A running request can't get a block → pop the newest from running → it has done the least work, and pop() is O(1) → free its blocks, reset num_computed to 0, push it to the front of waiting",
+      "No admission in a step that preempted → otherwise the victim is readmitted at once into the memory it just freed → on the toy trace the rule saves waste (3 vs 5 preemptions), not time",
+      "Admit in policy order and break at a head that doesn't fit → strict order, no starvation of big requests → costs small requests some TTFT (request 5: 53.5 vs 10.4 ms with skipping)"
+    ],
+    "elevated": [
+      "Python's while … else → the else runs only when allocation succeeded without a break → one loop both evicts until the request fits and detects that the request evicted itself"
+    ],
+    "reference": [
+      "the exact 76-character line wrapping and the black block numbers",
+      "the names of the tests in labs/test_scheduler.py",
+      "vLLM's assert line numbers (scheduler.py:1355–1359)"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, write step() as pseudocode in about ten lines, with its two loops, the preemption inner loop and the not-preempted guard. Then write finish_step() in five lines and list the four invariants.",
+    "checklist": [
+      "running loop: n = min(remaining, budget); while can't allocate: preempt running.pop()",
+      "admission loop only if nothing was preempted, while budget, seats and waiting remain",
+      "head of line that doesn't fit memory: break",
+      "finish_step: num_computed += n; caught up → emit a token; done → free blocks",
+      "invariants: Σn ≤ budget, running ≤ max_seqs, blocks ≤ total, exact output counts"
+    ]
+  },
+  "retrieve": [
+    {
+      "q": "Explain why step() serves running requests before waiting ones, in terms of both latency and memory.",
+      "kind": "concept",
+      "answer": [
+        "running requests' gaps between tokens are TPOT: serving them first keeps it short",
+        "they already hold KV; finishing them frees blocks",
+        "under memory pressure the newcomer, not the nearly finished request, is the one refused"
+      ]
+    },
+    {
+      "q": "Walk through toy step 3: what each running request gets, why request 3 is not admitted, and what is left over.",
+      "kind": "mechanism",
+      "answer": [
+        "requests 0, 1 and 2 each get one decode token (3 of 16 budget)",
+        "request 2's decode takes the last free block: 0 free",
+        "request 3 needs 2 blocks for its 7-token prompt, so admission breaks at the head despite a free seat",
+        "13 tokens of budget sit idle: memory, not compute, binds"
+      ]
+    },
+    {
+      "q": "Skip-ahead admission gave request 5 a 10.4 ms TTFT instead of 53.5 ms. Why does the reference still break at the head?",
+      "kind": "tradeoff",
+      "answer": [
+        "skipping lets small requests take memory a big request is waiting for",
+        "under steady load the big one may never find enough free blocks: starvation",
+        "on the toy trace skipping also cost more preemptions (4 vs 3) and a later finish (105.5 vs 100.7 ms)"
+      ]
+    }
+  ],
+  "compare": [
+    {
+      "with": "llm-request-scheduler/reference-solution",
+      "q": "This card's step() and the reference solution's step() produce identical traces. What does each keep that the other drops, and why does the mini file need _reap()?",
+      "answer": [
+        "this one has the watermark, pluggable WaitQueue, prefix matching and the fair-share charge",
+        "the mini file drops those but adds cancel()",
+        "_reap frees cancelled or finished requests only between steps, so blocks are never freed while a step may still write them"
+      ]
+    },
+    {
+      "with": "perf-5-engines/scheduler",
+      "q": "vLLM V1 runs the same running-first loop; SGLang runs prefill-first. What does each order protect, and which would you choose for short chat turns with a tight TTFT?",
+      "answer": [
+        "decode-first protects TPOT and frees memory sooner",
+        "prefill-first gets new prompts to their first token sooner and forms bigger prefill batches",
+        "short chat turns with a tight TTFT target favour prefill-first"
+      ]
+    }
+  ],
+  "predict": {
+    "q": "Change the victim rule from running.pop() (newest) to the request with the most tokens computed. Before running: does the toy trace thrash more or less, and what new cost appears?",
+    "answer": "More, not less. Mid-prefill, request 4 already has more tokens computed (22) than the decoding requests 1 and 3, so it is still the victim, and now every eviction throws away the most work available. In a quick variant of labs/mini_scheduler.py (victim = most tokens computed, refunding a victim already planned this step) the toy trace takes 24 steps and 4 preemptions (request 4 three times, request 6 once) and finishes at 115.1 ms, against 21 steps, 3 preemptions and 100.7 ms. The rule also costs an O(R) scan and needs the refund, which newest-first avoids by construction."
+  },
+  "apply": {
+    "task": "Trace step() and finish_step() by hand on a small config: budget 8, 3 seats, 6 blocks of 4 tokens, watermark 0, all arriving at t = 0: request 0 (prompt 6, output 4), request 1 (prompt 5, output 3), request 2 (prompt 9, output 2). For each step until all finish, write the plan (request: tokens), any preemption, and the free blocks after scheduling. Then check your trace against labs/mini_scheduler.py with the same inputs.",
+    "done": "Step 0: 0:6P 1:2P, free 3. Step 1: 0:1D 1:3P 2:4P, free 1. Step 2: 0:1D 1:1D, request 2 preempts itself, free 2. Step 3: 0:1D 1:1D, free 1 (request 2 can't get 2 blocks). Step 4: 2:8P, free 4. Step 5: 2:1P. Step 6: 2:1D. 7 steps; request 2's first token at step 5's end (28.77 ms) and it finishes at 33.56 ms.",
+    "hint": "Request 1's first output token appears when its 5th prompt token is computed (end of step 1)."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: how a \"most work\" victim rule changes thrashing?",
+    "Could you explain the not-preempted guard without referring to vLLM?",
+    "Which relationship is still fuzzy: preempt newest → least work lost, or break at head → no starvation?",
+    "In your hand trace, where did you first disagree with the lab, and which rule did you misapply?",
+    "What will you revisit before the block manager card: what can_allocate actually counts?"
+  ],
+  "revisit": [
+    "llm-request-scheduler/request-state",
+    "llm-request-scheduler/chunked-prefill",
+    "llm-request-scheduler/continuous-batching"
+  ],
+  "prereq": [
+    "llm-request-scheduler/request-state"
+  ]
+}

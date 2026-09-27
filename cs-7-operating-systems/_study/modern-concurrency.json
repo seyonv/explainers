@@ -1,0 +1,134 @@
+{
+  "prime": {
+    "problem": "An OS thread per waiting job costs a kernel object and a stack, and the M3 refused to start thread 6,143. Locks around shared state cost contention and risk deadlock. Modern code needs cheaper ways to hold thousands of waits open, to get results back from workers, and to share state without a lock around it.",
+    "fits": "Last card. It replaces the tools of the whole course with lighter ones: coroutines instead of threads (threads card), messages instead of locks (locks to monitors), compare-and-swap instead of a mutex, and user-space switching instead of kernel switches (the context-switch cards).",
+    "expect": [
+      "coroutines + one event loop (asyncio)",
+      "futures and executors",
+      "CSP channels (Go) vs actors (Erlang)",
+      "compare-and-swap with a retry loop",
+      "free-threaded Python 3.14t"
+    ],
+    "goal": "Pick the right construct for many waits, a few blocking calls, CPU-bound work and state owned by one worker, and explain the cost that each one removes and the one it keeps."
+  },
+  "attend": [
+    "Where does a coroutine hand control back to the event loop, and what does that imply about code between two awaits?",
+    "Why did 10,000 asyncio sleeps finish in 0.25 s while 10,000 threads never started?",
+    "What does <code>pool.submit</code> return immediately, and when does <code>result()</code> block?",
+    "In the CAS trace, how is thread 1's stale write refused rather than silently applied, as in the locks card?",
+    "What is fundamentally different about who has a name in CSP (the channel) and in the actor model (the process)?"
+  ],
+  "core": {
+    "must": [
+      "A waiting job needs only its state, not a kernel thread → coroutines are heap objects (≈ 1.6 KB) switched by one event loop at each await → 10,000 waits in 0.25 s (≈ 15 µs overhead per task) → but one blocking call or CPU loop in a coroutine stalls every task",
+      "Switches happen only at await → code between two awaits can't be interleaved → most races vanish without locks → but read, await, write still races",
+      "CAS = \"set to new only if still old\", in one atomic instruction → a stale update fails and retries instead of overwriting → no thread ever waits holding a lock → but under heavy contention retries burn CPU (3,385 retries for 40,000 increments), and structures beyond a counter hit ABA",
+      "Share by sending instead of by locking → one owner per piece of state behind a queue (channel or mailbox) → no lock around the state → channels name the pipe and can block the sender; actors name the process and send asynchronously"
+    ],
+    "elevated": [
+      "CPython 3.10 threads got 16 MiB stacks here vs the C default of 512 KiB → 10,000 threads reserve 156 GiB of address space (only ~25 KB each touched) → the real limit hit was macOS's 6,144 threads per process, not memory"
+    ],
+    "reference": [
+      "<code>LOCK CMPXCHG</code> on x86, load-exclusive/store-exclusive on ARM64",
+      "Go's <code>select</code>, Erlang's links and OTP supervisors",
+      "<code>kern.num_taskthreads</code> = 6,144",
+      "PEP 703 and PEP 779 (free-threading experimental in 3.13, supported in 3.14)"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, write the card's \"which one do I pick\" as four rows (many waits, a few dozen blocking calls, CPU-bound Python, state owned by one worker), each with the construct, the measured number and the one way it fails. Then draw the CAS retry trace in three rows.",
+    "checklist": [
+      "many waits: asyncio (10,000 in 0.25 s); fails on a blocking call",
+      "dozens of blocking calls: ThreadPoolExecutor; no async rewrite needed",
+      "CPU-bound: ProcessPoolExecutor (3.8×) or threads on 3.14t (2.6×) with locks",
+      "one owner behind a queue instead of a lock",
+      "CAS: read, compute, CAS; retry on failure; no lock held while waiting",
+      "none removes races by itself: read, await, write still races"
+    ]
+  },
+  "retrieve": [
+    {
+      "q": "Explain why an asyncio task is so much cheaper than an OS thread for holding a wait open, and what you give up for that.",
+      "kind": "concept",
+      "answer": [
+        "a task is a heap object that saves its state at await; switching is a function return inside one thread, no kernel",
+        "a thread is a kernel object with its own stack and is switched by the kernel",
+        "you give up preemption: a task that doesn't await (CPU loop, blocking call) freezes the loop"
+      ]
+    },
+    {
+      "q": "Walk through the CAS trace: both threads read 5, thread 2's CAS succeeds. What happens to thread 1, step by step, and why does the counter end at 7?",
+      "kind": "mechanism",
+      "answer": [
+        "thread 1 calls CAS(5 → 6), but the value is now 6, so the CAS fails and nothing is written",
+        "thread 1 re-reads 6 and calls CAS(6 → 7), which succeeds",
+        "both increments count: 5 → 6 → 7; the stale write was refused, not applied"
+      ]
+    },
+    {
+      "q": "10,000 HTTP calls of 0.1 s each. Compare a serial loop, 10,000 threads, a pool of 8 threads and asyncio, using the card's numbers and one failure mode each.",
+      "kind": "tradeoff",
+      "answer": [
+        "serial: 1,000 s; correct but slow",
+        "a thread each: stopped at 6,143 threads on macOS",
+        "pool of 8: 1,250 rounds × 0.1 s = 125 s",
+        "asyncio: 0.25 s, if every library call is async"
+      ]
+    },
+    {
+      "q": "When would you choose a queue in front of a worker that owns the state, rather than a lock around shared state?",
+      "kind": "tradeoff",
+      "answer": [
+        "when many parties update the same state and the updates can be applied one at a time by its owner",
+        "it removes the lock and its deadlock risk; the queue does the only synchronisation",
+        "it costs a hop per update and makes the owner a bottleneck if updates are heavy"
+      ]
+    }
+  ],
+  "compare": [
+    {
+      "with": "cs-7-operating-systems/monitors",
+      "q": "A hand-written monitor, <code>queue.Queue</code>, and a Go channel all hand items between workers. What does each one hide from you, and which one fits asyncio?",
+      "answer": [
+        "the monitor hides nothing: you write the lock, conditions and while loops",
+        "queue.Queue is that monitor pre-built (one mutex, three conditions)",
+        "a Go channel is the same hand-off as a language primitive, with select over several",
+        "in asyncio, use asyncio.Queue: thread-blocking queues would stall the loop"
+      ]
+    },
+    {
+      "with": "cs-7-operating-systems/context-switch-how",
+      "q": "A kernel context switch vs an asyncio task switch: what is saved, who decides when, and what does each cost according to the course's measurements?",
+      "answer": [
+        "kernel: registers into the PCB, maybe a page table; decided by blocking or a timer",
+        "asyncio: the coroutine's frame stays on the heap; decided only at await",
+        "the kernel switch is ≤ 4–7 µs each (ceilings) plus cold caches; asyncio's 15 µs covers creating, scheduling and finishing a task, with no trap into the kernel"
+      ]
+    }
+  ],
+  "predict": {
+    "q": "Same 10,000 waits of 0.1 s, but on a <code>ThreadPoolExecutor(max_workers=50)</code>, and separately in asyncio with an <code>asyncio.Semaphore(100)</code> around each wait. Predict both wall times. Commit before revealing.",
+    "answer": "Pool of 50: 10,000 / 50 = 200 rounds × 0.1 s = 20 s. asyncio capped at 100: 100 rounds × 0.1 s = 10 s, plus a little overhead. The cap, not the construct, now sets the time; asyncio's advantage is that it can afford a much higher cap. The cap is still worth having, for the server's sake, as the semaphores card argued."
+  },
+  "apply": {
+    "task": "Extend <code>code/modern-concurrency.py</code>: run the 10,000 asyncio sleeps with an <code>asyncio.Semaphore</code> of 100, 1,000 and 10,000, and record wall time. Then add a coroutine that runs a 0.05 s pure-Python loop once in the middle of the gather, and measure how much it delays everything. Finally, write a 4-thread counter three ways (lock, CAS loop from the card, per-thread counters summed) and record the final count and, for CAS, the retries.",
+    "done": "The semaphore runs sit near 10 s, 1 s and 0.25 s (100, 10 and 1 rounds, plus overhead); the CPU coroutine adds about 0.05 s to the total because nothing else runs while it computes; all three counters reach 40,000, and the CAS version reports some retries (the card's run had 3,385).",
+    "hint": "Wave count = 10,000 ÷ cap. A single-threaded event loop can't overlap CPU work, so the 0.05 s loop is pure added delay; <code>loop.run_in_executor</code> is the escape hatch."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: the pool's 20 s, or the capped asyncio's 10 s?",
+    "Can you explain, without the trace, why a failed CAS is safe while a stale write in the locks card was not?",
+    "Which relationship is still fuzzy: await → no interleaving → fewer locks, or channel vs actor → who is named?",
+    "For a service you know, which of the four picks would you change now?",
+    "Looking back over the course: which card's mechanism does each modern construct replace, and what cost does it keep?"
+  ],
+  "revisit": [
+    "cs-7-operating-systems/threads",
+    "cs-7-operating-systems/locks",
+    "cs-7-operating-systems/monitors",
+    "cs-7-operating-systems/context-switch-how"
+  ],
+  "prereq": [
+    "cs-7-operating-systems/threads"
+  ]
+}

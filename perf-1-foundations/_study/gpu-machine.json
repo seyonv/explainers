@@ -1,0 +1,59 @@
+{
+  "prime": {
+    "problem": "\"Decode is memory-bound\" means nothing until you know what the memory is, how far it sits from the math units, and how much math those units can do. Without a picture of the chip, every later optimisation (tiling, batching, fusing, quantizing) looks like an unrelated trick.",
+    "fits": "First card of the machine half. The FLOPs card counted the work; this card describes the H100 that does it. The roofline card next combines its two headline numbers (989 TF/s and 3.35 TB/s) into one ratio.",
+    "expect": ["SMs, sub-partitions and warps", "tensor cores vs CUDA cores", "registers → SMEM → L2 → HBM", "decode ceiling = bandwidth ÷ weight bytes"],
+    "goal": "Sketch an H100 from memory with its sizes and bandwidths, and explain why a batch-1 decode step leaves the tensor cores idle about 99.7% of the time."
+  },
+  "attend": [
+    "Why can't Llama-3.1-8B's weights stay on chip between decode steps, even with a 50 MB L2?",
+    "What happens inside a warp when its threads take different sides of an if/else?",
+    "Tensor cores give 15× the CUDA cores' FLOPs. Which parts of a transformer can't use them?",
+    "Why does an H200 decode faster than an H100 when both have the same compute?",
+    "How does an SM keep its math units busy while a memory read is still in flight?"
+  ],
+  "core": {
+    "must": [
+      "Each memory level is smaller and closer to the math (80 GB HBM → 50 MB L2 → 256 KB SMEM per SM → registers) → 16.06 GB of weights is 321× the L2 → the weights can't stay on chip → every decode step streams them from HBM: ≈ 4.8 ms at 3.35 TB/s",
+      "Tensor cores do matrix multiply-accumulate → 990 vs 66 TF/s on the CUDA cores (15×) → matmul-shaped work in a supported precision runs fast → softmax, norms and activations don't get that speed",
+      "Batch-1 decode needs 16.2 µs of math but 4.8 ms of reads → the tensor cores sit idle ≈ 99.7% of the step → for decode speed buy bandwidth (an H200 over an H100), not FLOPs",
+      "An SM keeps up to 64 warps resident → when one waits on memory, another runs → latency is hidden by switching, not by caching everything → but only if each thread uses few enough registers to leave room for many warps"
+    ],
+    "elevated": [
+      "A warp's 32 threads run one instruction together (SIMT) → an if/else split runs both branches in turn with the idle lanes masked → divergent code wastes lanes",
+      "Registers are 64 KB per sub-partition → at 256 registers per thread only 8 warps fit per SM instead of 64 → fewer warps to switch between, less latency hiding"
+    ],
+    "reference": ["132 SMs, 528 tensor cores, 16,896 CUDA cores", "L2 ≈ 5.5 TB/s (measured, not published)", "NVLink 450 GB/s per H100, 900 on B200", "V100/A100 SMEM sizes and tensor-core FLOPs per cycle", "TPU VMEM of about 128 MB on v5p"]
+  },
+  "compress": {
+    "prompt": "Draw the H100 from memory as nested boxes (chip → SM → sub-partition) with the four memory levels, each labelled with its size and, where published, its bandwidth. Then write one sentence on which arrow a decode step spends its time waiting on.",
+    "checklist": [
+      "132 SMs, each with 4 sub-partitions holding a tensor core, 32 CUDA cores and 64 KB of registers",
+      "SMEM/L1 256 KB per SM, L2 50 MB shared, HBM 80 GB at 3.35 TB/s",
+      "tensor cores 990 TF/s vs CUDA cores 66 TF/s",
+      "the weights are 321× the L2, so they're streamed from HBM every step",
+      "decode waits on the HBM arrow, so the tensor cores are idle about 99.7% of the time"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why a GPU keeps thousands of threads resident instead of running a few very fast ones like a CPU.", "kind": "concept", "answer": ["a read from HBM takes a long time", "with many resident warps the SM switches to one that is ready and hides the wait", "a CPU's few big cores (8 on the M3) suit branchy sequential work but have too few lanes and too little bandwidth to stream 16 GB per token"]},
+    {"q": "Follow one weight from HBM to a tensor core during a matmul: which levels does it pass through, and who manages each one?", "kind": "mechanism", "answer": ["HBM: you allocate it (global memory, <code>cudaMalloc</code>)", "L2: hardware only; you can only shape access patterns", "SMEM: you as shared memory (tiles for the tensor cores), or hardware as L1", "registers: the compiler, then the tensor core's multiply-accumulate"]},
+    {"q": "Using the card's register numbers, how many warps can one SM keep resident if every thread uses 256 registers, and why should a kernel writer care?", "kind": "mechanism", "answer": ["4 sub-partitions × 16,384 registers = 65,536 per SM", "256 × 32 threads = 8,192 registers per warp → 8 warps, instead of the maximum 64", "fewer resident warps means fewer to switch to while one waits on memory"]},
+    {"q": "Pick a chip to maximise single-user tokens/s on Llama-3.1-8B in BF16: an H100, an H200, or a hypothetical chip with 2× the H100's FLOPs and the same bandwidth. Rank them and justify it.", "kind": "tradeoff", "answer": ["H200 first: 4.8 TB/s → about 3.35 ms per step, ≈ 299 tok/s ceiling (computed)", "the H100 and the 2×-FLOPs chip tie at 3.35 TB/s → ≈ 209 tok/s", "extra FLOPs don't help batch-1 decode; they would help prefill"]}
+  ],
+  "compare": [
+    {"with": "perf-1-foundations/prefill-vs-decode-mac", "q": "Your M3 vs an H100 as machines for the same job: what is fundamentally different, which hardware choice causes most of the decode gap, when is the M3 the right tool, and how does each fall short?", "answer": ["the M3 shares one 24 GB pool between CPU and GPU at ~100 GB/s; the H100 has 80 GB of HBM at 3.35 TB/s", "bandwidth causes the 33.5× gap in decode ceilings (6.2 vs 209 tok/s for 8B BF16)", "the M3 fits one user running a small quantized model", "the M3 falls short on bandwidth and memory for big models or many users; the H100 wastes its FLOPs at batch 1"]},
+    {"with": "perf-1-foundations/roofline-intuition", "q": "This card gives the chip's two headline numbers; the roofline card turns them into one ratio. What does that ratio capture, and what from this card does it hide?", "answer": ["C ÷ W = 295: FLOPs the chip can do per byte it moves", "it hides that non-matmul work runs on CUDA cores (a ridge near 20, not 295)", "it hides caches: data kept in L2 or SMEM doesn't cost HBM bandwidth", "it hides launch and scheduling overhead on tiny operations"]}
+  ],
+  "predict": {"q": "A B200 has 148 SMs, a 126 MB L2 and 8 TB/s of HBM bandwidth. Before computing: could Llama-3.1-8B's BF16 weights live in its L2, and what batch-1 decode ceiling do you expect?", "answer": "No: 16.06 GB is about 127× the 126 MB L2, so the weights are still streamed from HBM every step. The ceiling scales with bandwidth: 8e12 ÷ 16.06e9 ≈ 498 tok/s, the same figure the serving-metrics card gives."},
+  "apply": {"task": "Build a one-page machine sheet for Llama-3.1-8B BF16 on five chips: H100, H200, B200, TPU v5e and your M3. For each give ops:byte (C ÷ W), whether 16.06 GB fits, the batch-1 decode ceiling (W ÷ 16.06 GB) and the 1,000-token prefill floor (2 × 8.03e9 × 1,000 ÷ C) where C is known.", "done": "H100: 295, fits, 209 tok/s, 16.2 ms. H200: 206, fits, ≈ 299 tok/s, 16.2 ms. B200: 281, fits, ≈ 498 tok/s, 7.1 ms. TPU v5e: 240, doesn't fit in 16 GB. M3: ops:byte unknown, fits in 24 GB, 6.2 tok/s, prefill floor unknown (all computed from the course's specs).", "hint": "H200: 989 TF/s and 4.8 TB/s. B200: 2,250 TF/s and 8 TB/s. Only the decode column needs bandwidth alone."},
+  "reflect": [
+    "Which prediction did you get wrong: whether the weights fit in a bigger L2, or the B200's ceiling?",
+    "Could you explain warp switching without the factory analogy?",
+    "Which relationship is still fuzzy: weights > on-chip memory → streamed every step, or streamed every step → tensor cores idle?",
+    "Which numbers from the hierarchy table do you actually need to remember, and which are reference?",
+    "What will you reopen before the roofline card: the FLOPs bar chart, or the memory hierarchy?"
+  ],
+  "revisit": ["perf-1-foundations/flops-per-token"],
+  "prereq": []
+}

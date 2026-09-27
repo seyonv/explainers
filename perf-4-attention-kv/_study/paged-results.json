@@ -1,0 +1,56 @@
+{
+  "prime": {
+    "problem": "A clever allocator is only worth it if the engine built on it is faster end to end. This card asks what vLLM had to build (kernels, three sequence calls), how it was measured, where the 2–4× came from, and where paging stops paying.",
+    "fits": "Third PagedAttention card. Cards I and II gave the allocator and sharing; this one walks §5–8: implementation, evaluation against FasterTransformer and three Orcas, ablations, and what paging means in today's vLLM.",
+    "expect": ["three fused kernels (block write, block-read attention, block copy)", "fork / append / free", "normalized latency (s per output token)", "block size and swap-vs-recompute ablations", "gpu_memory_utilization sizes the pool"],
+    "goal": "Explain the source of vLLM's speedup, read a normalized-latency curve, and predict how many KV blocks vLLM allocates on an H100."
+  },
+  "attend": [
+    "vLLM's attention kernel is 20–26% slower than FasterTransformer's. Where does the end-to-end win come from, then?",
+    "Why does normalized latency stay flat and then shoot up as the request rate rises, and what does \"sustains 2× the rate\" mean on that curve?",
+    "Why was vLLM's lead over Orca small on OPT-175B with Alpaca?",
+    "Why does going from gpu_memory_utilization 0.5 to 0.9 multiply KV capacity by more than 0.9/0.5?",
+    "In the chatbot experiment, why did all three Orcas behave alike?"
+  ],
+  "core": {
+    "must": [
+      "Paged allocation fits more requests → batch size grows (30.42 vs 13.62 vs 7.00 requests on OPT-13B) → per-step kernels are no faster (attention 20–26% slower) → but more tokens per step → 1.7–2.7× the sustainable request rate of Orca (Oracle), up to 22× FasterTransformer",
+      "Paging pays only where KV memory limits the batch → with lots of KV memory and short requests (OPT-175B, Alpaca) even wasteful allocators batch enough → the run is compute-bound → vLLM's lead shrinks → same logic for training and compute-bound serving",
+      "The engine takes util × GPU memory, subtracts fixed weights and profiled activations, and fills the rest with KV blocks → the weights are a fixed cost → KV capacity grows faster than util (0.5 → 0.9: 2.34× KV for Llama-3.1-8B)"
+    ],
+    "elevated": [
+      "Fused kernels hide the indirection → one launch per layer for reshape-and-write, one warp per block for coalesced reads, one batched launch for copy-on-write copies → without fusion many tiny launches would eat the gain"
+    ],
+    "reference": ["Table 1's per-model KV budgets and slot counts", "the FastAPI / NCCL architecture details", "V1 engine claims (1.7×, prefix caching default on)", "vLLM start-up log wording", "the H100 script's runtime and cost"]
+  },
+  "compress": {
+    "prompt": "Write the causal chain from paging to throughput in one line, then the chain for why the gain disappears, then the formula vLLM uses to size its KV pool.",
+    "checklist": [
+      "paging → more requests fit → larger batch → more tokens per step → higher sustainable rate",
+      "kernel is slower, so all the gain is batch size",
+      "gain vanishes when memory isn't the limit (compute-bound)",
+      "KV pool ≈ util × GPU memory − weights − activations",
+      "lead grows with sharing (2.3× at beam 6, 3.58× with a 341-token prefix)"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why vLLM beats FasterTransformer by up to 22× although FasterTransformer's attention kernel is faster.", "kind": "concept", "answer": ["FasterTransformer reserves like Orca (Max) and lacks iteration-level scheduling", "so its batch stays small", "vLLM's batch is many times larger; throughput comes from batch size, not per-kernel speed"]},
+    {"q": "Walk through the fork / append / free calls for parallel sampling with n = 4 and a 1,000-token prompt at B = 16.", "kind": "mechanism", "answer": ["fork: 3 new sequences share the 63 prompt blocks (62 full + 1 with 8 tokens), refs go to 4", "first append: the shared partial block is copied 3 times (copy-on-write): 66 blocks, 132 MiB vs 504 MiB unshared", "free: a finished sample returns its private blocks; shared ones stay while others use them"]},
+    {"q": "You're sizing a single-H100 Llama-3.1-8B deployment. What do you lose by lowering gpu_memory_utilization from 0.9 to 0.5, and why might you do it anyway?", "kind": "tradeoff", "answer": ["KV drops from ~55.9 GB to ~23.9 GB: 52 → 22 sequences of 8k (upper bounds)", "lower batch, lower throughput", "reasons: leave room for another process or model on the GPU, or cap batch for latency"]}
+  ],
+  "compare": [
+    {"with": "perf-5-engines/scheduler", "q": "Course 5's scheduler card treats the KV budget as the thing admission and preemption manage. What did PagedAttention change about that budget, and what scheduling decisions remain?", "answer": ["paging turned the budget into countable fixed-size blocks with no fragmentation", "the scheduler can admit whenever free blocks exist, instead of reserving max length", "it still decides whom to admit, whom to preempt (FCFS in vLLM), and swap vs recompute"]},
+    {"with": "perf-4-attention-kv/radixattention", "q": "In the paper's chatbot experiment vLLM drops KV between chat rounds. What does RadixAttention keep that vLLM (2023) didn't, and why does it matter most for chat?", "answer": ["RadixAttention keeps finished requests' KV in a radix tree as an LRU cache", "each chat turn resends the whole history, so the history is a shared prefix", "with the cache, only the new turn needs prefill"]}
+  ],
+  "predict": {"q": "Before looking at the lab script, predict vLLM's KV pool for Llama-3.1-8B BF16 on an 80 GB H100 at gpu_memory_utilization = 0.8, ignoring activations: GB, tokens, 16-token blocks and 8k sequences. Commit first.", "answer": "0.8 × 80 − 16.06 = 47.94 GB → ÷ 131,072 B = 365,753 tokens → 22,859 blocks → 44.6 sequences of 8k (our arithmetic). Real vLLM reports somewhat less, because activations and CUDA graphs take a few GB."},
+  "apply": {"task": "Read labs/h100-vllm-kv.sh without running it. Write down, for util 0.9 and 0.5, the \"GPU KV cache size\" and \"Maximum concurrency for 8,192 tokens\" you expect in the start-up log, and which way the real numbers should deviate. Then say what the prefix-caching test's two TTFT floors are and why the measured ratio won't match them.", "done": "You have four predicted log values with the direction of the expected error, plus the two floors (34.1 ms and 1.6 ms) and two reasons measured TTFT differs.", "hint": "util 0.9: 426,788 tokens, 52.1×; util 0.5: 182,648 tokens, 22.3× (card). Real values are lower (activations, CUDA graphs) unless CUDA reports more than 80 × 10⁹ bytes. Floors: 2 × 8.03e9 × 2,100 ÷ 989e12 = 34.1 ms and 1.6 ms for 100 tokens; measured TTFT adds queueing, scheduling and the HTTP path."},
+  "reflect": [
+    "Which prediction did you get wrong: the KV pool size, or how much activations take?",
+    "Could you explain normalized latency to someone reading one of the paper's plots?",
+    "Which relationship is still fuzzy: batch size → throughput, or memory-bound → paging pays?",
+    "Why is the paper's 2–4× no longer a statement about current vLLM?",
+    "What will you look for in RadixAttention I: how KV survives after a request finishes?"
+  ],
+  "revisit": ["perf-4-attention-kv/paged-memory", "perf-4-attention-kv/paged-sharing", "perf-3-kernels/fusion-cuda-graphs", "perf-3-kernels/coalescing"],
+  "prereq": ["perf-4-attention-kv/paged-sharing"]
+}

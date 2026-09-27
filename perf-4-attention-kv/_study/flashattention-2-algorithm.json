@@ -1,0 +1,56 @@
+{
+  "prime": {
+    "problem": "FlashAttention fixed the memory traffic but reached only 25–40% of an A100's peak, where a good GEMM reaches 80–90%. Part of the gap is work that looks tiny in FLOPs (max, exp, rescaling) but runs on units 16× slower than the tensor cores.",
+    "fits": "First of two FA2 cards. It keeps FA1's exact algorithm and IO bound (cards I–II) and trims the non-matmul work inside each tile; the next card fixes how the work is spread across the GPU.",
+    "expect": ["312 vs 19.5 TFLOP/s: matmul vs everything else", "un-scaled output Õ, divided once at the end", "logsumexp L = m + log ℓ", "swapped loops: Q outside, K/V inside", "causal block skipping"],
+    "goal": "Count the non-matmul work per score for FA1 and FA2, explain why 1.5% of FLOPs can be 20% of time, and say what block skipping buys under a causal mask."
+  },
+  "attend": [
+    "Why is a non-matmul FLOP \"16× more expensive\" on an A100, and what does that do to a 1.5% share of the FLOPs?",
+    "Why is it legal to skip dividing by ℓ at every step, while the e^(m_old − m_new) correction still has to happen every step?",
+    "What information does the single logsumexp L carry that m and ℓ carried separately, and how does the backward pass use it?",
+    "Which tiles can a causal mask skip entirely, which need no masking, and why does only the diagonal tile need the elementwise mask?",
+    "What does swapping the loop order do to O_i's trips to HBM?"
+  ],
+  "core": {
+    "must": [
+      "Tensor cores do only matmul (312 TF on A100) → max, exp, sums and rescaling run on FP32 units (19.5 TF) → each non-matmul FLOP costs 16× → at d = 128, 8.08 non-matmul ops per score are 1.55% of FLOPs but 20.2% of ideal time",
+      "Division by ℓ is linear → divide once after the last K/V block (keep an un-scaled Õ) → rescale O with 2 ops per element instead of 4 → 6.04 non-matmul ops per score → 15.9% of time; the max correction stays because it keeps numbers in range",
+      "Causal mask → tiles fully above the diagonal are all −∞ → skip them (2,016 of 4,096 at N = 8,192, 128-wide blocks) → only the diagonal tile per row needs the mask → ≈ 2× less work, measured 1.7–1.8×; in our A100 model worth far more than the rescale tweak"
+    ],
+    "elevated": [
+      "Loops swapped: Q_i outside, K_j/V_j inside → Õ_i, m_i, ℓ_i stay on chip until the row block is done → O is written once instead of 2·T_c times (16× fewer at N = 1,024) → and each row block becomes an independent job, which the next card parallelizes"
+    ],
+    "reference": ["the per-tile op-count table rows", "arXiv v1's extra −1 typo in Algorithm 1 line 10", "the H100/B200 exp-unit rates (next cards)", "FA2's MQA/GQA indexing details"]
+  },
+  "compress": {
+    "prompt": "Write FA2's inner loop from memory in five lines, then one sentence for each of the three tweaks (defer the divide, store L, skip causal blocks) saying what it saves.",
+    "checklist": [
+      "for each Q_i: for each K_j, V_j: S, new max, P̃, ℓ update, Õ = diag(e^(m_old − m_new))Õ + P̃V",
+      "after the loop: O = Õ/ℓ and L = m + log ℓ, written once",
+      "defer the divide: fewer non-matmul ops per score (8.08 → 6.04)",
+      "store L: one vector, P = exp(S − L) in backward",
+      "skip tiles above the diagonal: about half the work"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why cutting a sliver of FLOPs was worth a paper section: what property of the hardware makes the elementwise work expensive?", "kind": "concept", "answer": ["tensor cores only accelerate matmul", "everything else runs on FP32 units 16× slower on the A100", "so FLOP share understates time share: 1.55% of FLOPs → 20.2% of ideal time"]},
+    {"q": "Walk through FA2's causal tiling at N = 1,024 with 128-wide square blocks: how many tiles exist, are computed, are skipped, and are masked?", "kind": "mechanism", "answer": ["T = 8 per side, 64 tiles", "computed T(T+1)/2 = 36, skipped 28", "masked only the 8 diagonal tiles; tiles below need no mask", "22% of computed tiles need masking here, only 3.1% at N = 8,192"]},
+    {"q": "Your team has budget for one of two kernel changes on a causal-LM prefill: defer the 1/ℓ division, or add block skipping. Which do you pick, and what does each cost in correctness?", "kind": "tradeoff", "answer": ["block skipping: our A100 model gives 68.1 ms vs 137.6 ms, about 2×", "deferring the divide: 71.7 → 68.1 ms, about 5%", "neither changes the output: both are exact rewrites"]}
+  ],
+  "compare": [
+    {"with": "perf-4-attention-kv/flashattention-3-4-flashinfer", "q": "FA2 cut non-matmul work because it was 16× slower than matmul on A100. On H100 and B200 the exp unit alone is 256× and 512× slower. What does FA3/FA4 do instead of cutting ops further, and what does FA4 add that echoes FA2?", "answer": ["FA3 overlaps softmax with the other warpgroup's GEMMs (pingpong) so exp hides behind matmul", "FA4 emulates some exps with polynomials on FMA units", "FA4's conditional rescaling (only when the max jumps by more than 8) is the same instinct as FA2's deferred divide: skip rescales that don't change the result"]},
+    {"with": "perf-3-kernels/tensor-cores-low-precision", "q": "perf-3 explained tensor cores as matmul-only engines. Why does that design choice make every attention kernel since FA2 a fight against softmax, and not against the matmuls?", "answer": ["tensor-core throughput grows each generation; FP32 and special-function units grow much less", "attention's matmuls ride that growth; its exp and max don't", "so the non-matmul share of time rises with each GPU generation"]}
+  ],
+  "predict": {"q": "Keep d = 128 but shrink the K/V block width to B_c = 64. Does FA2's advantage over FA1 in rescale ops per score get bigger or smaller, and why? Commit first.", "answer": "It stays 2:1 but both grow: the rescale term is (ops per O element) × d / B_c, so at B_c = 64 FA1 spends 8 ops per score and FA2 4 (the card's note), versus 4 and 2 at B_c = 128. Narrow K/V blocks mean O is rescaled more often per score, so the absolute saving from deferring the divide doubles, even though the ratio doesn't change."},
+  "apply": {"task": "Run labs/fa2-nonmatmul.py, then do it by hand for a Llama prefill at N = 4,096 with 128-wide square blocks: how many tiles are computed, skipped and masked under a causal mask, and what is the FLOP saving from skipping? Then compute how many times fewer O elements FA2 writes than FA1 touches (2·T_c·N·d vs N·d) at that N.", "done": "You have computed/skipped/masked counts, the saving ratio and the O-traffic ratio, and they fit the pattern of the card's N = 1,024 and 8,192 rows.", "hint": "T = 32: computed 32·33/2 = 528, skipped 32·31/2 = 496, masked 32, saving 1,024 / 528 = 1.94×. O traffic: 2·T_c = 64× fewer (the card gives 16× at N = 1,024 and 128× at 8,192). Our arithmetic."},
+  "reflect": [
+    "Which prediction did you get wrong: how B_c changes the rescale cost?",
+    "Could you explain why the divide can be deferred but the max correction can't?",
+    "Which relationship is still fuzzy: tensor-core-only matmul → non-matmul share of time, or causal mask → skipped tiles?",
+    "Why does the measured 1.7–1.8× fall short of the 1.97× FLOP ratio?",
+    "What will you look for in FA2 II: how swapping the loops also creates parallel work?"
+  ],
+  "revisit": ["perf-4-attention-kv/flashattention-tiling", "perf-4-attention-kv/flashattention-backward-results", "perf-3-kernels/tensor-cores-low-precision"],
+  "prereq": ["perf-4-attention-kv/flashattention-tiling"]
+}

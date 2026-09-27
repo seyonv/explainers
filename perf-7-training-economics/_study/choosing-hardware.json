@@ -1,0 +1,57 @@
+{
+  "prime": {
+    "problem": "Spec sheets print four numbers, vendors print them in ways that flatter (sparse FLOPS, mixed footnotes), and the cheapest GPU per hour can make the most expensive tokens. Without knowing which spec your workload runs out of, you'll rent the wrong chip.",
+    "fits": "Builds on cost-per-token ($/M = price ÷ tokens per hour) and course 2's step formula, where each term is paid in a different resource. This card runs that formula on eight GPUs and prices the resource that binds.",
+    "expect": ["dense vs 2:4-sparse FLOPS", "B_crit = C ÷ BW and B_kv = (HBM − W) ÷ KV_seq", "which spec binds in decode, prefill and big-MoE serving", "$ per TB/s-hour and $ per PF-hour", "reading vendor $/M claims"],
+    "goal": "Name the binding resource for a workload, rank GPUs by $/hr divided by it, and spot the traps in a spec sheet or a vendor comparison."
+  },
+  "attend": [
+    "H100 and H200 have identical FLOPS. Why does the H200 decode 43% faster at batch 1?",
+    "On which GPUs does the HBM fill before decode can become compute-bound, and why does that barely matter for the cost?",
+    "Why is the cheapest card per hour tied for the most expensive tokens?",
+    "How much of NVIDIA's \"4.5× cheaper\" B200-vs-H100 claim does price per byte explain, and where does the rest come from?",
+    "When is a GPU's memory capacity worth more than its bandwidth?"
+  ],
+  "core": {
+    "must": [
+      "Decode at small batch pays W/BW per step → tok/s ≈ BW ÷ W → buy TB/s (H100 205 vs B200 490 tok/s at B = 1)",
+      "Decode at big batch is capped by HBM left after the weights (B_kv) and spends 66–84% of each step reading KV → buy GB, then TB/s → $/M falls with $ per TB/s-hour (B200 $0.84 vs H100 $1.19: $0.076 vs $0.111 per M)",
+      "Prefill shares each weight read across thousands of prompt tokens → compute-bound, tok/s ≈ C ÷ 2N → buy dense FLOPS; a big MoE or dense model first has to fit, and split models talk every layer → buy GB and interconnect",
+      "NVIDIA's headline FLOPS are 2:4-sparse, but inference is dense → divide by 2 before any comparison → otherwise B_crit, speed-of-light floors and utilization claims are all off by 2×"
+    ],
+    "elevated": [
+      "B_crit = C ÷ BW for BF16 because the 2 FLOPs and 2 bytes per parameter cancel → FP8 weights halve it → where B_kv < B_crit (H100, L40S) the batch hits memory before compute, but KV reads dominate either way"
+    ],
+    "reference": ["the full spec table (A100, L40S, H100, H200, B200, GB200, MI300X, MI325X)", "per-provider $/GPU-hour", "MLPerf v5.0 Llama-2-70B offline 34,988 / 98,858 tok/s", "Kiely's B200 figures (192 GB, ~5 PF) vs DGX ÷ 8 (180 GB, 4.5 PF)", "MIG and L4-class options for small models"]
+  },
+  "compress": {
+    "prompt": "From memory, draw a 2 × 2: regime (decode small batch, decode big batch, prefill, big model) against the spec that binds and the $-per-resource figure you'd sort by. Add one line on the sparse-vs-dense trap.",
+    "checklist": [
+      "decode, small batch: TB/s (tok/s ≈ BW/W)",
+      "decode, big batch: GB caps B, then TB/s; sort by $ per TB/s-hour",
+      "prefill: dense FLOPS; sort by $ per PF-hour",
+      "big dense or MoE: GB to fit, then interconnect",
+      "headline FLOPS are 2:4-sparse; use half"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why \"pick the biggest headline TFLOPS\" is wrong twice over for a decode-heavy service.", "kind": "concept", "answer": ["the headline is 2:4-sparse, 2× the dense rate inference uses", "decode is bandwidth- and memory-bound, so FLOPS barely enter", "H100 and H200 have the same FLOPS and decode 205 vs 294 tok/s at batch 1"]},
+    {"q": "Walk through the H100 row: batch-1 speed, B_kv, the step at B_kv and $/M.", "kind": "mechanism", "answer": ["step at B = 1 = 0.08 + 4.79 ms = 4.87 ms → 205 tok/s → $5.40/M", "B_kv = ⌊(80 − 16.06) ÷ 0.268⌋ = 238, below B_crit = 295", "step at 238 = 19.07 + 4.79 = 23.86 ms → 9,973 tok/s → $0.111/M"]},
+    {"q": "A vendor says their new GPU makes tokens 4.5× cheaper than the H100. What do you ask before believing it, and what would you do instead?", "kind": "tradeoff", "answer": ["same engine? (the B200 claim swaps vLLM for TensorRT-LLM)", "same per-user speed and batch? same precision?", "price per TB/s-hour explains only ~1.4× of it", "benchmark your model on your engine at your batch on both GPUs"]}
+  ],
+  "compare": [
+    {"with": "perf-2-scaling-book-inference/critical-batch-size", "q": "Course 2 used B_crit to say when decode becomes compute-bound; this card adds B_kv. What does each measure, and what happens to cost on a GPU where B_kv < B_crit versus one where B_kv > B_crit?", "answer": ["B_crit = C ÷ BW: where the weight matmuls turn compute-bound", "B_kv: how many sequences HBM holds after the weights", "B_kv < B_crit (H100, L40S): memory caps the batch first", "B_kv > B_crit (H200, B200, MI3xx): matmuls go compute-bound, but KV reads still take 77–84% of the step, so bandwidth stays the cost"]},
+    {"with": "perf-6-scaling-out/sizing-deployment", "q": "Sizing picked a layout for a 70B across GPUs; this card picks the GPU. When does memory per GPU change the layout itself, and what does that buy?", "answer": ["the 70B in BF16 is 141.1 GB: 2 H100s or H200s (141 GB is 0.1 GB short) vs 1 MI300X", "more memory per GPU means fewer GPUs per replica, smaller TP groups, and more room for KV", "the course's H200 vs H100 row: 16 H100s ($1.77/M) → 8 H200s ($1.02/M) for the same 70B load"]}
+  ],
+  "predict": {"q": "A workload is almost all prefill: long documents in, a few tokens out. Which is cheaper per million input tokens for the 8B, an H100 at $3.99 or an L40S at $1.09? Commit before computing.", "answer": "The L40S. Prefill is compute-bound, so input tok/s ≈ C ÷ 2N: 362 TF gives 22,540 tok/s and $0.0134/M, against the H100's 61,582 tok/s and $0.0180/M (both at 100% of dense peak, our arithmetic). The card's $ per BF16 PF-hour says the same (3.01 vs 4.03). The same L40S ties for the most expensive decode tokens: the binding resource flips the ranking."},
+  "apply": {"task": "Redo the worked example at 8k context (KV per sequence = 8,192 × 128 KiB = 1.074 GB) for three GPUs: H100 ($3.99, 80 GB, 3.35 TB/s), H200 ($4.59, 141 GB, 4.8 TB/s) and B200 ($6.69, 180 GB, 8.0 TB/s, 2,250 TF). For each, compute B_kv, the step at B_kv, tok/s and $/M. Which GPU wins, and by how much more or less than at 2k?", "done": "H100: 59 sequences, 23.7 ms, 2,489 tok/s, $0.445/M. H200: 116, 29.3 ms, 3,960 tok/s, $0.322/M. B200: 152, 22.4 ms, 6,783 tok/s, $0.274/M. The B200 still wins, by 1.62× over the H100 against 1.46× at 2k, because longer context makes memory capacity and bandwidth matter even more.", "hint": "B_kv = ⌊(HBM − 16.06 GB) ÷ 1.074 GB⌋; step = B_kv × 1.074 GB ÷ BW + max(2·B·N/C, 16.06 GB ÷ BW)."},
+  "reflect": [
+    "Which prediction did you get wrong: which GPU is cheaper for prefill?",
+    "What couldn't you explain cleanly: why the L40S is cheap per FLOP but expensive per decode token?",
+    "Which relationship is still fuzzy: regime → binding spec, or binding spec → $ per resource?",
+    "Could you find the \"with sparsity\" footnote on a datasheet and correct a number yourself?",
+    "What will you revisit before the KernelBench card, which reuses the dense peak?"
+  ],
+  "revisit": ["perf-7-training-economics/cost-per-token", "perf-2-scaling-book-inference/step-time", "perf-2-scaling-book-inference/critical-batch-size"],
+  "prereq": ["perf-7-training-economics/cost-per-token"]
+}

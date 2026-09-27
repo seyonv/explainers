@@ -1,0 +1,67 @@
+{
+  "prime": {
+    "problem": "With continuous batching, a new request's whole prompt joins the running decodes in one step. A 4,096-token prompt turns a 9.9 ms step into 72.8 ms, and every one of 64 streaming users freezes for it. Without a cap on tokens per step, streams stutter whenever long prompts arrive.",
+    "fits": "Last card of group 2, fixing the first problem continuous batching created. It adds one number, the token budget, to the continuous loop, and it is the default loop the scheduler cards build in group 3.",
+    "expect": [
+      "the token budget (max_num_batched_tokens)",
+      "decodes first, then a slice of a waiting prompt",
+      "E3: budget ↓ → ITL p99 ↓, TTFT p99 ↑, tok/s flat",
+      "<code>T* ≈ (SLO − KV read) × C ÷ 2P</code>",
+      "no phase flag: num_computed catching up with num_tokens"
+    ],
+    "goal": "Pick a token budget from a TPOT SLO with the formula, predict what a smaller or larger budget does to ITL and TTFT, and explain why chunking needs no prefill/decode flag."
+  },
+  "attend": [
+    "Why does a 960-token slice ride along with 64 decodes for 21.8 ms instead of 9.9 ms, but a 4,096-token prompt costs 72.8 ms?",
+    "Why does throughput barely move across budgets from 256 to 4,096?",
+    "Why is TTFT p99 lowest at a 2,048 budget rather than with no chunking at all?",
+    "Chunk 2 doesn't recompute chunk 1. What does it pay instead, and how much?",
+    "What real cost of small budgets does the course's cost model leave out?"
+  ],
+  "core": {
+    "must": [
+      "Cap the tokens per step → decodes go in first at 1 token each → the leftover budget gets a slice of a waiting prompt → no step grows much past the budget → the worst gap for streams is bounded (72.8 → 21.9 ms at budget 1,024)",
+      "The same work gets done either way → throughput stays flat (2,009–2,033 tok/s) → the budget only changes who waits: smaller budget → smoother ITL, slower first token for long prompts",
+      "Past ≈ 295 tokens a step is compute-bound → step time grows linearly with the budget → solve max(math, weights) + KV read ≤ SLO for T → ≈ 2,756 tokens for 50 ms with 64 decodes at 2k",
+      "A request tracks num_computed vs num_tokens, not a phase → chunking is just n = min(remaining, budget) → prefix caching (start above 0) and preemption (reset to 0) fit the same rule"
+    ],
+    "elevated": [
+      "Each chunk reads the KV of earlier chunks instead of recomputing → 20,160 tokens re-read at budget 512 (0.79 ms of a 66.7 ms prefill) → chunking's cost is extra reads and per-step overhead, not repeated math"
+    ],
+    "reference": [
+      "vLLM's per-GPU default budgets (8,192 / 16,384 / 2,048) and commit",
+      "SGLang's chunked_prefill_size and --enable-mixed-chunk flag",
+      "Sarathi-Serve's measured ~25% overhead at 512 and Course 5's +4.8%"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw five consecutive steps after a 4,096-token prompt arrives, once without chunking and once with a 1,024 budget, and label the worst gap and the new request's first token in each. Then write the budget formula and one line on why throughput stays flat.",
+    "checklist": [
+      "without chunking: one 72.8 ms step, then 10 ms decode steps",
+      "with a 1,024 budget: 64 decodes + 960-token slices at ~21.8 ms",
+      "worst stream gap 72.8 → 21.9 ms; new request's first token 72.8 → 97.9 ms",
+      "T* ≈ (SLO − KV read) × C ÷ 2P",
+      "throughput is flat because the same tokens get computed"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why chunked prefill improves stream smoothness without improving throughput.", "kind": "concept", "answer": ["the same prompt and decode tokens get computed either way", "chunking spreads a long prompt over several steps, so no single step is long", "only who waits changes: streams wait less per gap, the long prompt waits longer for its first token"]},
+    {"q": "Walk through how num_computed advances for a 4,096-token prompt at budget 1,024 with 64 decodes running, and when its first token appears.", "kind": "mechanism", "answer": ["each step the 64 decodes take 64 tokens, the prompt gets the leftover 960", "num_computed goes 0 → 960 → 1,920 → 2,880 → 3,840 → 4,096", "the chunk that reaches num_tokens emits the first token", "after that remaining is 1 every step: a decode"]},
+    {"q": "Your SLO is TPOT ≤ 50 ms and vLLM's H100 API default budget is 8,192. What goes wrong, and what budget would you set?", "kind": "tradeoff", "answer": ["a full 8,192-token step with 64 decodes takes about 138.5 ms in our model: any long prompt breaks the SLO", "solve the formula: about 2,756 tokens for 50 ms at 64 decodes, 2k context", "cost of the smaller budget: long prompts reach their first token later, plus some real per-chunk overhead"]}
+  ],
+  "compare": [
+    {"with": "llm-request-scheduler/disaggregation", "q": "Chunked prefill and disaggregation both attack prefill–decode interference. What does each do to the interference, what does each cost, and at what scale does each win?", "answer": ["chunking caps the interference: a stream's gap is at most one budget-sized step", "disaggregation removes it: decode GPUs never run a prefill", "chunking costs some TTFT and per-chunk overhead; disaggregation costs a KV transfer per request and a second pool", "chunking wins on one GPU or a few; disaggregation at fleet scale with long prompts and strict SLOs on both"]},
+    {"with": "perf-5-engines/sarathi-chunked-prefill", "q": "Sarathi-Serve profiles the budget; this card solves for it from a cost model. What does each approach capture that the other misses?", "answer": ["the formula gives a quick starting point from specs", "profiling captures real kernel efficiency and per-chunk overhead the model leaves out", "the formula ignores that busier steps (more decodes, longer contexts) need a smaller budget"]}
+  ],
+  "predict": {"q": "Your budget is sized for 64 decodes at 2k context. Traffic grows to 150 running decodes at the same budget. Before computing: does the worst stream gap go up, down or stay the same, and why?", "answer": "Up. The KV read of the running decodes grows with their number (150 × 2,048 × 128 KiB is about 12 ms, versus 5.13 ms for 64), and decodes also eat more of the budget, so each step is longer even though the token count is capped. The budget bounds tokens, not time: a busier step needs a smaller budget to hold the same SLO."},
+  "apply": {"task": "With 64 decodes at 2k context, find the largest budget that keeps a step under a 30 ms TPOT target, first with the card's approximate formula and then by exact search with CostModel.raw. Then simulate a 4,096-token prompt arriving at that budget: how many steps it takes, the worst step, and its first-token time. Compare with budget 1,024 (the card's example) and with no chunking.", "done": "Formula ≈ 1,531 tokens; exact search 1,528. At 1,528 the prompt takes 3 steps (1,464 + 1,464 + 1,168 tokens), the worst step is about 30.1 ms (just over, because later slices re-read the earlier chunks' KV) and its first token comes at about 85.4 ms, between 97.9 ms (budget 1,024) and 72.8 ms (no chunking).", "hint": "Each step's context is the 64 decodes' KV (growing by 1 token per step) plus the prompt tokens computed so far plus the new slice."},
+  "reflect": [
+    "Which prediction did you get wrong: the effect of more running decodes on the worst gap?",
+    "Could you explain why the budget formula only applies above ≈ 295 tokens?",
+    "Which relationship is still fuzzy: budget → ITL, or budget → TTFT for long prompts?",
+    "In the exercise, did the 30.1 ms surprise you? What does it say about sizing budgets with a margin?",
+    "What will you revisit before the build-it cards: the num_computed/num_tokens rule that step() will use?"
+  ],
+  "revisit": ["llm-request-scheduler/continuous-batching", "llm-request-scheduler/metrics-slos", "llm-request-scheduler/token-loop"],
+  "prereq": ["llm-request-scheduler/continuous-batching"]
+}

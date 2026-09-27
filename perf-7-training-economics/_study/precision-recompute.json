@@ -1,0 +1,58 @@
+{
+  "prime": {
+    "problem": "16-bit tensor cores are 14.8× faster than FP32 on an H100, but in 16 bits small gradients round to zero and small updates vanish, so training quietly stops learning or diverges. Separately, stored activations (380 GB for the 8B at 8k) swamp the GPU. Both need a fix that doesn't give the speed back.",
+    "fits": "Builds on the training-step card: the 4-byte master copy in the 16Ψ count and the sbh(34 + 5as/h) activation formula are explained here. Course 3's tensor-cores card gave the number formats; this card is what training must do to survive them.",
+    "expect": ["FP32 master weights and FP32 accumulation", "loss scaling and dynamic loss scaling", "BF16's exponent range", "FP8 with fine-grained (tile) scales", "full vs selective recompute, Chen's √n"],
+    "goal": "Explain which precision failure each piece of mixed precision prevents, pick a loss scale from a gradient range, and price full vs selective recompute in memory and FLOPs."
+  },
+  "attend": [
+    "Loss scaling fixes underflow in the gradients. Why doesn't it fix lost updates to the weights?",
+    "BF16 has fewer mantissa bits than FP16. Why does it still remove the need for loss scaling?",
+    "Why does one outlier ruin a per-tensor FP8 scale, and what does a 1×128 tile scale change?",
+    "Selective recompute throws away 90% of the activations for ~7% more FLOPs. Why is it that cheap?",
+    "Why does full recompute lower the MFU you report but not the HFU?"
+  ],
+  "core": {
+    "must": [
+      "FP16's smallest subnormal is 2⁻²⁴ and ~5% of gradients sit below it → they round to zero → multiply the loss by S (chain rule shifts every gradient by log₂S binades) → divide by S before the update, skip the step on overflow",
+      "A 16-bit weight has 8–11 mantissa bits → an update smaller than half a step rounds away (BF16: weight/update > 256) → the optimizer updates an FP32 master copy and casts to 16 bits for each pass → that's the 4 bytes in 16Ψ, and why mixed precision saves time and activation memory but not state",
+      "BF16 keeps FP32's 8 exponent bits (min normal 2⁻¹²⁶) → nothing underflows → no loss scaling to tune → but rounding is 8× coarser than FP16, so master weights are still needed",
+      "Attention's scores are huge (5as/h = 320 at 8k, 90% of activations) but cheap to rebuild → selective recompute drops them for +7% FLOPs (380 → 36.5 GB); full recompute keeps only each layer's input for one extra forward (+33%, 6ND → 8ND, 2.1 GB)"
+    ],
+    "elevated": [
+      "FP8 E4M3 tops out at 448 → a per-tensor scale lets one outlier squeeze every other value toward zero → DeepSeek-V3 scales per 1×128 activation tile and 128×128 weight block and promotes partial sums to FP32 every 128 elements → loss error vs BF16 < 0.25%",
+      "FlashAttention never stores the s×s scores → with it, \"no recompute\" already costs about selective's 36.5 GB → most runs get selective recompute for free"
+    ],
+    "reference": ["FP16 max 65,504 and E5M2 max 57,344", "the paper's 8…32K loss scales and the 80% Mandarin accuracy loss", "Korthikanti's 70% / 2.7% and the 5× headline (SP + selective)", "Chen's 1,000-layer ResNet 48G → 7G", "per-GPU dense TFLOPS for T4 / A100 / H100 / B200"]
+  },
+  "compress": {
+    "prompt": "From memory, make a two-column list: each failure 16-bit training runs into, and the piece of the recipe that prevents it. Then write one line comparing full and selective recompute in GB and extra FLOPs for the 8B at 8k.",
+    "checklist": [
+      "tiny gradients underflow in FP16 → loss scaling (not needed in BF16)",
+      "small updates round away in 16 bits → FP32 master weights (needed in both)",
+      "long reductions lose precision → FP32 accumulation",
+      "FP8 outliers crush the range → fine-grained tile/block scales",
+      "full: 2.1 GB, +33%; selective: 36.5 GB, +7%; none: 380 GB"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why switching from FP16 to BF16 removes loss scaling but not the FP32 master copy.", "kind": "concept", "answer": ["loss scaling exists for range: BF16's exponent matches FP32, so small gradients don't underflow", "the master copy exists for precision: BF16 has only 7 mantissa bits, so updates below half a step (weight/update > 256) vanish", "adding 1e-4 to 1.0 a thousand times stays 1.0000 in BF16, reaches 1.1000 in FP32"]},
+    {"q": "Walk through one training step with dynamic FP16 loss scaling, from the loss to the optimizer, including what happens on an overflow.", "kind": "mechanism", "answer": ["multiply the loss by S (a power of 2) and run backward in FP16", "check the gradients for inf/NaN", "if any: skip the update and halve S", "otherwise divide by S, clip, update the FP32 master, cast to FP16; after enough clean steps, double S"]},
+    {"q": "8 H100s with ZeRO-3 leave 63.9 GB per GPU for activations. For the 8B at 8k, compare none, selective and full recompute, and choose.", "kind": "tradeoff", "answer": ["none: 380.1 GB, doesn't fit", "selective: 36.5 GB, fits (52.6 GB total), +7.0% FLOPs", "full: 2.1 GB + 11.9 GB peak, fits, +33.3% FLOPs", "choose selective (or FlashAttention, which gives it for free); full only if memory is the binding limit"]}
+  ],
+  "compare": [
+    {"with": "perf-3-kernels/tensor-cores-low-precision", "q": "Course 3 chose low precision for inference kernels; this card chooses it for training. What does training have to protect that inference doesn't, and which pieces of the recipe exist only for that?", "answer": ["training accumulates millions of tiny updates into the weights and back-propagates tiny gradients", "inference runs a fixed model forward once per token", "master weights, loss scaling and FP32 gradient accumulation exist only for training", "both need FP32 accumulation inside matmuls and careful scales for FP8"]},
+    {"with": "perf-5-engines/quantization-serving", "q": "DeepSeek-V3 trained its GEMMs in FP8 with tile scales; course 5 quantizes a BF16-trained model after the fact. What is the same idea, and why is the risk different?", "answer": ["same: fine-grained scales keep outliers from crushing everyone else's range", "training in FP8 lets the weights adapt to FP8 rounding as they learn", "post-training quantization rounds a model that never saw FP8, so quality must be checked with evals", "Llama 3 found uncapped FP8 serving occasionally produced corrupted responses despite strong benchmarks"]}
+  ],
+  "predict": {"q": "Double the sequence to 16,384 tokens for the 8B, still with ZeRO-3 on 8 GPUs (16.1 GB of state per GPU). Does selective recompute still fit, and does its FLOP overhead stay at 7%?", "answer": "No and no. Selective stores 34·sbh·L = 73.0 GB, and 16.1 + 73.0 = 89.1 GB > 80 GB. Its overhead grows too, because the recomputed term 4·L·h·s² grows with s² while the model's 6Ns grows with s: 11.6% at 16k (our arithmetic with the card's formulas). Full recompute (4.3 GB kept, plus one layer rebuilt at a time) now becomes the choice."},
+  "apply": {"task": "Three quick computations. (1) Your FP16 gradients have max |g| = 10.0. What is the largest power-of-two loss scale that can't overflow? (2) A weight of 0.5 receives an update of 1e-3. Does it survive in FP16? In BF16? (Spacing just above 0.5: FP16 2⁻¹¹, BF16 2⁻⁸.) (3) For the 8B at s = 16,384 with ZeRO-3 on 8 GPUs, compute selective recompute's memory and extra FLOPs (4·L·h·s² over 6·N·s + 12·L·h·s²), and full recompute's memory including one layer rebuilt at a time with its scores ((34 + 5as/h)·s·h), then say which fits 80 GB.", "done": "(1) 65,504 ÷ 10 = 6,550 → S = 4,096. (2) FP16 keeps it (0.5 → 0.500977, since 1e-3 exceeds half of 4.88e-4); BF16 loses it (half its 3.9e-3 spacing is larger than 1e-3), so it stays 0.5. (3) Selective: 73.0 GB, +11.6% FLOPs, 16.1 + 73.0 = 89.1 GB ✗. Full: 4.3 GB kept + 45.2 GB for the rebuilt layer = 49.5 GB, 65.6 GB with the state ✓, +33.3% FLOPs.", "hint": "At s = 16,384: sbh = 67.1M, 5as/h = 5 × 32 × 16,384 ÷ 4,096 = 640, L = 32, h = 4,096, N = 8.03e9."},
+  "reflect": [
+    "Which prediction did you get wrong: that selective recompute stops fitting at 16k, or that its overhead grows?",
+    "What couldn't you explain cleanly: range (exponent bits) vs precision (mantissa bits), and which fix belongs to which?",
+    "Which relationship is still fuzzy: BF16 → no loss scaling, or BF16 → still needs a master copy?",
+    "Could you explain why one FP8 outlier matters, without the word \"quantization\"?",
+    "What will you revisit before the post-training card?"
+  ],
+  "revisit": ["perf-7-training-economics/training-step", "perf-3-kernels/tensor-cores-low-precision", "perf-7-training-economics/compute-budgets"],
+  "prereq": ["perf-7-training-economics/training-step", "perf-3-kernels/tensor-cores-low-precision"]
+}

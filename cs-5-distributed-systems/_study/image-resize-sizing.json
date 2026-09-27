@@ -1,0 +1,122 @@
+{
+  "prime": {
+    "problem": "\"10K requests a second\" doesn't tell you how many machines to buy. Size for the average and the queue in front of each machine grows until the p99 target is blown; size from the user count and you can be off by 1,000×. You need a chain of divisions plus a reason for the headroom.",
+    "fits": "The course's running example, sized. It uses cs-4's back-of-the-envelope estimation and Little's law, and every later card (architecture, backpressure, service discovery, sharding) reuses its 10K requests/s, 100 ms per image and 40 servers.",
+    "expect": [
+      "<code>servers = ⌈λ·t<sub>cpu</sub> / (c·u<sub>max</sub>)⌉</code>",
+      "Little's law: λ × t = busy cores",
+      "two readings of \"20% headroom\"",
+      "Erlang C / M/M/c queue wait",
+      "the six SOA questions"
+    ],
+    "goal": "Redo the 10K → 1,000 cores → 32 → 40 chain yourself, explain with the queueing numbers why 32 machines fail the p99 even though they cover the mean, and fill in the per-service checklist for a new service."
+  },
+  "attend": [
+    "Why is λ × t<sub>cpu</sub> the number of busy cores, and which law is that?",
+    "\"20% headroom\" gives 39 or 40 machines depending on how you read it. Which reading matches a utilisation cap, and why?",
+    "At 32 machines the fleet covers the mean exactly. What does the M/M/32 model say happens to the p99 queue wait, and why so suddenly?",
+    "Why is the weakest input \"10 conversions per second per core\", and which statistic of it should you measure?",
+    "Which of the six SOA questions does the source answer, and which does the card have to infer?"
+  ],
+  "core": {
+    "must": [
+      "Requests/s × CPU seconds per request → busy cores (Little's law: 10,000 × 0.1 s = 1,000) → ÷ cores per box → machines that cover the <i>mean</i> (32)",
+      "Utilisation near 100% → almost every arrival finds all cores busy (P(wait) 84.9% at 97.7%) → the spare capacity cμ − λ shrinks to 7.5/s → the p99 queue wait explodes (592 ms, over the whole 500 ms budget)",
+      "Cap utilisation at 80% → ÷ 0.8, not × 1.2 → 40 machines at 78.1% → spare capacity 70/s → p99 wait 36 ms, and room for a surge of 1.25×, a lost machine or a rolling deploy",
+      "Size from requests/s × work per request, never from users → the same 100K users could send 10K/s or 10/s → the user count is only a sanity check"
+    ],
+    "elevated": [
+      "p99 wait = ln(P(wait)/0.01) / (cμ − λ) → the denominator is the spare capacity per machine → halving the spare capacity roughly doubles the tail wait, which is why the last few percent of utilisation cost the most"
+    ],
+    "reference": [
+      "the Erlang C formula itself and its O(c) evaluation",
+      "the ingress numbers (2.62 GB/s = 21.0 Gb/s; 0.52 Gb/s per machine)",
+      "downtime per target (43.2 min/month at 99.9%, 4.3 at 99.99%)",
+      "Harchol-Balter chapter references"
+    ]
+  },
+  "compress": {
+    "prompt": "Write the chain from memory as four divisions with the image service's numbers, then add one sentence on why the last step (÷ 0.8) is a latency requirement and not just caution.",
+    "checklist": [
+      "10,000 × 0.1 s = 1,000 busy cores (Little's law)",
+      "1,000 ÷ 32 = 31.25 → 32 machines cover the mean",
+      "÷ 0.8 → 40 machines, 78.1% busy",
+      "at 97.7% busy the model's p99 queue wait is 592 ms, over budget before any work",
+      "size from requests/s and work per request, not users",
+      "measure the p99 CPU time per image, not the mean"
+    ]
+  },
+  "retrieve": [
+    {
+      "q": "Explain why a fleet that exactly covers the average load still misses a p99 target, in terms of what a request sees when it arrives.",
+      "kind": "concept",
+      "answer": [
+        "at 97.7% utilisation an arriving request finds every core busy most of the time (84.9%)",
+        "it waits for spare capacity, and there is only 7.5 requests/s of it per machine",
+        "random arrivals bunch up, so the wait's tail grows without limit as utilisation → 100%"
+      ]
+    },
+    {
+      "q": "Walk through the four lines of the source's sizing with each number, then show where the two readings of \"20% headroom\" split.",
+      "kind": "mechanism",
+      "answer": [
+        "10K requests/s; 256 KB → 10 conversions/s per core → 100 ms CPU",
+        "10,000 ÷ 10 = 1,000 cores; ÷ 32 = 31.25 → 32 machines",
+        "add 20%: 32 × 1.2 = 38.4 → 39; keep 20% idle: 32 ÷ 0.8 = 40",
+        "only ÷ 0.8 reproduces the source's ≥ 40 and matches an 80% utilisation cap"
+      ]
+    },
+    {
+      "q": "Autoscaling on queue depth vs a fixed fleet of 40: when does this card's chain stop being the right tool?",
+      "kind": "tradeoff",
+      "answer": [
+        "when load is bursty or unknown: a fixed 20% only covers a 1.25× surge",
+        "then scale on queue depth or utilisation, and trust a load test over any queueing model",
+        "the chain still gives the baseline and the per-machine numbers autoscaling needs"
+      ]
+    }
+  ],
+  "compare": [
+    {
+      "with": "cs-5-distributed-systems/backpressure-metrics",
+      "q": "This card prevents overload by buying headroom; backpressure handles it by rejecting work. What does each control, what does each cost, and which one saves you during a 2× surge that headroom wasn't sized for?",
+      "answer": [
+        "headroom controls utilisation (78%), paid for in idle machines",
+        "backpressure bounds the queue (cap 4 → latency ≤ 0.5 s), paid for in rejected requests (yield)",
+        "a 2× surge exceeds 1.25×, so only backpressure keeps the requests it accepts inside the budget; headroom alone lets the queue grow"
+      ]
+    },
+    {
+      "with": "cs-4-design-foundations/back-of-envelope",
+      "q": "cs-4's estimates stop at \"does it fit, within 10×?\". What does this card add that a pure back-of-envelope estimate would miss, and why does it matter for a latency SLO?",
+      "answer": [
+        "the queueing effect: the mean-based estimate says 32 is enough",
+        "a latency SLO is about the tail, and the tail depends on utilisation, not just capacity",
+        "so the estimate needs a utilisation cap on top, chosen from the latency target"
+      ]
+    }
+  ],
+  "predict": {
+    "q": "Traffic grows 20% to 12,000 requests/s and nobody adds machines. With 40 machines, what is the utilisation, and roughly how does the p99 queue wait compare with today's 36 ms and the 500 ms budget? Commit, then check with <code>p99_wait(40, rps=12000)</code>.",
+    "answer": "Utilisation becomes 12,000 × 0.1 / 1,280 = 93.75%. The M/M/32 model gives P(wait) 63.0% and a p99 queue wait of about 207 ms: nearly 6× today's 36 ms, still under the 500 ms budget but using 41% of it before any resizing. The headroom was exactly what absorbed a 1.2× surge; one more machine failure would push it much further."
+  },
+  "apply": {
+    "task": "Resize the fleet for the p99 image instead of the mean: images up to 1 MB take about 400 ms of CPU (the card's linear inference), so a core does 2.5 per second. Assume, pessimistically, every request is that size. Run <code>size(10_000, 2.5, 32, 0.20)</code> from <code>code/image-resize-sizing.py</code>, then compute the utilisation of the fleet you'd buy.",
+    "done": "You get (4000 cores, 125 machines, 150 with ×1.2, 157 with ÷0.8), a utilisation of 79.6% at 157 machines, and one sentence on why sizing every request at the worst case is too pessimistic when the p99 target covers the tail, not the mean.",
+    "hint": "4,000 ÷ 32 = 125; 125 ÷ 0.8 = 156.25 → 157; 4,000 ÷ (157 × 32) = 0.796. The real fleet sits between 40 and 157: measure the CPU-time distribution on real images."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: how far the p99 wait moves at 93.75% utilisation?",
+    "Could you explain why the tail explodes near 100% without the Erlang C formula?",
+    "Which relationship is still fuzzy: utilisation → P(wait), or spare capacity → tail wait?",
+    "Which input to this chain would you measure first on a real system, and how?",
+    "What will you revisit before the backpressure card: the queue that forms when λ exceeds capacity?"
+  ],
+  "revisit": [
+    "cs-4-design-foundations/back-of-envelope",
+    "cs-4-design-foundations/averages-and-expected-value"
+  ],
+  "prereq": [
+    "cs-4-design-foundations/back-of-envelope"
+  ]
+}

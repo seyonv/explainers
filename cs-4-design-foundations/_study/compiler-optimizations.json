@@ -1,0 +1,119 @@
+{
+  "prime": {
+    "problem": "It's easy to assume \"the compiler will fix it\". In CPython almost nothing is rewritten, and no compiler anywhere turns an O(n²) string loop into O(n): the source's loop takes 0.468 s where <code>join</code> takes 0.0073 s.",
+    "fits": "Fifth estimation card. The last card said compilers only change the constant c in <code>T = c·f(n)/s</code>; this one shows which rewrites they make (inline, fold, reduce, reuse, tail calls, JIT), which CPython skips and why, and what's left to you.",
+    "expect": [
+      "inline expansion and constant folding",
+      "strength reduction and common subexpression elimination",
+      "tail-call elimination",
+      "JIT compilation",
+      "<code>dis</code>: reading CPython's bytecode"
+    ],
+    "goal": "Predict what CPython and an optimizing C compiler will and won't rewrite in a small function, and spot a quadratic pattern no compiler will fix."
+  },
+  "attend": [
+    "Why does <code>s = s + str(i) + \" \"</code> copy the whole string each pass, while <code>s += str(i) + \" \"</code> often doesn't?",
+    "Why can't CPython inline <code>square(5)</code> or replace <code>x * 8</code> with a shift, when clang does both?",
+    "Which one optimization does CPython 3.10 perform in the <code>dis</code> output?",
+    "What does tail-call elimination do to the stack, and why did Guido van Rossum choose not to have it?",
+    "When the interpreter's per-operation cost is the problem (not the algorithm), what does the card say to change?"
+  ],
+  "core": {
+    "must": [
+      "Building a string by repeated <code>s + …</code> → each pass copies the whole old string → total copies grow as n² (≈ 49,142 copies of the final string at 10⁵) → join sizes once and copies once, O(n), on every Python",
+      "CPython can't prove a name or type won't change at run time → it can't inline <code>square</code>, reduce <code>x * 8</code> or reuse <code>x + y</code> (<code>__add__</code> may have side effects) → it only folds expressions made entirely of constants",
+      "A static compiler knows the types → it inlines, folds, reduces and removes the tail call (clang even replaced <code>sum_to</code> with a formula) → write the clear version in C/Rust/JVM and let -O2 or the JIT do it",
+      "No tail-call elimination in CPython → every call keeps a frame for tracebacks → deep recursion hits RecursionError at 1,000 → write loops, and raise the limit only for recursion you know is bounded"
+    ],
+    "elevated": [
+      "CPython grows a string in place when nothing else refers to it (<code>s += t</code>) → the += form ran in 0.011–0.013 s instead of 0.468 s → but PEP 8 calls this fragile and other runtimes may not do it, so use join"
+    ],
+    "reference": [
+      "the exact bytecode names (<code>LOAD_CONST</code>, <code>BINARY_MULTIPLY</code>)",
+      "clang's arm64 instructions",
+      "Java's StringBuilder / JEP 280 history",
+      "PEP 744's experimental JIT"
+    ]
+  },
+  "compress": {
+    "prompt": "Without scrolling, list the six optimizations with one line each on what they do, then mark which ones CPython 3.10 performs. Finish with one sentence on why none of them fixes the source's string loop.",
+    "checklist": [
+      "inline, fold constants, strength-reduce, eliminate common subexpressions, eliminate tail calls, JIT",
+      "CPython 3.10: constant folding only",
+      "because names and types can change at run time",
+      "the string loop is O(n²) copying; compilers change constants, not growth",
+      "join is the O(n) fix"
+    ]
+  },
+  "retrieve": [
+    {
+      "q": "Explain why the dynamic nature of Python blocks strength reduction of <code>x * 8</code>.",
+      "kind": "concept",
+      "answer": [
+        "x might be a float, a list or any object with <code>__mul__</code>",
+        "a shift is only correct for machine integers",
+        "the compiler can't prove the type, so it must emit a generic multiply"
+      ]
+    },
+    {
+      "q": "Walk through why <code>s = s + str(i) + \" \"</code> copies about 28.9 billion characters for 10⁵ iterations while the final string has 588,890.",
+      "kind": "mechanism",
+      "answer": [
+        "<code>s + str(i)</code> runs first while s is still referenced, so a new string is built by copying all of s",
+        "each pass copies the whole string so far",
+        "the sum over all passes is quadratic: ≈ 49,142 copies of the final string"
+      ]
+    },
+    {
+      "q": "You have a pure-Python hot loop that is already O(n). Rank these: rely on CPython to optimize it, rewrite with NumPy, run it under PyPy, rewrite the algorithm. What does each change?",
+      "kind": "tradeoff",
+      "answer": [
+        "CPython: folds constants only, so nothing changes",
+        "NumPy or PyPy: cut the per-operation constant (the next card measures it)",
+        "a new algorithm only helps if a lower f(n) exists; it's already O(n) here"
+      ]
+    }
+  ],
+  "compare": [
+    {
+      "with": "cs-4-design-foundations/algorithm-beats-hardware",
+      "q": "Both cards end with \"change the algorithm\". Using <code>T = c·f(n)/s</code>, which knob does each compiler optimization turn, and which knob did switching to join turn?",
+      "answer": [
+        "inlining, folding, reduction, CSE and JIT all lower c",
+        "tail-call elimination changes space, not time growth",
+        "join changed f(n) from n² to n copies"
+      ]
+    },
+    {
+      "with": "cs-1-data-structures/big-o-amortized",
+      "q": "A Python list's append is amortized O(1), but string concatenation in a loop is O(n²). What does the list do that immutable strings can't?",
+      "answer": [
+        "the list over-allocates spare capacity and grows geometrically, so most appends copy nothing",
+        "a str is immutable: every + must build a new one and copy",
+        "join (or a list of parts) gets the list's amortized behaviour back"
+      ]
+    }
+  ],
+  "predict": {
+    "q": "Before running <code>dis</code> on 3.10: which of these does CPython fold to a single constant: <code>2 * 3 * x</code>, <code>x * 2 * 3</code>, <code>60 * 60 * 24</code>, <code>\"x\" * 5000</code>? Commit to each.",
+    "answer": "<code>2 * 3 * x</code> folds the 2 * 3 to 6 (then one multiply by x). <code>x * 2 * 3</code> doesn't fold at all: it parses as <code>(x * 2) * 3</code>, and x is unknown. <code>60 * 60 * 24</code> becomes <code>LOAD_CONST 86400</code>. <code>\"x\" * 5000</code> isn't folded: CPython skips folding when the result would be too large (the limit is 4,096 items), so it stays a runtime multiply."
+  },
+  "apply": {
+    "task": "Write three versions of \"build a comma-separated string of the numbers 0…n−1\": repeated <code>s = s + …</code>, <code>s += …</code>, and <code>\",\".join</code>. Time each with <code>timeit</code> at n = 10⁴ and n = 10⁵ (one run each on your machine is fine). Then run <code>dis</code> on the first two and find the bytecode that differs.",
+    "done": "The <code>s = s + …</code> version's time grows far faster than 10× from n = 10⁴ to 10⁵ (quadratic), join grows about 10× (linear), and in the bytecode you can show the difference in order: the += form builds the right-hand side first and then does one add whose result goes straight back into <code>s</code> (which CPython can do in place), while the source form adds <code>s</code> first and then adds again, so <code>s</code> is copied every pass.",
+    "hint": "Keep the order of the + operations the same as the card's source form for the first version. In <code>dis</code>, look at what comes right after the add that involves <code>s</code>."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: which expressions CPython folds?",
+    "What couldn't you explain cleanly: why the += form escapes the copy and the source's form doesn't?",
+    "Which relationship is still fuzzy: dynamic types → no rewrites, or immutability → quadratic copies?",
+    "Where in your code do you rely on an optimization that PEP 8 calls fragile?",
+    "What will you look for in the loops card: what exactly each bytecode costs?"
+  ],
+  "revisit": [
+    "cs-4-design-foundations/algorithm-beats-hardware"
+  ],
+  "prereq": [
+    "cs-4-design-foundations/algorithm-beats-hardware"
+  ]
+}

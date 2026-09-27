@@ -1,0 +1,66 @@
+{
+  "prime": {
+    "problem": "A scheduler plans forward steps, so it has to know what a step is and what it costs. Without the split between prefill and decode you can't explain why a 1,000-token prompt takes 16 ms while 200 output tokens take almost a second, or why one decode step costs the same for 1 token as for 64.",
+    "fits": "First concept card of the course. It assumes only the transformer forward pass (Course 1). Everything after it schedules these two kinds of work: the KV cache card explains what decode re-reads, and the batching cards exploit the fact that a decode step barely cares how many tokens it carries.",
+    "expect": [
+      "prefill: one parallel pass that emits the first token",
+      "decode: one sequential pass per remaining output token",
+      "<code>T ≈ max(2·P·n_in ÷ C, W ÷ BW) + (n_out − 1) × step</code>",
+      "why a scheduler needs no prefill/decode flag"
+    ],
+    "goal": "Price any request from its prompt and output lengths, say which phase dominates and why, and explain why one weight read per decode step is the opening that batching fills."
+  },
+  "attend": [
+    "Why does a 1,000-token request need 199 decode steps and not 200?",
+    "What makes prefill parallel and decode strictly sequential, given it is the same model and the same forward function?",
+    "Toy request 0's 12-token prefill costs the same 4.79 ms as a decode step. Below what prompt length is that true, and why?",
+    "Prompt tokens are 83% of the example's tokens but under 2% of its time. Which two numbers in the formula cause that?",
+    "If prefill is \"just a request with many tokens left\", what would it cost to run a 1,000-token prompt one token per step?"
+  ],
+  "core": {
+    "must": [
+      "All prompt tokens are known up front → one pass processes them in parallel → 1,000 tokens share one weight read → the step is compute-bound (16.2 ms of math vs 4.8 ms of reading) → prefill cost grows with prompt length",
+      "Each output token is the next step's input → decode steps are strictly sequential → each reads all 16.06 GB of weights for one token → 0.016 ms of math waits on a 4.79 ms read → decode dominates request time (98% here)",
+      "A decode step's cost is the weight read, not the tokens it carries → more requests' tokens can ride the same read almost for free (1 → 64 requests: 4.9 → 9.9 ms) → the scheduler's job is to fill each step"
+    ],
+    "elevated": [
+      "Prefill emits the first output token → n_out tokens need only n_out − 1 decode steps, and the last token is never fed back → this is why the course's step counts and KV peaks are one smaller than you'd expect",
+      "Engines track only num_computed vs num_tokens, not a phase → a prompt is a request far behind, a decode is one token behind → chunking and prefix caching fall out of the same rule"
+    ],
+    "reference": [
+      "the M3 llama-bench rates (407.9 / 28.8 tok/s) and the Ollama qwen3.5 figures",
+      "the rule-of-thumb 996 ms vs the exact 979 ms",
+      "the exact per-step KV read (0.04 ms at ~1,100 tokens)"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw one request's timeline: one prefill bar, then a row of decode steps. Label each with what limits it and its cost for 1,000 in / 200 out on the H100. Then write one sentence on why a decode step is the scheduler's opportunity.",
+    "checklist": [
+      "prefill: one pass, all prompt tokens, compute-bound, 16.2 ms per 1,000 tokens",
+      "it ends by emitting the first output token (TTFT)",
+      "decode: one pass per remaining token, sequential, bandwidth-bound, about 4.8 ms each",
+      "199 decode steps ≈ 963 ms, 98% of the request",
+      "a decode step costs about the same for 1 or 64 tokens, so batching fills it"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why prefill is compute-bound and decode is bandwidth-bound on the same GPU running the same model.", "kind": "concept", "answer": ["both read all the weights once per step", "prefill spreads that read over many tokens, so the math (2·P per token) outgrows it", "decode has one token per request, so the read dominates and the math units sit idle"]},
+    {"q": "Walk through the four forward steps of toy request 0 (prompt 12, output 4): what each step computes, what it reads, and when each output token appears.", "kind": "mechanism", "answer": ["step 0: prefill all 12 prompt tokens, store their KV, emit token 1 at 4.8 ms", "steps 1–3: each feeds the previous token in, reads the stored KV, emits the next token", "token 4 comes out at 19.2 ms and is never fed back", "every step costs about 4.79 ms because the weight read dominates"]},
+    {"q": "Batching many requests, speculative decoding and quantizing weights all raise tokens per weight read. Which one does the scheduler own, and what does each cost?", "kind": "tradeoff", "answer": ["batching: the scheduler's lever; costs per-user speed (205 → 101 tok/s at 64) and needs memory", "speculative decoding: spends idle compute on one request; gain depends on batch size (1.21–1.96×)", "quantization: fewer bytes per read; may cost some quality"]}
+  ],
+  "compare": [
+    {"with": "perf-1-foundations/prefill-vs-decode-mac", "q": "Course 1 measured prefill vs decode on the M3 (14×); this card's H100 model gives about 300×. What is the same, what causes the gap in the ratio, and which number should you trust for sizing an H100 server?", "answer": ["same shape: prefill is many times faster per token because it shares the weight read", "the ratio depends on the chip's compute per byte (295 for the H100), the kernels and the prompt length", "the H100 number is a 100%-of-peak floor, the M3 one a real measurement on a busy machine", "for an H100, benchmark the real engine; the model gives the shape, not the exact ratio"]},
+    {"with": "llm-request-scheduler/chunked-prefill", "q": "This card treats prefill as one pass. Chunked prefill splits it across steps. What stays the same about the work, and what changes for the other requests in the batch?", "answer": ["the prompt still needs the same math and each chunk reads earlier chunks' KV instead of recomputing it", "no single step carries the whole prompt, so decodes sharing the step aren't stalled", "the prompt's own first token comes a little later"]}
+  ],
+  "predict": {"q": "A request has a 200-token prompt and 1,000 output tokens. Before computing: does its prefill take noticeably longer than one decode step, and roughly what fraction of its time is prefill?", "answer": "No: 200 tokens is below the ≈ 295-token point where math overtakes the weight read, so the prefill step costs about the same 4.8 ms as a decode step. The request is one prefill plus 999 decode steps, so prefill is about 0.1% of its time (4.8 ms of roughly 4.9 s). Short prompts make prefill nearly free; long outputs make decode everything."},
+  "apply": {"task": "Price a 2,000-token-in, 100-token-out request on the running example with the card's formula: prefill time, decode time, total, and the prefill share. Then estimate the same request on the M3 with the measured llama-bench rates, and say which phase dominates on each machine.", "done": "H100 (our model): prefill about 32.5 ms, 99 decode steps about 483 ms, total about 515 ms, so prefill is about 6%. M3 estimate: 2,000 ÷ 407.9 ≈ 4.90 s of prefill and 99 ÷ 28.8 ≈ 3.44 s of decode, so on the M3 prefill dominates this request.", "hint": "Prefill: max(2 × 8.03e9 × 2,000 ÷ 989e12, 4.79 ms). Decode: 99 steps of about 4.79 ms + the KV read of ~2,050 tokens (0.08 ms)."},
+  "reflect": [
+    "Which prediction did you get wrong: the 200-token prefill cost, or the prefill share?",
+    "Could you explain, without saying \"it's autoregressive\", why decode can't be parallelised across a request's own tokens?",
+    "Which relationship is still fuzzy: tokens per step → compute-bound, or one token per step → bandwidth-bound?",
+    "Did the M3 result surprise you? What does it say about how machine-specific \"decode dominates\" is?",
+    "What will you revisit before the KV cache card: what exactly each decode step reads besides the weights?"
+  ],
+  "revisit": ["perf-1-foundations/transformer-forward", "perf-1-foundations/prefill-vs-decode-mac"],
+  "prereq": []
+}

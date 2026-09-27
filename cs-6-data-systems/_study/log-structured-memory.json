@@ -1,0 +1,67 @@
+{
+  "prime": {
+    "problem": "A key-value store that keeps everything in DRAM sees objects of changing sizes created, overwritten and deleted all day. With malloc and free in place, memory fragments until up to half of it is wasted; a general garbage collector pauses for seconds.",
+    "fits": "Last memory card. It builds on the in-memory database card (RAM is home) and reuses the LSM card's append-then-merge idea, here in DRAM with RAMCloud's cleaner playing compaction's role.",
+    "expect": ["the log of 8 MB segments", "one hash table pointing at each newest record", "tombstones", "the cleaner and u/(1−u)", "two-level cleaning"],
+    "goal": "Trace appends, overwrites, deletes and cleaning on a small log, compute the cleaning cost at a given utilization, and explain why RAMCloud cleans memory and disk at different fullness."
+  },
+  "attend": [
+    "Why can the cleaner move an object with a single pointer update, and what property of RAMCloud's data makes that possible?",
+    "Why does a tombstone stay live while the segment it names still exists, and what happens to it after that segment is cleaned?",
+    "Where does u/(1−u) come from, and why does going from 90% to 95% full double the cost?",
+    "Why does cleaning memory and disk together throttle writes, and what does splitting them into two levels allow?",
+    "What makes it safe for a cleaner thread to copy from a segment while clients keep writing?"
+  ],
+  "core": {
+    "must": [
+      "Every write, overwrite or delete is appended at the log head → the hash table points each key at its newest record → old copies simply go dead in place → allocation is an append and nothing fragments in the middle",
+      "Only the hash table points at an object → relocating it means one pointer swap → the cleaner can pick the emptiest segments, copy their few live records to the head and free whole segments",
+      "Cleaning a segment with live fraction u copies u to free 1 − u → u/(1−u) bytes copied per byte freed → 1 at 50%, 9 at 90%, 19 at 95% → headroom is the price of cheap cleaning",
+      "Disk bandwidth is scarcer than DRAM bandwidth → compact segments in memory only, at high u, and run the combined cleaner later on an emptier disk log → memory at 90% (cost 9) and disk at 50% (cost 1), up to 6× better at high utilization"
+    ],
+    "elevated": [
+      "Written segments never change → cleaners copy without locking them → a cleaned segment is freed only after in-flight RPCs finish, since one might still be reading it",
+      "Compaction can't drop a tombstone whose target segment still exists on backups → too many tombstones force a combined cleaning early"
+    ],
+    "reference": [
+      "the 8 MB segment size and master/backup/coordinator roles",
+      "the paper's allocator and GC measurements (half of memory wasted, 1.5–5× space, 3–4 s pauses)",
+      "the toy 4-record segments",
+      "bucket locks for racing writers"
+    ]
+  },
+  "compress": {
+    "prompt": "Close the card. Draw a three-segment log after <code>put A B C D</code>, <code>put A</code>, <code>delete B, C</code>, and show what cleaning s0 copies and frees. Then write the cleaning-cost formula and one sentence on why there are two levels of cleaning.",
+    "checklist": [
+      "appends only; the hash table points at the newest copy",
+      "dead records stay in place until their segment is cleaned",
+      "tombstones stay live while the segment they name exists",
+      "cleaning copies live records to the head and frees the whole segment: cost u/(1−u)",
+      "memory compaction at high u, combined cleaning on an emptier disk log"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why a log-structured allocator never fragments the way malloc does, and what it does instead of reusing holes.", "kind": "concept", "answer": ["objects are never placed into holes; every write appends at the head", "dead space is reclaimed a whole segment at a time by moving live records", "moving is cheap because only the hash table points at an object"]},
+    {"q": "Walk through cleaning s0 in the card's trace: what is live, what is copied, what is freed, and why does s1's utilization drop afterwards?", "kind": "mechanism", "answer": ["s0 holds A, B, C, D; only D is live (A was overwritten, B and C deleted): u = 25%", "D is copied to the head (s2), the hash table repointed, s0 freed: 1 copied, 3 freed", "s1's tombstones named s0; with s0 gone they're dead, so s1 drops from 100% to 25%"]},
+    {"q": "Your RAMCloud-style store holds 10 GB of live data. Choose a memory utilization target, giving the RAM needed and the cleaning cost at 80% and 90%.", "kind": "tradeoff", "answer": ["80%: 10 / 0.8 = 12.5 GB of RAM, 4 bytes copied per byte freed", "90%: 10 / 0.9 ≈ 11.1 GB, 9 bytes copied per byte freed", "the extra 1.4 GB buys a cleaner that copies less than half as much; past 90% the cleaner sets write throughput"]}
+  ],
+  "compare": [
+    {"with": "cs-6-data-systems/lsm-trees", "q": "RAMCloud's log and an LSM tree both append and clean later. What does each keep sorted, what does its cleaning step optimise, and how does each fail when the background work falls behind?", "answer": ["LSM: sorted runs on disk, so reads can binary search and range-scan; compaction bounds read cost and drops versions", "RAMCloud: unsorted segments plus one hash table; cleaning reclaims space", "LSM falls behind → L0 piles up and writes stall", "RAMCloud falls behind → free segments run out and client writes wait on the cleaner"]},
+    {"with": "cs-6-data-systems/in-memory-db-anticaching", "q": "Both are DRAM-first stores. When memory gets tight, which one moves data to disk and which one moves data within memory, and what does each pay?", "answer": ["anti-caching evicts cold tuples to disk and pays aborts and fetches", "RAMCloud keeps all data in DRAM and pays copying (u/(1−u)) plus headroom", "anti-caching suits data larger than RAM with skew; RAMCloud suits data that fits, with churn"]}
+  ],
+  "predict": {"q": "RAMCloud's cleaner picks the emptiest segments. Suppose instead all segments sit at exactly 90% live, with no empty ones to pick. Commit first: what does that do to cleaning cost, and what workload pattern produces it?", "answer": "Every cleaning then copies 9 bytes per byte freed, with no cheap segments to pick first. It happens when deaths are spread uniformly across the log (uniform random overwrites) rather than clustered in old segments. With skewed or time-ordered deaths some segments empty quickly and the cleaner harvests them cheaply; that is why cost-benefit segment selection matters as much as the average utilization."},
+  "apply": {
+    "task": "Run a new trace by hand with 4-record segments: <code>put A B C D</code>, then <code>put B</code>, <code>put C</code>, <code>delete D</code>. Write the contents of s0, s1 and s2 (objects and tombstones), the utilization of each, then clean s0 and give copied/freed and the new utilizations. Check with <code>Log</code> in <code>code/log-structured-memory.py</code>.",
+    "done": "Before: s0 = A B C D (only A live, 25%), s1 = B tB0 C tC0 (100%), s2 = tD0. Cleaning s0 copies 1 (A, to s2) and frees 3; s1 drops to 50% because its two tombstones now name a freed segment, and s2 holds tD0 (dead) and A.",
+    "hint": "An overwrite appends the new object and then a tombstone naming the old copy's segment."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: what happens when every segment sits at 90%?",
+    "What couldn't you explain cleanly: why one pointer per object is the precondition for the whole design?",
+    "Which relationship is still fuzzy: utilization → cleaning cost, or disk bandwidth → why two levels?",
+    "Could you say why a general program heap can't use this allocator?",
+    "What will you look for in the MapReduce cards: where re-running work replaces keeping extra copies?"
+  ],
+  "revisit": ["cs-6-data-systems/lsm-trees", "cs-6-data-systems/in-memory-db-anticaching"],
+  "prereq": []
+}

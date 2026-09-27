@@ -1,0 +1,136 @@
+{
+  "prime": {
+    "problem": "Fine-tuning by imitation needs the right answer for every example, and for most hard coding problems nobody has written it down. What you <i>can</i> do is run the tests. Without a way to turn \"this attempt passed 2 of 3 assertions\" into a weight update, that cheap verifier is useless for training.",
+    "fits": "A standalone card on RL for a coding agent. It zooms in on the RL stage of the post-training pipeline (the post-training card in course 7 of the performance series) and reuses the idea that code is graded by running it, not by comparing text.",
+    "expect": ["group sampling and the advantage", "GRPO vs PPO's value model", "advantage collapse (all-equal groups)", "graded vs pass/fail vs similarity rewards", "masking environment tokens out of the loss"],
+    "goal": "Compute a group's advantages by hand, predict when a GRPO step teaches nothing, and choose a reward and an agent loop that give a small model a usable gradient."
+  },
+  "attend": [
+    "In <code>(reward_i − mean(group)) / std(group)</code>, which part replaces PPO's second network, and which part is only a convenience?",
+    "What exactly happens to the weights when all eight attempts at a problem score the same, and why does nothing in the logs tell you?",
+    "Why does the 0.33 <code>is_woodall</code> attempt matter more to training than to the 22% headline?",
+    "What does the similarity reward buy SWE-RL that an execution reward can't, and what correct code does it punish?",
+    "Why is the test output in the agent's context excluded from the loss, and what does the model learn if it isn't?",
+    "Why does a two-turn cap keep the trainer simple, and what would break first if you let the agent run 33 calls?"
+  ],
+  "core": {
+    "must": [
+      "Sample several answers to the same question → their mean is what \"average\" looks like for that question → subtract it from each reward → a signed advantage per answer with no value network → push tokens of above-mean answers up and below-mean answers down",
+      "Every answer in the group gets the same reward → every reward minus mean is 0 → every advantage and gradient is 0 → the weights don't move, yet the loss still prints and the bill still arrives → check that groups disagree (<code>headroom</code>) before training",
+      "Graded reward (fraction of assertions) → partial attempts differ from total failures → more groups have spread → more steps produce a gradient (2/40 vs 16/40 wasted in the demo; 30% vs 22% of MBPP problems carry signal)",
+      "The reward states the goal, never the method → the optimiser finds whatever satisfies it, a solution you didn't expect (<code>x + x</code>) or a loophole (style over correctness) → the reward is the whole specification"
+    ],
+    "elevated": [
+      "Only tokens the model sampled get loss mask 1; test output from the environment gets 0 → otherwise the model is trained to predict pytest output (in <code>verl</code>, a missing mask falls back to the attention mask and does exactly that)",
+      "Dividing by the group's std makes the update size independent of the reward's scale → a 0–100 reward gives the same advantages as a 0–1 reward, so the learning rate doesn't silently change"
+    ],
+    "reference": [
+      "the four-command table and prices (Modal's $30/month credit, H100 ≈ $3.95/h, Fireworks' $8/h dedicated deployment)",
+      "the defaults <code>clip_eps_hi: 0.28</code>, <code>beta: 0.0</code>, <code>num_rollouts: 8</code>",
+      "token-level vs sequence-level vs fixed-length loss averaging (they coincide when trajectories have similar length)",
+      "the provenance table and the SWE-RL licence details",
+      "MBPP #17's exact assertions and the baseline command line"
+    ]
+  },
+  "compress": {
+    "prompt": "Without scrolling up, write the GRPO loop as one arrow chain from \"same question, eight samples\" to \"weights move\". Under it, write a second chain showing how a pass/fail reward on a hard problem breaks it, and a third showing why a graded reward repairs it.",
+    "checklist": [
+      "sample a group; score each by running tests; advantage = reward minus the group mean (divided by std)",
+      "the group mean replaces PPO's learned value model, so there is no second network to hold or train",
+      "all-equal rewards → zero advantages → zero gradient, silently",
+      "graded rewards separate partial attempts from failures, so more groups have spread",
+      "the reward defines the goal, so it can be satisfied in ways you didn't intend",
+      "in the agent, only model-written tokens are trained on; environment output is masked"
+    ]
+  },
+  "retrieve": [
+    {
+      "q": "Explain why GRPO can drop PPO's value model, in terms of what the baseline is for and where GRPO gets it.",
+      "kind": "concept",
+      "answer": [
+        "the baseline answers \"better than expected?\" so updates push relative to what's typical",
+        "PPO learns that expectation with a second network that predicts the score",
+        "GRPO already sampled several answers to the same question, so their mean is the expectation for that question",
+        "result: no extra weights to hold, train or debug, which is what makes it fit on one GPU"
+      ]
+    },
+    {
+      "q": "Walk one training step through the two-turn agent: from the problem prompt to which tokens receive a gradient, and with what sign.",
+      "kind": "mechanism",
+      "answer": [
+        "turn 1: model writes a function; the assertions run; the test output is appended to the context",
+        "turn 2: model reads the failures and writes a corrected function; the final reward is the fraction of assertions passed",
+        "the group's rewards give each trajectory an advantage (reward minus mean, over std)",
+        "the loss covers turn-1 and turn-2 model tokens (mask 1), not the prompt or test output (mask 0); positive advantage raises their probability, negative lowers it"
+      ]
+    },
+    {
+      "q": "You must score patches from 11 million pull requests. Compare an execution reward with a similarity reward: what does each cost, what does each reward, and how does each fail?",
+      "kind": "tradeoff",
+      "answer": [
+        "execution: ~20–40 ms per score plus a working test environment per repo and commit; rewards code that works; fails when building environments is the hard part",
+        "similarity: microseconds and nothing but text, so it scales to ~11M PRs; rewards code that looks like the human's",
+        "similarity fails on correct code written differently: the repo's test shows 1.0 on execution vs under 0.75 on similarity",
+        "exact match is the extreme: SWE-RL's mean reward stayed near zero for the whole run"
+      ]
+    },
+    {
+      "q": "Before training, the baseline shows 70 of 100 MBPP problems at 0.00, 8 with partial credit and 22 solved. Which problems will give GRPO a gradient, and how does switching to pass/fail change that?",
+      "kind": "tradeoff",
+      "answer": [
+        "a problem helps only if its group of eight disagrees, so mostly the 30 with a nonzero score (the 0.00 ones will often be eight zeros)",
+        "30% clears the repo's one-in-five <code>headroom</code> floor",
+        "pass/fail folds the 8 partial problems into the zeros, so usable signal drops from 30% to 22%"
+      ]
+    }
+  ],
+  "compare": [
+    {
+      "with": "perf-7-training-economics/post-training",
+      "q": "That card counts PPO's four models and GRPO's three for an 8B policy; this card runs GRPO on a 0.6B model. What is fundamentally the same about the baseline in both, which design choice makes GRPO cheap, when would you still pick PPO, and how does each fail?",
+      "answer": [
+        "same: both need a baseline so an update means \"better than expected\"",
+        "PPO learns it per token with a policy-sized critic; GRPO reads it off G samples of the same question, deleting the critic",
+        "PPO still fits when you can't sample many answers per prompt, or need per-token credit; R1 found a tuned PPO (λ = 1.0) came close to GRPO",
+        "PPO fails by critic memory and hard-to-train value estimates on long outputs; GRPO fails when groups don't disagree (zero advantage) and pays for G rollouts per question"
+      ]
+    },
+    {
+      "with": "perf-7-training-economics/kernelbench",
+      "q": "KernelBench scores kernels 5/5 or 0/5 and had to close reward-hacking loopholes. Map both problems onto this card: which one is advantage collapse, which is \"the reward is the specification\", and what fix does each setting use?",
+      "answer": [
+        "no partial credit there is the pass/fail reward here: most attempts score the same, so there is little to rank",
+        "no-op kernels and cuBLAS calls are the loophole version of <code>x + x</code>: the check was satisfied without the intended work",
+        "this card's fix: graded reward plus a <code>headroom</code> check; KernelBench's: v0.1 closed loopholes, speed-of-light checks and scanning for library calls",
+        "shared lesson: whatever the scorer can't see, the optimiser (model or RL) is free to exploit"
+      ]
+    },
+    {
+      "with": "paper-2107-03374/bleu-score",
+      "q": "SWE-RL's similarity reward and BLEU both score code by overlap with a reference. Using the has_dup example there, what would a GRPO run optimise if it used BLEU as its reward, and why did SWE-RL accept that risk anyway?",
+      "answer": [
+        "BLEU rated the wrong one-operator flip (78.3) above a correct different algorithm (0.0), so the policy would be pushed toward reference-looking code, not working code",
+        "that is this card's 1.0 vs under 0.75 test in a sharper form",
+        "SWE-RL accepted it because executing 11M repos at historical commits is infeasible, and text similarity is still graded, so groups disagree"
+      ]
+    }
+  ],
+  "predict": {
+    "q": "Take the card's graded group of seven attempts (⅔, 0, ⅓, 0, ⅔, 0, ⅓) and add an eighth attempt that passes all three assertions. Nothing about the ⅓ attempts changed. Does the model now make them more likely or less likely? Commit before revealing.",
+    "answer": "Less likely. The mean rises from 2/7 ≈ 0.286 to 3/8 = 0.375, so ⅓ is now below average: its advantage flips from about +0.17 to about −0.12 (population std). The advantage is relative to the group, never absolute. As the policy improves and more groups contain full solves, partial credit that used to be rewarded starts being pushed down."
+  },
+  "apply": {
+    "task": "By hand, compute the advantages for the trap figure's graded group (⅔, 0, ⅓, 0, ⅔, 0, ⅓) using the population std. Then (a) rescore the same seven attempts pass/fail, (b) rescale the graded rewards to 0–100, and (c) score a group of eight where exactly one attempt passes and seven fail. For each case, say whether the step teaches anything and which attempt gets the biggest push.",
+    "done": "You have four rows of advantages that each sum to about 0, and you can say in one line why (a) teaches nothing, why (b) is unchanged, and why the lone winner in (c) gets a much bigger push than any loser.",
+    "hint": "Check after trying. Graded: mean 0.286, std 0.278, advantages ⅔ → +1.37, ⅓ → +0.17, 0 → −1.03. (a) all zeros, std 0: no gradient. (b) mean 28.6, std 27.8, same advantages. (c) mean 0.125, std 0.331: winner +2.65, each loser −0.38."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: the sign of the ⅓ attempts, or how big the lone winner's advantage is?",
+    "What couldn't you explain cleanly: why the group mean is enough of a baseline, or why a silent zero gradient isn't an error?",
+    "Which relationship is still fuzzy: reward shape → spread within a group, or spread → wasted steps?",
+    "Could you design a reward for a new task (say, SQL queries) and name the loophole it would most likely open?",
+    "What will you revisit: the loss mask in the agent diagram, or PPO's four models in the post-training card?"
+  ],
+  "revisit": ["paper-2107-03374/functional-correctness", "perf-7-training-economics/post-training"],
+  "prereq": []
+}

@@ -1,0 +1,121 @@
+{
+  "prime": {
+    "problem": "Standard attention writes the N×N scores S and probabilities P to HBM and reads them back. At 8k tokens that is 8.59 GB per Llama layer for S + P alone, all of it memory-bound traffic, and at 128k it is 27× the whole GPU.",
+    "fits": "Card 1 of 3 on FlashAttention. It applies the previous card's (m, ℓ) merge to whole tiles of the score matrix, so the N×N matrices live only in SRAM, one tile at a time.",
+    "expect": [
+      "SRAM vs HBM (19 vs 1.5 TB/s on A100)",
+      "Algorithm 0: S and P written to HBM",
+      "tiling with running (m, ℓ) and a rescaled O",
+      "recomputation instead of storing P",
+      "kernel fusion: one kernel, only O written"
+    ],
+    "goal": "Walk through Algorithm 1's inner step, say what is stored in HBM and what never leaves SRAM, and explain why doing more FLOPs still makes it faster."
+  },
+  "attend": [
+    "Softmax couples every column of a row. What two numbers per row let FlashAttention finish a row it only ever sees one block at a time?",
+    "At each (i, j) step, which three things are read from HBM and written back, and which Br × Bc matrix never leaves SRAM?",
+    "When a new K block raises a row's max, why must O_i be rescaled by the same factor as ℓ_i?",
+    "How does the block-size rule B_c = ⌈M/4d⌉ follow from what has to fit in SRAM, and why is it a proof device rather than a tuning recipe?",
+    "Why is \"recompute S and P in the backward pass\" faster here, when ordinary checkpointing trades speed for memory?"
+  ],
+  "core": {
+    "must": [
+      "S and P are N×N → writing and re-reading them makes attention memory-bound → split Q, K, V into SRAM-sized blocks and compute each S_ij on chip → fold it into O with running (m, ℓ) → S and P never reach HBM → O(N) extra memory instead of O(N²)",
+      "A new block may raise a row's max → the old ℓ_i and O_i were built on the old max → scale both by e^(m_old − m_new), add the block's e^(S−m)·V → after every step O_i is exact for the columns seen so far (Theorem 1, induction over j)",
+      "Keep only O and (m, ℓ) from the forward pass → rebuild S and P tile by tile in backward → +13% FLOPs but 9.2× less HBM traffic (GPT-2 medium: 40.3 → 4.4 GB) → 5.7× faster, because the bound was bytes, not FLOPs"
+    ],
+    "elevated": [
+      "FA1's loop order puts K, V outside and Q inside → O_i, ℓ_i, m_i round-trip to HBM on every (i, j) step → the waste FlashAttention-2 removes by swapping the loops"
+    ],
+    "reference": [
+      "Fig 1's exact bandwidths (19 TB/s estimated SRAM, 12.8 GB/s CPU DRAM)",
+      "the A100/H100 SRAM sizes (192 KB, 228 KB per SM)",
+      "Algorithm 1 line numbers",
+      "the lab's trace values and error magnitudes"
+    ]
+  },
+  "compress": {
+    "prompt": "Draw one tile step of Algorithm 1 from memory: which blocks come from HBM, what is computed in SRAM, which two statistics update, what gets rescaled, and what goes back to HBM. Then one line on why it's exact.",
+    "checklist": [
+      "load K_j, V_j (outer) and Q_i, O_i, ℓ_i, m_i (inner)",
+      "S_ij = Q_i K_jᵀ on chip; block max, exp, block sum",
+      "new max and new ℓ; old ℓ and old O_i rescaled by e^(m_old − m_new)",
+      "write back O_i, ℓ_i, m_i only; S_ij and P̃_ij never",
+      "exact because the rescale only moves terms to a common reference point"
+    ]
+  },
+  "retrieve": [
+    {
+      "q": "Explain what makes attention memory-bound in Algorithm 0 even though its matmuls are compute-heavy.",
+      "kind": "concept",
+      "answer": [
+        "S and P are N×N and each makes a round trip through HBM",
+        "softmax, masking and dropout are elementwise passes over N², with almost no FLOPs per byte",
+        "so HBM traffic, not the matmuls, sets the time once N ≫ d"
+      ]
+    },
+    {
+      "q": "Trace row 0 of the lab's N = 512 run at block 2: the old max was 1.6232 and ℓ = 27.3275; the block's max is 2.7522 and its sum 13.5671. What is the new ℓ, and what happens to O_0?",
+      "kind": "mechanism",
+      "answer": [
+        "new max 2.7522; old terms scale by e^(1.6232 − 2.7522) = 0.3233",
+        "ℓ_new = 0.3233 × 27.3275 + 1 × 13.5671 = 22.403",
+        "O_0 is scaled by the same 0.3233 before the block's P̃V is added, then divided by the new ℓ"
+      ]
+    },
+    {
+      "q": "FlashAttention does 13% more FLOPs than standard attention. When would that extra arithmetic actually cost you time, and when is FlashAttention not the right tool at all?",
+      "kind": "tradeoff",
+      "answer": [
+        "when the kernel is compute-bound (large blocks, long sequences), extra FLOPs do cost; the exp work bites again in FA3/FA4",
+        "in decode there is one query row and no N×N matrix to avoid",
+        "on small-SRAM GPUs (T4) the speedup shrinks",
+        "new attention variants need a new hand-written kernel"
+      ]
+    }
+  ],
+  "compare": [
+    {
+      "with": "perf-4-attention-kv/online-softmax",
+      "q": "Online softmax streams one vector; FlashAttention streams a whole attention row block by block. What does FlashAttention have to carry along that the vector version doesn't, and why does that make kernel fusion the real win?",
+      "answer": [
+        "it must also rescale the running output O_i, a d-dimensional vector per row",
+        "with (m, ℓ, O) carried in SRAM, the matmul, softmax and second matmul can live in one kernel",
+        "fusion is what stops S and P from ever being written: the saving is IO, the trick is online softmax"
+      ]
+    },
+    {
+      "with": "perf-3-kernels/shared-memory-transpose",
+      "q": "perf-3 tiled a transpose through shared memory to fix access patterns. What is the same about FlashAttention's tiling, and what is fundamentally different about why it needs tiles?",
+      "answer": [
+        "same: stage blocks in on-chip SRAM so HBM is touched once per block",
+        "different: attention tiles exist to avoid materialising an intermediate (S, P) at all, not just to coalesce reads",
+        "that only works because softmax can be decomposed with (m, ℓ)"
+      ]
+    }
+  ],
+  "predict": {
+    "q": "Run Algorithm 1 exactly but delete the rescale factor e^(m_old − m_new) from both the ℓ and O updates. Is the error small (rounding) or large, and does it depend on the block size? Commit before revealing.",
+    "answer": "Large: the lab's try-this shows errors of about 0.1–0.5, not 10⁻⁷. Every time a later block raises a row's max, the old contributions stay measured against a smaller max, so they are overweighted by e^(m_new − m_old). It barely depends on block size as long as there are several blocks (our numpy check at N = 512, d = 128: max error 0.30, 0.32, 0.29, 0.31 for B_c = 16, 64, 114, 256), because the damage comes from the max rising at all. With one block covering the whole row (B_c = 512) the max never moves and the error falls to 9e-16."
+  },
+  "apply": {
+    "task": "Size the tiles for an A100 (192 KB SRAM per SM, counted in 4-byte floats as the card does) and one Llama head (d = 128, N = 8,192): compute M, B_c, B_r, T_r × T_c and the number of inner-loop steps. Then compute, for 32 heads at N = 32,768 in BF16, what S + P would take per layer and what m + ℓ in FP32 take instead, and the ratio.",
+    "done": "You have M, the block sizes, the tile count, both memory figures and the ratio, each with one line of arithmetic, before opening the hint.",
+    "hint": "M = 192 × 1,024 ÷ 4 = 49,152; B_c = ⌈49,152 / 512⌉ = 96; B_r = min(96, 128) = 96; T = ⌈8,192 / 96⌉ = 86, so 86 × 86 = 7,396 steps (the card's A100 row). At 32k: S + P = 2 × 32 × 32,768² × 2 B = 137.4 GB per layer; m + ℓ = 2 × 32 × 32,768 × 4 B = 8.39 MB; ratio N/2 = 16,384× (our arithmetic)."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: how large the no-rescale error is, or whether block size matters?",
+    "Could you explain why 13% more FLOPs made it 5.7× faster without saying \"IO-aware\"?",
+    "Which relationship is still fuzzy: tiling → no N×N in HBM, or recomputation → faster backward?",
+    "Can you say what FA1's loop order costs, and which card fixes it?",
+    "What will you check in FA II: why the IO count has M in the denominator?"
+  ],
+  "revisit": [
+    "perf-4-attention-kv/online-softmax",
+    "perf-2-scaling-book-inference/attention-intensity",
+    "perf-3-kernels/fusion-cuda-graphs"
+  ],
+  "prereq": [
+    "perf-4-attention-kv/online-softmax"
+  ]
+}

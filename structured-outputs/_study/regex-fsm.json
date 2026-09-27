@@ -1,0 +1,133 @@
+{
+  "prime": {
+    "problem": "Constrained decoding must decide which tokens are legal at <i>every</i> step. Checking all 248,320 tokens against the schema each time is hopeless, so the engine needs a compact way to hold \"where am I in the schema?\" and look up the answer. A finite state machine is the simplest such memory, and its limits decide which schemas it can serve.",
+    "fits": "Second card of part 2. Token masking gave you the loop and assumed some oracle supplies the mask. This card is the first real oracle: compile the schema to a regex, the regex to a state machine, and the state machine to a token lookup table.",
+    "expect": [
+      "regex → character FSM → token FSM (the index)",
+      "states, transitions, real choices, the accept state",
+      "precompute once, O(1) lookup per step",
+      "deduplicating forced paths",
+      "why recursion needs infinite states"
+    ],
+    "goal": "Hand-trace an FSM's state and mask over a short output, explain why its limit on nesting is architectural, and say when its compile cost pays off. Watch four things as you read: grammar expressiveness → state representation → token masking → runtime performance."
+  },
+  "attend": [
+    "What exactly does one FSM state remember, and what does it forget?",
+    "How does the character machine become a <i>token</i> machine, and why is that step done before generation instead of during it?",
+    "At a state with two allowed tokens, when is that a real choice for the model and when is it just two spellings of the same text?",
+    "Why must a machine with finitely many states fail on the Wikipedia link chain, whatever engineering effort goes into it?",
+    "What does the precompute buy per step, and what does it cost before the first token?"
+  ],
+  "core": {
+    "must": [
+      "Constraint (regex) → FSM state (how far along the pattern) → allowed transitions → allowed tokens (precomputed per state) → logits mask → sampling: the state is the only thing the engine needs to know to mask",
+      "Finite states → no stack or counter → can't track unbounded nesting → a recursive schema needs a separate branch per depth (21·D − 7 states here, infinite without a limit) → recursion needs a CFG/PDA engine",
+      "Walk every token from every state once, before generation → each step becomes one table lookup regardless of vocabulary size → but that build is paid up front (Outlines GCT 3.48–12.77 s) → it only pays off when a schema is reused many times",
+      "Many token paths spell the same forced text (7 spellings of <code>name</code>, 1,344 paths for 4 outputs) → collapse each forced run to one spelling → the model is asked only at real choices (2 calls instead of 10)"
+    ],
+    "elevated": [
+      "The token index maps (state, token) → next state → masking is a lookup, not a vocabulary scan → this is why an FSM backend's per-step cost doesn't grow with 248,320 tokens, while its build cost does",
+      "Counting keywords (<code>minItems</code>, <code>maxItems</code>, big enums) must be unrolled into states → the index balloons → the paper's 40 s–10 min Outlines timeouts"
+    ],
+    "reference": [
+      "the toy regex's exact state numbering (0–27) and the 33-row table",
+      "the <code>interegular</code> 0.3.3 library used to count states",
+      "Outlines' internal index format and API",
+      "the break-even arithmetic (≈ 75 reuses on GlaiveAI)"
+    ]
+  },
+  "compress": {
+    "prompt": "Draw the pipeline from memory as a chain: regex → character FSM → token index → per-step lookup → mask. Under it, draw one arrow chain for the limit (finite states → … → PDA) and one for the cost (precompute → … → reuse). Aim for three lines total.",
+    "checklist": [
+      "a state records how much valid text has been written, nothing more",
+      "the token index stores, per state, the allowed tokens and where each leads",
+      "each step is one lookup, whatever the vocabulary size",
+      "no stack or counter, so unbounded nesting needs infinite states",
+      "the build cost (GCT) is paid per new schema and amortised by reuse",
+      "forced runs can be skipped; only real choices need the model"
+    ]
+  },
+  "retrieve": [
+    {
+      "q": "Explain why an FSM engine can serve a flat schema with a lookup per step but can't serve a recursive one at all, in terms of what a state can remember.",
+      "kind": "concept",
+      "answer": [
+        "a state is one position in a fixed pattern; there are finitely many",
+        "a flat schema has finitely many positions, so every prefix maps to a state",
+        "a recursive schema must remember how many objects are open; each depth needs its own states, so unbounded depth needs infinitely many"
+      ]
+    },
+    {
+      "q": "Walk through what the engine does between the model producing logits and sampling the next token at state 9 of the toy regex.",
+      "kind": "mechanism",
+      "answer": [
+        "look up state 9's row in the precomputed index: <code>John</code> → 16, <code>Paul</code> → 16",
+        "mask every other token (24 of the 26 illustrative tokens)",
+        "renormalise the model's probabilities over John and Paul, sample one",
+        "move to state 16 for the next step"
+      ]
+    },
+    {
+      "q": "Your service uses one fixed 10-field schema for millions of calls; another team builds a new schema from each user's CSV header. Which one should use an FSM backend, and what number decides it?",
+      "kind": "tradeoff",
+      "answer": [
+        "the fixed schema: the build is paid once and spread over every call",
+        "the per-request schema pays GCT every time (seconds on Outlines) for no reuse",
+        "the deciding number is reuses k vs the build cost: on GlaiveAI the card's arithmetic breaks even near 75 reuses, and never on GitHub-Hard, where Outlines' TPOT is also worse"
+      ]
+    },
+    {
+      "q": "The toy regex has 28 character states but the token table only uses 21 of them. Why, and does the model ever lose a valid output because of it?",
+      "kind": "mechanism",
+      "answer": [
+        "whole-word tokens like <code>John</code> and <code>age</code> jump over the middle states (10–15, 25)",
+        "those states are still reachable by single-character tokens in a real vocabulary, but not in this illustrative one",
+        "no output is lost: all 4 strings still reach the accept state"
+      ]
+    }
+  ],
+  "compare": [
+    {
+      "with": "structured-outputs/cfg-pda",
+      "q": "FSM vs PDA: what is fundamentally different about the state each one keeps, which design choice gives the FSM its speed and the PDA its reach, when do you pick each, and how does each fail?",
+      "answer": [
+        "FSM: one position in a fixed pattern. PDA: a position plus a stack of what's still open",
+        "no stack means everything can be precomputed into a table (fast lookups); the stack lets one small machine handle any depth",
+        "pick the FSM for small, flat, reused schemas; the PDA for recursive or deeply nested ones",
+        "the FSM fails by state explosion or compile timeouts, and can't express recursion. The PDA fails by per-token stack work that can't all be precomputed, and by letting the model nest without end"
+      ]
+    },
+    {
+      "with": "structured-outputs/fast-forward",
+      "q": "This card's \"2 LLM calls instead of 10\" and Guidance's fast-forward both skip forced text. What is the same, and what does an FSM make easier about it?",
+      "answer": [
+        "both notice that only one continuation is legal and append it without asking the model",
+        "in a precomputed FSM a forced run is visible at compile time: a chain of states with one way out",
+        "an on-the-fly engine must discover it at run time, step by step"
+      ]
+    }
+  ],
+  "predict": {
+    "q": "Four schemas go to an FSM backend: (a) an array of 1 to 1,000 SKUs, (b) an object with 200 optional fields in any order, (c) a comment with <code>replies: [comment]</code>, (d) a string matching an email-like regex. Which one first exposes a <i>pure FSM's limit</i> (not just its cost)? Commit before revealing.",
+    "answer": "(c). It is recursive, so exact support needs unbounded depth, which no finite machine can track: that is a limit of expressiveness. (a) and (b) are finite, so an FSM <i>can</i> represent them, but counting to 1,000 and 200 optional fields in any order both blow up the number of states: that is the cost limit behind the paper's Outlines timeouts. (d) is exactly what regexes are for."
+  },
+  "apply": {
+    "task": "Hand-trace the toy regex producing <code>{\"name\":\"Paul\",\"age\":30}</code> with the card's 26-token vocabulary, using the fewest tokens (<code>{\"</code> <code>name</code> <code>\":</code> <code>\"</code> <code>Paul</code> <code>\",\"</code> <code>age</code> <code>\":</code> <code>30</code> <code>}</code>). For each step write the current state, the allowed tokens and how many are masked. Then mark each step as a <i>real choice</i> (different outputs possible) or <i>spelling only</i> (several tokens, same text). Finally, break it: using the card's formula, how many states does a depth-2 link chain need, and what happens at depth 3?",
+    "done": "You have a 10-row table (state, allowed tokens, masked count, <i>real choice</i> or <i>spelling only</i>) ending in the accept state, plus the state counts for a depth-2 and a depth-3 link chain, all written before you open the check.",
+    "hint": "Check, only after trying: states 0, 2, 6, 8, 9, 16, 19, 22, 24, 26 → 27 (accept). Allowed counts 2, 4, 2, 1, 2, 2, 2, 2, 2, 1, so masked 24, 22, 24, 25, 24, 24, 24, 24, 24, 25 of 26. Only state 9 (<code>John</code>/<code>Paul</code>) and state 24 (<code>20</code>/<code>30</code>) are real choices; elsewhere the options spell the same text (at state 6, <code>\"</code> and <code>\":</code>; at state 16, <code>\"</code> and <code>\",\"</code>). Depth 2 needs 21 × 2 − 7 = 35 states; a depth-3 input is rejected until you rebuild with 56."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: which schema exposes the limit, or which ones only expose the cost?",
+    "Can you say why the nesting limit is architectural, not just that FSMs are \"less expressive\"?",
+    "Which relationship is still fuzzy: state → precomputed row → O(1) mask, or precompute → GCT → reuse?",
+    "In the trace, did you count spelling-only steps as choices? What does that mean for how many model calls are really needed?",
+    "What will you revisit before the grammars card: exactly which information a PDA's stack adds?"
+  ],
+  "revisit": [
+    "structured-outputs/token-masking",
+    "structured-outputs/json-schema"
+  ],
+  "prereq": [
+    "structured-outputs/token-masking"
+  ]
+}

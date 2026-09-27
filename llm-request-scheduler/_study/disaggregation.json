@@ -1,0 +1,67 @@
+{
+  "prime": {
+    "problem": "On one GPU, prefill wants compute and decode wants bandwidth, and they share every step. Chunking caps the damage but can't remove it (ITL p99 36.2 ms vs a 9.9 ms decode-only step), and both phases are stuck with one parallelism layout and one GPU type.",
+    "fits": "Second card of group 4, the step past chunked prefill: instead of sharing a GPU more politely, give each phase its own GPUs. It reuses the roofline split from the bottlenecks card and the KV size from the KV cache card to price the handoff.",
+    "expect": [
+      "prefill pool → KV handoff → decode pool",
+      "handoff vs recompute: break-even ≈ 8.1 GB/s here",
+      "<code>N_P ÷ N_D = (p̄ ÷ ō) × (R_D ÷ R_P)</code>",
+      "conditional disaggregation",
+      "when not to split"
+    ],
+    "goal": "Price a KV handoff against re-prefilling on a given link, size the prefill:decode ratio for a workload, and decide between chunked prefill and disaggregation for a given scale, prompt length and SLO."
+  },
+  "attend": [
+    "Why does the handoff-vs-recompute break-even depend only on the link, not on the prompt length?",
+    "Prompts are 2.6× longer than outputs, yet the decode pool needs more GPUs. Why?",
+    "Split, the new request's TTFT gets a few ms worse. What do the 64 running streams gain?",
+    "Why does the split buy only about +6% throughput for an 8B model with short prompts, when papers report up to 7.4×?",
+    "When should a request skip the handoff entirely?"
+  ],
+  "core": {
+    "must": [
+      "Prefill is compute-bound (MFU 99.8%) and decode bandwidth-bound (10.5%) → sharing a step makes decodes wait for prefills (9.9 → 72.8 ms) → separate pools remove the interference and let each phase pick its own parallelism and hardware",
+      "The prompt's KV (128 KiB per token) must move before decode can start → transfer n·b_KV ÷ BW_link vs recompute n·2P ÷ C → break-even BW = b_KV·C ÷ 2P ≈ 8.1 GB/s → any faster link ships KV cheaper than rebuilding it",
+      "Each pool must keep up with its own token demand → λ cancels → N_P ÷ N_D = (prompt ÷ output) × (decode rate ÷ prefill rate per GPU) → 0.81 : 1 for the course workload, 1.12 : 1 for long prompts → the ratio drifts with the traffic mix",
+      "Short or cached prompts cost little to prefill locally → conditional disaggregation keeps them on the decode GPU → only long prompts pay a handoff"
+    ],
+    "elevated": [
+      "Mooncake streams KV layer by layer while prefill runs → the transfer overlaps the prefill instead of following it → much of the handoff time is hidden"
+    ],
+    "reference": [
+      "DeepSeek's 4 + 18 nodes and EP32/EP144 layouts",
+      "the per-system headline multiples (Dynamo 30×, Together 40%, TensorRT-LLM 1.4–1.8×)",
+      "NIXL, MPI, UCX as transfer layers"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw router → prefill pool → KV handoff → decode pool, with the conditional-disaggregation shortcut. Write the break-even formula and the pool-ratio formula under it, and fill each in with the card's numbers.",
+    "checklist": [
+      "prefill: compute-bound; decode: bandwidth-bound; one GPU forces one layout",
+      "handoff = n·b_KV ÷ BW; break-even ≈ 8.1 GB/s for this model",
+      "4,096 tokens: 537 MB, 10.7 ms at 50 GB/s, 1.2 ms on NVLink",
+      "pool ratio from token demand: 0.81 : 1 (course) or 1.12 : 1 (long)",
+      "short or cached prompts skip the handoff"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why splitting prefill and decode removes interference that chunked prefill can only cap.", "kind": "concept", "answer": ["chunking still puts a prompt slice into every decode step until the prompt is done", "the worst gap is one budget-sized step (36.2 ms p99 at 2,048), not a decode-only 9.9 ms", "split, decode GPUs never run a prefill, so every decode step is decode-only"]},
+    {"q": "Walk through one 4,096-token request's TTFT split over a 50 GB/s link, and compare it with joining 64 decodes on one GPU.", "kind": "mechanism", "answer": ["prefill alone on the prefill pool: 66.7 ms", "ship 4,096 × 131,072 B = 537 MB at 50 GB/s: 10.7 ms", "TTFT ≈ 77.4 ms, versus 72.8 ms joined", "but the 64 running streams keep 9.9 ms steps instead of one 72.8 ms stall"]},
+    {"q": "One H100 serving an 8B model with 512-token prompts: should you disaggregate? Give three numbers from the card that decide it.", "kind": "tradeoff", "answer": ["on a single GPU there is nothing to split", "a 512-token prompt adds only 4.6 ms to a shared step; its handoff over 100 Gbps costs 65% of the prefill it saves", "our estimate: only about +6% throughput for 8 GPUs split vs colocated; start with chunked prefill"]}
+  ],
+  "compare": [
+    {"with": "llm-request-scheduler/chunked-prefill", "q": "Both fix prefill–decode interference. Fill in for each: what it does to a stream's worst gap, what it costs, and the scale where it wins.", "answer": ["chunking: worst gap = one budget-sized step; costs some TTFT and per-chunk overhead; wins on one to a few GPUs", "disaggregation: worst gap = a decode-only step; costs a KV transfer and a second pool; wins at fleet scale with long prompts and strict TTFT and TPOT", "large systems use both (Mooncake still chunks inside the prefill pool)"]},
+    {"with": "perf-4-attention-kv/mooncake-store", "q": "Course 4's Mooncake store trades storage for computation. How is its store-vs-recompute inequality related to this card's handoff break-even?", "answer": ["both compare moving KV bytes with recomputing them from FLOPs", "the handoff moves KV once, prefill to decode; the store keeps it for later reuse across requests", "both pay off only above a link speed set by bytes per token ÷ FLOPs per token"]}
+  ],
+  "predict": {"q": "You turn on an FP8 KV cache in a disaggregated deployment. Before computing: what happens to the handoff time and to the break-even link speed?", "answer": "Both halve. A 4,096-token prompt's KV drops from 537 MB to about 268 MB, so the handoff at 50 GB/s falls from 10.7 to about 5.4 ms, and the break-even link speed drops from ≈ 8.1 to ≈ 4.0 GB/s. Slower links become viable, which is part of why KV compression and disaggregation go together."},
+  "apply": {"task": "An 8,192-token prompt on the running example. Compute (a) its KV size, (b) the handoff time over a 100 Gbps NIC (12.5 GB/s), an illustrative 50 GB/s link and H100 NVLink (450 GB/s), (c) the time to re-prefill it, and (d) the break-even link speed with an FP8 KV cache. Then say for which links split TTFT (prefill + handoff) stays within 10% of the prefill alone.", "done": "(a) 8,192 × 131,072 B ≈ 1.07 GB. (b) ≈ 85.9 ms, 21.5 ms and 2.4 ms. (c) ≈ 133.4 ms. (d) ≈ 4.0 GB/s. Within 10% of 133.4 ms (≤ 13.3 ms extra): NVLink only; the 50 GB/s link adds 16%, and the 100 Gbps NIC 64%.", "hint": "Handoff and prefill both scale with the prompt, so their ratio (≈ 16% at 50 GB/s) is the same as for the card's 4,096-token example."},
+  "reflect": [
+    "Which prediction did you get wrong: what FP8 KV does to the handoff?",
+    "Could you explain why the decode pool needs more GPUs than the prefill pool for the course workload?",
+    "Which relationship is still fuzzy: link speed → handoff vs recompute, or workload shape → pool ratio?",
+    "At what scale would your own deployment start to consider splitting?",
+    "What will you revisit before the routing card: how a request's KV location should affect where it is sent?"
+  ],
+  "revisit": ["llm-request-scheduler/chunked-prefill", "llm-request-scheduler/bottlenecks", "llm-request-scheduler/kv-cache"],
+  "prereq": ["llm-request-scheduler/chunked-prefill"]
+}

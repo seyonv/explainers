@@ -1,0 +1,129 @@
+{
+  "prime": {
+    "problem": "When arrivals exceed capacity, an unbounded queue keeps the server 100% busy while every answer it produces is late. And the usual dashboards hide it: the mean latency looks healthy while the tail blows the SLO, and \"up 99.9% of the time\" says nothing about how many requests were lost at peak.",
+    "fits": "Builds on the sizing card's queue model (a busy core, 10 conversions/s) and the partial-failure card's timeouts. It gives the course its measuring sticks: p99 instead of mean, yield instead of uptime, harvest for partial answers.",
+    "expect": [
+      "backpressure: a bounded queue that rejects fast",
+      "percentiles: p50, p99, p99.9",
+      "fan-out: <code>1 − (1 − p)<sup>n</sup></code>",
+      "yield vs uptime",
+      "harvest: answer with less, or refuse"
+    ],
+    "goal": "Show with numbers why a capped queue beats an unbounded one under overload, why fan-out turns one server's p99 into everyone's median, and choose between lower yield and lower harvest for a given query."
+  },
+  "attend": [
+    "With 12/s into a core that does 10, after how many seconds is every finished image already late, and why does a cap of 4 stop that?",
+    "Why is the mean (81 ms) nowhere near the p99 (475 ms) in the lognormal sample?",
+    "What does fan-out to 100 servers do to a 1% slow rate, and why is one server's p99 now the system's median?",
+    "Why do two 60-second outages with identical uptime have different yields?",
+    "When shard B is down, when is answering from A and C the wrong choice?"
+  ],
+  "core": {
+    "must": [
+      "Arrivals 12/s > service 10/s → an unbounded backlog grows 2/s → wait = backlog / 10 → after 2 s every image finishes late, while the core stays 100% busy → cap the queue at 4 so the extra 2/s get an immediate error and back off (latency ≤ 0.5 s for the 83.3% served)",
+      "Latency has a long right tail → the mean is pulled up by the tail but lands far below it (81 ms vs p99 475 ms) → judge a service by its percentiles, because users in the tail are the ones who leave",
+      "A request waits for n parallel calls → it is as slow as the slowest → P(slow) = 1 − (1 − p)<sup>n</sup> → 1% slow per server becomes 63.4% of requests at n = 100",
+      "Uptime counts seconds, yield counts requests → the same 60 s outage costs 60,000 requests at the trough and 600,000 at peak → yield 99.987% vs 99.874%: one meets 99.9%, the other misses"
+    ],
+    "elevated": [
+      "Median of the max of 100 draws = the 100·0.5<sup>1/100</sup> ≈ 99.31st percentile → with fan-out 100 the <i>typical</i> request sees one server's p99.31 (542 ms) → tail-tolerant tricks (hedged requests, fewer fan-out calls) matter more than speeding up the median"
+    ],
+    "reference": [
+      "the lognormal parameters (median 50 ms, σ = 1.0, seed 7)",
+      "nearest-rank percentile definition",
+      "Fox and Brewer / Dean and Barroso citations",
+      "the <code>queue.Queue(maxsize=4)</code> blocking-put variant"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, write four short chains: overload → backpressure; tail → percentiles; fan-out → tail amplification; outage → yield vs uptime. Put one number from the card on each.",
+    "checklist": [
+      "unbounded queue: 12 s wait after 60 s; capped: ≤ 0.5 s, 16.7% rejected",
+      "mean 81 ms hides p99 475 ms",
+      "1 − 0.99<sup>100</sup> = 63.4%",
+      "same uptime, yield 99.987% vs 99.874%",
+      "harvest 67% with shard B down, or refuse and keep harvest 100%",
+      "reject fast, retry with backoff: overload becomes a signal, not a queue"
+    ]
+  },
+  "retrieve": [
+    {
+      "q": "Explain why an unbounded queue under a 20% surge is worse than rejecting 2 requests in 12, even though the unbounded one \"loses nothing\".",
+      "kind": "concept",
+      "answer": [
+        "every request is eventually served, but after 2 s every one is served late (wait > 0.4 s)",
+        "the core spends its time on images nobody is waiting for any more",
+        "with a cap, 10 of 12 finish within 0.5 s and the other 2 learn at once and can back off"
+      ]
+    },
+    {
+      "q": "Walk through <code>queue(12, 10, 60, cap=4)</code> for the first three seconds: backlog, wait and rejections each tick.",
+      "kind": "mechanism",
+      "answer": [
+        "t = 1: 12 in, room 14, all taken; backlog 2, wait 0.2 s, 0 rejected",
+        "t = 2: room 12, all taken; backlog 4, wait 0.4 s, 0 rejected",
+        "t = 3: room 10 + 4 − 4 = 10; 2 rejected; backlog stays 4, wait 0.4 s",
+        "from then on 2/s are rejected: 116 by t = 60"
+      ]
+    },
+    {
+      "q": "A search over 3 shards has shard B down. For a product search and for a billing total, choose lower harvest or lower yield and justify each.",
+      "kind": "tradeoff",
+      "answer": [
+        "product search: answer from A and C (harvest 67%); a partial list is still useful",
+        "billing total: refuse (yield drops, harvest stays 100%); a sum over 2 of 3 shards is a wrong answer",
+        "the rule: lower harvest only when a partial answer isn't a wrong answer"
+      ]
+    },
+    {
+      "q": "Why is the mean still the right number for capacity planning, even on a card that argues against it?",
+      "kind": "tradeoff",
+      "answer": [
+        "total CPU used is mean × count, so the 1K-core sizing is mean-based",
+        "percentiles are for latency promises; means are for resource totals",
+        "and a p99 from 100 samples is just the second-slowest request: you need data to trust it"
+      ]
+    }
+  ],
+  "compare": [
+    {
+      "with": "cs-5-distributed-systems/idempotency-retries",
+      "q": "Backpressure says \"reject fast and let callers back off\"; the retries card says how to back off. What goes wrong if backpressure is paired with instant retries, and which two mechanisms from that card fix it?",
+      "answer": [
+        "rejected callers retry at once: the core that could do 10/s is offered 24/s (the card's cascade)",
+        "full-jitter exponential backoff spreads the retries out in time",
+        "retrying at one layer only stops (r + 1)<sup>L</sup> amplification"
+      ]
+    },
+    {
+      "with": "cs-4-design-foundations/averages-and-expected-value",
+      "q": "cs-4 uses expected values to size things; this card says the mean lies about latency. What's the precise difference in what each summary answers?",
+      "answer": [
+        "the expected value answers \"how much in total\" (CPU, bytes, cost)",
+        "a percentile answers \"how bad for the unlucky users\"",
+        "skewed distributions separate them: mean 81 ms, p99 475 ms in the same sample"
+      ]
+    }
+  ],
+  "predict": {
+    "q": "The surge doubles: 20 requests/s into the same core, still capped at 4 waiting. What fraction is answered, what is the worst latency of an answered request, and how does the answered fraction compare with the 12/s case? Commit first.",
+    "answer": "The core still serves 10/s and the cap still bounds the wait at 0.4 s, so answered requests still finish within 0.5 s. But now 10 of 20 are rejected each second: yield falls to 50% (from 83.3%). Backpressure protects latency, never throughput: past capacity, every extra request becomes a rejection. That's the signal to add cores, not to raise the cap."
+  },
+  "apply": {
+    "task": "Run <code>queue()</code> from <code>code/backpressure-metrics.py</code> for a 50% surge (15/s into 10/s) for 10 s, unbounded and with cap = 4. Then use <code>p_slow</code> to find what fraction of requests are slow for fan-out 10 with the sample's per-call rate p = 0.9%, and for fan-out 20 with p = 1%.",
+    "done": "You get (10, 50, 5.0, 0) unbounded and (10, 4, 0.4, 46) capped, an answered share of 10/15 = 66.7%, and fan-out results of 8.6% and 18.2%.",
+    "hint": "Unbounded backlog = (15 − 10) × 10 = 50, wait 50 / 10 = 5.0 s. Capped: 5 rejected per second from t = 2 on, plus 1 in the tick the queue fills: 46. 1 − 0.991<sup>10</sup> = 0.0864; 1 − 0.99<sup>20</sup> = 0.1821."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: that yield halves while latency stays bounded?",
+    "Could you explain to someone why \"100% busy\" can mean \"useless\"?",
+    "Which relationship is still fuzzy: overload → queue growth → latency, or fan-out → tail amplification?",
+    "What does your own team's dashboard show: mean or percentiles, uptime or yield?",
+    "What will you reopen before the retries card?"
+  ],
+  "revisit": [
+    "cs-5-distributed-systems/image-resize-sizing",
+    "cs-4-design-foundations/averages-and-expected-value"
+  ],
+  "prereq": []
+}

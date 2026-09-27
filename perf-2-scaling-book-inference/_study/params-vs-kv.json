@@ -1,0 +1,115 @@
+{
+  "prime": {
+    "problem": "The step-time formula needs two byte counts: the weights and each sequence's KV cache. Get them wrong, or forget that one is shared and the other isn't, and you'll promise a server can hold 60 users when it holds 8.",
+    "fits": "Seventh card. The KV cache card gave you the per-token KV formula; this card counts LLaMA 2-13B's parameters, contrasts training and inference memory, and turns both into <i>how many sequences fit</i>, the limit the step-time card ran into.",
+    "expect": ["parameter count by block (MLP, attention, vocab)", "training vs inference memory", "KV = 2 · bytes · H · K · L · T", "how many sequences fit", "the book's GB vs GiB mix-up"],
+    "goal": "Count a model's parameters and KV bytes from its shapes, compute how many sequences of a given context fit on given hardware, and say when weights rather than KV are the binding constraint."
+  },
+  "attend": [
+    "Which three things dominate training memory that simply don't exist at inference?",
+    "Why are inference activations only about 80 MB even for an 8k prefill?",
+    "In 2·bytes·H·K·L·T, which factors are architecture choices and which one grows while the model runs?",
+    "Why is a 70B model's KV per token smaller than a 13B model's?",
+    "When do weights, not the KV cache, still decide what you can serve?"
+  ],
+  "core": {
+    "must": [
+      "At inference only one copy of the weights is kept, shared by every sequence → no optimizer state, no gradients, no checkpointed activations → 26 GB for LLaMA 2-13B instead of ≈ 100 GB plus several TB of activations in training",
+      "Each sequence stores one K and one V vector per KV head per layer per token → KV = 2·bytes·H·K·L·T → it grows with context and multiplies with batch → four 8k LLaMA 2-13B caches (26.8 GB) already outweigh its 26 GB of weights",
+      "Free HBM = capacity − weights → sequences that fit = free ÷ (KV per token × T) → KV capacity, not the weights, caps the batch at long context (59 × 8k on one H100 for Llama-3.1-8B; 16 for 13B on 8 v5e)",
+      "K is an architecture choice → GQA (K = 8 instead of 40) cuts KV per token 5× → LLaMA 3-70B at 320 KiB/token needs less KV per token than LLaMA 2-13B at 800 KiB"
+    ],
+    "elevated": [
+      "Engines reserve a fixed share of memory for KV up front → <i>free HBM</i> is an upper bound; Kiely's TensorRT-LLM example gives 80% of the remaining memory to KV → real fit counts are lower than the card's floor-division"
+    ],
+    "reference": [
+      "the LLaMA 2-13B hyperparameters (L = 40, D = 5,120, F = 13,824, N = K = 40, H = 128, V = 32,000)",
+      "the exact parameter split 8.49e9 + 0.33e9 + 4.19e9",
+      "the fit table for H100 and 8× v5e at 2k/8k/32k",
+      "GB vs GiB: 6.71e9 B = 6.25 GiB; 26.03e9 B = 24.24 GiB"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw an 80 GB HBM bar for Llama-3.1-8B on one H100: the weights block, then 8k KV blocks until the bar is full. Label each block's size and the count. Under it, write the KV formula and one line on what training would add to the bar.",
+    "checklist": [
+      "weights 16.06 GB, one copy, shared",
+      "KV per 8k sequence 8,192 × 131,072 B = 1.07 GB; 59 fit in 63.9 GB",
+      "KV = 2 · bytes · H · K · L · T",
+      "training adds optimizer state, gradients and checkpointed activations; inference has none",
+      "past about 15 sequences at 8k, KV outweighs the weights"
+    ]
+  },
+  "retrieve": [
+    {
+      "q": "Explain why a model trained on a large cluster can be served on far less memory, naming each thing that disappears.",
+      "kind": "concept",
+      "answer": [
+        "no optimizer state: the fp32 Adam moments that bring 13B to ≈ 100 GB",
+        "no gradients",
+        "no checkpointed activations for a backward pass (several TB in training; ≈ 80 MB at inference)",
+        "what's added is the KV cache, per sequence"
+      ]
+    },
+    {
+      "q": "Walk through the book's 6.7 GB: LLaMA 2-13B, one 8,192-token sequence in bf16. Then say how many fit on 8× v5e.",
+      "kind": "mechanism",
+      "answer": [
+        "8192 × 40 (K) × 128 (H) × 40 (L) × 2 bytes × 2 (K and V) = 6.71e9 B",
+        "per token 819,200 B = 800 KiB",
+        "(137.44 GB − 26.03 GB) / 6.71 GB = 16.6 → 16, the book's <i>OOM beyond batch size 16</i>"
+      ]
+    },
+    {
+      "q": "LLaMA 3-70B in bf16 is 140 GB. Why is <i>KV caps the batch</i> the wrong first question for it on one H100, and what are the two ways to make KV the question again?",
+      "kind": "tradeoff",
+      "answer": [
+        "140 GB of weights doesn't fit in 80 GB: fitting the weights comes first",
+        "quantize the weights (int8: 70 GB leaves 10 GB, a handful of 8k sequences) or shard across chips",
+        "only once the weights fit with room to spare does KV decide the batch"
+      ]
+    }
+  ],
+  "compare": [
+    {
+      "with": "perf-2-scaling-book-inference/modeling-13b",
+      "q": "This card says 16 LLaMA 2-13B sequences fit; the next card turns that into throughput. What does the memory limit do to throughput that the step formula alone wouldn't show?",
+      "answer": [
+        "the step formula would let the batch run to 240 and throughput creep toward W/KV",
+        "memory stops MHA at batch 16, ≈ 788 tok/s",
+        "a 5× smaller KV lets batch 64 fit: ≈ 3,757 tok/s, 4.8× from the same chips"
+      ]
+    },
+    {
+      "with": "perf-4-attention-kv/paged-memory",
+      "q": "This card's fit count divides free HBM by a full-context cache. What does that assume about how memory is reserved, and how does paging change the count?",
+      "answer": [
+        "it assumes every sequence takes its full context (or that you reserve that much per slot)",
+        "real requests are shorter, so contiguous per-slot reservation wastes the unused part",
+        "paging allocates small blocks on demand, so the count follows actual tokens, not the maximum"
+      ]
+    }
+  ],
+  "predict": {
+    "q": "Serve LLaMA 3-70B with FP8 weights and FP8 KV on 2 × H100 (160 GB). Commit before computing: roughly how many 8k sequences fit?",
+    "answer": "Weights 70 GB, leaving 90 GB. FP8 KV per token is 2 · 8 · 128 · 80 · 1 = 163,840 B, so an 8k sequence is 1.34 GB. 90 / 1.34 = 67 sequences, the same 67 the serving card's H100 panel shows. Before overhead: CUDA context, activations and the engine's KV reservation lower it."
+  },
+  "apply": {
+    "task": "Using the card's formulas, fill two new rows of the fit table. (a) Llama-3.1-8B with an FP8 KV cache at 32k context on one H100. (b) LLaMA 3-70B, FP8 weights and FP8 KV, 8k context on 2 × H100. For each, write weights, KV per token, KV per sequence, free HBM and sequences that fit, then say whether KV or weights is the binding constraint.",
+    "done": "(a) 64 KiB/token, 2.15 GB per 32k sequence, 63.94 GB free → 29 sequences; (b) 70 GB weights, 163,840 B/token, 1.34 GB per sequence, 90 GB free → 67 sequences; KV binds in both.",
+    "hint": "(a) 63.94e9 / (32,768 × 65,536) = 29.8. (b) (160 − 70) GB / (8,192 × 163,840 B)."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: the 70B fit count?",
+    "Could you rebuild LLaMA 2-13B's 13e9 parameters by block without looking?",
+    "Which relationship is still fuzzy: K (an architecture choice) → KV per token, or free HBM → batch?",
+    "Did the GB vs GiB note change any conclusion for you, or only the decimals?",
+    "What will you check on the next card: how the batch that fits turns into tokens per second?"
+  ],
+  "revisit": [
+    "perf-2-scaling-book-inference/kv-cache-sampling",
+    "perf-2-scaling-book-inference/step-time"
+  ],
+  "prereq": [
+    "perf-2-scaling-book-inference/kv-cache-sampling"
+  ]
+}

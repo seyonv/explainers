@@ -1,0 +1,62 @@
+{
+  "prime": {
+    "problem": "At 68.7% of cuBLAS, the big structural wins are spent. What's left is how loads are issued, which tile sizes suit this GPU, and whether the tiling matches how the hardware schedules warps. Each step is worth about 1.1×, and it took siboehm twice the effort of everything before it.",
+    "fits": "Last of the four siboehm cards. It builds on blocktiling's thread tile and adds a warp level between block and thread. It ends by showing what cuBLAS does that one kernel can't (many kernels, split-K) and points to tensor cores and Triton's autotuner.",
+    "expect": ["128-bit vectorized loads (<code>LDS.128</code>, <code>LDG.E.128</code>)", "autotuning ~400 configs", "warp tiles and WNITER/WMITER", "split-K and cuBLAS's kernel zoo", "the power law of effort"],
+    "goal": "Explain what each of kernels 6, 9 and 10 fixed, compute a warptile configuration's geometry, and argue when to stop tuning and call a library."
+  },
+  "attend": [
+    "Why does the compiler need a <code>reinterpret_cast</code> to float4 before it will emit 128-bit global loads?",
+    "The A6000's best autotuned config runs at 0.95× of the A100's own best on an A100. What does that say about shipping one tuned kernel?",
+    "Warps never appear in CUDA source. What three hardware facts make a warp-level tile worth adding anyway?",
+    "At 256², why does cuBLAS launch a second kernel, and what problem is split-K solving?",
+    "Kernels 7 and 8 removed bank conflicts and got slower. What's the card's (unverified) explanation?"
+  ],
+  "core": {
+    "must": [
+      "Kernel 5 stalls on a congested memory pipeline → 128-bit loads move 4 floats per instruction (transpose As so its reads are contiguous; float4 casts for global) → fewer load instructions for the same bytes → 1.14×",
+      "Tile sizes interact with registers, shared memory and SM count in ways nobody can predict → benchmark every valid (BM, BN, BK, TM, TN) → +8% on the A6000 → but the winner is GPU-specific and unexplained",
+      "Warps are what the SM's schedulers issue and where bank conflicts happen → give each warp its own tile inside the block tile → the code's three levels (block → warp → thread) match the hardware's three levels of parallelism → 1.10×, 93.7% of cuBLAS",
+      "Small or skinny shapes give too few output tiles to fill every SM → cuBLAS ships many kernels and splits K across blocks, then reduces the partials → one hand-written kernel falls behind below 2048²"
+    ],
+    "elevated": [
+      "Re-laying out shared memory to kill bank conflicts can break 16-byte alignment → 128-bit <code>LDS.128</code> reads become 4× as many scalar loads → a fix for one bottleneck can re-create another (the likely story behind kernels 7 and 8, not verified)"
+    ],
+    "reference": [
+      "kernel 10's A6000 settings (128 threads, BM = BN = 128, BK = 16, WM = WN = 64, WNITER = 4, TM = 8, TN = 4)",
+      "the cuBLAS kernel names (<code>ampere_sgemm_128x64_nn</code>, <code>splitKreduce_kernel</code>) and trace durations",
+      "Shankhdhar's H100 BF16 ladder (32 → 317 → 764 TF vs cuBLAS 716)",
+      "source quirks: \"A100\" for A6000 numbers, <code>threadIdx.x % warpSize</code> in the text"
+    ]
+  },
+  "compress": {
+    "prompt": "Rebuild the whole siboehm ladder from memory as a table: each step's bottleneck before it and the fix, with rough multipliers. Then draw the power-law curve (points per weekend) and label where you would stop in production and why.",
+    "checklist": [
+      "1→2 coalescing 6.4×; 2→3 SMEM tiles 1.5×; 3→4 column of results 2.84×; 4→5 square 1.88×",
+      "5→6 vectorized loads 1.14×; 6→9 autotune 1.08×; 9→10 warptile 1.10×; cuBLAS a further 1.07×",
+      "first four steps 51.7× in two weekends; last four 1.46× in four more",
+      "tuned configs don't transfer between GPUs",
+      "production: call cuBLAS/CUTLASS or Triton unless you need a fused epilogue"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why the last 20% of a matmul costs more effort than the first 80%, using what each late step changes.", "kind": "concept", "answer": ["early steps change structure: how much data is reused (bytes and loads per result fall by orders of magnitude)", "late steps change how loads are issued, which tile sizes fit, and scheduling, each ~1.1×", "they are also GPU-specific, so the work doesn't carry over"]},
+    {"q": "Walk through kernel 10's A6000 geometry: warps per block, the warp tile, the subtile shape, threads per subtile and results per thread.", "kind": "mechanism", "answer": ["128 threads = 4 warps; each owns a 64 × 64 warp tile of the 128 × 128 block tile", "WMITER = (64·64) ÷ (32·8·4·4) = 1, so subtiles are 64 × 16 (WNITER = 4)", "(64/8) × (16/4) = 32 threads per subtile = one warp", "8 × 16 = 128 results per thread = 128·128 ÷ 128"]},
+    {"q": "You need a 256 × 256 FP32 matmul fused with a custom activation. Compare using siboehm's kernel 10, cuBLAS plus a separate activation kernel, and a Triton kernel with a fused epilogue.", "kind": "tradeoff", "answer": ["kernel 10: tuned for 4096², only a few 128 × 128 tiles at 256² so most SMs idle", "cuBLAS: picks a split-K kernel for this shape, but the activation is an extra launch and a round trip of C", "Triton: autotuned per shape and the activation runs on the tile in registers; the right default for custom fusions"]}
+  ],
+  "compare": [
+    {"with": "perf-3-kernels/triton-matmul", "q": "siboehm's autotuning (a bash script over ~400 configs, once) vs <code>@triton.autotune</code> (16 configs, keyed on M, N, K). What does each search, when does each run, and what does each leave for you to choose by hand?", "answer": ["siboehm: all five tile sizes, once per GPU, offline", "Triton: a short list of block sizes, stages and warps, re-run whenever the shape key changes", "siboehm writes the warp and thread tiles and vectorization by hand; Triton's compiler picks those, and you choose the config list and GROUP_SIZE_M"]},
+    {"with": "perf-3-kernels/matmul-blocktiling", "q": "Blocktiling added results per thread; warptiling added a level between block and thread. What does each change about loads, and why does the second give only 1.10× when the first gave 2.84×?", "answer": ["blocktiling cut SMEM loads per FMA 2 → 0.25, attacking the main bottleneck", "warptiling reorganises the same work to match warp scheduling and bank-conflict scope, with a slightly bigger effective register tile", "by kernel 10 the bottleneck is spread across many small effects, so no single change gives a big step"]}
+  ],
+  "predict": {"q": "You move siboehm's kernel 10 to 256 threads with BM = BN = 128, WM = 64, WN = 32, WNITER = 2, TM = 8, TN = 4. Commit before computing: how many warps per block, what is WMITER, and how many results per thread?", "answer": "The block tile holds (128/64) × (128/32) = 8 warp tiles for 8 warps (256 threads). WMITER = (64·32) ÷ (32·8·4·2) = 2,048 ÷ 2,048 = 1, so each warp tile splits into 2 subtiles of 64 × 16, each covered by (64/8) × (16/4) = 32 threads. Results per thread = (1·8) × (2·4) = 64 = 128·128 ÷ 256. Half the results per thread of the original config, so its effective register tile (8 + 8 loads for 64 FMAs, 0.25 per FMA) is back to kernel 5's."},
+  "apply": {"task": "Open <code>labs/matmul-siboehm-repo.ipynb</code> on a T4 and run kernels 0–12 at 4096². Compute each kernel's % of cuBLAS on your T4 and the step multipliers, and compare the shape of your ladder with the A6000's. Then use section 6's <code>LDS.128</code> count to check the card's guess about kernels 7 and 8.", "done": "You have a T4 ladder with every step multiplier, a sentence on whether the power law (big early steps, ~1.1× late steps) held on the T4, and the <code>LDS.128</code> counts for kernels 6, 7 and 8.", "hint": "The notebook uses the A6000's tile sizes unchanged, so kernel 9's autotuned config may not be the T4's best; its try-this re-tunes. Colab's T4 clocks vary, so run it twice."},
+  "reflect": [
+    "Which prediction did you get wrong: the warps per block, or the results per thread?",
+    "Could you explain split-K to someone without saying \"cuBLAS does it\"?",
+    "Which relationship is still fuzzy: warp tile → bank-conflict scope, or tile size → SM fill?",
+    "Where would you stop tuning if this were your job, and what number would convince you?",
+    "What will you revisit before the tensor-core card: how block, warp and thread tiles nest?"
+  ],
+  "revisit": ["perf-3-kernels/matmul-blocktiling", "perf-3-kernels/shared-memory-transpose"],
+  "prereq": ["perf-3-kernels/matmul-blocktiling"]
+}

@@ -1,0 +1,58 @@
+{
+  "prime": {
+    "problem": "\"FlashAttention moves fewer bytes\" is a claim; this card makes it a count. Without it you can't say how much less traffic tiling saves, why it depends on the chip, or when tiling can even move more bytes than the naive kernel.",
+    "fits": "Card 2 of 3 on FlashAttention. The previous card built Algorithm 1; this one counts its HBM accesses loop by loop (Theorem 2), bounds what any exact method can do (Proposition 3) and adds block-sparse attention.",
+    "expect": ["Θ(Nd + N²) vs Θ(N²d²/M) HBM accesses", "the ratio ≈ M/d², independent of N", "M counted in elements, not bytes", "block size vs passes over Q", "block-sparse traffic ∝ s"],
+    "goal": "Derive the two access counts, compute the traffic ratio for a given GPU and head dimension, and explain when the bound misleads."
+  },
+  "attend": [
+    "Where in Algorithm 1's loops do the N²d²/M accesses come from: which matrix is re-streamed, and how many times?",
+    "Why does N cancel out of the ratio, leaving only a property of the chip and the model?",
+    "Why does doubling the head dimension from 64 to 128 cut the advantage 4×?",
+    "What does Proposition 3 actually prove, and what does it leave open at a real 100 KB SRAM?",
+    "Why can very small blocks make the tiled kernel move more bytes than standard attention?"
+  ],
+  "core": {
+    "must": [
+      "K, V blocks of Θ(M) elements are held in SRAM → Q and O are re-streamed once per K, V block → T_c = Θ(Nd/M) passes of Θ(Nd) each → Θ(N²d²/M) accesses, vs Θ(Nd + N²) for writing and re-reading N×N",
+      "Divide the counts → N² cancels → advantage ≈ M/d² (≈ M/3d² with Alg 1's constants) → a property of SRAM size and head dim → large at d = 64 on A100 (24), small at d = 128 on H100 (7.1, about 2.3× in the literal count)",
+      "Bigger blocks → fewer passes over Q and O → less traffic → until arithmetic dominates (~256 in Fig 2) and blocks stop fitting → too-small blocks (B_c = 32) move more than standard attention"
+    ],
+    "elevated": [
+      "M must be in elements: plugging bytes doubles every ratio → a silent 2× error in any back-of-envelope",
+      "The two-level model ignores L2 → real kernels on an H100 (50 MB L2) beat the literal count → measured traffic is closer to the ideal N/2 intensity than Alg 1's 146 FLOP/B"
+    ],
+    "reference": ["the Appendix C proof steps", "the exact per-head element counts (4,456,448 vs 800,768)", "the unreconciled 274.9 vs 66.6 GFLOP quirk", "LRA accuracy numbers for block-sparse"]
+  },
+  "compress": {
+    "prompt": "In three lines from memory: the two access counts, their ratio and what it depends on, and the one condition under which the ratio is large.",
+    "checklist": [
+      "standard Θ(Nd + N²): S and P round-trip through HBM",
+      "flash Θ(N²d²/M): Q, O re-streamed T_c = Θ(Nd/M) times",
+      "ratio ≈ M/d², independent of N",
+      "large when d² ≪ M (small head dim, big SRAM)",
+      "M in elements; Θ hides a factor ≈ 3 in Alg 1"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why FlashAttention's advantage depends on the chip's SRAM size and the head dimension but not on sequence length.", "kind": "concept", "answer": ["both counts scale with N² for large N", "the ratio (Nd + N²)·M / N²d² → M/d²", "SRAM size sets how big the K, V blocks are, head dim sets how much each row costs"]},
+    {"q": "Walk through where the Θ(N²d²/M) comes from, loop by loop.", "kind": "mechanism", "answer": ["SRAM must hold K_j, V_j (B_c·d), Q_i, O_i (B_r·d) and S_ij (B_r·B_c), so B_c = Θ(M/d)", "there are T_c = N/B_c = Θ(Nd/M) outer passes", "each pass streams Q and O: Θ(Nd) elements", "total Θ(Nd · Nd/M) = Θ(N²d²/M)"]},
+    {"q": "You're choosing a block size for a GPT-2-shaped forward pass on an A100. What goes wrong at B_c = 32, and why does going past ~256 stop helping?", "kind": "tradeoff", "answer": ["at 32 there are 32 passes over Q and O: 13.56 GB vs standard's 9.13 GB, so tiling loses", "at 256 traffic is 2.05 GB and the kernel becomes arithmetic-bound", "beyond that blocks stop fitting in SRAM (K_j + V_j alone need 128 KB at 512)"]},
+    {"q": "Block-sparse FlashAttention at s = 1/4 cut traffic to 0.312 of dense, not 0.25. Where does the extra come from?", "kind": "mechanism", "answer": ["Proposition 4 is Θ(Nd + N²d²s/M)", "the Nd term (initialising and writing O) doesn't shrink with s", "so traffic stays a little above s × dense"]}
+  ],
+  "compare": [
+    {"with": "perf-4-attention-kv/flashattention-2-algorithm", "q": "FA2 keeps the same Θ(N²d²/M) bound but runs about 2× faster. Which constant or cost does it attack instead, and why doesn't the IO theorem see it?", "answer": ["FA2 cuts non-matmul FLOPs, swaps the loop order so O stays on chip, and improves parallelism", "Theorem 2 counts only HBM element transfers under a two-level model", "so FA2's gains are in constants, compute efficiency and occupancy, outside the Θ"]},
+    {"with": "perf-2-scaling-book-inference/attention-intensity", "q": "perf-2 modelled a fused attention kernel at N/2 = 4,096 FLOP/B for 8k prefill. This card's literal Alg 1 count gives 146. What assumption separates them, and which is closer to real kernels?", "answer": ["perf-2 assumes Q, K, V are read once (the M = Θ(Nd) end of Proposition 3)", "Alg 1 as written with 228 KB SRAM and d = 128 needs 36 passes over Q and O", "real kernels land much closer to the ideal: FA2's loop swap, the 50 MB L2 and GQA sharing absorb the repeat reads"]}
+  ],
+  "predict": {"q": "On an H100 (M = 116,736 elements), a model uses head dim d = 256. Using M/(3d²), does Algorithm 1 as literally written still move fewer HBM bytes than standard attention? Commit first.", "answer": "No, not by this count: M/d² = 116,736 / 65,536 = 1.78 and M/(3d²) = 0.59, so the literal constants predict slightly more traffic than standard attention. The Θ advantage relies on d² ≪ M. Real kernels survive large head dims by using L2, smaller B_r and different loop orders, but the card's point holds: the advantage shrinks with d²."},
+  "apply": {"task": "Open labs/flash-io.py. First predict, then run: (1) the GPT-2 medium ratio at B_c = 64 (T_c = 16) from the card's per-head formula flash = (Nd + 2N) + 2Nd + T_c(3Nd + 4N) against standard 4Nd + 4N², with N = 1,024 and d = 64; (2) the same with B_c = 128. Then change BYTES to 4 and explain why the ratio doesn't move but M does.", "done": "Your two hand-computed ratios match the lab's output to two decimals, and you can say in one sentence why the byte width cancels in the ratio.", "hint": "Check: standard = 4,456,448 per head. B_c = 64: flash = 67,584 + 131,072 + 16 × 200,704 = 3,409,920, ratio 1.31. B_c = 128 (T_c = 8): 1,804,288, ratio 2.47 (our arithmetic; the card's sweep shows 1.3× and 2.5×). Both sides scale by bytes per element, so their ratio is unchanged; only M in elements (and so B_c) changes with the dtype."},
+  "reflect": [
+    "Which prediction did you get wrong: whether d = 256 still wins, or by how much?",
+    "Can you explain why N cancels without writing the algebra?",
+    "Which relationship is still fuzzy: SRAM size → block size → passes, or passes → traffic?",
+    "Did you mix up elements and bytes anywhere?",
+    "What will you look for in FA III: whether the backward pass has the same bound?"
+  ],
+  "revisit": ["perf-4-attention-kv/flashattention-tiling", "perf-1-foundations/roofline-intuition", "perf-3-kernels/matmul-coalescing-smem"],
+  "prereq": ["perf-4-attention-kv/flashattention-tiling"]
+}

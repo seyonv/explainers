@@ -1,0 +1,119 @@
+{
+  "prime": {
+    "problem": "Reading formulas is not the same as using them under pressure. Asked <i>how many 128k users fit on this box?</i> or <i>how big a batch does this MoE need?</i>, you have to pick the right formula, fill it and sanity-check it in minutes. Without practice, the chapter stays recognisable but not usable.",
+    "fits": "Fourteenth card: the seven problems at the end of Part 7, all on one invented model on a TPU v5e 4x4. They call on parameter counting and KV bytes, the step-time floor, sharding, MoE's B<sub>crit</sub> and 2D weight-stationary sharding.",
+    "expect": ["P = L·D·(3F + 2H(N+K)) + D·V", "users that fit at 128k", "the weight-loading floor", "MoE: total vs active, B<sub>crit</sub> × E/k", "2D vs 1D sharding crossover"],
+    "goal": "Solve each problem type from a blank page, check the answer against a second estimate, and say which everyday question each one models."
+  },
+  "attend": [
+    "In Q1, which block holds 70% of the weights, and why doesn't the embedding matter much here?",
+    "In Q2, why does dropping to one KV head multiply the batch by 8 but leave the parameter count almost unchanged?",
+    "Q3 calls the weight-load time a lower bound on per-step latency. Why is it a floor, and what usually sits on top of it?",
+    "In Q5, why do total parameters scale with E but FLOPs only with k, and what does that do to B<sub>crit</sub>?",
+    "In Q7, why does 2D sharding's communication fall as √N while 1D's stays flat?"
+  ],
+  "core": {
+    "must": [
+      "Count parameters by block (MLP 3·D·F, attention 2·D·H·(N+K), embeddings D·V) per layer → weight bytes → divide by total HBM bandwidth → the weight-read floor under every decode step (1.40 ms for 18.4 GB int8 on 16 v5e)",
+      "KV per token = 2·L·K·H·bytes → × context → per-sequence bytes → (HBM − weights) ÷ that = users that fit → 7 at 128k for the invented model, 56 with K = 1 → long context is a memory problem long before it is a compute problem",
+      "MoE multiplies MLP parameters by E for storage but only k per token for FLOPs → reuse per weight byte drops by E/k → B<sub>crit</sub> × E/k (240 → 1,920 tokens for E = 16, k = 2) while KV per token is unchanged",
+      "2D weight-stationary splits weights over both D and F → comms per chip fall as 1/√N → it beats 1D model sharding's constant 4BD/(3W) only past ≈ 72 chips → irrelevant at 4x4 or one 8-GPU node, important for very large slices"
+    ],
+    "elevated": [
+      "At Q2's full load a decode step reads 18.4 GB of weights plus 235 GB of KV → ≈ 19.3 ms → at 128k context, KV reads, not weights, set latency, and the Q3 floor is only a small part of it"
+    ],
+    "reference": [
+      "the invented model's hyperparameters (L = 64, D = 4,096, F = 16,384, N = 32, K = 8, H = 256, V = 32,128)",
+      "our Q4 and Q6 sharding answers (the book gives none)",
+      "Q7's general condition N > 32·(F/D)·(3/4)²",
+      "the Llama-3.1-8B-on-H100 comparison table"
+    ]
+  },
+  "compress": {
+    "prompt": "Without looking, write the four formulas you need most (parameter count, KV per token, users that fit, B<sub>crit</sub> for MoE) and next to each, the everyday question at an inference company it answers.",
+    "checklist": [
+      "P = L·D·(3F + 2H(N+K)) + D·V → how big is the model, and what is the weight-read floor?",
+      "KV/token = 2·L·K·H·bytes → how much does each user's context cost?",
+      "(HBM − weights) ÷ (KV/token × context) → how many users of this context fit on this box?",
+      "B<sub>crit</sub> × E/k → how much batch does this MoE need before its FLOPs stop idling?"
+    ]
+  },
+  "retrieve": [
+    {
+      "q": "Explain why Q2's answer (7 users at 128k) means the slice will be memory-bound no matter how the model is sharded.",
+      "kind": "concept",
+      "answer": [
+        "only 7 sequences fit, so the decode batch is 7 tokens per step",
+        "B<sub>crit</sub> for int8 × int8 on v5e is 240, far above 7",
+        "sharding changes which chip holds what, not how many sequences fit in total HBM"
+      ]
+    },
+    {
+      "q": "Walk through Q5's total and active parameter counts for E = 16, k = 2: which term changes and by how much?",
+      "kind": "mechanism",
+      "answer": [
+        "only the MLP term 3·D·F scales: × E for total, × k for active",
+        "total 64·4096·(3·16·16,384 + 2·256·40) + 4096·32,128 ≈ 212e9 (≈ 11.5× dense)",
+        "active 64·4096·(3·2·16,384 + 2·256·40) + 4096·32,128 ≈ 31.3e9",
+        "attention and embeddings unchanged, so KV per token stays 262 kB"
+      ]
+    },
+    {
+      "q": "For Q4 decode you could model-shard 16 ways or keep 4-way model sharding and use the other axis differently. What does the card's arithmetic say decides it, and what does the extra sharding cost?",
+      "kind": "tradeoff",
+      "answer": [
+        "decode is memory-bound, so reading fewer weight bytes per chip (1.15 GB at 16-way vs 4.60 GB at 4-way) cuts latency",
+        "the generation limit F/(B·β) = 16,384/(7·8) ≈ 293 ≫ 16, so comms don't bind on bandwidth",
+        "the cost: K = 8 < 16, so the KV must also be split on batch (two AllToAlls per layer), and small collectives pay ≈ 1 µs per hop"
+      ]
+    }
+  ],
+  "compare": [
+    {
+      "with": "perf-2-scaling-book-inference/serving-llama-70b",
+      "q": "Q2 asks how many users fit; Part 8 asks what a query costs. What does Part 8 add on top of Q2's arithmetic to get from <i>fits</i> to <i>cost</i>?",
+      "answer": [
+        "a step time (KV + max(params, FLOPs)) at that batch",
+        "decode steps per query (512 in the book)",
+        "division by chips: QPS per chip, which is cost per query",
+        "and it varies slice size and precision instead of fixing them"
+      ]
+    },
+    {
+      "with": "perf-6-scaling-out/expert-parallel",
+      "q": "Q6 shards experts over one mesh axis and finds the weight-load time barely depends on batch. What causes that, and what does it mean for an MoE server at low traffic?",
+      "answer": [
+        "each chip holds a fixed slice of experts and the step waits for the busiest chip",
+        "at modest batch most experts get some tokens, so that chip reads its whole slice anyway",
+        "so low traffic pays the full weight read per step; an MoE needs large batches (Q5's 1,920 tokens) to use its FLOPs"
+      ]
+    }
+  ],
+  "predict": {
+    "q": "Take the invented model but cut it to 48 layers (everything else the same). Commit first: how many 128k-token users fit on the v5e 4x4 in int8, and is the weight-load floor above or below 1 ms?",
+    "answer": "P = 48 · 4,096 · (3·16,384 + 2·256·40) + 4,096·32,128 = 13.82e9. KV per token = 2·48·8·256 = 196,608 B, so a 128k sequence is 25.2 GB. (256 − 13.8) / 25.2 = 9.6 → 9 users. The floor is 13.82e9 / 1.312e13 = 1.05 ms: just above 1 ms. Fewer layers shrink both the weights and the per-token KV by the same 3/4."
+  },
+  "apply": {
+    "task": "Work Q1–Q3 again, on paper and without the card, for two variants of the invented model: (a) L = 48 layers; (b) L = 64 but K = 2 KV heads. For each give parameters, KV per token in int8, users that fit at 128k on a v5e 4x4 (256 GB), and the weight-load floor. Then check both with <code>labs/worked-problems.py</code> by editing its constants.",
+    "done": "(a) ≈ 13.82e9 params, 196,608 B/token, 9 users, ≈ 1.05 ms; (b) ≈ 17.57e9 params (only the attention term shrinks), 65,536 B/token, 28 users, ≈ 1.34 ms; and the lab agrees.",
+    "hint": "For (b), KV = 2·64·2·256 = 65,536 B, so a 128k sequence is 8.39 GB; (256 − 18.4)/8.39 ≈ 28.3. Recompute (b)'s parameters with N + K = 34 instead of 40 if you want the exact floor."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: the user count or the floor?",
+    "Which of the seven problems couldn't you start without looking at the hint? That is the card to reopen.",
+    "Which relationship is still fuzzy: layers and heads → KV per token, or KV per sequence → users that fit?",
+    "Could you explain why Q7's answer rarely matters for GPU serving?",
+    "Which problem type would you expect in an interview at an inference company, and can you do it in under five minutes?"
+  ],
+  "revisit": [
+    "perf-2-scaling-book-inference/params-vs-kv",
+    "perf-2-scaling-book-inference/step-time",
+    "perf-2-scaling-book-inference/critical-batch-size",
+    "perf-2-scaling-book-inference/sharding-prefill-generation",
+    "perf-2-scaling-book-inference/sharding-kv-cache"
+  ],
+  "prereq": [
+    "perf-2-scaling-book-inference/params-vs-kv",
+    "perf-2-scaling-book-inference/step-time"
+  ]
+}

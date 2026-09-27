@@ -1,0 +1,65 @@
+{
+  "prime": {
+    "problem": "A scheduler can always raise throughput by letting the queue grow, and averages can hide a 185 ms freeze inside a request that \"passed\". Without the right scoreboard you tune the wrong knob and call a failing server healthy.",
+    "fits": "Last card of group 1. The bottlenecks card said what limits a step; this one says how to judge the result. Every later card reports TTFT, TPOT/ITL, throughput and SLO attainment, and the policy and admission cards optimise goodput, defined here.",
+    "expect": [
+      "TTFT = queue + prefill",
+      "TPOT = (E2E − TTFT) ÷ (n − 1), and ITL as each single gap",
+      "goodput and capacity under an SLO (TTFT ≤ 1 s, TPOT ≤ 50 ms)",
+      "open-loop vs closed-loop load"
+    ],
+    "goal": "Compute TTFT, TPOT, ITL and E2E from a request's token timestamps, explain why goodput, not throughput, is the scheduler's score, and spot an average that hides a stall."
+  },
+  "attend": [
+    "Request 5's TTFT is 53.5 ms, but its prefill takes only 4.8 ms. Where did the rest go, and what does that say about what TTFT measures?",
+    "How can request 442 have a 185.1 ms gap and still pass a 50 ms TPOT target?",
+    "From 20 to 60 req/s, throughput rises 1.9× while goodput falls 22%. Which queue behaviour causes both at once?",
+    "Why does a closed-loop benchmark hide queueing that an open-loop one exposes?",
+    "Why does the tighter Meta-style SLO cost only 5% of capacity here?"
+  ],
+  "core": {
+    "must": [
+      "A user feels the first token and the gaps after it → TTFT = queue wait + prefill, ITL = each gap, TPOT = their mean per request → these are what an SLO is written in",
+      "TPOT averages hundreds of gaps → one 185 ms stall vanishes into a 7.9 ms mean → report percentiles and put streaming SLOs on ITL p99, not on TPOT",
+      "Past capacity, arrivals outpace completions → the queue grows without bound → throughput keeps rising (9,102 tok/s) while TTFT explodes (41% in SLO) → score the scheduler on goodput, and size fleets by capacity (40 req/s here)"
+    ],
+    "elevated": [
+      "Open-loop load keeps arriving whatever the server does → the queue shows up in TTFT → it is the only way to measure capacity; closed-loop load backs off and hides it"
+    ],
+    "reference": [
+      "the n vs n − 1 convention difference between vLLM's benchmark and Databricks",
+      "Meta's stated targets (TTFT < 350 ms, TTIT < 25 ms) and the 38 req/s result",
+      "the M3 llama-server sweep numbers (28.9 → 100.2 tok/s)"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw one request's timeline (arrive, queue, prefill, first token, gaps, finish) and write TTFT, ITL, TPOT and E2E on it as formulas. Then write two sentences: why averages lie, and why goodput beats throughput as the score.",
+    "checklist": [
+      "TTFT = queue + prefill; E2E = TTFT + (n − 1) × TPOT",
+      "ITL is one gap; TPOT is the mean gap of one request",
+      "a single stall hides inside TPOT, so use ITL percentiles",
+      "throughput rises past capacity while goodput falls",
+      "capacity = highest rate with ≥ 99% of requests in SLO"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why a scheduler judged on raw throughput would learn to make users wait, and what goodput adds to stop it.", "kind": "concept", "answer": ["more requests in flight → fuller steps → more tok/s, even while the queue grows", "at 60 req/s: 9,102 tok/s but 59% of users wait over 1 s", "goodput counts only requests that met both SLO targets, so queueing lowers it"]},
+    {"q": "Walk through computing request 5's TTFT, TPOT and E2E from its timestamps: arrival 4.0 ms, first token 57.5 ms, finish 91.1 ms, 8 output tokens.", "kind": "mechanism", "answer": ["TTFT = 57.5 − 4.0 = 53.5 ms (48.8 queue + 4.8 prefill)", "TPOT = (87.1 − 53.5) ÷ 7 = 4.8 ms", "E2E = 91.1 − 4.0 = 87.1 ms"]},
+    {"q": "Your product streams text to readers. You can put the SLO on TPOT p99 or on ITL p99. Which do you choose, and what does the other miss?", "kind": "tradeoff", "answer": ["ITL p99: it sees individual freezes", "TPOT is a per-request mean: in E3 every request passed TPOT while 540 of 600 had a gap over 50 ms", "the cost: ITL SLOs are harder to meet and push toward smaller token budgets"]}
+  ],
+  "compare": [
+    {"with": "perf-1-foundations/serving-metrics", "q": "Course 1 defines the same metrics for a single local model. What does a multi-user server add to their meaning, especially TTFT?", "answer": ["alone, TTFT is mostly prefill", "on a busy server, TTFT is mostly queue: 1,397 ms p50 at 60 req/s", "so a server's TTFT measures scheduling and load, not just the model"]},
+    {"with": "llm-latency/tail-latency", "q": "The latency course looks at tails from the caller's side. What does this card show about where server-side tails come from, and which caller-side fix can't touch them?", "answer": ["server tails come from queueing past capacity and from prefill stalls inside steps", "a caller can hedge or retry, but a request stuck in an overloaded queue stays slow", "the server-side fixes are admission control, chunked prefill and more capacity"]}
+  ],
+  "predict": {"q": "Two servers both report a mean TPOT of about 20 ms. Server A's gaps are all 20 ms; server B's are mostly 12 ms with a 200 ms freeze every 25 tokens. Before computing: which one does a reader notice, and which percentile would reveal it?", "answer": "Server B: readers notice a freeze of 200 ms, while a steady 20 ms stream looks smooth. The mean hides it; ITL p99 would not, because 1 gap in 25 is 4% of gaps, well above the top 1%. A TPOT SLO of 50 ms passes both servers."},
+  "apply": {"task": "A request arrives at t = 0 and its 5 output tokens reach the user at 120, 130, 140, 250 and 260 ms. Compute its TTFT, TPOT, E2E and worst ITL, and say whether it passes the course SLO (TTFT ≤ 1 s, TPOT ≤ 50 ms) and whether it would pass an ITL ≤ 50 ms target. Then say what on the server most likely caused the 110 ms gap.", "done": "TTFT 120 ms, TPOT (260 − 120) ÷ 4 = 35 ms, E2E 260 ms, worst ITL 110 ms. It passes the course SLO but fails an ITL target: a long prefill joining the decode step (a generation stall) is the likely cause.", "hint": "TPOT divides by n − 1 = 4 gaps."},
+  "reflect": [
+    "Which prediction did you get wrong: which server a reader notices, or which percentile catches it?",
+    "Could you explain goodput in one sentence without using the word \"throughput\"?",
+    "Which relationship is still fuzzy: queue growth → TTFT, or stall → ITL but not TPOT?",
+    "What would you measure first on a real server, and with an open or closed loop?",
+    "What will you revisit before the batching cards: how TTFT p50 changes with the batching strategy?"
+  ],
+  "revisit": ["llm-request-scheduler/bottlenecks", "perf-1-foundations/serving-metrics"],
+  "prereq": ["llm-request-scheduler/token-loop"]
+}

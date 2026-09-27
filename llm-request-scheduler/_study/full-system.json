@@ -1,0 +1,67 @@
+{
+  "prime": {
+    "problem": "Each earlier card built one part. Without seeing them wired together you can't say where a request's time goes, which component fails first under load, or how many GPUs a target traffic level needs.",
+    "fits": "Capstone of the course, in group 5. It puts the gateway and router (routing card), the API server and engine loop (concurrency), step() and the block manager (group 3), the prefix cache and the P/D split into one diagram, follows one request through it, and sizes a fleet.",
+    "expect": [
+      "gateway → router → replica (API server → engine loop → GPU) → stream",
+      "one step's structures, zoomed",
+      "one request's path: TTFT ≈ 91 ms, E2E ≈ 2.06 s",
+      "every component's knob and failure mode",
+      "<code>N = ⌈λ ÷ (ρ·μ)⌉ + 1</code>"
+    ],
+    "goal": "Draw the whole system from memory, attribute one request's latency to each hop, name each component's failure mode and mitigation, and size a fleet with headroom and a spare."
+  },
+  "attend": [
+    "Everything in front of the engine is about 3% of E2E. What does that say about where engineering effort should go?",
+    "The request pays about 2.1× in E2E for sharing the GPU. What does the replica get in return?",
+    "Why does the sizing formula divide by ρ and then add 1?",
+    "At 10× the load, what changes around the engine, and what doesn't change inside it?",
+    "Which component would you build first, and which only when the numbers ask for it?"
+  ],
+  "core": {
+    "must": [
+      "The gateway decides whether, the router where, and the engine loop when → each layer has one job and can scale and fail on its own → all throughput comes from the inner loop; the outer layers keep it full, its caches warm, and shed load early",
+      "One request's TTFT ≈ network + gateway + router + tokenize + wait for the step in flight + step() + its mixed step (22.4 ms) + stream back ≈ 91 ms → E2E adds 199 decode steps at the batch's step time (9.9 ms) → the decode loop is 96% of E2E",
+      "Capacity per replica μ (40 req/s) is a cliff, not a slope → plan at ρ = 0.8 of it and add one spare → 200 req/s needs ⌈200 ÷ 32⌉ + 1 = 8 H100 → one failure still leaves 280 req/s",
+      "At 10× load the engine is unchanged → routing must become prefix-aware, P/D pools, multi-region and KV offload tiers appear as prefixes and prompts outgrow one replica"
+    ],
+    "elevated": [
+      "40 req/s comes from a 100%-of-peak model → it is an upper bound → at 60% of that speed the same target needs 12 H100, not 8 → benchmark the real engine before buying"
+    ],
+    "reference": [
+      "the illustrative network and gateway hop times (~30 ms, ~1 ms)",
+      "the list of who builds each layer (llm-d, Dynamo, production-stack, LMCache)",
+      "the cost per 1,000 requests at an illustrative $2.50 per H100-hour"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw the whole system on one page: client, gateway, router, replica pool (with one replica opened up to API server, engine loop, BlockManager, GPU), metrics and autoscaler, and the optional P/D split and KV offload tier. Then write the fleet-sizing formula and fill it in for 200 req/s.",
+    "checklist": [
+      "gateway: token limits and 429s; router: prefix hit − load",
+      "replica: async API server, one engine loop, step() + paged KV, GPU",
+      "one request: TTFT ≈ 91 ms, E2E ≈ 2.06 s, decode ≈ 96% of it",
+      "N = ⌈λ ÷ (ρ·μ)⌉ + 1 → 8 H100 for 200 req/s",
+      "at 10×: prefix-aware routing, P/D pools, regions, KV offload"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why the course spends almost all of its cards on the engine loop and only a few on the layers around it.", "kind": "concept", "answer": ["the decode loop is about 96% of a request's E2E, the front layers about 3%", "all tokens are produced in the loop; its batching sets throughput (≈ 10× from continuous batching)", "the outer layers matter for keeping it full, keeping caches warm and shedding load"]},
+    {"q": "Walk through the engine step in which request r65 (1,000-token prompt) is admitted beside 64 decodes: what step() does, what the step costs, and what finish_step does.", "kind": "mechanism", "answer": ["running first: 64 decode tokens; then admit r65: match_prefix, can_allocate with the 304-block reserve, allocate 63 blocks", "the plan is {r1:1 … r64:1, r65:1000}: 1,064 tokens, 22.4 ms", "finish_step advances counters; r65 has caught up, so its first token comes out of this step"]},
+    {"q": "Size a fleet for 200 req/s with and without the +1 spare and the ρ = 0.8 headroom. What does each piece protect against?", "kind": "tradeoff", "answer": ["no headroom: 200 ÷ 40 = 5 replicas, all at the capacity cliff", "ρ = 0.8: ⌈6.25⌉ = 7, room for bursts and autoscaler lag", "+1: 8, survives one replica failing (7 × 40 = 280 ≥ 200)"]}
+  ],
+  "compare": [
+    {"with": "llm-request-scheduler/real-systems", "q": "This card is one reference design; the real-systems card is what companies actually built. Which layers of this design appear in almost every real system, and which only at large scale?", "answer": ["everywhere: continuous batching over paged KV with prefix reuse, and some admission control", "at scale: KV-aware routers, separate prefill and decode pools, KV offload tiers", "the real systems add each layer only when their traffic demanded it"]},
+    {"with": "perf-0-map/stack", "q": "The map course draws the inference stack from kernels up. Where does this card's system sit on it, and which lower layers does it treat as a black box?", "answer": ["this card covers the serving layers: gateway, router, engine scheduler, KV management", "it treats the model runner, attention kernels and CUDA graphs as a box with a step time", "the Fast LLM inference courses open that box"]}
+  ],
+  "predict": {"q": "One of the 8 replicas at 200 req/s crashes during a traffic peak. Before reading the failure table: what happens to its in-flight requests, and do the other 7 stay inside the SLO?", "answer": "Its in-flight requests lose their KV; the router's health check drops the replica and retries them elsewhere, where their prefill is recomputed. The other 7 can carry 280 req/s at capacity, so 200 req/s is 71% of that: still inside the SLO, which is exactly what the +1 spare bought. Their prefix caches are colder for a while, so TTFT rises a little until they re-warm."},
+  "apply": {"task": "Size and cost a fleet for 500 req/s of the course workload with the card's formula (μ = 40 req/s, ρ = 0.8, +1 spare, illustrative $2.50 per H100-hour, mean output 265.8 tokens). Report the replica count, the hourly cost, the output tokens per second and the cost per million output tokens. Then say which two components you would add first beyond one replica, and why.", "done": "⌈500 ÷ 32⌉ + 1 = ⌈15.6⌉ + 1 = 17 H100, $42.50 per hour; 500 × 265.8 = 132,900 output tok/s ≈ 478.4 M tokens per hour → ≈ $0.089 per million output tokens. First additions: a router (prefix-aware once hit rates drop) and a gateway with a bounded queue and 429s.", "hint": "Cost per M = hourly cost ÷ millions of output tokens per hour."},
+  "reflect": [
+    "Which prediction did you get wrong: what a crash does to the other replicas?",
+    "Could you attribute one request's 2.06 s E2E to its hops without looking?",
+    "Which relationship is still fuzzy: capacity cliff → headroom ρ, or 100%-of-peak model → upper-bound capacity?",
+    "Which component's failure mode would bite your own deployment first?",
+    "What will you revisit before the real-systems card: which of these layers each company chose to build?"
+  ],
+  "revisit": ["llm-request-scheduler/routing-autoscaling", "llm-request-scheduler/concurrency", "llm-request-scheduler/step-algorithm", "llm-request-scheduler/disaggregation", "llm-request-scheduler/metrics-slos"],
+  "prereq": ["llm-request-scheduler/routing-autoscaling"]
+}

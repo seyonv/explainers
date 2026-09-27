@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Checkpoint 2: when to split prefill from decode</title>
+<style>
+:root{
+  --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
+  --text:#1c1f23; --muted:#6b7068; --faint:#b9b9b3;
+  --accent:#4a9d77; --accent-bg:#dcefdf; --accent-border:#8cc79c;
+  --red:#c0492b; --red-bg:#fbeceb;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#15171a; --surface:#1d2024; --surface2:#24282d; --border:#32373d;
+    --text:#e6e8ea; --muted:#9aa1a9; --faint:#4a5057;
+    --accent:#5fb37f; --accent-bg:#1c2b22; --accent-border:#3f7a55;
+    --red:#e57368; --red-bg:#2e1f1e;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text)}
+.card{max-width:820px;margin:0 auto;padding:28px 32px;font-family:-apple-system,"Inter",system-ui,sans-serif;line-height:1.45}
+h1{font-size:26px;font-weight:600;margin:0 0 6px;letter-spacing:-0.01em}
+.sub{font-size:15px;color:var(--muted);margin:0 0 20px}
+h2{font-size:17px;font-weight:600;margin:26px 0 10px}
+p{font-size:15px;margin:0 0 10px}
+ul{font-size:15px;margin:0 0 10px;padding-left:20px} li{margin:0 0 4px}
+.cap{font-size:13px;color:var(--muted);margin:8px 0 14px;text-align:center}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+
+/* Tables and formulas */
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border)}
+th{font-size:12px;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:none}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+.hi{color:var(--accent);font-weight:600} .lo{color:var(--red);font-weight:600}
+.formula{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin:10px 0;white-space:pre;overflow-x:auto;line-height:1.55}
+.tw{overflow-x:auto}
+
+/* 2x2 grid */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.cell{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.cell.win{background:var(--accent-bg);border-color:var(--accent-border)}
+.cell h3{font-size:16px;font-weight:600;margin:0 0 5px;display:flex;gap:8px;align-items:baseline}
+.cell p{font-size:14px;margin:0;color:var(--text)}
+.cell.win h3,.cell.win p{color:var(--accent)}
+.x{color:var(--red)} .ok{color:var(--accent)}
+
+/* Clarification box */
+.note{border:1px solid var(--border);border-radius:10px;padding:14px 18px;font-size:14px}
+.note p,.note li{font-size:14px} .note p:last-child{margin-bottom:0}
+.ours{border-left:3px solid var(--accent-border);padding:2px 0 2px 14px;margin:10px 0}
+
+
+/* Checkpoint */
+.how{border:1px solid var(--border);border-radius:10px;padding:10px 16px;background:var(--surface);margin:0 0 8px}
+.how p{font-size:14px;margin:4px 0}
+ol.qs{padding-left:24px;margin:6px 0}
+ol.qs>li{margin:0 0 16px;font-size:15px}
+.tag{display:inline-block;font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:var(--accent);border:1px solid var(--accent-border);border-radius:4px;padding:0 5px;margin-right:6px;vertical-align:1px}
+details.chk{margin:6px 0 0;padding:4px 12px;border-left:3px solid var(--accent-border);background:var(--surface2);border-radius:0 6px 6px 0;font-size:14px}
+details.chk>summary{cursor:pointer;color:var(--accent);font-size:13px;font-weight:600}
+details.chk ul,details.chk ol{margin:6px 0;padding-left:20px}
+details.chk li{margin:3px 0;font-size:14px}
+.re{font-size:13px;color:var(--muted);margin:4px 0 6px}
+.tw{overflow-x:auto;margin:8px 0}
+table.cmp{min-width:680px;font-size:13.5px;table-layout:fixed}
+table.cmp th,table.cmp td{vertical-align:top}
+table.cmp td:first-child{font-weight:600;width:19%}
+table.cmp td.blank{height:64px;background:var(--surface);border:1px dashed var(--border)}
+table.fix td{vertical-align:top}
+.proj{border:1px solid var(--accent-border);border-radius:10px;padding:12px 18px;margin:8px 0}
+.proj h3{font-size:15px;margin:12px 0 4px}
+.proj p,.proj li{font-size:14px}
+.proj ol,.proj ul{padding-left:20px;margin:4px 0}
+.proj li{margin:5px 0}
+.done{background:var(--accent-bg);border:1px solid var(--accent-border);border-radius:8px;padding:8px 12px;font-size:14px;margin:10px 0}
+
+.foot{margin-top:22px;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+.foot p{font-size:13px;margin:0 0 6px}
+svg{display:block;max-width:100%;height:auto;margin:6px 0}
+.sl{font-size:12px;fill:var(--muted)} .st{font-size:13px;fill:var(--text)}
+a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+@media (max-width:560px){
+  .card{padding:22px 16px}
+  .grid2{grid-template-columns:1fr}
+  th,td{padding:6px 6px}
+}
+</style>
+</head>
+<body>
+<article class="card">
+<h1>Checkpoint 2: when to split prefill from decode</h1>
+<p class="sub">Ties together <a href="distserve-interference.html">DistServe I</a>, <a href="distserve-placement.html">DistServe II</a>, <a href="disaggregation-in-production.html">disaggregation in production</a> and <a href="pipeline-data-parallel.html">pipeline and data parallelism</a>: why prefill and decode fight on one GPU, how a split fleet is sized, placed and routed, and when splitting isn't worth it.</p>
+
+<div class="how">
+<p><b>How to use this page.</b> Close the four cards. Answer each question in writing, in full sentences, <i>before</i> opening its Check. A wrong or shaky answer isn't a failure: it tells you exactly which section to reopen. The questions are mixed on purpose, so you have to work out which idea applies before you can answer.</p>
+</div>
+
+<h2>1 · Mixed retrieval</h2>
+<ol class="qs">
+<li><span class="tag">which concept?</span>A colocated, prefill-first server's P90 TTFT stays around 35 ms as load rises, but past 20 req/s more and more requests miss a 10 ms TPOT target. Which concept explains the pattern, and what are your two options?
+<details class="chk"><summary>Check</summary><ul>
+<li>prefill–decode interference: each waiting prompt runs first and every decoding stream sits through it, so TPOT, not TTFT, breaks (the card's sim: 93.3% attainment at 20 req/s, 54.3% at 25)</li>
+<li>option 1: chunked prefill, which smooths the stalls but doesn't remove them</li>
+<li>option 2: separate prefill and decode instances, each sized for its own SLO</li>
+</ul><p class="re">Missed it? Reopen <a href="distserve-interference.html">DistServe I</a>, "Fig 1 again, for the running example".</p></details></li>
+
+<li>A prefill-only GPU sustains 6 req/s within the TTFT SLO, a decode-only GPU 12 req/s within the TPOT SLO, and a colocated GPU 3 req/s within both. What is the best per-GPU goodput with a small split, and the gain?
+<details class="chk"><summary>Check</summary><ul>
+<li>2 prefill + 1 decode: min(2 × 6, 12) = 12 req/s on 3 GPUs = 4.0 req/s per GPU</li>
+<li>4P2D gives the same 4.0; 3P2D only 3.6, 1P1D 3.0</li>
+<li>4.0 ÷ 3 = 1.33× over colocation, before KV transfer and rounding</li>
+</ul><p class="re">Missed it? Reopen <a href="distserve-interference.html">DistServe I</a>, "§1 Fig 1: the 2.1× in four numbers".</p></details></li>
+
+<li><span class="tag">which concept?</span>A cluster has NVLink inside nodes but only 25 Gb/s between them. OPT-175B's prefill and decode copies together need 700 GB, more than one node's 640 GB. How can the KV cache still move only over NVLink?
+<details class="chk"><summary>Check</summary><ul>
+<li>KV of layer ℓ only goes to layer ℓ of the decode instance</li>
+<li>cut both instances into the same pipeline stages and put matching prefill and decode stages on the same node (instance segments, Alg 2)</li>
+<li>DistServe measured transfer at under 0.1% of latency, with 95% of requests under 30 ms</li>
+</ul><p class="re">Missed it? Reopen <a href="distserve-placement.html">DistServe II</a>, "Algorithm 2".</p></details></li>
+
+<li>At load RD = 0.4 with an intra-op speedup K = 1.8, which gives lower average TTFT for prefill on 2 GPUs: two pipeline stages or tensor-style splitting? Where is the crossover for this K?
+<details class="chk"><summary>Check</summary><ul>
+<li>intra-op: 1/1.8 + 0.4 / (2 × 1.8 × 1.4) ≈ 0.63 D</li>
+<li>inter-op: 1 + 0.4 / (4 × 1.6) ≈ 1.06 D, so intra-op wins at this load</li>
+<li>the crossover moves right as K rises: about RD ≈ 1.43 at K = 1.8 (0.94 at K = 1.5)</li>
+</ul><p class="re">Missed it? Reopen <a href="distserve-interference.html">DistServe I</a>, "§3.1 The prefill instance".</p></details></li>
+
+<li><span class="tag">which concept?</span>A router sends a request whose system prompt is cached on worker A to worker B, which holds nothing. The on-call engineer calls it a bug. Which mechanism explains it, and when is it right?
+<details class="chk"><summary>Check</summary><ul>
+<li>KV-aware routing scores prefill cost (reduced by cache hits) plus decode load; the lowest total wins</li>
+<li>if A is busy (e.g. 50 active prefill and 300 decode blocks against B's 150), A can cost more even with a 30-block cache hit: 360 vs 190 at scale 1</li>
+<li>neither pure load routing nor pure cache routing; Mooncake's Conductor makes the same trade</li>
+</ul><p class="re">Missed it? Reopen <a href="disaggregation-in-production.html">disaggregation in production</a>, the Dynamo router row and its cost formula.</p></details></li>
+
+<li>Why can Splitwise put the token phase on A100s instead of H100s with little loss, and what does it measure to back that up?
+<details class="chk"><summary>Check</summary><ul>
+<li>the token phase is memory-bound, so the H100's extra compute barely helps it</li>
+<li>Table IV: the H100 halves TTFT (185 → 95 ms coding) but TBT only improves 40 → 28 ms (conversation)</li>
+<li>cost per request is lower on A100 ($2.4 vs $3.6 conversation), with equal or lower energy</li>
+</ul><p class="re">Missed it? Reopen <a href="disaggregation-in-production.html">disaggregation in production</a>, the Splitwise section and Table IV.</p></details></li>
+
+<li>In the card's Llama-3.1-8B lab, disaggregation is 0.83× on code prompts but 2.85× on summarization. What about each workload decides it?
+<details class="chk"><summary>Check</summary><ul>
+<li>code: 171-token prompts, so a prefill costs about one decode step; splitting adds rounding and queueing for nothing</li>
+<li>summarization: 1,738-token prompts against a 10 ms TPOT; each ~28 ms prefill would freeze decoders for about three TPOT budgets</li>
+<li>so the gain grows with prompt length and SLO tightness</li>
+</ul><p class="re">Missed it? Reopen <a href="distserve-placement.html">DistServe II</a>, "Alg 1 in miniature" and "When not to disaggregate".</p></details></li>
+
+<li>How does Splitwise hide most of the KV transfer, and how much of end-to-end latency is left?
+<details class="chk"><summary>Check</summary><ul>
+<li>it sends each layer's KV as soon as that layer finishes, overlapping the rest of the prompt's compute</li>
+<li>only the tail is exposed (~5 ms on H100, ~8 ms on A100)</li>
+<li>0.8% of end-to-end, vs up to 3% if sent after the whole prompt</li>
+</ul><p class="re">Missed it? Reopen <a href="disaggregation-in-production.html">disaggregation in production</a>, "Layer-wise KV transfer".</p></details></li>
+</ol>
+
+<h2>2 · Compare the designs</h2>
+<p>Fill this in on paper first. Rows are ways to serve prefill and decode; columns ask what's fundamentally different, which design choice causes it, when you'd pick it, and how it fails.</p>
+<div class="tw"><table class="cmp">
+<tr><th>Approach</th><th>Core mechanism</th><th>Design choice that causes the difference</th><th>When to choose it</th><th>How it fails</th></tr>
+<tr><td>Colocated, prefill-first</td><td class="blank"></td><td class="blank"></td><td class="blank"></td><td class="blank"></td></tr>
+<tr><td>Colocated with chunked prefill (Sarathi-Serve)</td><td class="blank"></td><td class="blank"></td><td class="blank"></td><td class="blank"></td></tr>
+<tr><td>Searched placement (DistServe)</td><td class="blank"></td><td class="blank"></td><td class="blank"></td><td class="blank"></td></tr>
+<tr><td>Heterogeneous pools (Splitwise)</td><td class="blank"></td><td class="blank"></td><td class="blank"></td><td class="blank"></td></tr>
+<tr><td>xPyD with router and planner (Dynamo)</td><td class="blank"></td><td class="blank"></td><td class="blank"></td><td class="blank"></td></tr>
+</table></div>
+<details class="chk"><summary>Check: the filled-in table</summary>
+<div class="tw"><table class="cmp">
+<tr><th>Approach</th><th>Core mechanism</th><th>Design choice that causes the difference</th><th>When to choose it</th><th>How it fails</th></tr>
+<tr><td>Colocated, prefill-first</td><td>new prompts run before the running decodes</td><td>one GPU, one batch, one parallelism plan for both phases</td><td>low traffic, loose TPOT, few GPUs</td><td>every prompt stalls all streams; goodput capped by the harder SLO (1.6 rps per A100 in Fig 1)</td></tr>
+<tr><td>Chunked prefill</td><td>prompts cut into chunks that ride along with decodes</td><td>keep the phases together but make each batch uniform</td><td>throughput-oriented jobs, short-to-medium prompts, no fast interconnect</td><td>reduces but doesn't remove interference; O(N²) KV re-reads grow with context; still one GPU count for both</td></tr>
+<tr><td>DistServe</td><td>separate instances; simulator searches each phase's TP/PP; replicas cover the rate</td><td>goodput per GPU under TTFT + TPOT; layer-aligned stages keep KV on NVLink</td><td>long prompts, strict TPOT, enough GPUs to split</td><td>rounding at small scale; shared fate (one decode instance serves several prefills); offline replanning</td></tr>
+<tr><td>Splitwise</td><td>prompt pool, token pool, mixed overflow pool; layer-wise transfer over IB</td><td>optimise per dollar and per watt, so phases get different hardware or power caps</td><td>large fleets where the cost of GPU types matters</td><td>headline pairings don't match the paper's body; still needs a fast network for transfer</td></tr>
+<tr><td>Dynamo</td><td>xPyD workers of any engine, KV-aware router, planner, NIXL, KV tiers</td><td>decide per request (conditional disaggregation) and resize pools at run time</td><td>high volume, ≥ 100B models, prefill-heavy traffic</td><td>overhead and complexity at low volume; workers take minutes to start, so the planner must predict</td></tr>
+</table></div>
+<p class="re">Shaky rows? Rows 1–2: <a href="distserve-interference.html">DistServe I</a>. Row 3: <a href="distserve-placement.html">DistServe II</a>. Rows 4–5: <a href="disaggregation-in-production.html">disaggregation in production</a>.</p>
+</details>
+
+<h2>3 · Project: plan a prefill/decode fleet on paper and in code</h2>
+<div class="proj">
+<p><b>What it reinforces:</b> the M/D/1 prefill model and goodput (<a href="distserve-interference.html">DistServe I</a>), replication and KV transfer (<a href="distserve-placement.html">DistServe II</a>), production thresholds (<a href="disaggregation-in-production.html">disaggregation in production</a>), and TP vs PP as intra-op vs inter-op (<a href="pipeline-data-parallel.html">pipeline and data parallelism</a>).</p>
+<ol>
+<li><b>Simulate the queue.</b> In about 40 lines of Python, simulate a single-server FCFS queue with Poisson arrivals and deterministic service D = 1. Add two variants: a two-stage pipeline (a request enters every D/2, latency D) and a K-times-faster server with capacity K. Run 200,000 requests at RD = 0.5 with K = 1.5 and compare with Eq 1–3.</li>
+<li><b>Find the crossover.</b> Sweep RD and find where the two 2-GPU layouts tie for K = 1.5 and K = 1.8.</li>
+<li><b>Size a fleet.</b> With the DistServe II lab's goodputs for a Llama-3.1-8B chatbot (prefill 68.4 req/s per GPU, decode 108.4, colocated 38.1), size both designs for 400 req/s and for 10 req/s.</li>
+<li><b>Price the move.</b> For Llama-3.1-70B (320 KiB per token), compute the KV transfer for an 8,192-token prompt over one NVLink link and one IB link, and compare with a 5.27 ms TP8 decode step.</li>
+<li><b>Decide.</b> Apply Kiely's three conditions to this 70B service at 500M tokens a day with 8k prompts and 200-token answers.</li>
+</ol>
+<div class="done"><b>Done when:</b> your simulation matches Eq 1–3 within 1%, you have two crossovers, four fleet sizes, two transfer times, and a verdict with the condition that decided it. Then compare with the check.</div>
+<details class="chk"><summary>Check: the numbers (Eq 1–3, the cards' lab values and our arithmetic)</summary>
+<ul>
+<li>RD = 0.5: one GPU 1.500 D, inter-op 1.083 D, intra-op 0.833 D (the card's Monte Carlo: 1.508 / 1.084 / 0.835).</li>
+<li>Crossovers: RD ≈ 0.94 at K = 1.5 and ≈ 1.43 at K = 1.8.</li>
+<li>400 req/s: ⌈400/68.4⌉ = 6 prefill + ⌈400/108.4⌉ = 4 decode = 10 GPUs vs ⌈400/38.1⌉ = 11 colocated. 10 req/s: 1 + 1 = 2 GPUs vs 1 colocated: rounding eats the gain at small scale.</li>
+<li>8k prompt of 70B: 2.68 GB → 5.97 ms over 450 GB/s NVLink (about one TP8 step), 53.7 ms over 50 GB/s IB.</li>
+<li>500M tokens a day ≈ 5,787 tok/s (volume passes), prefill-heavy (8k in, 200 out, passes), but 70.55B parameters is under Kiely's 100B: a borderline case. Start with replicas and chunked prefill, and use conditional disaggregation if TPOT tails appear; the Dynamo blog's 70B result (3K/50) shows prompt-heavy shapes can still pay.</li>
+</ul></details>
+</div>
+
+<h2>4 · Reflect</h2>
+<ul>
+<li>Which link between these cards is still fuzzy: <i>interference → TPOT breaks</i>, <i>load → intra vs inter-op</i>, or <i>network speed → placement</i>?</li>
+<li>Can you give three situations where the sources say not to disaggregate?</li>
+<li>Which question did you answer from the wrong card? That confusion is the comparison to redo.</li>
+<li>In the project, did the 10 req/s sizing change how you'd pitch disaggregation to a small team?</li>
+</ul>
+<table class="fix">
+<tr><th>If this is fuzzy</th><th>Reopen</th></tr>
+<tr><td>why a colocated GPU is capped by the harder SLO</td><td><a href="distserve-interference.html">DistServe I</a>, §1 Fig 1 and §2.3</td></tr>
+<tr><td>when TP-style vs pipeline prefill wins</td><td><a href="distserve-interference.html">DistServe I</a>, §3.1 Eq 1–3</td></tr>
+<tr><td>how a fleet is searched, sized and placed</td><td><a href="distserve-placement.html">DistServe II</a>, Algorithms 1 and 2</td></tr>
+<tr><td>what moving the KV cache costs</td><td><a href="distserve-placement.html">DistServe II</a>, "What moving the KV cache costs"</td></tr>
+<tr><td>routing by cache and load, and when not to split</td><td><a href="disaggregation-in-production.html">disaggregation in production</a>, Dynamo and Kiely sections</td></tr>
+</table>
+
+<div class="foot">
+<p><b>Related:</b> <a href="_overview.html">overview</a> · <a href="distserve-interference.html">DistServe I</a> · <a href="distserve-placement.html">DistServe II</a> · <a href="disaggregation-in-production.html">disaggregation in production</a> · <a href="pipeline-data-parallel.html">pipeline and data parallelism</a> · <a href="../perf-5-engines/sarathi-chunked-prefill.html">course 5: Sarathi-Serve II</a> · <a href="../learning-principles/learning-principles.html">learning principles</a></p>
+<p><b>Sources:</b> the four cards above and their labs (<code>distserve-queue.py</code>, <code>pd-ratio.py</code>). The 6/12/3 req/s split, the K = 1.8 values, the 10 req/s sizing, the 500M-token conversion and the router example are our arithmetic with the cards' formulas; the queue values at RD = 0.5 are Eq 1–3 as the DistServe I card gives them.</p>
+</div>
+</article>
+</body>
+</html>

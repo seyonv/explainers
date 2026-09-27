@@ -1,0 +1,55 @@
+{
+  "prime": {
+    "problem": "A model stored at 16 bits per weight is slow to generate with and may not even fit in memory. Dropping bits makes it smaller and faster, but past a point the answers get worse, and a suspiciously fast host may be doing exactly that without saying so.",
+    "fits": "Third mechanism card: the bytes side of the memory-bandwidth division. Hardware raised the bandwidth; quantization shrinks what has to be read per token. MoE, next, shrinks it a different way.",
+    "expect": ["bits per weight (F16, Q8_0, Q4_K_M, Q2_K)", "size vs speed vs perplexity", "dequantization overhead", "provider precision (bf16 / fp8 / fp4)"],
+    "goal": "Choose a quantization level for a use case, and predict roughly what it does to size, speed and quality."
+  },
+  "attend": [
+    "Why does 3.3× smaller give only 2.47× faster, not 3.3×?",
+    "Why does Q4_K_M → Q2_K buy only 11% more speed while quality drops noticeably?",
+    "Why does quantization do little for a slow first token on a long prompt?",
+    "Why is perplexity a poor guide to damage on code and math?"
+  ],
+  "core": {
+    "must": [
+      "Fewer bits per weight → fewer bytes read per token → decode is bandwidth-bound → tokens come faster (F16 → Q4_K_M: 29.17 → 71.93 t/s)",
+      "Packed weights must be unpacked before use → extra compute per byte → speed rises less than size falls → gains shrink below about 4 bits while quality loss grows",
+      "Quantization only speeds the memory-bound writing phase → prefill is compute-bound → a long-prompt TTFT barely changes → use caching there instead"
+    ],
+    "elevated": [
+      "Hosts choose precision for you → OpenRouter lists bf16 / fp8 / fp4 per provider → a fast or cheap host may be fp4 → compare speeds only at the same precision"
+    ],
+    "reference": ["the GGUF format names (Q4_K_M, Q8_0, Q2_K)", "the exact perplexities (5.9066, 6.1565)", "the llama.cpp quantize README table"]
+  },
+  "compress": {
+    "prompt": "From memory, explain in 3–4 sentences why dropping bits speeds up generation, why the speed-up is less than the size reduction, and where the sweet spot is. Add one sentence on what quantization does not speed up.",
+    "checklist": [
+      "fewer bytes per token → faster in a bandwidth-bound decode",
+      "dequantization compute means speed-up &lt; size reduction",
+      "sweet spot 4–8 bits: most of the speed for &lt;1% perplexity at 5–8 bits",
+      "below ~4 bits: small speed gain, noticeable quality loss",
+      "doesn't help prefill-dominated TTFT"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why Ollama ships Q4_K_M by default rather than F16 or Q2_K.", "kind": "concept", "answer": ["F16 is 3.3× bigger and about 2.5× slower, and may not fit", "Q2_K is only ~11% faster than Q4_K_M with noticeably worse output", "Q4_K_M gets most of the speed at a small quality cost"]},
+    {"q": "Walk through what changes, step by step, when the same Llama-3.1-8B goes from Q8_0 to Q4_K_M: bytes per token, predicted speed, measured speed.", "kind": "mechanism", "answer": ["size 7.95 → 4.58 GiB: about 1.7× fewer bytes per token", "a pure bandwidth model predicts about 1.7× faster", "measured 50.93 → 71.93 t/s ≈ 1.41×: dequantization eats part of the gain"]},
+    {"q": "You're generating SQL for a production database on a hosted open model. Two hosts: one fp4 at 2× the speed, one bf16. Which do you pick and what would change your mind?", "kind": "tradeoff", "answer": ["prefer bf16 (or fp8): precise tasks suffer more than perplexity shows", "switch to fp4 only if you measure your own task quality and it holds", "or if answers are checked cheaply, so a rare error costs a retry"]}
+  ],
+  "compare": [
+    {"with": "llm-latency/moe", "q": "Quantization and MoE both cut the bytes read per token. Which one also cuts the memory needed to hold the model, and which cuts bytes by more?", "answer": ["quantization shrinks both storage and bytes read (about 4× from 16 to 4 bits)", "MoE cuts bytes read by 9–23× but you still hold every expert", "they combine: MoE models are usually also quantized"]},
+    {"with": "perf-5-engines/quantization-serving", "q": "On a laptop, quantization is about fitting and single-user speed. What changes when a server quantizes for many users, and why can weight-only quantization help less there?", "answer": ["servers batch many users, so each weight read serves many tokens", "at high batch the step is less bandwidth-bound, so fewer weight bytes help less", "servers then also quantize activations or the KV cache, and care about throughput per GPU"]}
+  ],
+  "predict": {"q": "You move from Q4_K_M to Q8_0 on the M3 to get better code. Predict the new speed for qwen3.5:4b from the measured 15.4 t/s, using the card's Llama ratio, and say whether you'd notice it on an 82-token answer.", "answer": "The Llama table gives 71.93 → 50.93 t/s, about 0.71×, so roughly 15.4 × 0.71 ≈ 10.9 t/s. An 82-token answer goes from about 5.3 s to about 7.5 s of writing: noticeable, but small next to the 653-token vs 82-token difference. Worth it if the code gets better."},
+  "apply": {"task": "Pull two quantizations of the same small model in Ollama (for example a Q4_K_M and a Q8_0 tag). For each, record the size on disk, the eval rate on the same ~300-token prompt, and judge the output on three tasks where precision matters (a regex, a SQL query, a unit conversion).", "done": "You have size, speed and a quality verdict for both, and the speed ratio is below the size ratio (dequantization overhead). You've decided which you'll keep for which task.", "hint": "Ollama tags like <code>:q8_0</code> and <code>:q4_K_M</code> exist for many models; <code>ollama list</code> shows sizes."},
+  "reflect": [
+    "Which prediction did you get wrong: how much speed you give up at 8 bits?",
+    "What couldn't you explain cleanly: why speed rises less than size falls?",
+    "Which relationship is still fuzzy: bits → bytes per token, or bits → quality?",
+    "Which of your tasks is precise enough that you should avoid 4-bit or fp4?",
+    "What do you expect MoE to do that quantization can't?"
+  ],
+  "revisit": ["llm-latency/memory-bandwidth", "llm-latency/hardware"],
+  "prereq": ["llm-latency/memory-bandwidth"]
+}

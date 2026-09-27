@@ -1,0 +1,115 @@
+{
+  "prime": {
+    "problem": "Batching fixes linear layers: share the weights and intensity climbs to B<sub>crit</sub>. Try the same on attention and nothing improves. If you don't know why, you'll spend effort on faster attention math that sits idle 99% of the time in decode.",
+    "fits": "Fifth card. It applies the roofline to the other kind of operation from the <i>what we optimize</i> split, right after linear layers, and derives why the KV term of the step-time formula is always memory-bound.",
+    "expect": ["Flash Attention's byte accounting", "intensity = ST/(S+T)", "prefill T/2 vs decode ≈ 1", "GQA raises it to ≈ G", "KV bytes vs weight bytes per step"],
+    "goal": "Derive attention's intensity, explain why B and D cancel, compute it for prefill, decode and GQA, and say which lever speeds up decode attention."
+  },
+  "attend": [
+    "In the Flash Attention accounting, which tensors are read from HBM, and which big tensor is never written?",
+    "Why do B and D cancel out of ST/(S+T), and what does that cancellation mean for batching?",
+    "What plays the role of <i>reuse</i> in prefill attention, and why does decode have none?",
+    "How does GQA change the bytes but not the FLOPs, and why does that push intensity toward G?",
+    "At what batch and context do KV bytes overtake weight bytes in a decode step, and why does that moment matter?"
+  ],
+  "core": {
+    "must": [
+      "Flash Attention reads Q (2BTD) and K, V (4BSD), writes the output (2BTD) and does 4BSTD FLOPs → intensity = ST/(S+T) → B and D cancel, so neither batching nor a wider model raises it",
+      "Prefill has S = T → intensity T/2 → compute-bound past ≈ 480 tokens (v5e) or ≈ 590 (H100); decode has T = 1 → intensity S/(S+1) < 1 → memory-bound at every context and every batch",
+      "Each sequence brings its own KV cache → a second sequence adds as many bytes as FLOPs → unlike weights, nothing is shared → the attention term grows linearly in B × context and dominates a long-context step",
+      "GQA lets G query heads share each K/V row → bytes drop by G while FLOPs don't → decode intensity rises to ≈ G (4 for Llama-3.1-8B, 32 for MQA) → still far below 295, so the lever is fewer KV bytes, not faster math"
+    ],
+    "elevated": [
+      "KV bytes equal weight bytes when B · S<sub>KV</sub> = S<sub>params</sub> → 15 sequences at 8k for Llama-3.1-8B → the book's rule of thumb 2DF/(SHK) ≈ F vs S predicts when batching's gains start to fade"
+    ],
+    "reference": [
+      "the softmax FLOPs the book ignores",
+      "the book's Part 4 answer of <i>compute-bound at S = 240</i> vs Part 7's 480",
+      "the GQA prefill crossover formula ridge · (G+1)/G",
+      "the batch-64 bytes-per-step bars (6.3% → 81.1% KV)"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, write attention's FLOPs and bytes, simplify to ST/(S+T), and evaluate it for prefill (T = S = 4096) and decode (T = 1, S = 8192). Add the GQA version in one line. Then say in one sentence what that implies for the step-time formula's KV term.",
+    "checklist": [
+      "FLOPs 4BSTD; bytes 4BSD + 4BTD; B and D cancel",
+      "prefill 4096 → 2,048 FLOPs/byte, compute-bound",
+      "decode 8192 → 0.9999, memory-bound at any B",
+      "GQA: decode intensity → G (Llama-3.1-8B ≈ 4)",
+      "so the KV term is just KV bytes ÷ bandwidth, never a FLOPs term"
+    ]
+  },
+  "retrieve": [
+    {
+      "q": "Explain the book's point, conceptually, of why adding sequences raises a linear layer's intensity but not attention's.",
+      "kind": "concept",
+      "answer": [
+        "a linear layer's weights are the same for every sequence, so one load serves the whole batch",
+        "attention's K and V are different for every sequence, so each new sequence brings its own bytes",
+        "FLOPs and bytes grow together, so the ratio is stuck"
+      ]
+    },
+    {
+      "q": "Walk through one decode step of attention for one sequence at S = 8,192 with the card's MHA-sized layer: what is read, how many FLOPs, what intensity?",
+      "kind": "mechanism",
+      "answer": [
+        "read the one new query (8 KB) and the whole K, V cache for that layer (134.2 MB)",
+        "one query meets every key: 4·S·T·D = 1.34e8 FLOPs",
+        "intensity 0.9999, about 240–295× below the ridge"
+      ]
+    },
+    {
+      "q": "A team proposes a faster attention kernel to cut decode latency at batch 64 and 8k context on Llama-3.1-8B. Using the card's whole-model check, how much can math improvements save, and what would you do instead?",
+      "kind": "tradeoff",
+      "answer": [
+        "attention there is 2.75e11 FLOPs over 68.75 GB: 4.0 FLOPs/byte",
+        "T<sub>math</sub> = 0.28 ms vs T<sub>comms</sub> = 20.5 ms: arithmetic is idle ~99%",
+        "a faster matmul saves almost nothing; read fewer KV bytes (FP8 KV, GQA/MQA, paging that skips padding)"
+      ]
+    }
+  ],
+  "compare": [
+    {
+      "with": "perf-4-attention-kv/flashattention-io",
+      "q": "Flash Attention is assumed inside ST/(S+T). What does it change about attention's bytes, why does that let prefill reach T/2, and why doesn't it rescue decode?",
+      "answer": [
+        "it never writes the [B, S, T] score matrix to HBM, so bytes are just Q, K, V and the output",
+        "without that, the S·T scores would add bytes and cap prefill intensity well below T/2",
+        "decode still has to read the whole K, V cache for a single query row, so intensity stays ≈ 1 either way"
+      ]
+    },
+    {
+      "with": "perf-1-foundations/attention",
+      "q": "perf-1 introduced GQA as a way to shrink the KV cache. This card says it also raises intensity. Are those the same effect, and why is neither enough to make decode attention compute-bound?",
+      "answer": [
+        "same cause: G query heads read one K/V row, so KV bytes drop by G for the same FLOPs",
+        "that shrinks the cache (4× for Llama-3.1-8B) and raises intensity from ≈ 1 to ≈ G",
+        "G is 4–32 in practice, far below a ridge of 240–295"
+      ]
+    }
+  ],
+  "predict": {
+    "q": "Llama-3.1-8B, one H100, batch 32 at 4k context. Commit first: how many GB of KV does one decode step read across all layers, how long does that take, and is the attention math more or less than 0.1 ms?",
+    "answer": "32 × 4,096 × 131,072 B = 17.18 GB, which takes 17.18 / 3.35 TB/s = 5.13 ms. The math is 4 × B × S × N × H × L = 6.87e10 FLOPs = 0.069 ms at 989 TFLOPS: less than 0.1 ms. Intensity = 6.87e10 / 17.18e9 = 4.0 = G, exactly as the GQA formula predicts."
+  },
+  "apply": {
+    "task": "Run <code>labs/attention-intensity.py</code> and add a row for Llama-3.1-8B decode at batch 32, S = 4,096: KV bytes, FLOPs, intensity, T<sub>math</sub> and T<sub>comms</sub> on an H100. Then compute the prefill crossover (the T at which prefill attention turns compute-bound) for a hypothetical G = 8 model on H100 and on v5e.",
+    "done": "Your decode row shows ≈ 17.2 GB, ≈ 6.9e10 FLOPs, intensity ≈ 4.0, T<sub>comms</sub> ≈ 5.13 ms against T<sub>math</sub> ≈ 0.07 ms, and your G = 8 crossovers are ≈ 332 tokens (H100) and 270 (v5e).",
+    "hint": "Crossover T = ridge × (G + 1)/G: 295 × 9/8 and 240 × 9/8. For decode, KV bytes = B × S × 131,072 and FLOPs = 4·B·S·N·H·L with N = 32, H = 128, L = 32."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: the KV bytes, or how small the math is?",
+    "Could you explain why B cancels, in one sentence and without the formula?",
+    "Which relationship is still fuzzy: shared weights → intensity ≈ B, or private KV → intensity ≈ 1?",
+    "Can you say when the weights, not KV, still dominate a decode step?",
+    "What will you check on the step-time card: how this becomes its always-memory-bound first term?"
+  ],
+  "revisit": [
+    "perf-2-scaling-book-inference/roofline",
+    "perf-2-scaling-book-inference/critical-batch-size",
+    "perf-1-foundations/attention"
+  ],
+  "prereq": [
+    "perf-2-scaling-book-inference/critical-batch-size"
+  ]
+}

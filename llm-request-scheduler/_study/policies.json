@@ -1,0 +1,67 @@
+{
+  "prime": {
+    "problem": "Once a queue forms, the order you read it in is the latency. FCFS makes every short chat wait behind every long job; SJF fixes that and starves the long jobs; priority protects one class and can starve the other. Pick a policy without knowing what it costs and someone ends up waiting 37 seconds.",
+    "fits": "Sixth card of group 3. step() admits \"in policy order\" through WaitQueue.peek(); this card fills in that order: the data structure, the sort key, and what each choice does to TTFT and to the worst case.",
+    "expect": [
+      "FCFS, SJF/SRPT, priority, VTC fair share, aging, EDF, MLFQ, LPM",
+      "each as a data structure plus a sort key",
+      "E5: SJF ≈ 77× better median, worst case 22.4 → 37.3 s",
+      "linear aging as a fixed heap key",
+      "E6: the light tenant 8,353 → 46 ms"
+    ],
+    "goal": "Choose a policy for a given workload, state its container and cost, predict whom it helps and whom it starves with numbers, and explain why policy changes who waits but not how much gets done."
+  },
+  "attend": [
+    "At 20 req/s FCFS and SJF give the same TTFT. What has to be true before a policy decides anything?",
+    "Why does a 100%-noise length predictor keep almost all of SJF's gain?",
+    "Why can linear aging stay a fixed heap key, while HRRN forces SGLang to re-sort every pass?",
+    "Under fairness, tenant B's share rises to 21% though it sends 10% of requests. What does that tell you?",
+    "Why can no α in the aging sweep give both the 97 ms median and the 22 s worst case?"
+  ],
+  "core": {
+    "must": [
+      "The policy is only the order step() reads the waiting queue → the same work gets done (6,451–6,584 tok/s in every run) → it decides who waits, and only once requests arrive faster than they finish",
+      "SJF admits short jobs first → the median wait collapses (7,490 → 97.2 ms at 55 req/s) → long jobs lose every tie → worst E2E 22.4 → 37.3 s → pair it with aging, and a rough predictor is enough because it only has to rank short vs long",
+      "Priority classes put interactive first (36.1 ms p50) → batch waits longer (9,760 ms) → if the high class alone fills the GPU, batch starves → add aging or a reserved share",
+      "VTC keeps a weighted service counter per tenant and serves the least-served → a burst from one tenant stops costing the others (B: 8,353 → 46 ms) → the heavy tenant pays a little (A: 9,279 → 10,974 ms)"
+    ],
+    "elevated": [
+      "Every waiting request ages at the same rate → size − α·(now − arrival) orders like size + α·arrival → linear aging is a fixed O(log W) heap key, while ratio keys (HRRN) reorder over time"
+    ],
+    "reference": [
+      "the published multiples (FastServe 31.4×, Andes 4.7×, Learning to Rank 2.8×)",
+      "SGLang's policy names and the 128-waiting FCFS fallback",
+      "the WaitQueue code details (_seq tie-break, _n counter)"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, write each of FCFS, SJF, priority and fair as \"container · key · push/pick cost · who it starves\". Then write one sentence on why none of them changes throughput, and one on what to do when every order fails.",
+    "checklist": [
+      "FCFS: deque · arrival · O(1)/O(1) · nobody, but head-of-line blocking",
+      "SJF: heap · prompt + predicted · O(log W) · long jobs",
+      "priority: heap or K deques · (class, arrival) · low class",
+      "fair: per-tenant deques + counters · least served · O(T) · the heavy tenant pays a little",
+      "policy changes who waits, not tokens/s; under sustained overload, shed load or add replicas"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why SJF cuts median TTFT about 77× at 55 req/s but does nothing at 20 req/s.", "kind": "concept", "answer": ["at 20 req/s a request is admitted the step after it arrives: there is no queue to reorder", "at 55 req/s the queue keeps growing, so order decides who waits", "SJF lets the many short requests skip ahead of the few long ones"]},
+    {"q": "Walk through how the fair WaitQueue picks the next request when tenant A has been served 9,120 weighted tokens and tenant B 912, and what happens when a new tenant C appears.", "kind": "mechanism", "answer": ["pick the backlogged tenant with the smallest counter: B", "pop B's oldest request; charge prompt tokens + 2 × output tokens as it runs", "C starts at the lowest active counter, so it can't bank credit it didn't use"]},
+    {"q": "Interactive and batch traffic share the GPUs. Compare strict priority with priority + aging, and say what each risks.", "kind": "tradeoff", "answer": ["strict priority: interactive TTFT p50 36.1 ms, but batch is never admitted if interactive alone fills the GPU", "priority + aging: batch eventually rises, capping its wait", "cost: aging gives back some of the interactive gain and adds a knob (α)"]}
+  ],
+  "compare": [
+    {"with": "llm-request-scheduler/admission-preemption", "q": "Admission control and policy both decide who waits. What does each control that the other can't, and which one fixes sustained overload?", "answer": ["policy reorders requests already in the queue", "admission control decides whether a request enters at all (429, early rejection)", "under sustained overload every order just picks who suffers; only admission control or more capacity fixes it"]},
+    {"with": "perf-4-attention-kv/cache-aware-scheduling", "q": "Cache-aware LPM is a policy whose key depends on what is cached now. How is that different from SJF's key, and what does it cost?", "answer": ["SJF's key is fixed per request, so a heap works", "LPM's key changes as the cache changes, so the queue must be re-sorted and prefix-matched each pass (O(W log W))", "SGLang falls back to FCFS above 128 waiting to cap that cost; cold-prefix requests can wait behind warm ones"]}
+  ],
+  "predict": {"q": "Traffic is bursty: 70 req/s for 10 s, then 10 req/s for 20 s, repeating. Before simulating: does SJF still starve long jobs as badly as in E5's sustained 55 req/s?", "answer": "Much less. In the quiet periods the queue drains, so every long job eventually gets admitted; SJF only delays it through the burst. Starvation in E5 comes from the queue never emptying. The card makes the same point about aging: with bursts that drain between peaks the trade is kinder."},
+  "apply": {"task": "Four requests wait: A (arrived 0.0 s, size 5,000 tokens), B (1.0 s, 700), C (2.0 s, 1,200), D (2.5 s, 300), where size = prompt + predicted output. Write the admission order under FCFS, SJF, and linear aging with key size + α·arrival for α = 1,000 and α = 3,000 tokens per second. Then say which α protects A, and at what cost to D.", "done": "FCFS: A, B, C, D. SJF: D (300), B (700), C (1,200), A (5,000). α = 1,000: keys A 5,000, B 1,700, C 3,200, D 2,800 → B, D, C, A. α = 3,000: A 5,000, B 3,700, C 7,200, D 7,800 → B, A, C, D. The larger α moves A from last to second and pushes D, the shortest, to last.", "hint": "A smaller key goes first; arrival time in seconds times α is the \"size\" forgiven."},
+  "reflect": [
+    "Which prediction did you get wrong: how bursty traffic changes SJF's starvation?",
+    "Could you explain why a noisy predictor keeps SJF's gain?",
+    "Which relationship is still fuzzy: queue exists → policy matters, or policy → who starves?",
+    "Which policy would you pick for your own workload, and what would you measure to check it?",
+    "What will you revisit before the concurrency card: where the waiting queue gets its requests from?"
+  ],
+  "revisit": ["llm-request-scheduler/request-state", "llm-request-scheduler/step-algorithm", "llm-request-scheduler/metrics-slos"],
+  "prereq": ["llm-request-scheduler/request-state"]
+}

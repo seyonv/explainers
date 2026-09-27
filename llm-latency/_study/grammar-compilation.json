@@ -1,0 +1,54 @@
+{
+  "prime": {
+    "problem": "Structured outputs and strict tool calling guarantee valid JSON, but the server first has to turn your schema into a grammar machine. That build can take milliseconds or minutes, and if your schema changes every request, you pay it every time.",
+    "fits": "Seventh mechanism card, another hidden part of TTFT. Like prompt caching, it's a one-time cost hidden by a cache; unlike prefill, it depends on the schema, not the prompt.",
+    "expect": ["grammar compilation time (GCT)", "per-token mask check", "compiled-schema cache", "eager vs lazy engines"],
+    "goal": "Tell whether grammar compilation is costing you time, and pick the fix."
+  },
+  "attend": [
+    "Why does compiling a grammar show up as TTFT and not as slower output speed?",
+    "Why is the cost per new schema, not per request?",
+    "Why do llama.cpp and Guidance compile almost nothing up front?",
+    "Which schema designs turn every call into a first call?"
+  ],
+  "core": {
+    "must": [
+      "Constrained decoding needs a machine that says which tokens are allowed next → the schema is compiled into it before the first token → compile time adds to TTFT → cached, so paid once per new schema",
+      "Engines split the work differently → eager engines precompute (Outlines 8.05 s, up to minutes on hard schemas) → lazy ones check as tokens are generated (Guidance 0.01 s) → upfront cost vs per-token work",
+      "A schema that changes per request (today's IDs in an enum, per-user tool lists) → every call misses the cache → the compile is paid every time → keep structure stable and move variable parts into the prompt"
+    ],
+    "elevated": [
+      "The per-token mask check runs every token → a good engine keeps it under 40 µs (0.26% of a 15.2 ms token) → a slow engine shows up as lower output speed, not longer TTFT"
+    ],
+    "reference": ["JSONSchemaBench engine timings (0.01 / 0.06 / 0.20 / 8.05 s)", "Claude's 24 h compiled-schema cache and <code>output_config.format</code>", "XGrammar-2's 534 ms → 5.37 ms benchmark"]
+  },
+  "compress": {
+    "prompt": "From memory, write TTFT for the first request with a new schema and for a repeat, and add the per-token term. Then give three fixes for a schema that changes every request, in one line each.",
+    "checklist": [
+      "first: network + queue + compile + prefill; repeat: network + queue + prefill",
+      "plus a small mask check per token",
+      "cost depends heavily on the engine (ms to minutes)",
+      "fixes: stable schema structure with variable parts in the prompt; a warm-up request at deploy; a lazy engine or XGrammar; or prompt + validate + retry"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain the difference between cold start, prefill and grammar compilation: what each is paid per, and what makes each one go away.", "kind": "concept", "answer": ["cold start: per model load; keep the model loaded", "prefill: per request, grows with prompt; prompt caching skips a repeated prefix", "grammar compilation: per new schema; cached after the first use"]},
+    {"q": "Walk through two requests with the same new schema on vLLM with XGrammar: what happens before the first token each time, and what happens on every token?", "kind": "mechanism", "answer": ["request 1: schema compiled (0.11–0.30 s in the benchmark), then prefill, then decode", "request 2: compiled grammar found in the cache, so only prefill", "every token: the mask check (under 40 µs) limits which tokens can be picked"]},
+    {"q": "Your tool list is assembled per user from 50 possible tools. When would you drop strict decoding for prompt + validate + retry, and what does that cost instead?", "kind": "tradeoff", "answer": ["if the compile per unique tool set is slow and users rarely repeat sets", "retry has no compile cost but each invalid output costs a whole extra call", "or keep strict decoding but stabilise the schema (a fixed superset) so it caches"]}
+  ],
+  "compare": [
+    {"with": "llm-latency/prompt-caching", "q": "Changing the schema on Claude can invalidate both the grammar cache and the prompt cache. Why does that stack two costs on one call, and which change triggers only the cheaper one?", "answer": ["a new schema must be compiled, and changing <code>output_config.format</code> also invalidates the conversation's prompt cache", "so the call pays compile time and a full prefill", "editing only a name or description doesn't create a new grammar cache entry"]},
+    {"with": "structured-outputs/compile-vs-per-token", "q": "This card focuses on the compile; that one weighs compile against per-token mask work across engines. For a schema used once for a 40-token answer vs a million times, which cost should decide the engine?", "answer": ["used once: compile time dominates, so pick a lazy or on-the-fly engine", "used a million times: compile is amortised, so per-token mask speed decides", "the break-even depends on reuse count × tokens per answer"]}
+  ],
+  "predict": {"q": "Outlines takes 8.05 s to compile a schema and XGrammar 0.20 s. If each answer is 200 tokens at 66 t/s, after how many reuses of the same schema does Outlines' compile add less than 10% to the total time? Commit to an order of magnitude first.", "answer": "One answer takes about 1.39 + 200 ÷ 66 ≈ 4.42 s. 10% of the total means 8.05 ÷ k &lt; 0.1 × (4.42 + 8.05 ÷ k), which rearranges to k &gt; 8.05 × 0.9 ÷ 0.442 ≈ 16.4, so about 17 reuses. A handful of calls with a new schema each time is terrible; hundreds of calls with one schema makes it negligible."},
+  "apply": {"task": "Measure it locally. With Ollama, send one ~30-token prompt four ways (no <code>format</code>, <code>format: \"json\"</code>, a 2-field schema, a 40-field schema), three runs each, and record the median TTFT and eval rate. Then say whether grammar compilation is visible on your machine and why.", "done": "You have a 4-row table of median TTFT and speed. The differences are within noise, and you can explain why: llama.cpp's grammar is checked lazily, so there's almost nothing to compile up front.", "hint": "The card measured 0.143 s vs 0.154 s TTFT (40-field) and 15.4–15.7 t/s either way on the M3."},
+  "reflect": [
+    "Which prediction did you get wrong: how many reuses amortise a slow compile?",
+    "What couldn't you explain cleanly: why a slow mask shows up as lower output speed?",
+    "Which relationship is still fuzzy: schema changes → cache misses, or engine choice → compile time?",
+    "Do any of your schemas or tool lists change per request?",
+    "Which of the mechanism cards' ideas does the hosts overview combine?"
+  ],
+  "revisit": ["llm-latency/ttft", "llm-latency/prompt-caching"],
+  "prereq": ["llm-latency/ttft"]
+}

@@ -1,0 +1,58 @@
+{
+  "prime": {
+    "problem": "Sometimes you can't touch the decoder: a closed model, a schema the API rejects, or a check no grammar can express (\"the total matches the price list\"). Then the only lever is after the fact: clean, parse, validate, and ask again. Done blindly, that loop either retries forever or ships the errors your checker didn't look for.",
+    "fits": "First card of part 6. Why JSON breaks showed that cleaning fixes most wrappers; valid-not-correct showed value errors survive a grammar. This card turns both into a control loop and prices it with <code>E[calls] = 1/p</code>, the same pass rate as in the overview formula.",
+    "expect": ["clean → lenient parse → validate → repair → fresh retry", "<code>E[calls] = 1/p</code>, <code>P(fail after k) = (1 − p)^k</code>", "why repairs aren't independent", "Instructor, Pydantic AI, BAML"],
+    "goal": "Price a repair loop from its pass rate, predict where the independence assumption breaks, and decide when a loop beats a grammar and when to combine them."
+  },
+  "attend": [
+    "What exactly counts as a \"pass\" in <code>E[calls] = 1/p</code>, and why does the answer change p from 7/30 to 29/30 for the same outputs?",
+    "Why did 14 wrong totals ship with a schema-only checker, and what had to change for the loop to see them?",
+    "The formula predicted 12.5% stuck and the run saw 13.3%. Why is that agreement partly a coincidence?",
+    "What does a fresh retry do that a repair in the same chat can't?",
+    "When does a grammar plus one value-check repair beat either one alone?"
+  ],
+  "core": {
+    "must": [
+      "Each call passes the checker with probability p → expected calls 1/p and failure after k tries (1 − p)^k → cleaning first moves p from 7/30 to 29/30, from 4.29 calls to 1.03",
+      "The loop only retries what the checker rejects → a schema-only checker passes wrong totals (14 of 30 shipped) → add a value check (total = Σ qty × price) → 15 → 26 correct at 1.67 calls per request",
+      "A repair keeps the bad answer in the chat → the model tends to repeat itself (4 chats stuck on 60 or 78) → repairs aren't independent coin flips → a fresh retry (new chat, temperature above 0) is what re-rolls a stuck answer",
+      "Every extra try is a whole call (≈ 5.53 s here) → the loop costs about 1.67 × 5.53 ≈ 9.2 s per request vs 2.72 s constrained → use it where there's no grammar, or as a thin value-check layer on top of one"
+    ],
+    "elevated": [
+      "A lenient allow-list silently drops unknown keys while a strict validator rejects them → seed 1007 needed 3 calls under strict <code>jsonschema</code> but might pass at once under the cookbook's allow-list → how strict your checker is changes p, and with it the cost"
+    ],
+    "reference": ["the cookbook's function names (<code>clean_text</code>, <code>parse_json</code>, <code>sanitize_data</code>, <code>reliable_extract</code>)", "Instructor's <code>response_model</code> and retry options", "Pydantic AI's <code>agent.run</code>", "BAML's ~420 → ~140 token prompt claim"]
+  },
+  "compress": {
+    "prompt": "From memory, draw the loop (prompt → clean → parse → validate → repair ×2 → fresh chat ×3 → raise) and write <code>E[calls]</code> and <code>P(fail after k)</code> beside it. Add one line on what the loop can't catch.",
+    "checklist": [
+      "clean (strip fences, first { to last }), lenient parse, validate or allow-list",
+      "on failure: append the output and the error, call again; after 3 calls, start a fresh chat",
+      "E[calls] = 1/p, P(fail after k) = (1 − p)^k if tries are independent",
+      "p depends on what the checker checks: raw parse, schema, or values",
+      "repairs in one chat aren't independent; fresh retries are closer",
+      "it only catches what the checker knows to look for"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why the same 30 outputs give an expected 4.29 calls, 1.03 calls or 2.00 calls depending on the checker.", "kind": "concept", "answer": ["raw json.loads: p = 7/30, so 30/7 ≈ 4.29 calls", "clean, then schema: p = 29/30, so ≈ 1.03 calls", "values too: p = 15/30, so 2.00 calls", "the model didn't change; the definition of \"pass\" did"]},
+    {"q": "Walk through the local value-check run: how many requests passed on call 1, 2 and 3, how many stayed wrong, and where do the 50 calls come from?", "kind": "mechanism", "answer": ["15 right on call 1 (15 calls)", "10 fixed on the first repair (20 calls), 1 on the second (3 calls)", "4 still wrong after 3 calls (12 calls)", "50 calls for 30 requests = 1.67 each; 26/30 correct"]},
+    {"q": "A closed API accepts your schema but can't express \"total equals the sum of line items\". Design the cheapest reliable pipeline and price it with the card's numbers.", "kind": "tradeoff", "answer": ["use the API's strict mode for the shape: first-pass validity close to 1", "compute the total in code if you can (no extra calls); otherwise add a value check with one repair", "a value-check repair loop cost 1.67 calls per request locally; computing the value costs none"]}
+  ],
+  "compare": [
+    {"with": "structured-outputs/token-masking", "q": "Masking prevents bad tokens; the repair loop rejects bad answers. What is fundamentally different about where each acts, what each can check, and how each fails?", "answer": ["masking acts on every token during decoding; the loop acts on whole answers after decoding", "masking can only enforce what a grammar expresses; the loop can run any code check (sums, lookups)", "masking fails by forced unlikely tokens and valid-but-wrong values; the loop fails by cost (1/p calls) and by repeating a stuck mistake"]},
+    {"with": "llm-latency/retries-timeouts", "q": "The latency course's retries re-send a call that failed at the transport level; this loop re-asks because the content failed. How do the two differ in what changes between attempts, and in what they cost?", "answer": ["transport retries send the identical request after a backoff; nothing about the content changes", "a repair sends the error back so the model can change its answer; a fresh retry re-rolls the sample", "both multiply calls, but content retries also change the prompt length and can repeat the same mistake"]}
+  ],
+  "predict": {"q": "The 4 stuck chats kept writing 60 or 78 across 3 repairs. If you replaced repairs with 3 <i>fresh</i> chats at temperature 0.7, would you expect more or fewer of those 4 to end correct? And what if the fresh chats ran at temperature 0? Commit before revealing.", "answer": "More at temperature 0.7: each fresh chat drops the wrong answer from context and re-samples, and the course's runs got the right total half the time without a value check, so a fresh sample has a real chance. At temperature 0, none: greedy decoding gives the same answer for the same prompt, so a fresh chat repeats the first call's total. The card flags this last point as inferred, not tested. Fresh retries only help when there is randomness to re-roll."},
+  "apply": {"task": "Implement the loop in about 40 lines for the store order: <code>clean_text</code>, <code>json.loads</code>, a <code>jsonschema</code> check, and a value check (total = Σ qty × price from the 10-SKU list). Allow 3 calls per chat and 3 chats. Log, per request, the number of calls and why each failed. Run it on 10 prompts, then change only the checker (schema-only vs schema + value) and compare calls per request and correct answers. For a transfer project, the <a href=\"https://agents-inference-software-factory.svas.workers.dev/agents/#p2-coding-tools\">Agents guide, project p2 (coding tools)</a> applies the same validate → repair loop to recovering from tool errors.", "done": "You have two runs over the same 10 prompts with calls per request and correct counts, and you can point to at least one request whose outcome changed only because the checker changed.", "hint": "The card's reference: schema-only passes 29/30 on call 1 but ships 14 wrong totals; schema + value reached 26/30 at 1.67 calls per request. Put the price list in code, not in the repair message, or the model can copy the answer from it."},
+  "reflect": [
+    "Which prediction did you get wrong: whether fresh chats un-stick a repeated wrong answer?",
+    "What couldn't you explain cleanly: why the formula's 12.5% matched the observed 13.3% for the wrong reason?",
+    "Which relationship is still fuzzy: checker strictness → p → cost, or repair context → correlated failures?",
+    "Which checks in your own pipeline could compute the value instead of asking again?",
+    "What will you look for in the where-it-runs card: which stacks give you a grammar at all, and which leave you with this loop?"
+  ],
+  "revisit": ["structured-outputs/why-json-breaks", "structured-outputs/valid-not-correct", "structured-outputs/_overview", "llm-latency/retries-timeouts"],
+  "prereq": ["structured-outputs/valid-not-correct"]
+}

@@ -1,0 +1,62 @@
+{
+  "prime": {
+    "problem": "Eager PyTorch runs every op as its own kernel: each one reads its inputs from DRAM, writes its output back, and costs microseconds of CPU and driver time to launch. For small kernels, like the ~300 in a batch-1 decode step, the GPU spends much of the step waiting between launches, and no kernel tuning fixes that.",
+    "fits": "The first-kernel card noted that an H100 vector add takes about as long as launching it. This card deals with that cost and with DRAM round trips between ops. It sets up Triton (the language <code>torch.compile</code> emits) and perf-5's engines, which capture decode steps as CUDA graphs.",
+    "expect": ["overhead-, bandwidth- and compute-bound regimes", "the \"double the batch\" test", "fusion: count trips to DRAM", "CUDA graph capture and replay", "vLLM's FULL_AND_PIECEWISE mode"],
+    "goal": "Identify which regime a workload is in, count the bytes fusion saves, estimate how much of a decode step launch gaps cost, and say which of fusion and graphs helps each case."
+  },
+  "attend": [
+    "Horace's \"double the batch\" test: why does an overhead-bound program barely slow down, and what would a bandwidth-bound one do?",
+    "Why is <code>x.cos().cos()</code> twice as fast fused, and why does adding up to ~64 more multiplies to a fused kernel cost almost nothing?",
+    "At prefill, fusing the elementwise tail saves 0.70 ms. Why is that a modest win, and when would it be large?",
+    "A CUDA graph replays the same kernels. What does it remove, and what does it leave exactly as slow as before?",
+    "Why must vLLM capture one graph per batch size and pad a batch of 5 up to 8?"
+  ],
+  "core": {
+    "must": [
+      "Every unfused op reads its inputs and writes its output through DRAM → a chain of k elementwise ops moves ~k times the bytes a fused kernel moves → fusion keeps intermediates in registers → fewer bytes (225 → 152 MB per Llama layer at prefill)",
+      "Elementwise math is cheap next to bytes (~100 FP32 ops per element before an A100 turns compute-bound) → extra ops inside a fused kernel are nearly free → a fused GELU costs about the same as a fused ReLU",
+      "Each launch costs CPU and driver time and leaves a gap on the GPU → small kernels can't hide it → at batch-1 decode, 323 kernels × 1.3–5 µs is 9–34% of the 4.79 ms floor → graphs replay a whole step with one call and shrink the gaps",
+      "Graphs remove launches, fusion removes bytes → neither makes a matmul faster → so first find the regime: overhead (graphs, megakernels), bandwidth (fusion), compute (tensor cores)"
+    ],
+    "elevated": [
+      "A graph freezes shapes and control flow at capture → engines capture one graph per batch size and pad to the nearest captured size → run attention eagerly between graph pieces (piecewise) when its shapes vary → each captured size costs capture time and GPU memory"
+    ],
+    "reference": [
+      "the CUDA graph API (<code>cudaStreamBeginCapture</code>, <code>cudaGraphInstantiate</code>, <code>cudaGraphLaunch</code>)",
+      "V100 timings (2.9 / 9.6 / 3.8 / 3.4 µs) and ~400 µs instantiation",
+      "vLLM's <code>cudagraph_mode</code> names and <code>cudagraph_capture_sizes</code>",
+      "constant-time launch: 2 µs + 200 ns/node → 2.5 µs + ~1 ns/node on Ampere"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw the three timelines (eager unfused, fused, graph replay) for four small kernels, marking CPU launches, gaps and DRAM round trips. Under them, write which regime each fix targets and one number from the card for each.",
+    "checklist": [
+      "eager: one launch and one DRAM round trip per op, gaps between kernels",
+      "fused: one launch, intermediates stay on-chip, fewer bytes",
+      "graph: same kernels and bytes, one launch call, smaller gaps",
+      "fusion attacks bandwidth; graphs attack overhead; neither helps compute-bound matmuls",
+      "numbers: x.cos().cos() 4 → 2 transfers; Llama layer 225 → 152 MB; V100 3.8 → 3.4 µs per kernel with a graph"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why the same fusion that saves only ~0.7 ms of a 16.2 ms prefill can matter much more in a decode step, even though decode's weight bytes don't change.", "kind": "concept", "answer": ["at prefill the matmuls dominate (441 µs per layer vs 45–67 µs of elementwise tail)", "at decode each kernel is small, so the number of kernels (launch gaps) matters", "fusion also cuts the kernel count, which is what decode pays for"]},
+    {"q": "Walk through what happens between two PyTorch ops on tiny tensors in eager mode, and then under CUDA graph replay.", "kind": "mechanism", "answer": ["eager: Python and the dispatcher (~3.6 µs per op), then a CUDA launch; the GPU waits if the CPU can't run ahead", "each kernel reads its input from DRAM and writes its output back", "graph replay: one <code>cudaGraphLaunch</code> for the recorded sequence; no Python or per-kernel launch cost, smaller GPU-side gaps", "the kernels and their DRAM traffic are unchanged"]},
+    {"q": "A 4-op elementwise chain on 64M FP32 elements on a T4: estimate unfused vs fused time from bytes alone, then say what else could keep the fused version from reaching that floor.", "kind": "tradeoff", "answer": ["unfused: 4 ops × 8 B × 67,108,864 ≈ 2.15 GB → 6.71 ms at 320 GB/s", "fused: 8 B × 67,108,864 ≈ 0.54 GB → 1.68 ms", "the fused kernel can fall short if its math passes ~202 FLOP per element (T4 break-even) or if memory access isn't coalesced"]}
+  ],
+  "compare": [
+    {"with": "perf-3-kernels/triton-programming-model", "q": "Tutorial 02's fused softmax and this card's fused add + RMSNorm both remove DRAM round trips. What does each fuse, what's the predicted gain in each, and what limits each design?", "answer": ["softmax: five eager kernels (max, subtract, exp, sum, divide) into one, ~4× fewer bytes", "add + RMSNorm: an add kernel and a norm kernel into one, 5 → 4 transfers (1.25×)", "softmax needs a whole row on-chip; the add+norm gain is small because the residual must still be written"]},
+    {"with": "perf-2-scaling-book-inference/step-time", "q": "perf-2's step-time model counts weight and KV bytes against bandwidth. What does this card's launch-gap estimate add to it, and at which batch sizes and model sizes does that addition matter most?", "answer": ["perf-2 gives the byte floor (4.79 ms for Llama-3.1-8B at batch 1)", "this card adds per-kernel gaps: 0.42–1.62 ms for 323 kernels", "it matters most at small batch and small models (75.6% of Llama-1B's floor at 5 µs per kernel)"]}
+  ],
+  "predict": {"q": "You capture Llama-3.1-8B's batch-1 decode step as one CUDA graph on an H100. Using Hazy Research's per-kernel gaps (2.1 µs stream, 1.3 µs graph) and the card's 323 kernels, commit: how much time per step does the graph save, and roughly what tokens/s ceiling is left if nothing else changes?", "answer": "The gap shrinks by 0.8 µs × 323 ≈ 0.26 ms per step (0.68 → 0.42 ms of gaps). On the 4.79 ms floor that is about 5.4% of the step: from 4.79 + 0.68 = 5.47 ms to 4.79 + 0.42 = 5.21 ms, ≈ 183 → 192 tok/s. The graph removes most CPU launch cost, but the remaining 1.3 µs GPU-side gap per kernel is why Hazy went further, to one megakernel."},
+  "apply": {"task": "Open <code>labs/fusion-graphs.ipynb</code> on a T4. Run the <code>x.cos().cos()</code> and 10-op chain experiments (eager vs <code>torch.compile</code>), Horace's repeat-multiply sweep, and the 20-kernel tiny-tensor step (eager vs CUDA graph replay). Before running, predict each result from bytes and launch counts; then apply the double-the-size test to the tiny step.", "done": "You have predicted and measured numbers side by side for all four experiments, the multiply count where the T4 sweep's runtime starts rising, and a verdict (overhead-, bandwidth- or compute-bound) for the tiny-tensor step based on the doubling test.", "hint": "The T4's break-even is about 202 FLOP per FP32 element (~101 multiplies), so expect the knee later than the A100's 64. For the doubling test: if doubling the tensor size barely changes the time, you're overhead-bound."},
+  "reflect": [
+    "Which prediction did you get wrong: the graph's saving, or where the T4's knee falls?",
+    "Could you explain why a CUDA graph doesn't make an RMSNorm kernel faster?",
+    "Which relationship is still fuzzy: kernel count → launch gaps, or op chain → DRAM bytes?",
+    "Did the prefill number (13.3% → 8.9% of the floor) make fusion look more or less important than you expected?",
+    "What will you revisit before the Triton cards: which fusions <code>torch.compile</code> can find by itself?"
+  ],
+  "revisit": ["perf-3-kernels/first-kernel", "perf-3-kernels/reduction-unrolling"],
+  "prereq": ["perf-3-kernels/first-kernel"]
+}

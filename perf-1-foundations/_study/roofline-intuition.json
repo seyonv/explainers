@@ -1,0 +1,59 @@
+{
+  "prime": {
+    "problem": "Knowing an operation's FLOPs and its bytes separately doesn't tell you which one sets its time. So you can't say whether a faster chip, a better kernel or a bigger batch would help, and a wrong guess spends money on the resource that was already idle.",
+    "fits": "Joins the two cards before it: the FLOPs card's work count and the GPU card's 989 TF/s and 3.35 TB/s. The ridge of 295 you compute here comes back throughout the series, first as the critical batch size in perf-2.",
+    "expect": ["<code>T ≈ max(FLOPs/C, bytes/W)</code>", "arithmetic intensity I", "the ridge I* = C/W ≈ 295", "batching slides you along the roof", "the roofline plot"],
+    "goal": "Classify any operation as compute- or memory-bound from two numbers, and predict how batching or a change of chip moves it."
+  },
+  "attend": [
+    "Why is intensity a property of the work, while the ridge is a property of the chip?",
+    "Why does a single-token matmul land at exactly the same intensity as the whole decode step?",
+    "From B = 1 to 256 the matmul's time barely moves. What is shared, and what finally makes the time grow?",
+    "Why does the matmul cross the ridge at B ≈ 325 and not at 295?",
+    "When does taking the max of the two times underestimate the real time, and by at most how much?"
+  ],
+  "core": {
+    "must": [
+      "Every operation needs FLOPs and bytes → with perfect overlap, time ≈ max(FLOPs/C, bytes/W) → which term is larger ⇔ I = FLOPs/bytes vs I* = C/W → on an H100, 989e12 ÷ 3.35e12 ≈ 295",
+      "The weights are read once per step however many tokens use them → a B-token matmul has I ≈ B (for B much smaller than D and F) → batching raises intensity almost for free → the time stays flat (35 → 38 µs from B = 1 to 256) until the ridge, then grows linearly with B",
+      "Batch-1 decode does 2 FLOPs per 2-byte weight → I = 1, far below 295 → memory-bound: a 4.79 ms floor against 0.016 ms of math → the only fixes are fewer bytes (FP8, GQA), more bandwidth, or more tokens per read",
+      "The ridge is C/W, so a new chip moves it → the H200 (more W) lowers it to 206 and decodes 1.43× faster; FP8 doubles C (ridge 591) but FP8 weights also halve the bytes → the batch needed to become compute-bound stays about the same"
+    ],
+    "elevated": [
+      "Activations add B·(D + F) bytes → I sits a little below B → the matmul reaches the ridge at B ≈ 325, not 295",
+      "Non-matmul work (a vector add, softmax) runs on CUDA cores at about 66 TF/s → their own ridge is near 20 → a different roof for elementwise work"
+    ],
+    "reference": ["the plot's axis ranges and the grey batch dots", "the full batch-sweep table", "TPU v5e and B200 ridges (240, 281)", "80–85% achievable FLOP/s on H100/B200", "the sum-vs-max bound (at most 2×)"]
+  },
+  "compress": {
+    "prompt": "Without looking, draw the roofline: log axes, the sloped memory roof, the flat compute roof and the ridge at 295. Place the vector add, the 1-token matmul, the 512-token matmul and the decode step on it. Then write two sentences on what batching does to a point.",
+    "checklist": [
+      "memory roof = I × W, compute roof = C, meeting at the ridge C/W",
+      "vector add (I = 0.167) and decode step / 1-token matmul (I = 1) sit far left, on the memory roof",
+      "the 512-token matmul (I = 441) is right of the ridge, on the compute roof",
+      "batching slides a matmul right along the memory roof: same time, more useful work",
+      "below the ridge, cut bytes or batch; above it, cut FLOPs or add compute"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why comparing I with I* gives the same answer as comparing the math time with the memory time.", "kind": "concept", "answer": ["FLOPs/C > bytes/W rearranges to FLOPs/bytes > C/W", "I belongs to the work, I* to the chip", "taking the max assumes perfect overlap; with none you'd add them, which is at most 2× the max"]},
+    {"q": "Compute FLOPs, bytes, intensity and the bound for X[512, 4096] · W[4096, 14336] in BF16 on an H100.", "kind": "mechanism", "answer": ["FLOPs = 2 · 512 · 4096 · 14336 = 60.13 G", "bytes = 2 · (2.10M + 58.72M + 7.34M) = 136.3 MB", "I = 441 > 295: compute-bound", "math 60.8 µs against memory 40.7 µs"]},
+    {"q": "Your decode service runs at batch 8. One vendor offers 2× the FLOP/s at the same bandwidth; another offers 1.43× the bandwidth at the same FLOP/s. Which helps, and when would the other one start to matter?", "kind": "tradeoff", "answer": ["I ≈ 8, far below 295: memory-bound", "more FLOP/s changes nothing for this step", "1.43× bandwidth cuts the weight read (the H200 case: 4.79 → 3.35 ms at batch 1)", "the FLOPs offer matters for prefill, or once the batch passes the ridge"]},
+    {"q": "A profiler says a kernel took 35 µs. What would you compute to tell whether that's good or bad, and what would you do in each case?", "kind": "tradeoff", "answer": ["compute its FLOPs and bytes, hence I, and compare the measured time with the roof at that I", "if it sits on the bandwidth roof (like the 1-token matmul's 35.1 µs floor) it's already optimal: cut bytes or batch more", "if it's far below both roofs, the kernel itself is inefficient: fix it before buying hardware"]}
+  ],
+  "compare": [
+    {"with": "perf-2-scaling-book-inference/critical-batch-size", "q": "The ridge here vs the critical batch size there: what is each a property of, why are they nearly the same number, and when do they come apart?", "answer": ["the ridge is a chip property (FLOPs per byte); B_crit is the batch at which a model's linear layers reach it", "with BF16 weights and compute, a linear layer's intensity is about B, so B_crit ≈ ridge (≈ 295 on H100, 240 on TPU v5e)", "they come apart when weight bytes change: int8 weights with BF16 compute halve B_crit (120 on v5e)", "and the KV-cache reads never get the batching benefit at all"]},
+    {"with": "perf-1-foundations/flops-per-token", "q": "The FLOPs card's 'same FLOPs, different hardware' table found a 295× ratio for one decode token. How is that the same result as this card's ridge, and what does this card add?", "answer": ["that ratio was (bytes ÷ W) ÷ (FLOPs ÷ C) with FLOPs = bytes, which equals C/W", "this card generalises it: any operation's I against the ridge", "it adds batching (moving I), the plot, and the limits of the model"]}
+  ],
+  "predict": {"q": "An H100 serves Llama-3.1-8B with FP8 weights and FP8 math (1,979 TF/s) at batch 1. Before computing: the decode floor, the math time, and whether the step is any closer to compute-bound than in BF16.", "answer": "Bytes halve, so the floor is 8.03 GB ÷ 3.35 TB/s ≈ 2.40 ms. The math is 16.06 GFLOP ÷ 1,979e12 ≈ 8.1 µs. The ratio is still about 295× (computed): I doubles to 2, but the ridge doubles to 591. Faster, yet exactly as memory-bound."},
+  "apply": {"task": "Reproduce the matmul batch sweep X[B, 4096] · W[4096, 14336] for B = 1, 64, 256 and 512 on the H100 (in the lab or by hand). Then redo it for the H200 (989 TF/s, 4.8 TB/s): where does the ridge crossing move, and how much faster is B = 1?", "done": "H100: 35.07, 35.76, 37.87, 60.80 µs, crossing near B = 325. H200: 24.47, 24.96, 30.40, 60.80 µs, ridge 206, crossing near B = 220 (computed). B = 1 is 1.43× faster, and B = 512 doesn't change because it was compute-bound already.", "hint": "time = max(2BDF ÷ C, 2(BD + DF + BF) ÷ W). Find the crossing by solving BDF ÷ (BD + DF + BF) = C/W, or by bisection."},
+  "reflect": [
+    "Which prediction did you get wrong: the FP8 decode floor, or whether FP8 gets you closer to the ridge?",
+    "Could you explain why batching is 'almost free' below the ridge without drawing the plot?",
+    "Which relationship is still fuzzy: tokens per weight read → intensity, or intensity → which roof?",
+    "Which of the plot's limits (overhead, caches, other roofs) would you have forgotten?",
+    "What will you reopen before measuring your Mac: the batch sweep, or the chip table?"
+  ],
+  "revisit": ["perf-1-foundations/flops-per-token", "perf-1-foundations/gpu-machine"],
+  "prereq": ["perf-1-foundations/gpu-machine"]
+}

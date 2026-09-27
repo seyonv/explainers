@@ -1,0 +1,56 @@
+{
+  "prime": {
+    "problem": "Safe softmax needs the row's maximum before it can start summing exponentials, so it reads the input three times and needs the whole row to exist first. That blocks tiling: you can't normalise a row you only see one block at a time.",
+    "fits": "First technical card. perf-3 showed softmax as two reductions (max, then sum); this card fuses them into one pass with a running max, and the (m, d) merge it introduces is the exact tool FlashAttention applies to every tile next.",
+    "expect": ["safe softmax (subtract the max)", "running max m and running sum d", "rescale factor e^(m_old − m_new)", "the associative ⊕ merge of (m, d) pairs", "fused softmax + top-k"],
+    "goal": "Hand-trace online softmax over a short vector, merge two partial results with ⊕, and explain why this one trick is what makes tiled attention possible."
+  },
+  "attend": [
+    "Why does subtracting the maximum change nothing mathematically, yet stop fp32 from turning logits of 1,000 into NaN?",
+    "When a new element raises the running max, what exactly is wrong with the sum accumulated so far, and what single multiply fixes it?",
+    "Why can two threads each summarise their half of a row as (m, d) and still produce the exact answer, in any order?",
+    "Accesses drop from 4 to 3 per element. Why should that alone make a memory-bound kernel about 1.33× faster, and when did the V100 not show it?",
+    "Why does fusing top-k into the pass get 5 → 1 accesses, and why can't the fused version serve top-p sampling?"
+  ],
+  "core": {
+    "must": [
+      "Safe softmax needs the global max before summing → three passes, 4 accesses per element → keep a running max m and re-base the running sum by e^(m_old − m_new) whenever m rises → max and sum in one pass, 3 accesses, exactly the same result (Theorem 1)",
+      "A partial result is just (m, d) → two partials merge exactly with ⊕ (rescale both to the larger max, add) → ⊕ is associative and commutative → a row can be split across threads, blocks or tiles and recombined in any order → the basis of FlashAttention's tiles and Flash-Decoding's split-KV",
+      "Softmax does few FLOPs per byte → it is memory-bound → time tracks memory accesses → 4 → 3 accesses predicts ≈ 1.33×, measured ≈ 1.3× at batch 4,000 on V100, but only ≈ 1.15× at batch 10 where latency, not bytes, dominates"
+    ],
+    "elevated": [
+      "Each element costs an extra rescale multiply and exp → harmless on a memory-bound op → but in FA3/FA4 the exp unit becomes the bottleneck, so FA4 rescales only when the max jumps by more than 8"
+    ],
+    "reference": ["the list of approximate softmax variants in §1", "fp32 overflow at x = 88.72 and the 1.7 × 10³⁷ element bound", "the exact V100 benchmark settings (CUDA 9.1, CUB 1.8)", "Algorithm 4's insertion-buffer details"]
+  },
+  "compress": {
+    "prompt": "Without scrolling up, write the two update lines of online softmax and the ⊕ merge rule, then one sentence on why ⊕ being associative matters for GPUs.",
+    "checklist": [
+      "m_j = max(m_{j−1}, x_j); d_j = d_{j−1}·e^(m_{j−1} − m_j) + e^(x_j − m_j)",
+      "the rescale only does work when the max rises",
+      "result is exact, not an approximation, and can't overflow (m is one of the inputs, 1 ≤ d ≤ j)",
+      "⊕ rescales both partial sums to the common max and adds them",
+      "associative + commutative → any split, any order → parallel and tiled"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why safe softmax forces the whole row to exist before normalising, and how online softmax removes that requirement.", "kind": "concept", "answer": ["safe softmax subtracts the global max, which is only known after reading everything", "online softmax measures the sum against the max seen so far", "when the max rises it multiplies the old sum by e^(m_old − m_new) to re-base it", "so the row can arrive in pieces"]},
+    {"q": "Walk through the ⊕ merge of thread A's [3, 1] and thread B's [5, 2]: what pair does each thread hold, and what happens to each sum at the merge?", "kind": "mechanism", "answer": ["A holds (3, 1 + e^(1−3)) = (3, 1.135335)", "B holds (5, 1 + e^(2−5)) = (5, 1.049787)", "M = 5; A's sum is scaled by e^(3−5) = 0.135335, B's by 1", "merged (5, 1.203438), the same as the sequential pass"]},
+    {"q": "When is online softmax not worth adding to a kernel, and when is the fused top-k version the wrong choice?", "kind": "tradeoff", "answer": ["short vectors (V ≤ ~1,000) stay in cache, so extra passes cost nothing", "tiny batches are latency-bound (1.15× at batch 10), and one H100 sampling softmax is ~0.5 µs anyway", "fused top-k only helps small K (1.4× at K = 30) and can't give full-vocabulary probabilities for top-p"]}
+  ],
+  "compare": [
+    {"with": "perf-3-kernels/reduction-divergence", "q": "perf-3 computed softmax as two separate reductions (max, then sum). What is fundamentally different about online softmax's single reduction, which choice makes it possible, and what does it cost?", "answer": ["two reductions need two passes because the sum depends on the finished max", "online softmax makes the reduction operate on (m, d) pairs, so max and sum travel together", "the cost is an extra exp and multiply per element (or per merge)", "both are tree reductions; ⊕ just carries a richer state"]},
+    {"with": "perf-4-attention-kv/flashattention-tiling", "q": "Online softmax merges (m, d) for one vector; FlashAttention merges (m, ℓ) per row of a score tile. What extra state does FlashAttention have to rescale that this card doesn't?", "answer": ["the running output row O_i (a weighted sum of V rows)", "O_i was built against the old max, so it is scaled by the same e^(m_old − m_new)", "without that, O would mix terms on different reference points"]}
+  ],
+  "predict": {"q": "You run Flash-Decoding: one query against 8,192 keys split into 16 chunks on 16 thread blocks. Each block returns its partial output plus one scalar. What is that scalar, and could the chunks finish in any order? Commit, then reveal.", "answer": "The scalar is the chunk's log-sum-exp (m + log ℓ), which carries both the max and the sum. Because ⊕ is associative and commutative, the partial outputs can be rescaled and combined in any order once all 16 arrive. That is online softmax applied across thread blocks instead of across one thread's loop."},
+  "apply": {"task": "Hand-trace online softmax over x = [2, 4, 1, 4]: write m_j and d_j after every element, then the final probabilities. Then split it into [2, 4] and [1, 4], compute each half's (m, d), and merge with ⊕. Finally, break it: redo the sequential pass but forget the rescale (just add e^(x_j − m_j)). What wrong d do you get?", "done": "Your sequential d, your merged d and the check below agree, and you can say at which element the rescale did its only work.", "hint": "Check after trying: m = 2, 4, 4, 4; d = 1, 1.135335, 1.185122, 2.185122. Halves: (4, 1.135335) and (4, 1.049787), merged (4, 2.185122). y = [0.061935, 0.457640, 0.022785, 0.457640]. Without the rescale d = 3.049787, because element 1's term stays measured against the old max 2. Only element 2 (x = 4) triggers a real rescale (e^(2−4) = 0.135335)."},
+  "reflect": [
+    "Which prediction did you get wrong: what the scalar is, or whether the order matters?",
+    "Could you explain the rescale to someone as \"changing the reference point\" without the formula?",
+    "Which relationship is still fuzzy: running max → exactness, or ⊕ associativity → parallelism?",
+    "Why is the sampling-softmax speedup on the running example honest-but-small (0.013% of a step)?",
+    "What will you look for in FlashAttention I: what extra quantity gets rescaled alongside ℓ?"
+  ],
+  "revisit": ["perf-3-kernels/reduction-divergence", "perf-3-kernels/triton-programming-model"],
+  "prereq": ["perf-3-kernels/reduction-divergence"]
+}

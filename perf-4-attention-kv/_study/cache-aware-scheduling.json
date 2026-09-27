@@ -1,0 +1,56 @@
+{
+  "prime": {
+    "problem": "A prefix cache only helps if the KV is still there when the next request that needs it runs. First-come, first-served interleaves unrelated prefixes, so LRU evicts a template just before its next user: in the card's 64-request batch FCFS recomputes templates 36 times and hits 30.2% instead of 84.7%.",
+    "fits": "Second RadixAttention card. Card 1 built the tree and its eviction; this one controls the order requests run in, proves the best order for a batch, and extends it to several replicas.",
+    "expect": ["cache thrashing under FCFS", "longest-shared-prefix-first (LSPF)", "Theorem 3.1: DFS order is optimal", "starvation and an age cap", "the router's meta-tree across replicas"],
+    "goal": "Compute the optimal hit rate of a batch from its request tree, explain why LSPF achieves it, and say what it costs in fairness."
+  },
+  "attend": [
+    "Why does the order of requests change the hit rate at all, if the cache and eviction policy are fixed?",
+    "What is the lower bound on computed tokens for a batch, and why can no order beat it?",
+    "Why is \"run the request with the longest cached match next\" the same as a depth-first walk of the request tree?",
+    "What cache size does the theorem need, and why is it so small?",
+    "Who pays for LSPF's higher hit rate in an online system?"
+  ],
+  "core": {
+    "must": [
+      "The cache holds fewer prefixes than are in flight → FCFS interleaves unrelated prefixes → LRU evicts a prefix just before its next user → recompute (thrashing) → 30.2% hit rate (0% with round-robin arrivals)",
+      "Every edge of the batch's request tree must be computed at least once → C ≥ Σ|e| → DFS finishes an edge's whole subtree before leaving it → each edge computed exactly once if the cache holds the longest request → LSPF picks the deepest branch-off point, which is DFS → optimal (84.7%, exactly 15,200 tokens)",
+      "Online, greedy LSPF keeps sorting requests that match nothing behind those that do → cold requests starve (worst wait 354 vs 85 slots) → a guard such as an age cap restores the tail but gives up hit rate (93.2% → 80.4%)"
+    ],
+    "elevated": [
+      "Across replicas each worker has its own tree → a router matches prompts on a meta-tree of all workers' trees and sends by prefix affinity → hit rate rises (30.2% → 78.6% in the toy) but load becomes uneven (8 vs 24 requests): locality vs parallelism"
+    ],
+    "reference": ["Algorithm 1's pseudocode method names", "the current_size quirk in the printed admit test", "Fig 8(c) ablation bar list", "Table 2 multimodal numbers", "compressed-FSM jump-forward (1.6×)"]
+  },
+  "compress": {
+    "prompt": "From memory: state the lower bound, the DFS argument in two sentences, and the one online cost. Draw the request tree for 2 templates × 2 questions and number the nodes in LSPF order.",
+    "checklist": [
+      "lower bound: sum of edge lengths of the request tree",
+      "DFS computes each edge once and finishes its subtree while it is cached",
+      "cache ≥ longest request is enough",
+      "LSPF = DFS: the longest match branches off deepest on the cached path",
+      "online: starvation of requests that share nothing; guards trade hit rate for fairness"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain cache thrashing in a prefix cache and why a bigger cache is not the only fix.", "kind": "concept", "answer": ["with more prefixes in flight than fit, FCFS order evicts each before its next use", "a bigger cache helps only once it holds all in-flight prefixes", "reordering so each prefix's requests run back to back gets the optimum with a cache the size of one request"]},
+    {"q": "Walk through LSPF on the card's batch after the first T3 request finishes: what does match_prefix return for the waiting requests, how are they sorted, and what runs next?", "kind": "mechanism", "answer": ["the other 7 T3 requests match 1,500 tokens; all others match 0", "sorted longest first, so the T3 requests come first", "they run back to back, each prefilling only its 50-token question", "then ties at 0 go to the earliest arrival, starting the next template"]},
+    {"q": "You run an API with strict per-customer latency targets. Do you enable greedy LSPF, and if so with what guard?", "kind": "tradeoff", "answer": ["greedy LSPF maximises hit rate but can starve requests that share nothing", "add a guard: an age cap, a bound on reordering, or fair queues per client with LSPF inside each", "accept a lower hit rate (93.2% → 80.4% in the lab) for a bounded tail"]}
+  ],
+  "compare": [
+    {"with": "perf-4-attention-kv/mooncake-scheduling", "q": "SGLang sorts one GPU's queue by longest cached prefix; Mooncake's Conductor picks which machine runs a request. What does the Conductor weigh that LSPF doesn't, and why?", "answer": ["the Conductor adds queue time and network transfer time to the cached-prefix benefit", "in a cluster the best cache holder may be busy, so an idle node that pulls the prefix can win", "LSPF on one GPU has no transfer option and one queue"]},
+    {"with": "perf-7-training-economics/kv-aware-routing", "q": "Course 7's KV-aware routing sends requests where their cache lives. How is it the A.4 meta-tree router at production scale, and what trade-off does it inherit?", "answer": ["both route by prefix affinity to the worker that holds the matching KV", "both keep only an approximate view of each worker's cache", "both trade load balance for locality: pure affinity overloads the workers holding hot prefixes"]}
+  ],
+  "predict": {"q": "The cache is large enough to hold every template and question in the batch at once. Does LSPF still beat FCFS? Commit first.", "answer": "No. If nothing is ever evicted, every order computes each edge exactly once, so FCFS, random and LSPF all reach the 84.7% optimum (the lab's try-this 2, at 15,200 slots). Scheduling only matters when the cache is smaller than the working set."},
+  "apply": {"task": "Small batch by hand: 3 templates (T0, T1, T2) of 1,000 tokens, each followed by 3 different 50-token questions (9 requests), a cache that holds 2 templates with their questions (2,100 slots), and round-robin arrivals T0, T1, T2, T0, T1, T2, … Compute the lower bound on computed tokens, the optimal hit rate, and FCFS's hit rate with LRU. Then order the 9 requests by LSPF.", "done": "You have Σ|e|, the optimal hit rate, FCFS's hit rate with a one-line reason, and the LSPF order, all before checking.", "hint": "Prompt tokens 9 × 1,050 = 9,450. Σ|e| = 3 × 1,000 + 9 × 50 = 3,450, so optimal = 1 − 3,450 / 9,450 = 63.5%. FCFS round-robin: each template is evicted (LRU) just before its next request, so 0%. LSPF: T0 × 3, T1 × 3, T2 × 3 (our arithmetic)."},
+  "reflect": [
+    "Which prediction did you get wrong: whether order still matters with a huge cache?",
+    "Could you explain the DFS optimality proof in two sentences without notation?",
+    "Which relationship is still fuzzy: order → eviction timing, or DFS → each edge once?",
+    "Where would you put the fairness guard in a real engine?",
+    "What will you look for in Mooncake I: what happens when the reusable KV outgrows one GPU?"
+  ],
+  "revisit": ["perf-4-attention-kv/radixattention", "perf-2-scaling-book-inference/inference-engine-design"],
+  "prereq": ["perf-4-attention-kv/radixattention"]
+}

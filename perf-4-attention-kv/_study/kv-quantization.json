@@ -1,0 +1,57 @@
+{
+  "prime": {
+    "problem": "GQA and MLA are fixed when the model is trained. A serving team with an existing model still pays 128 KiB per token for Llama-3.1-8B, and decode reads all of it each step. Storing each number in fewer bits is the lever they control, but at 2 bits naive rounding wrecks the model.",
+    "fits": "Third card on bytes per token, and the first a serving team can apply to any model. It reuses the capacity formula (GQA card) and perf-3's FP8 formats, then walks KIVI's study of which axis to quantize along.",
+    "expect": ["bits per number, including scales", "FP8 E4M3 with one scale per tensor", "per-channel vs per-token groups", "outlier key channels, sparse attention over values", "KIVI's full-precision residual window (R = 128)"],
+    "goal": "Compute capacity and throughput for FP8, INT4 and KIVI-2, and explain why keys go per-channel and values per-token."
+  },
+  "attend": [
+    "Why does halving bytes per token double decode throughput on a full H100 but not change the step time at maximum batch?",
+    "Why does one outlier channel in a per-token group make all the normal numbers in that group round to the same level?",
+    "Values have no outlier channels. So why does quantizing them per-channel blow up the output error almost 15×?",
+    "Per-token groups stream naturally as tokens arrive. What does per-channel quantization of keys need that a stream doesn't give, and how does KIVI's residual window supply it?",
+    "At what batch does a smaller KV cache stop buying throughput on the running example, and why?"
+  ],
+  "core": {
+    "must": [
+      "Decode is memory-bound → a full H100 reads ~80 GB per step whatever the format → fewer bits per KV number → more sequences share each step (59 → 119 → 297 for BF16 → FP8 → KIVI-2) → throughput scales with the cut → until matmuls (4.82 ms at 297 sequences) match the weight read",
+      "Keys have a few fixed huge channels → a per-token group spans those channels, so its step is set by the outlier and normal values collapse → per-channel groups confine each outlier to its own channel → key and attention-score error ~3–5× lower",
+      "Attention is sparse, so each output is a mix of a few tokens' values → per-channel groups let 31 neighbours set an important token's step → per-token groups keep each token's error inside that token → values go per-token (output error 3.55 vs 49.89)",
+      "Per-channel groups need 32 tokens before they can be quantized → keep the newest R = 128 tokens in full precision, then quantize in groups → streaming works and recent tokens (which attention often weights) stay exact → GSM8K 12.21 → 20.77"
+    ],
+    "elevated": [
+      "Scales and zero-points are part of the bill: 2 bits + two 16-bit values per 32-number group = 3 bits per number → 24 KiB/token, not 16 → quote bits \"including scales\""
+    ],
+    "reference": ["vLLM's kv_cache_dtype flag values and --kv-cache-dtype-skip-layers", "E4M3's max of 448", "the Q_MatMul CUDA kernel and Triton quantize kernel names", "KIVI's per-task tables", "the synthetic lab's exact error values"]
+  },
+  "compress": {
+    "prompt": "From memory, write KIVI as three rules (keys, values, recent tokens), each with the one-line reason, then the formula for KV bytes per token with the scale overhead included.",
+    "checklist": [
+      "keys per-channel: outlier channels stay in their own groups",
+      "values per-token: sparse attention means each important token's error must stay its own",
+      "newest R tokens in full precision: per-channel groups need 32 tokens, and recent tokens matter",
+      "bytes/token = 2·L·K·H × bits (with scales) / 8",
+      "FP8 is 2× with no layout change; KIVI-2 ~5× on the running example"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why quantizing the KV cache speeds up decode, not just fits more users.", "kind": "concept", "answer": ["decode reads every cached byte every step and is memory-bound", "at the same batch, fewer bytes per step: 23.70 → 8.58 ms with KIVI-2 at batch 59", "at a full HBM, more sequences share each ~24 ms step, so tokens/s rises"]},
+    {"q": "Walk through how a 2-bit per-token group containing an outlier channel fails, using the card's token 0: values from −2.33 to 13.05.", "kind": "mechanism", "answer": ["zero-point = min = −2.33, step = (13.05 + 2.33)/3 = 5.12", "only 4 levels, 5.12 apart", "normal values around ±1 all round to the same level", "per-channel groups over 32 tokens of channel 0 get a step of 1.36"]},
+    {"q": "Your model runs long-context retrieval and maths at batch 200 on H100s. Choose between FP8 KV and KIVI-2, and say what you'd measure before shipping either.", "kind": "tradeoff", "answer": ["FP8: 2×, one flag, no layout change, usually near-lossless but calibrate scales and skip sensitive layers", "KIVI-2: ~5× but GSM8K fell 22.67 → 20.77 on Llama-2-13B; maths suffers most", "at batch 200 the running example is near the compute edge, so KIVI's extra capacity may buy little", "measure a long-context and a reasoning benchmark, not just perplexity"]}
+  ],
+  "compare": [
+    {"with": "perf-4-attention-kv/gqa", "q": "GQA cuts KV heads; quantization cuts bits per number. What is fundamentally different about where each loses quality, and who gets to choose each?", "answer": ["GQA removes K/V capacity from the model, so quality depends on training (uptraining helps)", "quantization keeps every number but adds rounding error, so it depends on the data's shape (outlier channels, sparsity)", "GQA is chosen by the model builder; quantization by the serving team", "they multiply: Llama's GQA-8 plus FP8 is 64 KiB/token"]},
+    {"with": "perf-5-engines/quantization-serving", "q": "Course 5 covers quantizing weights and activations for serving. Why does KV quantization need different choices than weight quantization, and when does each matter more?", "answer": ["weights are static and can use heavy offline methods (GPTQ); KV arrives token by token, so round-to-nearest in a stream", "KV has its own structure: outlier key channels, sparse use of values", "weights dominate the bytes at small batch and short context; KV dominates at large batch and long context"]}
+  ],
+  "predict": {"q": "KIVI-2 with group size 128 instead of 32 (scales amortised over 4× more numbers). How many 8k sequences fit on the running example, and would you expect quality to hold? Commit first.", "answer": "Bits per number fall to 2 + 32/128 = 2.25, so 18 KiB/token; with the 128-token BF16 window a sequence is 0.165 GB and 386 fit, vs 297 at G = 32 (our arithmetic). But the card's ablation shows group size 128 dropping GSM8K to 17.29 from 20.77: bigger groups mean each scale covers more varied numbers, so rounding gets coarser. And at 386 sequences the matmuls already outweigh the weight read, so the extra capacity buys less throughput."},
+  "apply": {"task": "Quantize two 4-number groups to 2 bits by hand with KIVI's formula (zero = min, step = (max − min)/3, round to the nearest level): (a) a per-token group from a key row containing an outlier channel: [0.5, −1.0, 12.0, 0.2]; (b) a per-channel group of normal values: [0.5, 0.3, −0.2, 0.9]. Write the step, the four levels, the dequantized values and the largest error among the non-outlier numbers.", "done": "Both groups are worked out, and you can say in one sentence why (a) destroys the normal values while (b) keeps every error under 0.14.", "hint": "(a) step 4.333; levels −1, 3.333, 7.667, 12; result [−1, −1, 12, −1]: 0.5 and 0.2 both collapse to −1 (errors 1.5 and 1.2). (b) step 0.367; levels −0.2, 0.167, 0.533, 0.9; result [0.533, 0.167, −0.2, 0.9], max error 0.133 (our arithmetic)."},
+  "reflect": [
+    "Which prediction did you get wrong: capacity at group size 128, or its quality?",
+    "Could you explain \"keys per-channel, values per-token\" in two sentences, one reason each?",
+    "Which relationship is still fuzzy: outlier channels → per-channel keys, or sparse attention → per-token values?",
+    "Did you forget the scales when counting bits?",
+    "What will you look for in PagedAttention I: how a smaller per-token KV still gets wasted by the allocator?"
+  ],
+  "revisit": ["perf-4-attention-kv/gqa", "perf-4-attention-kv/mla", "perf-3-kernels/tensor-cores-low-precision", "perf-2-scaling-book-inference/kv-tricks"],
+  "prereq": ["perf-4-attention-kv/gqa"]
+}

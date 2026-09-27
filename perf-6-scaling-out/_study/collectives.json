@@ -1,0 +1,64 @@
+{
+  "prime": {
+    "problem": "Once one model runs on several GPUs, each GPU holds only part of an answer, and the next layer can't start until the parts are combined. If you can't say what combining costs, you can't say which way of splitting a model is fast, or why some splits must never leave a server.",
+    "fits": "First card of the course. Course 2's sharding cards told you tensor parallelism needs an all-reduce; this card opens that box: which collective, how the ring moves the bytes, and what the wire inside a node vs between nodes does to the cost. Every later card prices its communication with these formulas.",
+    "expect": ["the six NCCL collectives and AllReduce = ReduceScatter + AllGather", "the ring all-reduce and its 2(n−1)/n factor", "latency term vs bandwidth term, and the crossover size", "algbw vs busbw", "scale-up (NVLink, 450 GB/s) vs scale-out (InfiniBand, 50 GB/s)"],
+    "goal": "Estimate what one all-reduce costs for a given message size, GPU count and link, say whether it is latency- or bandwidth-bound, and explain why tensor parallelism stays inside one NVLink node."
+  },
+  "attend": [
+    "Why does each GPU in a ring all-reduce send 2(n−1)/n × S bytes, and why does that approach 2S instead of growing with n?",
+    "Which of the two cost terms matters for a 16 kB decode message, and which for a 1 GB gradient?",
+    "Why does an nccl-tests line with algbw at 57% of the link spec not mean the link is underused?",
+    "What turns NVIDIA's \"900 GB/s\" and a \"400 Gb/s\" NIC into a 9× gap per GPU, not 2.25× or 18×?",
+    "When is the ring the wrong algorithm, and what does NCCL use instead?"
+  ],
+  "core": {
+    "must": [
+      "ReduceScatter then AllGather = AllReduce → a ring runs n−1 reduce steps then n−1 gather steps, each sending S/n per GPU → 2(n−1)/n × S per GPU, never more than 2S → in the bandwidth-bound regime the time depends on the array size and link, not on how many GPUs join",
+      "Every collective pays a fixed latency per hop plus bytes ÷ link bandwidth → small messages are dominated by 2(n−1)·α → crossover S* = n·α·W (3.6 MB on NVLink at the illustrative α) → decode all-reduces (16 kB–4 MB) sit in the latency-bound region, so fewer calls matter more than a faster link",
+      "NVLink inside a node is 450 GB/s per direction per GPU, InfiniBand 50 GB/s → 9× less bandwidth once a collective leaves the node → at 70B TP8 batch 64 the 160 all-reduces take 0.65 ms of data time on NVLink but 5.87 ms on IB, more than the whole 5.27 ms step → chatty splits (TP) stay inside one NVLink domain",
+      "busbw = algbw × 2(n−1)/n for AllReduce → it normalises for the ring's extra traffic → compare busbw, not algbw, with the link spec: 1 GB in 3.89 ms is 257 GB/s algbw but a full 450 GB/s busbw"
+    ],
+    "elevated": [
+      "Measured 8×H100 all-reduce reaches ~370 GB/s busbw only near 10 GB messages and ~150 GB/s at 58.7 MB → real collectives run well below spec at serving sizes → treat every model number here as a ceiling and measure your node"
+    ],
+    "reference": [
+      "NCCL's exact collective names and Gather/Scatter/Send/Recv",
+      "the busbw factors per collective (1.75 AllReduce, 0.875 AllGather/ReduceScatter/AllToAll at n = 8)",
+      "B200, H800, V100 DGX-2H link figures",
+      "SHARP/NVLS in-switch reduction (~30% more bandwidth measured)",
+      "the Scaling Book's bidirectional-TPU form of the formulas"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, write the all-reduce cost formula and label each term, then draw the ring for 4 GPUs as two phases in one line each. Finish with one sentence on why that formula keeps tensor parallelism inside a node.",
+    "checklist": [
+      "T ≈ 2(n−1)·α + 2(n−1)/n · S/W: hops times latency, plus bytes on the busiest link",
+      "phase 1 ReduceScatter leaves one summed chunk per GPU; phase 2 AllGather spreads them",
+      "each GPU sends at most 2S however many GPUs join",
+      "small messages are latency-bound, big ones bandwidth-bound; crossover n·α·W",
+      "NVLink 450 vs IB 50 GB/s per GPU: the 9× gap decides where each parallelism can live"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why the ring all-reduce is called bandwidth-optimal, and what it gives up to be that.", "kind": "concept", "answer": ["every link is busy on every step and each GPU sends 2(n−1)/n × S, never more than 2S", "the alternatives (send to one GPU, everyone to everyone) push 7S through a link at n = 8, 4× the ring", "the price is 2(n−1) sequential hops, so small messages pay a lot of latency; a tree needs only log n hops"]},
+    {"q": "Walk through step 1 of the reduce-scatter phase on a 4-GPU ring: which chunk does GPU 2 send, to whom, and what does the receiver do with it?", "kind": "mechanism", "answer": ["at step s GPU i sends chunk (i − s) mod n; at s = 1 GPU 2 sends chunk 1", "it goes to its neighbour GPU 3", "GPU 3 adds it to its own copy of chunk 1, so that chunk now holds two GPUs' data", "after 3 such steps each GPU holds one chunk summed over all 4"]},
+    {"q": "A 70B model at TP8 decodes at batch 1, where each all-reduce carries 16 kB. Your manager offers a faster interconnect with twice the bandwidth. How much does it help, and what would help more?", "kind": "tradeoff", "answer": ["the data term is 0.06 µs per all-reduce; halving it saves almost nothing", "the cost is ~14 hops × α per all-reduce, 2.24 ms per step at the illustrative 1 µs", "fewer all-reduces, lower-latency algorithms (tree, in-switch reduction) or a smaller TP group help more"]},
+    {"q": "An nccl-tests all-reduce on 8 GPUs prints algbw 257 GB/s for 1 GB. Is the NVLink link saturated? Show the conversion.", "kind": "mechanism", "answer": ["busbw = algbw × 2(n−1)/n = 257 × 1.75 ≈ 450 GB/s", "that equals the 450 GB/s per-direction spec, so the link is full", "algbw looks low only because each byte crosses the links 1.75 times"]}
+  ],
+  "compare": [
+    {"with": "perf-6-scaling-out/expert-parallel", "q": "All-reduce (tensor parallelism) vs all-to-all (expert parallelism): what does each GPU need at the end, which property of the model decides which collective you need, and how does each one's traffic grow with the number of GPUs?", "answer": ["all-reduce: every GPU needs the full sum of everyone's partial result; all-to-all: each GPU needs a different, personalised piece", "TP splits every matrix so every GPU holds partial sums; EP puts whole experts on GPUs, so tokens go only where their experts live", "TP's total bytes per token grow with n (200.7 kB at 8 to 1,806 kB at 64 for V3's layer), EP's are capped by top-k (~150–170 kB)", "all-reduce fails over slow links on every layer; all-to-all fails by imbalance and multi-node efficiency (\"even 50%\" is hard)"]},
+    {"with": "perf-2-scaling-book-inference/sharding-prefill-generation", "q": "Course 2 told you when sharded generation is comms-bound using bandwidth ratios. What does this card add that changes the answer at batch 1?", "answer": ["course 2's rule compares bytes over links against bytes from HBM", "this card adds the fixed per-hop latency term", "at batch 1 the bandwidth rule says hundreds of ways are fine, but 2(n−1)·α per all-reduce is what actually costs time"]}
+  ],
+  "predict": {"q": "Keep 70B at TP8 on NVLink and raise the decode batch from 64 to 128. Does the all-reduce time per step double? Commit to a number before revealing.", "answer": "No. The message doubles to 2.10 MB, so the data term doubles from 0.65 to 1.30 ms per step, but the latency floor (160 × 14 hops × 1 µs = 2.24 ms, illustrative) doesn't change. Total goes from 2.89 to 3.54 ms, about 1.23×. Only in the bandwidth-bound regime does time scale with bytes."},
+  "apply": {"task": "Price the all-reduces of one Llama-3.1-70B TP8 decode step at batch 128 (message = 128 × 8,192 × 2 bytes) with the card's model: α = 1 µs per hop, 14 hops, 160 all-reduces. Do it for NVLink (450 GB/s) and for a hypothetical all-IB ring (50 GB/s). Then compute the NVLink crossover size for a TP4 group, and say which regime a TP4 decode message at batch 64 falls in.", "done": "You have the per-step totals for both links, the TP4 crossover, and a one-line verdict on the batch-64 TP4 message, all before opening the hint.", "hint": "Message 2,097,152 B. NVLink data per all-reduce 1.75 × 2,097,152 / 450e9 = 8.16 µs → ×160 = 1.30 ms, + 2.24 ms latency = 3.54 ms. IB: 73.40 µs → 11.74 ms + 2.24 = 13.98 ms, well over the 5.27 ms weight read. TP4 crossover = 4 × 1 µs × 450 GB/s = 1.8 MB; a batch-64 message is 1.05 MB, so it is still latency-bound."},
+  "reflect": [
+    "Which prediction did you get wrong: how the step time scales with batch, or which regime a message is in?",
+    "Could you explain the 2(n−1)/n factor from the ring's two phases, not just quote it?",
+    "Which link is still fuzzy: message size → latency- or bandwidth-bound, or link type → where TP can live?",
+    "Can you convert a vendor's \"900 GB/s\" and \"400 Gb/s\" into per-direction bytes without looking?",
+    "What will you check first on the Megatron cards: where the two all-reduces per layer come from?"
+  ],
+  "revisit": ["perf-2-scaling-book-inference/sharding-prefill-generation"],
+  "prereq": ["perf-2-scaling-book-inference/sharding-prefill-generation"]
+}
