@@ -127,3 +127,11 @@ test("validate rejects script and hard-coded colours inside fields", () => {
   assert.match(p, /prime.goal: no <script>/);
   assert.match(p, /prime.goal: no inline style/);
 });
+
+test("each stage links to its principle, and field-guide backlinks render in Prime", () => {
+  const out = inject(card, study, { ...ctx, usedIn: [{ guide: "Agents", title: "p2 coding tools", url: "https://example.com/#p2" }] });
+  for (const id of ["layers", "compress", "retrieve", "interleave", "predict", "apply", "reflect", "prime"])
+    assert.ok(out.includes(`learning-principles.html#${id}"`), id);
+  assert.match(out, /Used in the field guides:<\/b> <a href="https:\/\/example.com\/#p2">p2 coding tools<\/a> \(Agents\)/);
+  assert.doesNotMatch(inject(card, study, ctx), /Used in the field guides/);
+});

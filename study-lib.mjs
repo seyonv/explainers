@@ -27,12 +27,13 @@ function prime(s, ctx) {
   const p = s.prime;
   const needs = (s.prereq || []).map((r) => link(r, ctx)).join(" · ");
   const back = (s.revisit || []).map((r) => link(r, ctx)).join(" · ");
+  const used = (ctx.usedIn || []).slice(0, 4).map((u) => `<a href="${u.url}">${u.title}</a> (${u.guide})`).join(" · ");
   return `<!-- study:prime -->
 <aside class="prime" aria-label="Prime: read this first">
-<div class="prime-k">Prime · 2 minutes before you read</div>
+<div class="prime-k"><a href="${PRINCIPLES}#prime">Prime</a> · 2 minutes before you read</div>
 <p><b>The problem:</b> ${p.problem}</p>
 <p><b>Where it fits:</b> ${p.fits}</p>${needs ? `\n<p class="prime-links"><b>Needs first:</b> ${needs}</p>` : ""}${back ? `\n<p class="prime-links"><b>Builds on:</b> ${back}</p>` : ""}
-<p><b>You'll meet:</b> ${p.expect.map((e) => `<span class="chip">${e}</span>`).join(" ")}</p>
+${used ? `<p class="prime-links"><b>Used in the field guides:</b> ${used}</p>\n` : ""}<p><b>You'll meet:</b> ${p.expect.map((e) => `<span class="chip">${e}</span>`).join(" ")}</p>
 <p><b>By the end:</b> ${p.goal}</p>
 <p class="prime-q"><b>Read with these questions</b> (answer them in your head as you go; don't take notes line by line):</p>
 <ol>${li(s.attend)}</ol>
@@ -43,29 +44,29 @@ function prime(s, ctx) {
 function panel(s, ctx) {
   const c = s.core;
   const stages = [
-    ["Core model", "what to internalise, what to just look up",
+    ["Core model", "layers", "what to internalise, what to just look up",
       `<p class="st-rule">Keep it if it changes what you can <i>explain, predict, compare, choose, build or debug</i>. Otherwise it's reference.</p>
 <div class="core"><div><h4>Understand and remember</h4><ul>${li(c.must)}${li((c.elevated || []).map((e) => `<span class="up">detail that matters</span> ${e}`))}</ul></div>
 <div><h4>Reference only</h4><ul class="muted">${li(c.reference)}</ul></div></div>`],
-    ["Compress", "write it yourself first",
+    ["Compress", "compress", "write it yourself first",
       `<p>${s.compress.prompt}</p><p class="st-how">On paper or in your notes, in your own words, without scrolling up. Aim for the smallest thing that still explains it.</p>
 ${reveal("Then compare with this checklist", `<ul>${li(s.compress.checklist)}</ul><p class="st-how">Missing a point? Reread only the section about it, not the whole card.</p>`)}`],
-    ["Retrieve", "from memory, card closed",
+    ["Retrieve", "retrieve", "from memory, card closed",
       `<ol class="qs">${s.retrieve.map((r) => `<li><span class="kind">${r.kind}</span> ${r.q}${reveal("Check", `<ul>${li(r.answer)}</ul>`)}</li>`).join("")}</ol>`],
-    ["Compare", "against what you already know",
+    ["Compare", "interleave", "against what you already know",
       s.compare.map((x) => `<p><b>vs ${link(x.with, ctx)}:</b> ${x.q}</p>${reveal("Check", `<ul>${li(x.answer)}</ul>`)}`).join("")],
-    ["Predict", "commit to an answer before revealing",
+    ["Predict", "predict", "commit to an answer before revealing",
       `<p>${s.predict.q}</p>${reveal("Reveal", `<p>${s.predict.answer}</p>`)}`],
-    ["Apply", "use the model, don't restate it",
+    ["Apply", "apply", "use the model, don't restate it",
       `<p>${s.apply.task}</p><p><b>Done when:</b> ${s.apply.done}</p>${s.apply.hint ? reveal("Hint", `<p>${s.apply.hint}</p>`) : ""}`],
-    ["Reflect", "and decide whether to move on",
+    ["Reflect", "reflect", "and decide whether to move on",
       `<ul>${li(s.reflect)}</ul><p class="st-how">Repair what came up: reopen only that section, then retry the question you missed. Tutor mode: <code>/study ${ctx.course}/${ctx.slug}</code> in Claude Code grades your answers and walks you through each stage.</p>`],
   ];
   return `<!-- study:panel -->
 <section class="study" aria-label="Study this card">
 <div class="study-head"><h2>Study this card</h2><span>Open each step in order · <a href="${PRINCIPLES}">why this works</a></span></div>
 <input type="checkbox" id="study-all" class="study-all"><label for="study-all" class="study-all-l">show all steps (for revisiting)</label>
-${stages.map(([t, sub, inner], i) => `<details class="st"><summary><b>${i + 1} · ${t}</b> <span>${sub}</span></summary><div class="st-body">${inner}</div></details>`).join("\n")}
+${stages.map(([t, why, sub, inner], i) => `<details class="st"><summary><b>${i + 1} · ${t}</b> <span>${sub}</span></summary><div class="st-body">${inner}<p class="st-why"><a href="${PRINCIPLES}#${why}">Why this step?</a></p></div></details>`).join("\n")}
 </section>
 <!-- /study:panel -->`;
 }
@@ -91,6 +92,7 @@ export const CSS = `/* study:css */
 .st-body ul,.st-body ol{margin:4px 0;padding-left:22px}
 .st-body li{margin:3px 0}
 .st-rule,.st-how{color:var(--muted);font-size:13px}
+.st-why{font-size:12px;color:var(--muted);text-align:right;margin:2px 0 0}
 .core{display:grid;grid-template-columns:3fr 2fr;gap:6px 18px}
 .core h4{margin:4px 0;font-size:13px}
 .core .muted{color:var(--muted)}

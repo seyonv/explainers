@@ -193,6 +193,11 @@ function patchIndex(c) {
   } else if (!html.includes('class="back"')) {
     html = html.replace(/<main class="wrap">/, `<main class="wrap">\n<!-- series-nav --><a class="back" href="../index.html">← All explainers</a><!-- /series-nav -->`);
   }
+  // Courses with Study Mode link the principles page under the subtitle (after the prerequisites line, if any).
+  if (existsSync(join(root, c.slug, "_study"))) {
+    const study = `<!-- series-nav --><p class="needs"><b>Study mode:</b> every card opens with a short Prime and ends with a step-by-step study panel. <a href="../learning-principles/learning-principles.html">How to study these cards</a> · for a tutor that grades your answers, run <code>/study ${c.slug}/&lt;card&gt;</code> in Claude Code.</p><!-- /series-nav -->`;
+    html = html.includes('<p class="needs">') ? html.replace(/(<p class="needs">[\s\S]*?<\/p><!-- \/series-nav -->)/, `$1\n${study}`) : html.replace(/(<p class="sub">[\s\S]*?<\/p>)/, `$1\n${study}`);
+  }
   if (!html.includes('class="rbody"')) {
     html = html.replace(/<iframe id="rframe" title="Card"><\/iframe>/, `<div class="rbody"><aside class="side" id="side" aria-label="Contents"></aside><iframe id="rframe" title="Card"></iframe></div>`);
     html = html.replace(/(<span class="t" id="rtitle">)/, `<button id="tog" aria-label="Toggle contents">☰</button>\n    $1`);
