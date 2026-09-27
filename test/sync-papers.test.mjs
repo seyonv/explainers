@@ -102,3 +102,15 @@ test("a paper title with $' and $& renders verbatim", () => {
   assert.ok(idx.includes("A $&amp; B"));
   assert.ok(idx.includes(`"Overview $'"`));
 });
+
+test("syncPapers never prunes a paper's _study/ sidecars", () => {
+  const src = mkdtempSync(join(tmpdir(), "src-")), dest = mkdtempSync(join(tmpdir(), "dest-"));
+  paperDir(src, "20260913-2305-01210-gp2n", "2305.01210", ready);
+  syncPapers({ src, dest });
+  mkdirSync(join(dest, "paper-2305-01210", "_study"));
+  writeFileSync(join(dest, "paper-2305-01210", "_study", "pass-at-k.json"), "{}");
+  writeFileSync(join(dest, "paper-2305-01210", "stray.html"), "x");
+  syncPapers({ src, dest });
+  assert.ok(existsSync(join(dest, "paper-2305-01210", "_study", "pass-at-k.json")));
+  assert.ok(!existsSync(join(dest, "paper-2305-01210", "stray.html")));
+});

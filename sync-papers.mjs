@@ -51,7 +51,8 @@ export function syncPapers({ src, dest }) {
     mkdirSync(out, { recursive: true });
     const want = new Set(["index.html", "explainer.json", ...cards.map((c) => c.file)]);
     let changed = false;
-    for (const f of readdirSync(out)) if (!want.has(f)) { rmSync(join(out, f)); changed = true; }
+    // _study/ holds Study Mode sidecars (study-build.mjs re-injects them after each sync), so it is never pruned.
+    for (const f of readdirSync(out)) if (!want.has(f) && f !== "_study") { rmSync(join(out, f)); changed = true; }
     for (const c of cards) changed = put(join(out, c.file), readFileSync(join(cardsDir, c.file))) || changed;
     changed = put(join(out, "explainer.json"), JSON.stringify(meta, null, 2) + "\n") || changed;
     changed = put(join(out, "index.html"), renderIndex(paper, meta, cards)) || changed;
