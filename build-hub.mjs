@@ -77,6 +77,7 @@ if (existsSync(join(root, "study-path.json"))) {
     const html = readFileSync(join(root, d.plan, d.plan + ".html"), "utf8");
     d.ids = [...new Set([...html.matchAll(/data-id="([^"]+)"/g)].map((m) => m[1]))];
   }
+  for (const e of entries.filter((x) => x.slug === path.overview)) e.series = path.title;
 }
 
 const page = readFileSync(join(root, "hub-template.html"), "utf8")
