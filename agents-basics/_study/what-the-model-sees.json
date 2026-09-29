@@ -1,0 +1,58 @@
+{
+  "prime": {
+    "problem": "The model only knows what is in the request, so everything an agent can do depends on what the harness packs in. Packed badly, a run costs more, misses the cache every call, gets less accurate as the input grows, or dies late with \"prompt is too long\".",
+    "fits": "The previous two cards showed the loop and one tool call. This card looks at the whole request those calls build up, and places skills, MCP, subagents and hooks on that picture.",
+    "expect": ["stable prefix: tools → system → repo instructions", "history that only grows", "compaction and context rot", "skill · MCP · subagent · hook", "a 200,000-token budget"],
+    "goal": "Break one call into its parts with token counts, say what order keeps the cache working, and say where each of the four extensions lands in the request."
+  },
+  "attend": [
+    "Which parts of the request stay the same on every call, and roughly how big are they in Claude Code's example?",
+    "At turn 30, what share of the 200,000-token window is used, and how many more turns fit?",
+    "Why does a timestamp at the top of the system prompt make every call pay full price?",
+    "Which of the four extensions never enters the context unless it sends a message back?",
+    "What does context rot say about filling the window just because there's room?"
+  ],
+  "core": {
+    "must": [
+      "The model sees only the request → the harness sends a stable prefix (tools, system prompt, repo instructions) then the growing history on every call → the prefix is paid every call and the history grows each turn",
+      "The cache matches from the start in the order tools → system → messages → any change invalidates that point and everything after → keep the front byte-identical and only append",
+      "History only grows → the window fills (call 95 in the example) and the run fails late → compact or clear old tool results well before the limit, in large chunks, because each rewrite restarts the cache",
+      "Accuracy drops as input grows, even on simple tasks → a full window costs quality, not only money → load files just in time and keep paths and queries instead of contents"
+    ],
+    "elevated": [
+      "Skills and MCP tools sit in the prefix, a subagent returns only a report, a hook runs outside the context → each extension costs tokens in a different place → count where it lands before adding it"
+    ],
+    "reference": ["Claude Code's startup sizes (4,200, 1,800, 450, 320, 280, 120)", "the 566-tool, 208,000-token MCP case", "the Agent Skills size limits", "hook exit code 2"]
+  },
+  "compress": {
+    "prompt": "Close the card. Draw one request as a stack from the front: label each layer, give its size from the example, and mark the line where the cache stops helping if the system prompt changes. Then add a small arrow for where each of skills, MCP, subagents and hooks plugs in.",
+    "checklist": [
+      "tools 6,000 → system 4,200 → CLAUDE.md 2,120 → skills 450 → environment 280: prefix 13,050",
+      "history 29 × 2,000 = 58,000; this call 71,050 = 35.5% of 200,000",
+      "a change invalidates the cache from that layer onward",
+      "skill: description in the prefix, body on demand; MCP: tools block; subagent: report into history; hook: outside, blocks with exit 2",
+      "compact at a threshold (call 55 at 60%), well before the call-95 wall"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain the difference between a skill and an MCP server in terms of what each adds to the request and when.", "kind": "concept", "answer": ["a skill adds about 100 tokens of name and description to the prefix every call, and its body only when the model loads it", "an MCP server adds its tool definitions to the tools block, the front of every call", "a skill is know-how; MCP gives the agent new abilities through tools"]},
+    {"q": "A harness adds one new tool half-way through a run. Trace what happens to the cache on the next call and why.", "kind": "mechanism", "answer": ["tools are the very first layer of the request", "changing them invalidates the cache for tools, system and all messages after", "the whole request is written again at the write price instead of read at 0.1×"]},
+    {"q": "Your run is at 60% of the window. Clear old tool results, summarize the history, or let it run: which do you pick and what does each cost?", "kind": "tradeoff", "answer": ["clearing old tool results is lightest; the model rarely needs raw output again", "a summary keeps decisions and open bugs but may drop a detail the next step needs", "both rewrite the history, so the cache restarts from there: do it rarely, in large chunks", "letting it run risks a late 'prompt is too long' failure and lower accuracy"]},
+    {"q": "Why does delegating a big search to a subagent keep the parent's context small without lowering total tokens?", "kind": "mechanism", "answer": ["the subagent reads the files in its own fresh context", "only its short report enters the parent's history", "but the subagent pays for its own reads, so total tokens don't fall"]}
+  ],
+  "compare": [
+    {"with": "agents-basics/tool-call", "q": "Cutting a tool's output and compacting the history both shrink the context. Which one keeps the cache intact, and how does that decide when you use each?", "answer": ["cutting happens before the output enters the history, so the prefix stays append-only and the cache keeps hitting", "compaction rewrites earlier turns, so everything after is written to the cache again", "so cut at the tool on every call, and compact rarely, only on long runs"]},
+    {"with": "llm-latency/prompt-caching", "q": "The prompt-caching card showed why a repeated prefix is cheap. What in an agent's request is the repeated prefix, and what breaks it?", "answer": ["tools, system prompt and repo instructions, plus every earlier turn", "anything that changes near the front: a timestamp, reordered tools, an edited turn", "the fix is ordering: stable parts first, volatile values last"]}
+  ],
+  "predict": {"q": "Before a run, you add an MCP server whose tool definitions are 20,000 tokens. With the example's other numbers, predict at which call the 200,000-token window fills, compared with call 95 before.", "answer": "The prefix becomes 33,050, so input on call k = 33,050 + 2,000 × (k − 1). Call 84 is 199,050 and fits; call 85 is 201,050 and doesn't. The window fills 10 calls sooner (20,000 ÷ 2,000 per turn), and every one of those calls pays for the 20,000 extra tokens."},
+  "apply": {"task": "In an agent you use, find out what goes into one request: the tool list, the system prompt, the repo instructions file and how big the history is at some turn. Claude Code's docs page \"Explore the context window\" walks through the same breakdown. Put the numbers in a table like the card's, and mark anything volatile that sits near the front.", "done": "You have a table of the request's parts with token counts that add up, the share of the window used, and one change that would shrink the prefix or keep it more stable.", "hint": "If you can't see counts directly, count characters and divide by about 4 (or 3.1 for Claude's newer tokenizer)."},
+  "reflect": [
+    "Did you predict call 85, or did you forget that the added tokens ride on every call?",
+    "Can you place all four extensions in the request without looking?",
+    "Which is still fuzzy: why order matters for the cache, or why more context can lower accuracy?",
+    "What in your own agent's system prompt or CLAUDE.md could move to a skill loaded on demand?",
+    "If a change to what the model sees looks helpful, how would you prove it? That's the next card."
+  ],
+  "revisit": ["agents-basics/tool-call", "llm-latency/prompt-caching", "llm-latency/context-growth"],
+  "prereq": ["agents-basics/agent-loop", "llm-latency/prompt-caching"]
+}

@@ -1,0 +1,58 @@
+{
+  "prime": {
+    "problem": "An agent looks like magic until you see the loop: call the model, run the tool it asked for, append the result, call again. Without the loop in your head you can't say why an agent run costs what it does, why it re-sends the same text every call, or why it sometimes stops half-way.",
+    "fits": "First card of the course and the base for the other three. The tool-call card zooms into one turn of this loop, the context card into what each call carries, and the evals card into how to tell if a change to the loop helped.",
+    "expect": ["harness vs model", "<code>stop_reason</code>: end_turn, tool_use, max_tokens, refusal", "input on call k = start + per-turn × (k − 1)", "step, cost and time budgets", "workflow vs agent"],
+    "goal": "Draw the loop from memory, compute the input tokens and cost of a short run with and without caching, and name what the loop should do for each way a run ends."
+  },
+  "attend": [
+    "Why does call 6 of the test_slugify run send 13,500 tokens when only 1,800 of them are new?",
+    "Where do the 40,500 cached tokens come from, and why does caching save only 2.1× here?",
+    "Which stop reasons end the run, and which one means keep going?",
+    "Why is a budget exit logged as a failed run rather than a crash?",
+    "What makes a task better suited to a fixed workflow than to an agent?"
+  ],
+  "core": {
+    "must": [
+      "The API keeps no memory between calls → the harness re-sends the whole conversation every call → input per call grows by a fixed step and the run's total grows faster than the call count (54,000 tokens for 6 calls, 172,800 for 12)",
+      "The model can only ask for a tool → the harness runs it and appends the call and result → the loop repeats while stop_reason is tool_use",
+      "A reply can stop for reasons other than finishing (max_tokens, refusal) → a loop that only checks for tool_use runs half-written calls or never stops → give every stop reason its own branch",
+      "Agents succeed quickly and fail slowly (12 steps vs 21 in SWE-agent) → an unbounded loop spends most of its money on failures → step, cost and time budgets are exits, logged as failed runs"
+    ],
+    "elevated": [
+      "Caching reads old tokens at 0.1× but writes new ones at 1.25× (Sonnet 5 with the 5-minute cache; the multipliers vary by model) → on a short run the writes dominate → the saving grows with the run (2.1× at 6 calls, 6.2× at 30)"
+    ],
+    "reference": ["the seven stop_reason names", "mini-swe-agent's budget setting names", "the illustrative 4,500-token start and 1,800 per turn", "Sonnet 5 list prices"]
+  },
+  "compress": {
+    "prompt": "Close the card. Draw the loop as boxes and arrows (conversation, call the model, read stop_reason, run tools, append, done, stop early) and label each arrow. Then write the formula for input on call k and compute the 6-call total.",
+    "checklist": [
+      "conversation → call model → stop_reason → tool_use → run tools → append → call again",
+      "end_turn → check and stop; max_tokens, refusal, budget → stop early",
+      "input on call k = 4,500 + 1,800 × (k − 1); total 54,000 = 4× the last call",
+      "cached: 40,500 read + 13,500 written → $0.059 vs $0.125 uncached",
+      "workflow when the steps are known; agent when the path can't be written down"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain the difference between a harness and a model, using Claude Code and Claude as the example, and say which one owns the conversation.", "kind": "concept", "answer": ["the model predicts text and can only ask for tools", "the harness sends requests, runs tools, keeps the history and decides when to stop", "so the harness owns the conversation and its size"]},
+    {"q": "Walk call 4 of the test_slugify run through the loop: what it sends, what is read from cache, what is new, and what it returns.", "kind": "mechanism", "answer": ["it sends 4,500 + 3 × 1,800 = 9,900 tokens", "8,100 (all of call 3's input) is read from cache; 1,800 (call 3's tool call and result) is new", "it returns a tool_use asking for the edit, so the loop runs it and calls again"]},
+    {"q": "A reply comes back with stop_reason max_tokens and a half-written edit call. What goes wrong if the loop runs it, and what should it do instead?", "kind": "mechanism", "answer": ["the tool input is cut off, so the call is broken or does the wrong thing", "a loop that only checks for tool_use may run it or treat the turn as finished", "don't run it: retry the turn with a higher max_tokens"]},
+    {"q": "A support task is worth about $0.10 and always follows the same three steps. Agent or workflow? Justify it with cost and with what each can handle.", "kind": "tradeoff", "answer": ["workflow: the steps are known, so code them", "$0.10 affords roughly 30,000–50,000 tokens; an agent re-reads its history every call, and even the 6-call example sent 54,000", "an agent is worth it only when the path can't be planned, like finding a bug in unfamiliar code"]}
+  ],
+  "compare": [
+    {"with": "llm-latency/harness-calls", "q": "The harness-calls card priced the loop in seconds; this card prices it in tokens and dollars. Which term grows with the square of the call count in each, and which lever helps both?", "answer": ["seconds: each call pays TTFT and writing time, plus prefill of the growing history", "tokens: the re-sent history makes total input grow roughly with the square of the calls", "cutting the number of calls helps both; caching helps the prefill and the bill"]},
+    {"with": "llm-latency/context-growth", "q": "Context growth used a 30-call session and found caching 6.2× cheaper; this card's 6-call run is only 2.1× cheaper. What explains the gap?", "answer": ["cache writes cost 1.25× and reads 0.1× the input price", "in a short run the new tokens (writes) are a large share: 25% here", "in a long run most input is old history read cheaply, so the saving grows"]}
+  ],
+  "predict": {"q": "Keep the same start (4,500) and per-turn growth (1,800) but run 10 calls instead of 6. Predict the total input tokens before computing. Closer to 90,000 (10/6 × 54,000) or closer to 126,000?", "answer": "Total = 10 × 4,500 + 1,800 × (0+1+…+9) = 45,000 + 1,800 × 45 = 126,000 tokens, 2.3× the 6-call run for 1.7× the calls. The history term grows with the square of the call count, so a straight scale-up underestimates it."},
+  "apply": {"task": "Open the transcript of one real agent session (Claude Code's transcript, or your own loop's log). For each model call, write down its stop_reason and roughly how many tokens were added since the previous call. Then estimate the total input tokens with the formula and say which stop reason ended the run.", "done": "You have a per-call table with stop reasons, a total input estimate from the formula, and one sentence on whether the run should have been a fixed workflow.", "hint": "Every tool use in the transcript sits between two model calls; the usage fields on each response give input and cache-read tokens if your harness logs them."},
+  "reflect": [
+    "Did you predict the 10-call total, or did you scale linearly?",
+    "Can you name what the loop should do for each of end_turn, tool_use, max_tokens and refusal without looking?",
+    "Which is still fuzzy: why caching saves less on short runs, or why failures cost more than successes?",
+    "Which of your own tasks would be cheaper as a fixed workflow?",
+    "What do you expect the tool result to look like on the next card, and what makes it cost more on every later call?"
+  ],
+  "revisit": ["llm-latency/harness-calls", "llm-latency/context-growth", "llm-latency/prompt-caching"],
+  "prereq": ["llm-latency/harness-calls", "llm-latency/prompt-caching"]
+}
