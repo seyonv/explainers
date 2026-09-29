@@ -1,0 +1,570 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Day 2: Inside the GPU and the engine loop, on one page</title>
+<style>
+:root{
+  --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
+  --text:#1c1f23; --muted:#6b7068; --faint:#b9b9b3;
+  --accent:#4a9d77; --accent-bg:#dcefdf; --accent-border:#8cc79c;
+  --red:#c0492b; --red-bg:#fbeceb;
+  --blue:#3b6fb0; --blue-bg:#e3ecf7; --amber:#a66a00; --amber-bg:#f8ecd2;
+  --sbw:300px;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#15171a; --surface:#1d2024; --surface2:#24282d; --border:#32373d;
+    --text:#e6e8ea; --muted:#9aa1a9; --faint:#4a5057;
+    --accent:#5fb37f; --accent-bg:#1c2b22; --accent-border:#3f7a55;
+    --red:#e57368; --red-bg:#2e1f1e;
+    --blue:#7fa8de; --blue-bg:#1c2533; --amber:#e0a84a; --amber-bg:#2e2616;
+  }
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+@media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,"Inter",system-ui,sans-serif;line-height:1.45}
+a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+a:hover{text-decoration-color:var(--accent)}
+.ext{font-size:11px;color:var(--faint)}
+.n{color:var(--muted);font-weight:400}
+
+/* Layout: sidebar + flow */
+.side{position:fixed;inset:0 auto 0 0;width:var(--sbw);background:var(--surface);border-right:1px solid var(--border);overflow-y:auto;padding:14px 14px 40px;z-index:20;transition:transform .2s}
+.flow{margin-left:var(--sbw);min-width:0;transition:margin .2s}
+html.closed .side{transform:translateX(-100%)}
+html.closed .flow{margin-left:0}
+@media (prefers-reduced-motion:reduce){.side,.flow{transition:none}}
+.opener{position:fixed;left:12px;bottom:12px;z-index:15;display:none;font:inherit;font-size:13px;font-weight:600;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:6px 10px;cursor:pointer;box-shadow:0 1px 4px rgb(0 0 0/.08)}
+html.closed .opener{display:block}
+.opener .oc{font-weight:400;color:var(--muted);font-variant-numeric:tabular-nums}
+@media (max-width:900px){
+  .flow{margin-left:0}
+  .side{box-shadow:4px 0 20px rgb(0 0 0/.15)}
+  .opener{display:block}
+  html:not(.closed) .opener{display:none}
+}
+
+/* Sidebar */
+.shead{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.shead .k{font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--accent);text-decoration:none}
+.close{font:inherit;font-size:13px;color:var(--muted);background:none;border:1px solid var(--border);border-radius:6px;padding:2px 8px;cursor:pointer}
+.close:hover,.close:focus-visible{color:var(--text);border-color:var(--muted);outline:none}
+.daynav{display:flex;gap:4px;margin:10px 0 2px;font-size:12px}
+.daynav>*{flex:1;text-align:center;padding:3px 0;border:1px solid var(--border);border-radius:6px;text-decoration:none;color:var(--muted)}
+.daynav>a:hover{border-color:var(--accent-border);color:var(--text)}
+.daynav b{background:var(--accent-bg);border-color:var(--accent-border);color:var(--accent)}
+.daynav::before{content:"Day";align-self:center;flex:0 0 auto;border:0;padding:0 2px 0 0;color:var(--muted)}
+.side h1{font-size:16px;margin:8px 0 8px}
+.overall{font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
+.track{height:4px;border-radius:2px;background:var(--surface2);margin:5px 0 8px;overflow:hidden}
+.track i{display:block;height:100%;width:0;background:var(--accent);transition:width .25s}
+.resume{display:none;font-size:13px;margin:0 0 6px}
+.resume.on{display:block}
+.side details{font-size:12.5px;color:var(--muted);margin:4px 0 10px}
+.side details summary{cursor:pointer}
+.side details ol{padding-left:18px;margin:6px 0}
+.legend{display:flex;flex-wrap:wrap;gap:4px;margin:6px 0 2px}
+.side>ol{list-style:none;margin:0;padding:0}
+.sp{margin-top:12px}
+.sph{display:flex;flex-direction:column;text-decoration:none;font-size:13px;font-weight:600;padding:2px 4px}
+.spm{font-size:11.5px;font-weight:400;color:var(--muted);font-variant-numeric:tabular-nums}
+.sp ol{list-style:none;margin:4px 0 0;padding:0}
+.si{display:grid;grid-template-columns:18px 1fr;gap:6px;align-items:start;padding:3px 4px 3px 5px;border-radius:6px;border-left:3px solid transparent}
+.si input{margin:3px 0 0;accent-color:var(--accent);cursor:pointer}
+.si a{text-decoration:none;font-size:13px;display:flex;gap:6px;align-items:baseline}
+.si .st{min-width:0}
+.si.done .st{color:var(--muted);text-decoration:line-through;text-decoration-color:var(--faint)}
+.si.cur{background:var(--accent-bg);border-left-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent-border)}
+.si.cur .st{font-weight:700;color:var(--text)}
+.si.cur .st::after{content:"← now";margin-left:6px;font-size:10px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--accent);white-space:nowrap}
+.sp.cur>.sph>span:first-child{color:var(--accent)}
+.keys{font-size:11.5px;color:var(--faint);margin-top:18px}
+kbd{font:inherit;border:1px solid var(--border);border-radius:4px;padding:0 4px;color:var(--muted)}
+
+/* Mode chips */
+.chip{flex:none;font-size:10px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;border-radius:4px;padding:1px 5px;white-space:nowrap}
+.chip.read{background:var(--accent-bg);color:var(--accent)}
+.chip.skim{background:var(--blue-bg);color:var(--blue)}
+.chip.test,.chip.check{background:var(--amber-bg);color:var(--amber)}
+.chip.opt{background:var(--surface2);color:var(--muted)}
+.chip.task{background:var(--red-bg);color:var(--red)}
+
+/* Flow */
+.wrap{max-width:884px;margin:0 auto;padding:0 0 80px}
+.top{padding:28px 32px 8px}
+.back{font-size:13px;color:var(--muted);text-decoration:none}
+.eyebrow{font-size:12px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--accent);margin:14px 0 0}
+.top h2{font-size:26px;font-weight:600;margin:4px 0 6px;letter-spacing:-0.01em}
+.sub{font-size:15px;color:var(--muted);margin:0 0 16px}
+.box{border:1px solid var(--border);background:var(--surface);border-radius:10px;padding:12px 18px;margin:0 0 12px;font-size:14px}
+.box.g{border-color:var(--accent-border);background:var(--accent-bg)}
+.box .k,.primer .k,.also .k{font-size:11px;letter-spacing:.06em;text-transform:uppercase;font-weight:600;margin-bottom:4px;color:var(--muted)}
+.box.g .k{color:var(--accent)}
+.box ul,.box ol{margin:4px 0 2px;padding-left:20px}.box li{margin:3px 0}
+.why{border:1px solid var(--border);border-radius:10px;margin:0 0 12px;overflow:hidden}
+.why .whead{padding:12px 18px 10px;background:var(--surface)}
+.why .whead .k{font-size:11px;letter-spacing:.06em;text-transform:uppercase;font-weight:600;color:var(--accent);margin-bottom:4px}
+.why .whead p{margin:0;font-size:15px}
+.why dl{margin:0}
+.why .wr{display:grid;grid-template-columns:minmax(0,34%) 1fr;gap:4px 18px;padding:10px 18px;border-top:1px solid var(--border);font-size:14px}
+.why dt{font-weight:600}
+.why dt span{display:block;font-weight:400;font-size:13px;color:var(--muted);margin-top:2px}
+.why dd{margin:0}
+@media (max-width:640px){.why .wr{grid-template-columns:1fr}}
+.phase{padding:40px 32px 0}
+.ph{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:2px 12px}
+.ph h2,.after h2{font-size:22px;font-weight:600;margin:0}
+.meta{font-size:13px;color:var(--muted);font-variant-numeric:tabular-nums}
+.pintro{font-size:15px;color:var(--muted);margin:0 0 12px}
+.primer{border:1px solid var(--amber);background:var(--amber-bg);border-radius:10px;padding:12px 18px;font-size:14px;margin-bottom:8px}
+.primer .k{color:var(--amber)}
+.primer p{margin:4px 0}
+.bte{margin:4px 0 8px;padding-left:20px}.bte li{margin:4px 0}
+.pretest summary{cursor:pointer}
+.pretest[open] summary{margin-bottom:8px}
+.pretest .cf{border:1px solid var(--border);border-radius:8px}
+
+.it{margin:28px -32px 0}
+.ibar{position:sticky;top:0;z-index:5;background:color-mix(in srgb,var(--bg) 92%,transparent);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);border-top:2px solid var(--border);border-bottom:1px solid var(--border);padding:8px 32px 7px}
+.it.cur .ibar{border-top-color:var(--accent)}
+.ib1{display:flex;align-items:center;gap:8px}
+.ib1 h3{font-size:16px;font-weight:600;margin:0;flex:1;min-width:0}
+.num{font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
+.ins{font-size:13.5px;color:var(--muted);margin:3px 0 0}
+.ins b{color:var(--text);font-weight:600}
+.done{display:inline-flex;align-items:center;gap:5px;font-size:13px;color:var(--muted);cursor:pointer;white-space:nowrap}
+.done input{width:16px;height:16px;margin:0;accent-color:var(--accent);cursor:pointer}
+.it.isdone .ib1 h3{color:var(--muted)}
+.ibody{padding:0 32px}
+.cf{display:block;width:calc(100% + 64px);margin:0 -32px;border:0;min-height:70vh;background:var(--bg)}
+.cf.ready{min-height:0}
+.xf{margin:14px 0;border:1px solid var(--border);border-radius:10px;overflow:hidden}
+.xbar{display:flex;justify-content:space-between;gap:8px;font-size:12.5px;color:var(--muted);background:var(--surface);padding:6px 12px;border-bottom:1px solid var(--border)}
+.xf iframe{display:block;width:100%;height:80vh;border:0;background:#fff}
+.fintro{font-size:15px;margin:14px 0}
+.paper{margin-top:14px;background:#fdfcf8;border:1px solid var(--border);border-radius:12px;padding:10px;overflow-x:auto}
+.paper object{display:block;width:100%;min-width:760px;aspect-ratio:1569.3/2036}
+.figlinks{font-size:13px;color:var(--muted);margin:8px 0}
+.key dl{margin:8px 0 0;display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:8px 18px}
+.key dt{font-weight:600;font-size:14px}
+.key dd{margin:2px 0 0 30px;font-size:13.5px}
+.kb{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;background:#e03131;color:#fff;font-size:12px;font-weight:700;margin-right:4px}
+.write{margin:14px 0;display:flex;flex-direction:column;gap:10px}
+.wq{display:flex;flex-direction:column;gap:4px;font-size:14px;font-weight:600}
+.wq textarea{font:inherit;font-size:15px;font-weight:400;padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--text);resize:vertical}
+.wq textarea:focus{outline:none;border-color:var(--accent-border)}
+.was{font-size:13px;font-weight:400;color:var(--muted)}
+.also{border:1px solid var(--accent-border);background:var(--accent-bg);border-radius:10px;padding:12px 16px;margin:14px 0;font-size:14px}
+.also .k{color:var(--accent)}
+.also p{margin:0 0 6px}
+.also .xf{background:var(--bg)}
+.deep{margin:14px 0 0;font-size:14px;border:1px solid var(--border);border-radius:10px;padding:8px 14px}
+.deep>summary{cursor:pointer;color:var(--accent);font-weight:600}
+.dnote{font-size:13.5px;color:var(--muted);margin:8px 0}
+.dl{list-style:none;margin:6px 0 2px;padding:0}
+.dl li{padding:5px 0;border-top:1px solid var(--border)}
+.dl li:first-child{border-top:0}
+.drow{display:flex;justify-content:space-between;gap:10px;align-items:baseline}
+.show{flex:none;font:inherit;font-size:12px;color:var(--accent);background:none;border:1px solid var(--accent-border);border-radius:6px;padding:1px 8px;cursor:pointer}
+.show:hover,.show:focus-visible{background:var(--accent-bg);outline:none}
+.dl .cf{width:100%;margin:8px 0 4px;border:1px solid var(--border);border-radius:8px}
+.endrow{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:8px;margin:14px 0 0;padding:10px 0;border-top:1px dashed var(--border);font-size:13px}
+.endrow a{color:var(--muted)}
+.done.big{font-size:14px;color:var(--text);font-weight:600}
+.reset{font:inherit;font-size:12px;color:var(--muted);background:none;border:1px solid var(--border);border-radius:6px;padding:2px 8px;cursor:pointer;margin-top:4px}
+.reset:hover,.reset:focus-visible{border-color:var(--red);color:var(--red);outline:none}
+.after{padding:48px 32px 0}
+.after ul{list-style:none;margin:0;padding:0;border-top:1px solid var(--border)}
+.after li{padding:9px 0;border-bottom:1px solid var(--border);font-size:14px}
+.after .links{display:block;font-size:13px;color:var(--muted);margin-top:2px}
+.nextday{margin:40px 32px 0;display:flex;flex-wrap:wrap;justify-content:space-between;gap:10px;font-size:14px}
+.nextday a{display:block;padding:12px 16px;border:1px solid var(--border);border-radius:10px;text-decoration:none;background:var(--surface);flex:1;min-width:220px}
+.nextday a:hover{border-color:var(--accent-border)}
+.nextday a.nx{text-align:right}
+.nextday small{display:block;font-size:12px;color:var(--muted)}
+.foot{margin:24px 32px 0;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+@media (max-width:560px){
+  .top,.phase,.after{padding-left:16px;padding-right:16px}
+  .it{margin-left:-16px;margin-right:-16px}
+  .ibar,.ibody{padding-left:16px;padding-right:16px}
+  .cf{width:calc(100% + 32px);margin:0 -16px}
+  .num{display:none}
+  .foot,.nextday{margin-left:16px;margin-right:16px}
+}
+</style>
+</head><body>
+<script>try{if(localStorage.getItem("study-flow:side")==="closed"||innerWidth<=900)document.documentElement.classList.add("closed")}catch{if(innerWidth<=900)document.documentElement.classList.add("closed")}</script>
+<button class="opener" id="open" type="button" aria-controls="side">☰ Plan <span class="oc" data-allcount></span></button>
+<nav class="side" id="side" aria-label="Study plan">
+<div class="shead"><a class="k" href="../index.html#path">The study path</a><button class="close" id="close" type="button" aria-label="Hide the plan">Hide ‹</button></div>
+<nav class="daynav" aria-label="Study path days"><a href="../llm-speed-study-flow/llm-speed-study-flow.html" title="Day 1: LLM speed study plan">1</a><a href="../study-flow-day-1-5/study-flow-day-1-5.html" title="Day 1.5: Just enough about the model">1.5</a><b aria-current="page">2</b><a href="../study-flow-day-3/study-flow-day-3.html" title="Day 3: The math of serving">3</a></nav>
+<h1>Day 2: Inside the GPU and the engine loop</h1>
+<div class="overall"><span data-allcount>0 done</span></div>
+<div class="track" aria-hidden="true"><i id="allbar"></i></div>
+<p class="resume" id="resume">Last here: <a href="#"></a></p>
+<details><summary>The routine for every phase</summary><ol><li><b>Prime:</b> read the phase's “Before you read” box. Each card's green Prime box at its top is part of priming too.</li><li><b>Pretest:</b> try its checkpoint cold.</li><li><b>Read in order.</b> After each card, work through its “Study this card” box at the bottom without scrolling back.</li><li><b>Checkpoint for real.</b> Open “Go deeper” only for cards you missed.</li></ol></details>
+<div class="legend"><span class="chip skim">Skim</span><span class="chip read">Read</span><span class="chip test">Pretest</span><span class="chip check">Checkpoint</span><span class="chip opt">Optional</span><span class="chip task">Task</span></div>
+<ol><li class="sp" data-phase-side="p0"><a class="sph" href="#p0"><span>Phase 0 · Prime the day</span><span class="spm"><span data-count>0/5</span> · ~30 min</span></a><ol><li class="si" data-side="d2-map"><input type="checkbox" data-id="d2-map" aria-label="Done: perf-0: the map of fast LLM inference"><a href="#i-d2-map"><span class="chip skim">Skim</span><span class="st">perf-0: the map of fast LLM inference</span></a></li><li class="si" data-side="d2-stack"><input type="checkbox" data-id="d2-stack" aria-label="Done: perf-0: one request down the stack"><a href="#i-d2-stack"><span class="chip skim">Skim</span><span class="st">perf-0: one request down the stack</span></a></li><li class="si" data-side="d2-arch"><input type="checkbox" data-id="d2-arch" aria-label="Done: Serving guide: the reference architecture"><a href="#i-d2-arch"><span class="chip skim">Skim</span><span class="st">Serving guide: the reference architecture</span></a></li><li class="si" data-side="d2-glossary"><input type="checkbox" data-id="d2-glossary" aria-label="Done: perf-0 glossary"><a href="#i-d2-glossary"><span class="chip skim">Skim</span><span class="st">perf-0 glossary</span></a></li><li class="si" data-side="d2-pretest"><input type="checkbox" data-id="d2-pretest" aria-label="Done: Try scheduler Checkpoint 1 cold"><a href="#i-d2-pretest"><span class="chip test">Pretest</span><span class="st">Try scheduler Checkpoint 1 cold</span></a></li></ol></li><li class="sp" data-phase-side="p1"><a class="sph" href="#p1"><span>Phase 1 · What the model computes</span><span class="spm"><span data-count>0/5</span> · ~1 h</span></a><ol><li class="si" data-side="p1-overview"><input type="checkbox" data-id="p1-overview" aria-label="Done: Foundations on one card"><a href="#i-p1-overview"><span class="chip read">Read</span><span class="st">Foundations on one card</span></a></li><li class="si" data-side="transformer-forward"><input type="checkbox" data-id="transformer-forward" aria-label="Done: The transformer forward pass"><a href="#i-transformer-forward"><span class="chip read">Read</span><span class="st">The transformer forward pass</span></a></li><li class="si" data-side="attention"><input type="checkbox" data-id="attention" aria-label="Done: Attention: Q, K, V, heads and GQA"><a href="#i-attention"><span class="chip read">Read</span><span class="st">Attention: Q, K, V, heads and GQA</span></a></li><li class="si" data-side="flops-per-token"><input type="checkbox" data-id="flops-per-token" aria-label="Done: FLOPs per token"><a href="#i-flops-per-token"><span class="chip read">Read</span><span class="st">FLOPs per token</span></a></li><li class="si" data-side="p1-checkpoint-1"><input type="checkbox" data-id="p1-checkpoint-1" aria-label="Done: perf-1 Checkpoint 1: what one token costs"><a href="#i-p1-checkpoint-1"><span class="chip check">Checkpoint</span><span class="st">perf-1 Checkpoint 1: what one token costs</span></a></li></ol></li><li class="sp" data-phase-side="p2"><a class="sph" href="#p2"><span>Phase 2 · What the machine does, and what you measure</span><span class="spm"><span data-count>0/6</span> · ~1.25 h</span></a><ol><li class="si" data-side="gpu-machine"><input type="checkbox" data-id="gpu-machine" aria-label="Done: The GPU as a machine"><a href="#i-gpu-machine"><span class="chip read">Read</span><span class="st">The GPU as a machine</span></a></li><li class="si" data-side="roofline-intuition"><input type="checkbox" data-id="roofline-intuition" aria-label="Done: Compute-bound or memory-bound?"><a href="#i-roofline-intuition"><span class="chip read">Read</span><span class="st">Compute-bound or memory-bound?</span></a></li><li class="si" data-side="prefill-vs-decode-mac"><input type="checkbox" data-id="prefill-vs-decode-mac" aria-label="Done: Prefill vs decode on your Mac"><a href="#i-prefill-vs-decode-mac"><span class="chip read">Read</span><span class="st">Prefill vs decode on your Mac</span></a></li><li class="si" data-side="serving-metrics"><input type="checkbox" data-id="serving-metrics" aria-label="Done: Serving metrics"><a href="#i-serving-metrics"><span class="chip read">Read</span><span class="st">Serving metrics</span></a></li><li class="si" data-side="p1-checkpoint-2"><input type="checkbox" data-id="p1-checkpoint-2" aria-label="Done: perf-1 Checkpoint 2: from bytes to step time"><a href="#i-p1-checkpoint-2"><span class="chip check">Checkpoint</span><span class="st">perf-1 Checkpoint 2: from bytes to step time</span></a></li><li class="si" data-side="d2-st1"><input type="checkbox" data-id="d2-st1" aria-label="Done: Serving station 1: the request's life and the numbers you report"><a href="#i-d2-st1"><span class="chip task">Task</span><span class="st">Serving station 1: the request's life and the numbers you report</span></a></li></ol></li><li class="sp" data-phase-side="p3"><a class="sph" href="#p3"><span>Phase 3 · Why and how a server batches</span><span class="spm"><span data-count>0/12</span> · ~2 h</span></a><ol><li class="si" data-side="s-overview"><input type="checkbox" data-id="s-overview" aria-label="Done: The scheduler on one page"><a href="#i-s-overview"><span class="chip read">Read</span><span class="st">The scheduler on one page</span></a></li><li class="si" data-side="token-loop"><input type="checkbox" data-id="token-loop" aria-label="Done: The token loop: prefill, then decode"><a href="#i-token-loop"><span class="chip read">Read</span><span class="st">The token loop: prefill, then decode</span></a></li><li class="si" data-side="kv-cache"><input type="checkbox" data-id="kv-cache" aria-label="Done: The KV cache: what it stores"><a href="#i-kv-cache"><span class="chip read">Read</span><span class="st">The KV cache: what it stores</span></a></li><li class="si" data-side="bottlenecks"><input type="checkbox" data-id="bottlenecks" aria-label="Done: The bottlenecks"><a href="#i-bottlenecks"><span class="chip read">Read</span><span class="st">The bottlenecks</span></a></li><li class="si" data-side="metrics-slos"><input type="checkbox" data-id="metrics-slos" aria-label="Done: Measuring a server"><a href="#i-metrics-slos"><span class="chip opt">Optional</span><span class="st">Measuring a server</span></a></li><li class="si" data-side="why-batch"><input type="checkbox" data-id="why-batch" aria-label="Done: Why batching works"><a href="#i-why-batch"><span class="chip read">Read</span><span class="st">Why batching works</span></a></li><li class="si" data-side="static-batching"><input type="checkbox" data-id="static-batching" aria-label="Done: Static batching and its padding tax"><a href="#i-static-batching"><span class="chip read">Read</span><span class="st">Static batching and its padding tax</span></a></li><li class="si" data-side="dynamic-batching"><input type="checkbox" data-id="dynamic-batching" aria-label="Done: Dynamic batching"><a href="#i-dynamic-batching"><span class="chip read">Read</span><span class="st">Dynamic batching</span></a></li><li class="si" data-side="continuous-batching"><input type="checkbox" data-id="continuous-batching" aria-label="Done: Continuous batching"><a href="#i-continuous-batching"><span class="chip read">Read</span><span class="st">Continuous batching</span></a></li><li class="si" data-side="chunked-prefill"><input type="checkbox" data-id="chunked-prefill" aria-label="Done: Chunked prefill and the token budget"><a href="#i-chunked-prefill"><span class="chip read">Read</span><span class="st">Chunked prefill and the token budget</span></a></li><li class="si" data-side="s-checkpoint-1"><input type="checkbox" data-id="s-checkpoint-1" aria-label="Done: Scheduler Checkpoint 1"><a href="#i-s-checkpoint-1"><span class="chip check">Checkpoint</span><span class="st">Scheduler Checkpoint 1</span></a></li><li class="si" data-side="d2-st3"><input type="checkbox" data-id="d2-st3" aria-label="Done: Serving station 3: inside an engine"><a href="#i-d2-st3"><span class="chip task">Task</span><span class="st">Serving station 3: inside an engine</span></a></li></ol></li><li class="sp" data-phase-side="p4"><a class="sph" href="#p4"><span>Phase 4 · Consolidate</span><span class="spm"><span data-count>0/2</span> · ~20 min</span></a><ol><li class="si" data-side="d2-draw"><input type="checkbox" data-id="d2-draw" aria-label="Done: Draw it in Excalidraw"><a href="#i-d2-draw"><span class="chip task">Task</span><span class="st">Draw it in Excalidraw</span></a></li><li class="si" data-side="d2-principles"><input type="checkbox" data-id="d2-principles" aria-label="Done: Reread the 15 principles"><a href="#i-d2-principles"><span class="chip task">Task</span><span class="st">Reread the 15 principles</span></a></li></ol></li></ol>
+<button class="reset" id="reset" type="button">Clear ticks</button>
+<p class="keys"><kbd>j</kbd> <kbd>k</kbd> next / previous step · <kbd>[</kbd> show or hide the plan</p>
+</nav>
+<main class="flow"><div class="wrap">
+<header class="top">
+<a class="back" href="../index.html#path">← The study path</a>
+<p class="eyebrow">Study path · Day 2 · one page</p>
+<h2>Inside the GPU and the engine loop</h2>
+<p class="sub">Day 2 of the inference study plan: what one decode step does to a GPU, how to measure it, and why a server batches. It covers perf-1 Foundations and Part 1 of the request-scheduler course, and closes each half with a Serving field-guide station. Everything is inline: just scroll. Ticks are shared with the <a href="../study-plan-day-2/study-plan-day-2.html">checklist version</a>.</p>
+<section class="why" aria-label="What today uses, and why"><div class="whead"><div class="k">What today uses, and why</div><p>Day 1 told you that writing speed is capped by memory bandwidth. Day 2 shows why on a real chip, then why a server batches many users together to get past that cap.</p></div><dl><div class="wr"><dt>perf-0: the map<span>The start-here course of the Fast LLM inference series.</span></dt><dd>For orientation only: one map from GPU price to cost per token, so you know where today's two courses sit. You skim it, and keep its glossary open all day.</dd></div><div class="wr"><dt>perf-1 Foundations<span>Course 1 of the Fast LLM inference series.</span></dt><dd>What one token costs: the parameters, attention and FLOPs, then the GPU, the roofline and the serving metrics. Its one formula, step time = max(maths, memory), is what every later day builds on.</dd></div><div class="wr"><dt>Request scheduler course, Part 1<span>A course on how an engine decides which requests run at each step.</span></dt><dd>It explains batching, the biggest serving lever, as a chain: each kind of batching fixes the problem the previous one leaves.</dd></div><div class="wr"><dt>Serving field guide: reference architecture, stations 1 and 3<span>Field-guide lessons with read-with questions, sources and a closed-book check.</span></dt><dd>They check each half of the day against real systems (a production deployment and vLLM's engine), so what you learn isn't only theory.</dd></div><div class="wr"><dt>Labs<span>Short Python scripts, in the Go deeper lists.</span></dt><dd>Optional. Run one when a card's numbers feel abstract. Prefill vs decode on your Mac is the one most worth doing.</dd></div></dl></section>
+<aside class="box"><div class="k">By the end of today, you'll be able to</div><ul><li>Count Llama-3.1-8B's 8.03B parameters from its config, and explain why every decode step reads all 16 GB of them.</li><li>Compute a small attention by hand, and explain why the number of KV heads, not query heads, sets the cache size.</li><li>Sketch an H100 from memory, and classify any operation as compute- or memory-bound from two numbers.</li><li>Measure prefill and decode on your own Mac, and back out the effective memory bandwidth.</li><li>Compute TTFT, TPOT, throughput and goodput for a request, and explain why goodput sets the cost.</li><li>Explain why batching is the biggest serving lever, what stops it scaling forever, and how static → dynamic → continuous batching → chunked prefill each fix the previous step's problem.</li></ul></aside>
+<aside class="box g"><div class="k">How to use this page</div><ol>
+<li>Scroll. The bar pinned at the top always says what the current step is and <b>how</b> to read it: <span class="chip skim">Skim</span> <span class="chip read">Read</span> <span class="chip test">Pretest</span> <span class="chip check">Checkpoint</span> <span class="chip opt">Optional</span> <span class="chip task">Task</span>.</li>
+<li>Each phase with a checkpoint opens with a <b>Before you read</b> box: prime, then try the checkpoint cold.</li>
+<li>Every card has two study boxes. The green <b>Prime</b> box at its top is read <i>before</i> the card. <b>Study this card</b> at its bottom is done <i>after</i> it, on Read steps only; Skim steps hide it.</li>
+<li>Tick <b>Done</b> as you finish a step. Take a break after each checkpoint.</li>
+<li>“Go deeper” sources stay closed. Open them only for a card whose questions you missed; <b>Show here</b> loads one inline.</li>
+</ol></aside>
+</header>
+<section class="phase" id="p0" data-phase><div class="ph"><h2>Phase 0 · Prime the day</h2><span class="meta">~30 min · <span data-count>0 / 5</span></span></div>
+<div class="track" aria-hidden="true"><i data-bar></i></div>
+<p class="pintro">Two maps and one trace. Skim for shape; don't try to learn the numbers yet.</p>
+<section class="it" id="i-d2-map" data-item="d2-map">
+<div class="ibar"><div class="ib1"><span class="chip skim">Skim</span><span class="num">01 / 30</span><h3>perf-0: the map of fast LLM inference</h3><label class="done"><input type="checkbox" data-id="d2-map"> Done</label></div>
+<p class="ins"><b>Skim only. Don't try to learn the details yet, and skip “Study this card”.</b> One causal map from GPU price to $/token. Find where today's two courses sit on it.</p></div>
+<div class="ibody"><iframe class="cf" src="../perf-0-map/_overview.html" title="perf-0: the map of fast LLM inference" data-nostudy></iframe>
+<div class="endrow"><label class="done big"><input type="checkbox" data-id="d2-map"> Done with perf-0: the map of fast LLM inference</label><a href="../perf-0-map/_overview.html" target="_blank" rel="noopener">Open the card on its own ↗</a></div></div>
+</section>
+<section class="it" id="i-d2-stack" data-item="d2-stack">
+<div class="ibar"><div class="ib1"><span class="chip skim">Skim</span><span class="num">02 / 30</span><h3>perf-0: one request down the stack</h3><label class="done"><input type="checkbox" data-id="d2-stack"> Done</label></div>
+<p class="ins"><b>Skim only. Don't try to learn the details yet, and skip “Study this card”.</b> Skim the trace. It's today's route in miniature.</p></div>
+<div class="ibody"><iframe class="cf" src="../perf-0-map/stack.html" title="perf-0: one request down the stack" data-nostudy></iframe>
+<div class="endrow"><label class="done big"><input type="checkbox" data-id="d2-stack"> Done with perf-0: one request down the stack</label><a href="../perf-0-map/stack.html" target="_blank" rel="noopener">Open the card on its own ↗</a></div></div>
+</section>
+<section class="it" id="i-d2-arch" data-item="d2-arch">
+<div class="ibar"><div class="ib1"><span class="chip skim">Skim</span><span class="num">03 / 30</span><h3>Serving guide: the reference architecture</h3><label class="done"><input type="checkbox" data-id="d2-arch"> Done</label></div>
+<p class="ins"><b>Skim only. Don't try to learn the details yet, and skip “Study this card”.</b> Read the numbered trace of one request through a real deployment. Today explains the engine box.</p></div>
+<div class="ibody"><div class="xf"><div class="xbar"><span>agents-inference-software-factory.svas.workers.dev · scrolls inside this frame</span><a href="https://agents-inference-software-factory.svas.workers.dev/serving/#systems" target="_blank" rel="noopener">Open in a new tab ↗</a></div><iframe src="https://agents-inference-software-factory.svas.workers.dev/serving/#systems" title="Serving guide: the reference architecture" loading="lazy"></iframe></div>
+<div class="endrow"><label class="done big"><input type="checkbox" data-id="d2-arch"> Done with Serving guide: the reference architecture</label></div></div>
+</section>
+<section class="it" id="i-d2-glossary" data-item="d2-glossary">
+<div class="ibar"><div class="ib1"><span class="chip skim">Skim</span><span class="num">04 / 30</span><h3>perf-0 glossary</h3><label class="done"><input type="checkbox" data-id="d2-glossary"> Done</label></div>
+<p class="ins"><b>Skim only. Don't try to learn the details yet, and skip “Study this card”.</b> Don't read it through. Keep it open and look terms up as they come.</p></div>
+<div class="ibody"><iframe class="cf" src="../perf-0-map/glossary.html" title="perf-0 glossary" data-nostudy></iframe>
+<div class="endrow"><label class="done big"><input type="checkbox" data-id="d2-glossary"> Done with perf-0 glossary</label><a href="../perf-0-map/glossary.html" target="_blank" rel="noopener">Open the card on its own ↗</a></div></div>
+</section>
+<section class="it" id="i-d2-pretest" data-item="d2-pretest">
+<div class="ibar"><div class="ib1"><span class="chip test">Pretest</span><span class="num">05 / 30</span><h3>Try scheduler Checkpoint 1 cold</h3><label class="done"><input type="checkbox" data-id="d2-pretest"> Done</label></div>
+<p class="ins"><b>Answer cold, before reading anything.</b> Five minutes. This is where the day ends up.</p></div>
+<div class="ibody"><iframe class="cf" src="../llm-request-scheduler/checkpoint-1.html" title="Try scheduler Checkpoint 1 cold" data-nostudy></iframe>
+<div class="endrow"><label class="done big"><input type="checkbox" data-id="d2-pretest"> Done with Try scheduler Checkpoint 1 cold</label><a href="../llm-request-scheduler/checkpoint-1.html" target="_blank" rel="noopener">Open the card on its own ↗</a></div></div>
+</section>
+</section>
+<section class="phase" id="p1" data-phase><div class="ph"><h2>Phase 1 · What the model computes</h2><span class="meta">~1 h · <span data-count>0 / 5</span></span></div>
+<div class="track" aria-hidden="true"><i data-bar></i></div>
+<p class="pintro">The parameters, the attention and the FLOPs behind one token.</p><div class="primer"><div class="k">Before you read · 5–10 min</div>
+<p><b>1 · Prime.</b> Read what each card below will let you do. Nothing else yet.</p>
+<ul class="bte"><li><b>Foundations on one card.</b> Place every card of the course on one formula, and say for any proposed change which side of the max() it acts on and whether it will help.</li><li><b>The transformer forward pass.</b> Count Llama-3.1-8B's 8.03B parameters from its config, say which part holds most of them, and explain why every decode step reads all 16.06 GB.</li><li><b>Attention: Q, K, V, heads and GQA.</b> Compute a small attention by hand, and explain why the number of KV heads, not query heads, sets the cache size and the decode bytes.</li><li><b>FLOPs per token.</b> Estimate FLOPs per token and a training run's total from a parameter count, say when the estimate goes wrong, and explain why a FLOP count alone can't predict decode speed.</li></ul>
+<details class="pretest" data-src="../perf-1-foundations/checkpoint-1.html" data-title="perf-1 Checkpoint 1"><summary><b>2 · Pretest:</b> try perf-1 Checkpoint 1 cold for 5 minutes <span class="n">(opens here)</span></summary></details></div>
+<section class="it" id="i-p1-overview" data-item="p1-overview">
+<div class="ibar"><div class="ib1"><span class="chip read">Read</span><span class="num">06 / 30</span><h3>Foundations on one card</h3><label class="done"><input type="checkbox" data-id="p1-overview"> Done</label></div>
+<p class="ins"><b>Read it all, then open “Study this card” at the bottom and work through it, at least to step 3 · Retrieve, without scrolling back up.</b> The course's one formula: step time = max(math, memory). Every card is one side of that max().</p></div>
+<div class="ibody"><iframe class="cf" src="../perf-1-foundations/_overview.html" title="Foundations on one card"></iframe>
+<div class="endrow"><label class="done big"><input type="checkbox" data-id="p1-overview"> Done with Foundations on one card</label><a href="../perf-1-foundations/_overview.html" target="_blank" rel="noopener">Open the card on its own ↗</a></div></div>
+</section>
+<section class="it" id="i-transformer-forward" data-item="transformer-forward">
+<div class="ibar"><div class="ib1"><span class="chip read">Read</span><span class="num">07 / 30</span><h3>The transformer forward pass</h3><label class="done"><input type="checkbox" data-id="transformer-forward"> Done</label></div>
+<p class="ins"><b>Read it all, then open “Study this card” at the bottom and work through it, at least to step 3 · Retrieve, without scrolling back up.</b> Where the 8.03B parameters live, and why decode reads them all.</p></div>
+<div class="ibody"><iframe class="cf" src="../perf-1-foundations/transformer-forward.html" title="The transformer forward pass"></iframe><details class="deep"><summary>Go deeper (3) <span class="n">· only if you missed a question</span></summary><p class="dnote">Only if you missed a question on this card, or it left you with one. Reread the card first.</p><ul class="dl"><li><div class="drow"><span><a href="https://agents-inference-software-factory.svas.workers.dev/models/#the-transformer" target="_blank" rel="noopener">Models guide: the transformer</a> <span class="ext" aria-label="external">↗</span></span><button type="button" class="show" data-src="https://agents-inference-software-factory.svas.workers.dev/models/#the-transformer" data-title="Models guide: the transformer">Show here</button></div></li><li><div class="drow"><span><a href="../z2h-8-gpt/index.html" target="_blank" rel="noopener">Let's build GPT (z2h course 8)</a> <span class="n">· if you want to build one from scratch</span></span><button type="button" class="show" data-src="../z2h-8-gpt/index.html" data-title="Let's build GPT (z2h course 8)">Show here</button></div></li><li><div class="drow"><span><a href="https://github.com/seyonv/explainers/blob/main/perf-1-foundations/labs/transformer-forward.py" target="_blank" rel="noopener">Lab: transformer-forward.py</a> <span class="ext" aria-label="external">↗</span></span></div></li></ul></details>
+<div class="endrow"><label class="done big"><input type="checkbox" data-id="transformer-forward"> Done with The transformer forward pass</label><a href="../perf-1-foundations/transformer-forward.html" target="_blank" rel="noopener">Open the card on its own ↗</a></div></div>
+</section>
+<section class="it" id="i-attention" data-item="attention">
+<div class="ibar"><div class="ib1"><span class="chip read">Read</span><span class="num">08 / 30</span><h3>Attention: Q, K, V, heads and GQA</h3><label class="done"><input type="checkbox" data-id="attention"> Done</label></div>
+<p class="ins"><b>Read it all, then open “Study this card” at the bottom and work through it, at least to step 3 · Retrieve, without scrolling back up.</b> Computed by hand. The KV heads are what you'll be paying for all of Day 3.</p></div>
+<div class="ibody"><iframe class="cf" src="../perf-1-foundations/attention.html" title="Attention: Q, K, V, heads and GQA"></iframe><details class="deep"><summary>Go deeper (2) <span class="n">· only if you missed a question</span></summary><p class="dnote">Only if you missed a question on this card, or it left you with one. Reread the card first.</p><ul class="dl"><li><div class="drow"><span><a href="https://agents-inference-software-factory.svas.workers.dev/models/#f-F04" target="_blank" rel="noopener">Models failure F04</a> <span class="ext" aria-label="external">↗</span></span><button type="button" class="show" data-src="https://agents-inference-software-factory.svas.workers.dev/models/#f-F04" data-title="Models failure F04">Show here</button></div></li><li><div class="drow"><span><a href="https://github.com/seyonv/explainers/blob/main/perf-1-foundations/labs/attention.py" target="_blank" rel="noopener">Lab: attention.py</a> <span class="ext" aria-label="external">↗</span></span></div></li></ul></details>
+<div class="endrow"><label class="done big"><input type="checkbox" data-id="attention"> Done with Attention: Q, K, V, heads and GQA</label><a href="../perf-1-foundations/attention.html" target="_blank" rel="noopener">Open the card on its own ↗</a></div></div>
+</section>
+<section class="it" id="i-flops-per-token" data-item="flops-per-token">
+<div class="ibar"><div class="ib1"><span class="chip read">Read</span><span class="num">09 / 30</span><h3>FLOPs per token</h3><label class="done"><input type="checkbox" data-id="flops-per-token"> Done</label></div>
+<p class="ins"><b>Read it all, then open “Study this card” at the bottom and work through it, at least to step 3 · Retrieve, without scrolling back up.</b> 2N to serve, 6N to train, and why a FLOP count alone can't predict decode speed.</p></div>
+<div class="ibody"><iframe class="cf" src="../perf-1-foundations/flops-per-token.html" title="FLOPs per token"></iframe><details class="deep"><summary>Go deeper (3) <span class="n">· only if you missed a question</span></summary><p class="dnote">Only if you missed a question on this card, or it left you with one. Reread the card first.</p><ul class="dl"><li><div class="drow"><span><a href="https://agents-inference-software-factory.svas.workers.dev/models/#scaling-and-compute" target="_blank" rel="noopener">Models guide: scaling and compute</a> <span class="ext" aria-label="external">↗</span></span><button type="button" class="show" data-src="https://agents-inference-software-factory.svas.workers.dev/models/#scaling-and-compute" data-title="Models guide: scaling and compute">Show here</button></div></li><li><div class="drow"><span><a href="https://kipp.ly/transformer-inference-arithmetic/" target="_blank" rel="noopener">Transformer Inference Arithmetic (kipply)</a> <span class="ext" aria-label="external">↗</span></span></div></li><li><div class="drow"><span><a href="https://github.com/seyonv/explainers/blob/main/perf-1-foundations/labs/flops-per-token.py" target="_blank" rel="noopener">Lab: flops-per-token.py</a> <span class="ext" aria-label="external">↗</span></span></div></li></ul></details>
+<div class="endrow"><label class="done big"><input type="checkbox" data-id="flops-per-token"> Done with FLOPs per token</label><a href="../perf-1-foundations/flops-per-token.html" target="_blank" rel="noopener">Open the card on its own ↗</a></div></div>
+</section>
+<section class="it" id="i-p1-checkpoint-1" data-item="p1-checkpoint-1">
+<div class="ibar"><div class="ib1"><span class="chip check">Checkpoint</span><span class="num">10 / 30</span><h3>perf-1 Checkpoint 1: what one token costs</h3><label class="done"><input type="checkbox" data-id="p1-checkpoint-1"> Done</label></div>
+<p class="ins"><b>Answer every question before opening its answer. Note which card each miss points to.</b> Break after this one.</p></div>
+<div class="ibody"><iframe class="cf" src="../perf-1-foundations/checkpoint-1.html" title="perf-1 Checkpoint 1: what one token costs" data-nostudy></iframe>
+<div class="endrow"><label class="done big"><input type="checkbox" data-id="p1-checkpoint-1"> Done with perf-1 Checkpoint 1: what one token costs</label><a href="../perf-1-foundations/checkpoint-1.html" target="_blank" rel="noopener">Open the card on its own ↗</a></div></div>
+</section>
+</section>
+<section class="phase" id="p2" data-phase><div class="ph"><h2>Phase 2 · What the machine does, and what you measure</h2><span class="meta">~1.25 h · <span data-count>0 / 6</span></span></div>
+<div class="track" aria-hidden="true"><i data-bar></i></div>
+<p class="pintro">The chip, the roofline and the four serving metrics. Roofline lands now because you know what a decode step reads.</p><div class="primer"><div class="k">Before you read · 5–10 min</div>
+<p><b>1 · Prime.</b> Read what each card below will let you do. Nothing else yet.</p>
+<ul class="bte"><li><b>The GPU as a machine.</b> Sketch an H100 from memory with its sizes and bandwidths, and explain why a batch-1 decode step leaves the tensor cores idle about 99.7% of the time.</li><li><b>Compute-bound or memory-bound?.</b> Classify any operation as compute- or memory-bound from two numbers, and predict how batching or a change of chip moves it.</li><li><b>Prefill vs decode on your Mac.</b> Measure prefill and decode on your own machine, back out the effective bandwidth, and explain why the gap is 13× on the M3 but about 295× on an H100 at batch 1.</li><li><b>Serving metrics.</b> Compute TTFT, TPOT and E2E floors for a request, find the batch at which an SLO starts to bind, and explain why goodput, not raw throughput or mean latency, sets the cost.</li></ul>
+<details class="pretest" data-src="../perf-1-foundations/checkpoint-2.html" data-title="perf-1 Checkpoint 2"><summary><b>2 · Pretest:</b> try perf-1 Checkpoint 2 cold for 5 minutes <span class="n">(opens here)</span></summary></details></div>
+<section class="it" id="i-gpu-machine" data-item="gpu-machine">
+<div class="ibar"><div class="ib1"><span class="chip read">Read</span><span class="num">11 / 30</span><h3>The GPU as a machine</h3><label class="done"><input type="checkbox" data-id="gpu-machine"> Done</label></div>
+<p class="ins"><b>Read it all, then open “Study this card” at the bottom and work through it, at least to step 3 · Retrieve, without scrolling back up.</b> SMs, tensor cores and the memory hierarchy, and why batch-1 decode leaves the tensor cores idle 99.7% of the time.</p></div>
+<div class="ibody"><iframe class="cf" src="../perf-1-foundations/gpu-machine.html" title="The GPU as a machine"></iframe><details class="deep"><summary>Go deeper (2) <span class="n">· only if you missed a question</span></summary><p class="dnote">Only if you missed a question on this card, or it left you with one. Reread the card first.</p><ul class="dl"><li><div class="drow"><span><a href="https://jax-ml.github.io/scaling-book/gpus/" target="_blank" rel="noopener">Scaling Book: how to think about GPUs</a> <span class="ext" aria-label="external">↗</span></span><button type="button" class="show" data-src="https://jax-ml.github.io/scaling-book/gpus/" data-title="Scaling Book: how to think about GPUs">Show here</button></div></li><li><div class="drow"><span><a href="https://horace.io/brrr_intro.html" target="_blank" rel="noopener">Making Deep Learning Go Brrrr (Horace He)</a> <span class="ext" aria-label="external">↗</span></span><button type="button" class="show" data-src="https://horace.io/brrr_intro.html" data-title="Making Deep Learning Go Brrrr (Horace He)">Show here</button></div></li></ul></details>
+<div class="endrow"><label class="done big"><input type="checkbox" data-id="gpu-machine"> Done with The GPU as a machine</label><a href="../perf-1-foundations/gpu-machine.html" target="_blank" rel="noopener">Open the card on its own ↗</a></div></div>
+</section>
+<section class="it" id="i-roofline-intuition" data-item="roofline-intuition">
+<div class="ibar"><div class="ib1"><span class="chip read">Read</span><span class="num">12 / 30</span><h3>Compute-bound or memory-bound?</h3><label class="done"><input type="checkbox" data-id="roofline-intuition"> Done</label></div>
+<p class="ins"><b>Read it all, then open “Study this card” at the bottom and work through it, at least to step 3 · Retrieve, without scrolling back up.</b> The roofline intuition. Two numbers tell you which wall you hit.</p></div>
+<div class="ibody"><iframe class="cf" src="../perf-1-foundations/roofline-intuition.html" title="Compute-bound or memory-bound?"></iframe><details class="deep"><summary>Go deeper (2) <span class="n">· only if you missed a question</span></summary><p class="dnote">Only if you missed a question on this card, or it left you with one. Reread the card first.</p><ul class="dl"><li><div class="drow"><span><a href="https://jax-ml.github.io/scaling-book/roofline/" target="_blank" rel="noopener">Scaling Book: all about rooflines</a> <span class="ext" aria-label="external">↗</span></span><button type="button" class="show" data-src="https://jax-ml.github.io/scaling-book/roofline/" data-title="Scaling Book: all about rooflines">Show here</button></div></li><li><div class="drow"><span><a href="https://github.com/seyonv/explainers/blob/main/perf-1-foundations/labs/roofline-intuition.py" target="_blank" rel="noopener">Lab: roofline-intuition.py</a> <span class="ext" aria-label="external">↗</span></span></div></li></ul></details>
+<div class="endrow"><label class="done big"><input type="checkbox" data-id="roofline-intuition"> Done with Compute-bound or memory-bound?</label><a href="../perf-1-foundations/roofline-intuition.html" target="_blank" rel="noopener">Open the card on its own ↗</a></div></div>
+</section>
+<section class="it" id="i-prefill-vs-decode-mac" data-item="prefill-vs-decode-mac">
+<div class="ibar"><div class="ib1"><span class="chip read">Read</span><span class="num">13 / 30</span><h3>Prefill vs decode on your Mac</h3><label class="done"><input type="checkbox" data-id="prefill-vs-decode-mac"> Done</label></div>
+<p class="ins"><b>Read it all, then open “Study this card” at the bottom and work through it, at least to step 3 · Retrieve, without scrolling back up.</b> 188 vs 14 tok/s, measured. Run it on your own machine.</p></div>
+<div class="ibody"><iframe class="cf" src="../perf-1-foundations/prefill-vs-decode-mac.html" title="Prefill vs decode on your Mac"></iframe><details class="deep"><summary>Go deeper (2) <span class="n">· only if you missed a question</span></summary><p class="dnote">Only if you missed a question on this card, or it left you with one. Reread the card first.</p><ul class="dl"><li><div class="drow"><span><a href="https://huggingface.co/blog/tngtech/llm-performance-prefill-decode-concurrent-requests" target="_blank" rel="noopener">Prefill and decode for concurrent requests (TNG, Hugging Face)</a> <span class="ext" aria-label="external">↗</span></span></div></li><li><div class="drow"><span><a href="https://agents-inference-software-factory.svas.workers.dev/serving/#pr-2" target="_blank" rel="noopener">Serving principle 2: decode reads memory; prefill does math</a> <span class="ext" aria-label="external">↗</span></span><button type="button" class="show" data-src="https://agents-inference-software-factory.svas.workers.dev/serving/#pr-2" data-title="Serving principle 2: decode reads memory; prefill does math">Show here</button></div></li></ul></details>
+<div class="endrow"><label class="done big"><input type="checkbox" data-id="prefill-vs-decode-mac"> Done with Prefill vs decode on your Mac</label><a href="../perf-1-foundations/prefill-vs-decode-mac.html" target="_blank" rel="noopener">Open the card on its own ↗</a></div></div>
+</section>
+<section class="it" id="i-serving-metrics" data-item="serving-metrics">
+<div class="ibar"><div class="ib1"><span class="chip read">Read</span><span class="num">14 / 30</span><h3>Serving metrics</h3><label class="done"><input type="checkbox" data-id="serving-metrics"> Done</label></div>
+<p class="ins"><b>Read it all, then open “Study this card” at the bottom and work through it, at least to step 3 · Retrieve, without scrolling back up.</b> TTFT, TPOT, throughput, goodput and percentiles, from the server's side.</p></div>
+<div class="ibody"><iframe class="cf" src="../perf-1-foundations/serving-metrics.html" title="Serving metrics"></iframe><details class="deep"><summary>Go deeper (2) <span class="n">· only if you missed a question</span></summary><p class="dnote">Only if you missed a question on this card, or it left you with one. Reread the card first.</p><ul class="dl"><li><div class="drow"><span><a href="https://agents-inference-software-factory.svas.workers.dev/serving/#f-F05" target="_blank" rel="noopener">Serving failure F05</a> <span class="ext" aria-label="external">↗</span></span><button type="button" class="show" data-src="https://agents-inference-software-factory.svas.workers.dev/serving/#f-F05" data-title="Serving failure F05">Show here</button></div></li><li><div class="drow"><span><a href="https://github.com/seyonv/explainers/blob/main/perf-1-foundations/labs/serving-metrics.py" target="_blank" rel="noopener">Lab: serving-metrics.py</a> <span class="ext" aria-label="external">↗</span></span></div></li></ul></details>
+<div class="endrow"><label class="done big"><input type="checkbox" data-id="serving-metrics"> Done with Serving metrics</label><a href="../perf-1-foundations/serving-metrics.html" target="_blank" rel="noopener">Open the card on its own ↗</a></div></div>
+</section>
+<section class="it" id="i-p1-checkpoint-2" data-item="p1-checkpoint-2">
+<div class="ibar"><div class="ib1"><span class="chip check">Checkpoint</span><span class="num">15 / 30</span><h3>perf-1 Checkpoint 2: from bytes to step time</h3><label class="done"><input type="checkbox" data-id="p1-checkpoint-2"> Done</label></div>
+<p class="ins"><b>Answer every question before opening its answer. Note which card each miss points to.</b> Then do the station below before your break.</p></div>
+<div class="ibody"><iframe class="cf" src="../perf-1-foundations/checkpoint-2.html" title="perf-1 Checkpoint 2: from bytes to step time" data-nostudy></iframe>
+<div class="endrow"><label class="done big"><input type="checkbox" data-id="p1-checkpoint-2"> Done with perf-1 Checkpoint 2: from bytes to step time</label><a href="../perf-1-foundations/checkpoint-2.html" target="_blank" rel="noopener">Open the card on its own ↗</a></div></div>
+</section>
+<section class="it" id="i-d2-st1" data-item="d2-st1">
+<div class="ibar"><div class="ib1"><span class="chip task">Task</span><span class="num">16 / 30</span><h3>Serving station 1: the request's life and the numbers you report</h3><label class="done"><input type="checkbox" data-id="d2-st1"> Done</label></div>
+<p class="ins"><b>Work through it actively. Don't just read it.</b> The check that this phase stuck. Do the station as a lesson: answer its read-with questions, read only the sources a question sends you to, then do its closed-book check. Its sources are the Databricks, NVIDIA and TNG posts.</p></div>
+<div class="ibody"><div class="xf"><div class="xbar"><span>agents-inference-software-factory.svas.workers.dev · scrolls inside this frame</span><a href="https://agents-inference-software-factory.svas.workers.dev/serving/#mental-model" target="_blank" rel="noopener">Open in a new tab ↗</a></div><iframe src="https://agents-inference-software-factory.svas.workers.dev/serving/#mental-model" title="Serving station 1: the request's life and the numbers you report" loading="lazy"></iframe></div>
+<div class="endrow"><label class="done big"><input type="checkbox" data-id="d2-st1"> Done with Serving station 1: the request's life and the numbers you report</label></div></div>
+</section>
+</section>
+<section class="phase" id="p3" data-phase><div class="ph"><h2>Phase 3 · Why and how a server batches</h2><span class="meta">~2 h · <span data-count>0 / 12</span></span></div>
+<div class="track" aria-hidden="true"><i data-bar></i></div>
+<p class="pintro">Part 1 of the scheduler course. Each batching card fixes the problem the previous one leaves.</p><div class="primer"><div class="k">Before you read · 5–10 min</div>
+<p><b>1 · Prime.</b> Read what each card below will let you do. Nothing else yet.</p>
+<ul class="bte"><li><b>The scheduler on one page.</b> Place every card of the course on one causal map, and say which term of the step formula a given change attacks, and whether it moves throughput or only who waits.</li><li><b>The token loop: prefill, then decode.</b> Price any request from its prompt and output lengths, say which phase dominates and why, and explain why one weight read per decode step is the opening that batching fills.</li><li><b>The KV cache: what it stores.</b> Compute a model's KV size per token and how many sequences fit, explain why the cache both enables fast decode and caps the batch, and pick a lever to shrink it.</li><li><b>The bottlenecks.</b> Name the phase, then the term: for any symptom, say which bottleneck binds, prove it with a number, and pick the fix and its trade-off.</li><li><b>Why batching works.</b> Compute a batch's step time and throughput from the formula, explain the three things that stop batching from scaling forever, and say what batching costs each user.</li><li><b>Static batching and its padding tax.</b> Compute a static batch's padding and idle-seat waste from its lengths, explain why its TTFT is bad even at light load, and say when static batching is still the right tool.</li><li><b>Dynamic batching.</b> Predict a dynamic batcher's batch size and added latency from λ and d, explain why it works for one-pass models and fails for generation, and recognise its idea inside continuous batching.</li><li><b>Continuous batching.</b> Hand-trace continuous vs static batching on a slot grid, explain why a ragged batch is possible, and name the three problems re-deciding every step creates.</li><li><b>Chunked prefill and the token budget.</b> Pick a token budget from a TPOT SLO with the formula, predict what a smaller or larger budget does to ITL and TTFT, and explain why chunking needs no prefill/decode flag.</li></ul>
+<details class="pretest" data-src="../llm-request-scheduler/checkpoint-1.html" data-title="scheduler Checkpoint 1"><summary><b>2 · Pretest:</b> try scheduler Checkpoint 1 cold for 5 minutes <span class="n">(opens here)</span></summary></details></div>
+<section class="it" id="i-s-overview" data-item="s-overview">
+<div class="ibar"><div class="ib1"><span class="chip read">Read</span><span class="num">17 / 30</span><h3>The scheduler on one page</h3><label class="done"><input type="checkbox" data-id="s-overview"> Done</label></div>
+<p class="ins"><b>Read it all, then open “Study this card” at the bottom and work through it, at least to step 3 · Retrieve, without scrolling back up.</b> The causal map for this course: which term of the step formula each card attacks.</p></div>
+<div class="ibody"><iframe class="cf" src="../llm-request-scheduler/_overview.html" title="The scheduler on one page"></iframe><details class="deep"><summary>Go deeper (1) <span class="n">· only if you missed a question</span></summary><p class="dnote">Only if you missed a question on this card, or it left you with one. Reread the card first.</p><ul class="dl"><li><div class="drow"><span><a href="https://blog.bytebytego.com/p/a-guide-to-ai-inference-engineering" target="_blank" rel="noopener">A guide to AI inference engineering (ByteByteGo)</a> <span class="ext" aria-label="external">↗</span></span></div></li></ul></details>
+<div class="endrow"><label class="done big"><input type="checkbox" data-id="s-overview"> Done with The scheduler on one page</label><a href="../llm-request-scheduler/_overview.html" target="_blank" rel="noopener">Open the card on its own ↗</a></div></div>
+</section>
+<section class="it" id="i-token-loop" data-item="token-loop">
+<div class="ibar"><div class="ib1"><span class="chip read">Read</span><span class="num">18 / 30</span><h3>The token loop: prefill, then decode</h3><label class="done"><input type="checkbox" data-id="token-loop"> Done</label></div>
+<p class="ins"><b>Read it all, then open “Study this card” at the bottom and work through it, at least to step 3 · Retrieve, without scrolling back up.</b> One weight read per decode step, and the opening that batching fills.</p></div>
+<div class="ibody"><iframe class="cf" src="../llm-request-scheduler/token-loop.html" title="The token loop: prefill, then decode"></iframe>
+<div class="endrow"><label class="done big"><input type="checkbox" data-id="token-loop"> Done with The token loop: prefill, then decode</label><a href="../llm-request-scheduler/token-loop.html" target="_blank" rel="noopener">Open the card on its own ↗</a></div></div>
+</section>
+<section class="it" id="i-kv-cache" data-item="kv-cache">
+<div class="ibar"><div class="ib1"><span class="chip read">Read</span><span class="num">19 / 30</span><h3>The KV cache: what it stores</h3><label class="done"><input type="checkbox" data-id="kv-cache"> Done</label></div>
+<p class="ins"><b>Read it all, then open “Study this card” at the bottom and work through it, at least to step 3 · Retrieve, without scrolling back up.</b> It makes decode fast and it caps the batch. Both at once.</p></div>
+<div class="ibody"><iframe class="cf" src="../llm-request-scheduler/kv-cache.html" title="The KV cache: what it stores"></iframe><details class="deep"><summary>Go deeper (1) <span class="n">· only if you missed a question</span></summary><p class="dnote">Only if you missed a question on this card, or it left you with one. Reread the card first.</p><ul class="dl"><li><div class="drow"><span><a href="https://agents-inference-software-factory.svas.workers.dev/serving/#f-F01" target="_blank" rel="noopener">Serving failure F01</a> <span class="ext" aria-label="external">↗</span></span><button type="button" class="show" data-src="https://agents-inference-software-factory.svas.workers.dev/serving/#f-F01" data-title="Serving failure F01">Show here</button></div></li></ul></details>
+<div class="endrow"><label class="done big"><input type="checkbox" data-id="kv-cache"> Done with The KV cache: what it stores</label><a href="../llm-request-scheduler/kv-cache.html" target="_blank" rel="noopener">Open the card on its own ↗</a></div></div>
+</section>
+<section class="it" id="i-bottlenecks" data-item="bottlenecks">
+<div class="ibar"><div class="ib1"><span class="chip read">Read</span><span class="num">20 / 30</span><h3>The bottlenecks</h3><label class="done"><input type="checkbox" data-id="bottlenecks"> Done</label></div>
+<p class="ins"><b>Read it all, then open “Study this card” at the bottom and work through it, at least to step 3 · Retrieve, without scrolling back up.</b> Bandwidth, compute, memory and the CPU: name the phase, then the term.</p></div>
+<div class="ibody"><iframe class="cf" src="../llm-request-scheduler/bottlenecks.html" title="The bottlenecks"></iframe>
+<div class="endrow"><label class="done big"><input type="checkbox" data-id="bottlenecks"> Done with The bottlenecks</label><a href="../llm-request-scheduler/bottlenecks.html" target="_blank" rel="noopener">Open the card on its own ↗</a></div></div>
+</section>
+<section class="it" id="i-metrics-slos" data-item="metrics-slos">
+<div class="ibar"><div class="ib1"><span class="chip opt">Optional</span><span class="num">21 / 30</span><h3>Measuring a server</h3><label class="done"><input type="checkbox" data-id="metrics-slos"> Done</label></div>
+<p class="ins"><b>Skip unless it applies to you.</b> The same metrics from the scheduler's side. Skim if serving-metrics landed.</p></div>
+<div class="ibody"><iframe class="cf" src="../llm-request-scheduler/metrics-slos.html" title="Measuring a server"></iframe><details class="deep"><summary>Go deeper (1) <span class="n">· only if you missed a question</span></summary><p class="dnote">Only if you missed a question on this card, or it left you with one. Reread the card first.</p><ul class="dl"><li><div class="drow"><span><a href="https://agents-inference-software-factory.svas.workers.dev/serving/#pr-5" target="_blank" rel="noopener">Serving principle 5: optimize goodput, not throughput</a> <span class="ext" aria-label="external">↗</span></span><button type="button" class="show" data-src="https://agents-inference-software-factory.svas.workers.dev/serving/#pr-5" data-title="Serving principle 5: optimize goodput, not throughput">Show here</button></div></li></ul></details>
+<div class="endrow"><label class="done big"><input type="checkbox" data-id="metrics-slos"> Done with Measuring a server</label><a href="../llm-request-scheduler/metrics-slos.html" target="_blank" rel="noopener">Open the card on its own ↗</a></div></div>
+</section>
+<section class="it" id="i-why-batch" data-item="why-batch">
+<div class="ibar"><div class="ib1"><span class="chip read">Read</span><span class="num">22 / 30</span><h3>Why batching works</h3><label class="done"><input type="checkbox" data-id="why-batch"> Done</label></div>
+<p class="ins"><b>Read it all, then open “Study this card” at the bottom and work through it, at least to step 3 · Retrieve, without scrolling back up.</b> One weight read, many tokens, and the three things that stop it scaling.</p></div>
+<div class="ibody"><iframe class="cf" src="../llm-request-scheduler/why-batch.html" title="Why batching works"></iframe><details class="deep"><summary>Go deeper (1) <span class="n">· only if you missed a question</span></summary><p class="dnote">Only if you missed a question on this card, or it left you with one. Reread the card first.</p><ul class="dl"><li><div class="drow"><span><a href="https://agents-inference-software-factory.svas.workers.dev/serving/#f-F18" target="_blank" rel="noopener">Serving failure F18</a> <span class="ext" aria-label="external">↗</span></span><button type="button" class="show" data-src="https://agents-inference-software-factory.svas.workers.dev/serving/#f-F18" data-title="Serving failure F18">Show here</button></div></li></ul></details>
+<div class="endrow"><label class="done big"><input type="checkbox" data-id="why-batch"> Done with Why batching works</label><a href="../llm-request-scheduler/why-batch.html" target="_blank" rel="noopener">Open the card on its own ↗</a></div></div>
+</section>
+<section class="it" id="i-static-batching" data-item="static-batching">
+<div class="ibar"><div class="ib1"><span class="chip read">Read</span><span class="num">23 / 30</span><h3>Static batching and its padding tax</h3><label class="done"><input type="checkbox" data-id="static-batching"> Done</label></div>
+<p class="ins"><b>Read it all, then open “Study this card” at the bottom and work through it, at least to step 3 · Retrieve, without scrolling back up.</b> The naive version, and the waste you can count.</p></div>
+<div class="ibody"><iframe class="cf" src="../llm-request-scheduler/static-batching.html" title="Static batching and its padding tax"></iframe><details class="deep"><summary>Go deeper (1) <span class="n">· only if you missed a question</span></summary><p class="dnote">Only if you missed a question on this card, or it left you with one. Reread the card first.</p><ul class="dl"><li><div class="drow"><span><a href="https://github.com/seyonv/explainers/blob/main/llm-request-scheduler/labs/scheduler.py" target="_blank" rel="noopener">Lab: scheduler.py</a> <span class="ext" aria-label="external">↗</span></span></div></li></ul></details>
+<div class="endrow"><label class="done big"><input type="checkbox" data-id="static-batching"> Done with Static batching and its padding tax</label><a href="../llm-request-scheduler/static-batching.html" target="_blank" rel="noopener">Open the card on its own ↗</a></div></div>
+</section>
+<section class="it" id="i-dynamic-batching" data-item="dynamic-batching">
+<div class="ibar"><div class="ib1"><span class="chip read">Read</span><span class="num">24 / 30</span><h3>Dynamic batching</h3><label class="done"><input type="checkbox" data-id="dynamic-batching"> Done</label></div>
+<p class="ins"><b>Read it all, then open “Study this card” at the bottom and work through it, at least to step 3 · Retrieve, without scrolling back up.</b> Wait a little, batch a lot. It works for one-pass models and fails for generation.</p></div>
+<div class="ibody"><iframe class="cf" src="../llm-request-scheduler/dynamic-batching.html" title="Dynamic batching"></iframe>
+<div class="endrow"><label class="done big"><input type="checkbox" data-id="dynamic-batching"> Done with Dynamic batching</label><a href="../llm-request-scheduler/dynamic-batching.html" target="_blank" rel="noopener">Open the card on its own ↗</a></div></div>
+</section>
+<section class="it" id="i-continuous-batching" data-item="continuous-batching">
+<div class="ibar"><div class="ib1"><span class="chip read">Read</span><span class="num">25 / 30</span><h3>Continuous batching</h3><label class="done"><input type="checkbox" data-id="continuous-batching"> Done</label></div>
+<p class="ins"><b>Read it all, then open “Study this card” at the bottom and work through it, at least to step 3 · Retrieve, without scrolling back up.</b> Requests join and leave at every step. This is the core idea of modern engines.</p></div>
+<div class="ibody"><iframe class="cf" src="../llm-request-scheduler/continuous-batching.html" title="Continuous batching"></iframe><details class="deep"><summary>Go deeper (4) <span class="n">· only if you missed a question</span></summary><p class="dnote">Only if you missed a question on this card, or it left you with one. Reread the card first.</p><ul class="dl"><li><div class="drow"><span><a href="https://www.anyscale.com/blog/continuous-batching-llm-inference" target="_blank" rel="noopener">How continuous batching enables 23× throughput (Anyscale)</a> <span class="ext" aria-label="external">↗</span></span></div></li><li><div class="drow"><span><a href="https://huggingface.co/blog/continuous_batching" target="_blank" rel="noopener">Continuous batching from first principles (Hugging Face)</a> <span class="ext" aria-label="external">↗</span></span></div></li><li><div class="drow"><span><a href="../perf-5-engines/orca-iteration-scheduling.html" target="_blank" rel="noopener">Orca I: iteration-level scheduling</a></span><button type="button" class="show" data-src="../perf-5-engines/orca-iteration-scheduling.html" data-title="Orca I: iteration-level scheduling">Show here</button></div></li><li><div class="drow"><span><a href="https://www.usenix.org/conference/osdi22/presentation/yu" target="_blank" rel="noopener">Orca paper (OSDI '22)</a> <span class="ext" aria-label="external">↗</span></span></div></li></ul></details>
+<div class="endrow"><label class="done big"><input type="checkbox" data-id="continuous-batching"> Done with Continuous batching</label><a href="../llm-request-scheduler/continuous-batching.html" target="_blank" rel="noopener">Open the card on its own ↗</a></div></div>
+</section>
+<section class="it" id="i-chunked-prefill" data-item="chunked-prefill">
+<div class="ibar"><div class="ib1"><span class="chip read">Read</span><span class="num">26 / 30</span><h3>Chunked prefill and the token budget</h3><label class="done"><input type="checkbox" data-id="chunked-prefill"> Done</label></div>
+<p class="ins"><b>Read it all, then open “Study this card” at the bottom and work through it, at least to step 3 · Retrieve, without scrolling back up.</b> Stops a long prompt from stalling everyone else's decode.</p></div>
+<div class="ibody"><iframe class="cf" src="../llm-request-scheduler/chunked-prefill.html" title="Chunked prefill and the token budget"></iframe><details class="deep"><summary>Go deeper (4) <span class="n">· only if you missed a question</span></summary><p class="dnote">Only if you missed a question on this card, or it left you with one. Reread the card first.</p><ul class="dl"><li><div class="drow"><span><a href="../perf-5-engines/sarathi-chunked-prefill.html" target="_blank" rel="noopener">Sarathi-Serve II: chunked prefill</a></span><button type="button" class="show" data-src="../perf-5-engines/sarathi-chunked-prefill.html" data-title="Sarathi-Serve II: chunked prefill">Show here</button></div></li><li><div class="drow"><span><a href="https://arxiv.org/abs/2403.02310" target="_blank" rel="noopener">Sarathi-Serve paper</a> <span class="ext" aria-label="external">↗</span></span></div></li><li><div class="drow"><span><a href="https://agents-inference-software-factory.svas.workers.dev/serving/#pr-9" target="_blank" rel="noopener">Serving principle 9: schedule prefill and decode on purpose</a> <span class="ext" aria-label="external">↗</span></span><button type="button" class="show" data-src="https://agents-inference-software-factory.svas.workers.dev/serving/#pr-9" data-title="Serving principle 9: schedule prefill and decode on purpose">Show here</button></div></li><li><div class="drow"><span><a href="https://agents-inference-software-factory.svas.workers.dev/serving/#f-F04" target="_blank" rel="noopener">Serving failure F04</a> <span class="ext" aria-label="external">↗</span></span><button type="button" class="show" data-src="https://agents-inference-software-factory.svas.workers.dev/serving/#f-F04" data-title="Serving failure F04">Show here</button></div></li></ul></details>
+<div class="endrow"><label class="done big"><input type="checkbox" data-id="chunked-prefill"> Done with Chunked prefill and the token budget</label><a href="../llm-request-scheduler/chunked-prefill.html" target="_blank" rel="noopener">Open the card on its own ↗</a></div></div>
+</section>
+<section class="it" id="i-s-checkpoint-1" data-item="s-checkpoint-1">
+<div class="ibar"><div class="ib1"><span class="chip check">Checkpoint</span><span class="num">27 / 30</span><h3>Scheduler Checkpoint 1</h3><label class="done"><input type="checkbox" data-id="s-checkpoint-1"> Done</label></div>
+<p class="ins"><b>Answer every question before opening its answer. Note which card each miss points to.</b> Compare it with your cold attempt from this morning.</p></div>
+<div class="ibody"><iframe class="cf" src="../llm-request-scheduler/checkpoint-1.html" title="Scheduler Checkpoint 1" data-nostudy></iframe><details class="deep"><summary>Go deeper (1) <span class="n">· only if you missed a question</span></summary><p class="dnote">Only if you missed a question on this card, or it left you with one. Reread the card first.</p><ul class="dl"><li><div class="drow"><span><a href="https://github.com/seyonv/explainers/blob/main/llm-request-scheduler/labs/experiments.py" target="_blank" rel="noopener">Lab: experiments.py</a> <span class="ext" aria-label="external">↗</span></span></div></li></ul></details>
+<div class="endrow"><label class="done big"><input type="checkbox" data-id="s-checkpoint-1"> Done with Scheduler Checkpoint 1</label><a href="../llm-request-scheduler/checkpoint-1.html" target="_blank" rel="noopener">Open the card on its own ↗</a></div></div>
+</section>
+<section class="it" id="i-d2-st3" data-item="d2-st3">
+<div class="ibar"><div class="ib1"><span class="chip task">Task</span><span class="num">28 / 30</span><h3>Serving station 3: inside an engine</h3><label class="done"><input type="checkbox" data-id="d2-st3"> Done</label></div>
+<p class="ins"><b>Work through it actively. Don't just read it.</b> The check that the batching cards stuck, on a real engine (vLLM V1). Do the station as a lesson: answer its read-with questions, read only the sources a question sends you to, then do its closed-book check. Its questions on preemption and the scheduler code preview Day 4, so answer what you can.</p></div>
+<div class="ibody"><div class="xf"><div class="xbar"><span>agents-inference-software-factory.svas.workers.dev · scrolls inside this frame</span><a href="https://agents-inference-software-factory.svas.workers.dev/serving/#inside-an-engine" target="_blank" rel="noopener">Open in a new tab ↗</a></div><iframe src="https://agents-inference-software-factory.svas.workers.dev/serving/#inside-an-engine" title="Serving station 3: inside an engine" loading="lazy"></iframe></div>
+<div class="endrow"><label class="done big"><input type="checkbox" data-id="d2-st3"> Done with Serving station 3: inside an engine</label></div></div>
+</section>
+</section>
+<section class="phase" id="p4" data-phase><div class="ph"><h2>Phase 4 · Consolidate</h2><span class="meta">~20 min · <span data-count>0 / 2</span></span></div>
+<div class="track" aria-hidden="true"><i data-bar></i></div>
+<p class="pintro">Close everything and rebuild the day from memory.</p>
+<section class="it" id="i-d2-draw" data-item="d2-draw">
+<div class="ibar"><div class="ib1"><span class="chip task">Task</span><span class="num">29 / 30</span><h3>Draw it in Excalidraw</h3><label class="done"><input type="checkbox" data-id="d2-draw"> Done</label></div>
+<p class="ins"><b>Work through it actively. Don't just read it.</b> Use the Serving guide's drawing prompts to draw one request from prompt to last token: the chip, the step formula, and where batching slots in.</p></div>
+<div class="ibody"><div class="xf"><div class="xbar"><span>agents-inference-software-factory.svas.workers.dev · scrolls inside this frame</span><a href="https://agents-inference-software-factory.svas.workers.dev/serving/#draw" target="_blank" rel="noopener">Open in a new tab ↗</a></div><iframe src="https://agents-inference-software-factory.svas.workers.dev/serving/#draw" title="Draw it in Excalidraw" loading="lazy"></iframe></div>
+<div class="endrow"><label class="done big"><input type="checkbox" data-id="d2-draw"> Done with Draw it in Excalidraw</label></div></div>
+</section>
+<section class="it" id="i-d2-principles" data-item="d2-principles">
+<div class="ibar"><div class="ib1"><span class="chip task">Task</span><span class="num">30 / 30</span><h3>Reread the 15 principles</h3><label class="done"><input type="checkbox" data-id="d2-principles"> Done</label></div>
+<p class="ins"><b>Work through it actively. Don't just read it.</b> Tick off in your head each one you can now back with a number. Expect about five.</p></div>
+<div class="ibody"><div class="xf"><div class="xbar"><span>agents-inference-software-factory.svas.workers.dev · scrolls inside this frame</span><a href="https://agents-inference-software-factory.svas.workers.dev/serving/#principles" target="_blank" rel="noopener">Open in a new tab ↗</a></div><iframe src="https://agents-inference-software-factory.svas.workers.dev/serving/#principles" title="Reread the 15 principles" loading="lazy"></iframe></div>
+<div class="endrow"><label class="done big"><input type="checkbox" data-id="d2-principles"> Done with Reread the 15 principles</label></div></div>
+</section>
+</section>
+
+<nav class="nextday" aria-label="Previous and next day"><a href="../study-flow-day-1-5/study-flow-day-1-5.html"><small>← Previous</small>Day 1.5: Just enough about the model</a><a class="nx" href="../study-flow-day-3/study-flow-day-3.html"><small>Next →</small>Day 3: The math of serving</a></nav>
+<p class="foot">About 5 hours with breaks. Keep the glossary open in a tab. If a card's math feels heavy, do its Retrieve questions first and read backwards from what you couldn't answer. Tutor mode for any card: <code>/study &lt;course&gt;/&lt;card&gt;</code> in Claude Code.</p>
+</div></main>
+<script>
+(() => {
+  const KEY = "study-plan-day-2:v1", SIDE = "study-flow:side", LAST = "study-flow-day-2:last", WKEY = "study-plan-day-2:sentences";
+  const get = (k) => { try { return localStorage.getItem(k); } catch { return null; } };
+  const set = (k, v) => { try { localStorage.setItem(k, v); } catch {} };
+  let done = {};
+  try { done = JSON.parse(get(KEY)) || {}; } catch {}
+  const html = document.documentElement;
+  const boxes = [...document.querySelectorAll("input[data-id]")];
+  const ids = [...new Set(boxes.map((b) => b.dataset.id))];
+  const items = [...document.querySelectorAll(".it")];
+
+  const paint = () => {
+    for (const b of boxes) b.checked = !!done[b.dataset.id];
+    for (const s of document.querySelectorAll("[data-side]")) s.classList.toggle("done", !!done[s.dataset.side]);
+    for (const s of items) s.classList.toggle("isdone", !!done[s.dataset.item]);
+    for (const s of document.querySelectorAll("[data-phase]")) {
+      const its = [...s.querySelectorAll(".it")], k = its.filter((i) => done[i.dataset.item]).length;
+      s.querySelector("[data-count]").textContent = k + " / " + its.length;
+      s.querySelector("[data-bar]").style.width = (100 * k / its.length) + "%";
+      const sp = document.querySelector('[data-phase-side="' + s.id + '"] [data-count]');
+      if (sp) sp.textContent = k + "/" + its.length;
+    }
+    const k = ids.filter((i) => done[i]).length;
+    for (const e of document.querySelectorAll("[data-allcount]")) e.textContent = k + " / " + ids.length + " done";
+    document.getElementById("allbar").style.width = (100 * k / ids.length) + "%";
+  };
+  for (const b of boxes) b.addEventListener("change", () => { if (b.checked) done[b.dataset.id] = 1; else delete done[b.dataset.id]; set(KEY, JSON.stringify(done)); paint(); });
+  // Another tab (e.g. the checklist version) changed the ticks.
+  addEventListener("storage", (e) => { if (e.key === KEY) { try { done = JSON.parse(e.newValue) || {}; } catch { done = {}; } paint(); } });
+  const reset = document.getElementById("reset");
+  let armed = false;
+  reset.addEventListener("click", () => {
+    if (!armed) { armed = true; reset.textContent = "Click again to clear"; setTimeout(() => { armed = false; reset.textContent = "Clear ticks"; }, 3000); return; }
+    done = {}; set(KEY, "{}"); paint(); armed = false; reset.textContent = "Clear ticks";
+  });
+
+  // Written answers (Day 1.5's five sentences), saved as you type.
+  let wr = {};
+  try { wr = JSON.parse(get(WKEY)) || {}; } catch {}
+  const showPre = () => { for (const e of document.querySelectorAll("[data-pre]")) e.textContent = (wr.pre || [])[e.dataset.pre] || "(nothing written yet)"; };
+  for (const blk of document.querySelectorAll("[data-write]")) {
+    const which = blk.dataset.write;
+    for (const t of blk.querySelectorAll("textarea")) {
+      t.value = (wr[which] || [])[t.dataset.i] || "";
+      t.addEventListener("input", () => { (wr[which] ||= [])[t.dataset.i] = t.value; set(WKEY, JSON.stringify(wr)); showPre(); });
+    }
+  }
+  showPre();
+
+  // Sidebar
+  const narrow = () => innerWidth <= 900;
+  const toggle = (open) => { html.classList.toggle("closed", !open); if (!narrow()) set(SIDE, open ? "open" : "closed"); };
+  document.getElementById("close").addEventListener("click", () => toggle(false));
+  document.getElementById("open").addEventListener("click", () => toggle(true));
+  document.getElementById("side").addEventListener("click", (e) => { if (narrow() && e.target.closest("a[href^='#']")) toggle(false); });
+
+  // Same-origin cards: hide their course navigation, open their links in new tabs, grow to fit.
+  const fit = (f) => {
+    const d = f.contentDocument;
+    if (!d || !d.body || d.__fitted) return;
+    d.__fitted = true;
+    const st = d.createElement("style");
+    st.textContent = ".sn,.snx{display:none!important}html,body{overflow:hidden!important}" + (f.hasAttribute("data-nostudy") ? ".study{display:none!important}" : "");
+    d.head.append(st);
+    for (const l of d.querySelectorAll("a[href]")) if (!l.getAttribute("href").startsWith("#")) { l.target = "_blank"; l.rel = "noopener"; }
+    const size = () => { f.style.height = Math.ceil(d.documentElement.getBoundingClientRect().height) + "px"; };
+    new ResizeObserver(size).observe(d.body);
+    size();
+    f.classList.add("ready");
+  };
+  const wire = (f) => { f.addEventListener("load", () => fit(f)); if (f.contentDocument?.readyState === "complete" && f.contentDocument.body?.childElementCount) fit(f); };
+  const esc = (s) => s.replace(/"/g, "&quot;");
+  const makeFrame = (src, title) => {
+    if (src.startsWith("../")) { const f = document.createElement("iframe"); f.className = "cf"; f.src = src; f.title = title; wire(f); return f; }
+    const w = document.createElement("div"); w.className = "xf";
+    w.innerHTML = '<div class="xbar"><span>' + new URL(src).host + ' · scrolls inside this frame</span><a href="' + esc(src) + '" target="_blank" rel="noopener">Open in a new tab ↗</a></div><iframe src="' + esc(src) + '" title="' + esc(title) + '"></iframe>';
+    return w;
+  };
+  document.querySelectorAll("iframe.cf").forEach(wire);
+  for (const d of document.querySelectorAll("details.pretest")) d.addEventListener("toggle", () => { if (d.open && !d.querySelector("iframe")) d.append(makeFrame(d.dataset.src, d.dataset.title)); });
+  for (const b of document.querySelectorAll("button.show")) b.addEventListener("click", () => {
+    const li = b.closest("li"), old = li.querySelector(".cf,.xf");
+    if (old) { old.remove(); b.textContent = "Show here"; return; }
+    li.append(makeFrame(b.dataset.src, b.dataset.title)); b.textContent = "Hide";
+  });
+
+  // Current step: the last one whose top has passed a third of the way down the screen.
+  const sideOf = (id) => document.querySelector('[data-side="' + id + '"]');
+  let cur = null;
+  const track = () => {
+    const y = innerHeight / 3;
+    let c = null;
+    for (const s of items) { if (s.getBoundingClientRect().top <= y) c = s; else break; }
+    if (c === cur) return;
+    cur?.classList.remove("cur"); if (cur) { const o = sideOf(cur.dataset.item); o?.classList.remove("cur"); o?.closest(".sp")?.classList.remove("cur"); }
+    cur = c;
+    if (!c) return;
+    c.classList.add("cur");
+    const si = sideOf(c.dataset.item);
+    si?.classList.add("cur");
+    si?.closest(".sp")?.classList.add("cur");
+    const side = document.getElementById("side");
+    if (si && !narrow()) { const r = si.getBoundingClientRect(); if (r.top < 60 || r.bottom > innerHeight - 20) side.scrollTop += r.top - innerHeight / 2; }
+    set(LAST, c.dataset.item);
+  };
+  addEventListener("scroll", () => requestAnimationFrame(track), { passive: true });
+
+  const last = get(LAST), res = document.getElementById("resume");
+  if (last && !location.hash && document.getElementById("i-" + last)) {
+    const a = res.querySelector("a");
+    a.href = "#i-" + last; a.textContent = document.querySelector("#i-" + last + " h3").textContent;
+    res.classList.add("on");
+  }
+
+  const go = (d) => {
+    const i = cur ? items.indexOf(cur) : -1, t = items[Math.max(0, Math.min(items.length - 1, i + d))];
+    t.scrollIntoView({ block: "start" });
+  };
+  addEventListener("keydown", (e) => {
+    if (e.metaKey || e.ctrlKey || e.altKey || /INPUT|TEXTAREA|SELECT/.test(e.target.tagName)) return;
+    if (e.key === "j") go(1); else if (e.key === "k") go(-1);
+    else if (e.key === "[") toggle(html.classList.contains("closed"));
+  });
+
+  // Frames above a linked step change height as they load, so land on it again once they're in.
+  if (location.hash) addEventListener("load", () => document.querySelector(location.hash)?.scrollIntoView({ block: "start" }));
+  paint(); track();
+})();
+</script>
+</body></html>

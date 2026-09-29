@@ -66,8 +66,22 @@ for (const f of readdirSync(root).filter((f) => f.endsWith("-series.json"))) {
 }
 entries.sort((a, b) => (b.kind === "series") - (a.kind === "series"));
 
+// study-path.json lays the day plans out as one path above the grid. Each day has a checklist and a
+// one-page version; both stay in the list for search but leave the grid, like series members.
+let path = null;
+if (existsSync(join(root, "study-path.json"))) {
+  path = JSON.parse(readFileSync(join(root, "study-path.json"), "utf8"));
+  path.days = path.days.filter((d) => entries.some((e) => e.slug === d.plan) && entries.some((e) => e.slug === d.flow));
+  for (const d of path.days) {
+    for (const e of entries.filter((x) => x.slug === d.plan || x.slug === d.flow)) e.series = path.title;
+    const html = readFileSync(join(root, d.plan, d.plan + ".html"), "utf8");
+    d.ids = [...new Set([...html.matchAll(/data-id="([^"]+)"/g)].map((m) => m[1]))];
+  }
+}
+
 const page = readFileSync(join(root, "hub-template.html"), "utf8")
   .replace("/*ENTRIES*/[]", () => JSON.stringify(entries, null, 1).replace(/</g, "\\u003c"))
+  .replace("/*PATH*/null", () => JSON.stringify(path).replace(/</g, "\\u003c"))
   .replace("<!--COUNT-->", () => `${entries.length} explainer${entries.length === 1 ? "" : "s"}, ${entries.reduce((n, e) => n + e.cards, 0)} cards`);
 writeFileSync(join(root, "index.html"), page);
 writeFileSync(join(root, "hub.json"), JSON.stringify({
