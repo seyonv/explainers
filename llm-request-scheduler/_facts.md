@@ -142,6 +142,7 @@ prefill (prompt processing) · decode (generation) · forward step / iteration �
 | kv-cache.html | The KV cache: what it stores and why generation needs it | 1 |
 | bottlenecks.html | The bottlenecks: bandwidth, compute, memory, and the CPU | 1 |
 | metrics-slos.html | Measuring a server: TTFT, TPOT, throughput, goodput | 1 |
+| queueing-knee.html | Queueing and the knee: why p95 explodes before the GPU is full | 1 (numbers from labs/knee.py) |
 | why-batch.html | Why batching works: one weight read, many tokens | 2 · Batching strategies |
 | static-batching.html | Static batching and its padding tax | 2 |
 | dynamic-batching.html | Dynamic batching: wait a little, batch a lot | 2 |

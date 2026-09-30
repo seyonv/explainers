@@ -1,0 +1,79 @@
+{
+  "prime": {
+    "problem": "You sweep a server's load and p95 time to first token is flat, flat, flat, then ten times worse, while the token gap still looks healthy. Without a model of queueing you cannot say where that bend will be, why it is so sudden, or why two load tests of the same server disagree about it.",
+    "fits": "Group 1, straight after the metrics card. That card defined TTFT, TPOT and capacity and said a closed loop hides queueing; this one explains why the curve bends at all, using the running set that continuous batching and the KV cache cards fill in later.",
+    "expect": [
+      "utilisation = arrival rate ÷ the most the server can finish",
+      "the wait multiplier ρ ÷ (1 − ρ): 1, 4, 9, 19",
+      "the running set: seat cap or KV memory",
+      "Little's law: in flight = rate × time inside",
+      "closed loop vs open loop"
+    ],
+    "goal": "Predict where a server's knee will be, explain why TTFT breaks there while the token gap does not, turn a concurrency into the request rate it delivered, and pick an operating point below the knee."
+  },
+  "attend": [
+    "From 50% to 95% utilisation the load grows 1.9× and the simple model's wait grows 19×. Which part of the formula causes that?",
+    "In the rate sweep, TPOT stops at 24.5 ms while TTFT p95 goes from 114 ms to 12.4 s. What is full, and why does that protect one number and wreck the other?",
+    "Why does the simple one-server formula give the right shape but the wrong numbers for an engine with continuous batching?",
+    "Concurrency 64 delivered 26.4 req/s. Which two numbers from the test give you that, and why does doubling to 128 not double it?",
+    "512 closed-loop users settle at a TTFT p95 of about 7 s, but at 44 req/s open loop the p95 is 4.7 s after 3,000 requests and 12.4 s after 6,000. What does each test do when the server slows down?",
+    "Why does bursty traffic reach the knee at a lower average rate than Poisson traffic?"
+  ],
+  "core": {
+    "must": [
+      "Arrivals come in random clumps → a server with spare time clears each clump in the next quiet gap → as utilisation nears 100% the gaps vanish and leftovers pile up → the wait grows like ρ ÷ (1 − ρ), far faster than the load",
+      "An engine adds new requests to the running set while it has seats and KV memory → extra load first becomes a bigger, slower step (TPOT rises) → once the running set is full, new requests wait outside before their first token → TTFT explodes while TPOT stays flat",
+      "Requests in flight = rate × time inside (Little's law) → a closed-loop test fixes the in-flight count → rate delivered = concurrency ÷ mean end-to-end time → once the rate is flat, more users only buy more time",
+      "A closed loop waits for each reply before sending again → it throttles itself and its queue is bounded → it cannot show the unbounded queue an open loop builds past the maximum sustainable rate → find that rate, then run at 70 to 80% of it"
+    ],
+    "elevated": [
+      "Which limit fills the running set first decides where the knee is: min(seat cap, KV tokens ÷ tokens per request) → in our runs the 256 seats filled and memory never did → a sweep that stops below that number sees slower tokens but no queue knee"
+    ],
+    "reference": [
+      "the flag names <code>--max-concurrency</code>, <code>--request-rate</code>, <code>--burstiness</code> and <code>--max-num-seqs</code>",
+      "the textbook name M/M/1 and the symbols λ, μ, ρ, L, W",
+      "the exact simulated values (39 req/s maximum sustainable rate, 24.5 ms TPOT ceiling, 380-request H100 memory estimate)",
+      "the metric name <code>vllm:num_requests_waiting</code>"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, sketch p95 TTFT and TPOT against request rate for one engine and mark the knee. Then write four sentences: what utilisation is, why the wait bends upward, what fills on the engine at the knee, and what a closed-loop test cannot show.",
+    "checklist": [
+      "utilisation = arrival rate ÷ maximum sustainable rate",
+      "wait ∝ ρ ÷ (1 − ρ): dividing by the spare capacity, which heads to zero",
+      "below the knee load becomes slower tokens; above it, queue time in TTFT",
+      "the knee is where the running set fills: seat cap or KV memory",
+      "in flight = rate × time inside, so rate = concurrency ÷ end-to-end time",
+      "closed loop throttles itself; open loop past the maximum sustainable rate grows without limit"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why a server at 90% utilisation makes requests wait far longer than one at 50%, even though it still finishes work faster than work arrives.", "kind": "concept", "answer": ["arrivals are clumpy, so short bursts exceed the service rate even when the average does not", "the backlog from a burst is cleared in idle gaps, and at 90% there is little idle time", "simple model: 0.9 ÷ 0.1 = 9× the service time, against 0.5 ÷ 0.5 = 1×"]},
+    {"q": "Walk through what happens to a new request, and to the requests already running, when it arrives at an engine whose running set is full.", "kind": "mechanism", "answer": ["it cannot join the next step: no free seat, or no free KV blocks", "it waits outside until a running request finishes and frees its place", "that wait is before its first token, so it is added to its TTFT", "running requests keep the same batch size, so their token gaps do not change"]},
+    {"q": "A closed-loop run at concurrency 128 reports a mean end-to-end time of 3.720 s. What request rate did it deliver, and why was that not twice the rate at concurrency 64 (2.423 s)?", "kind": "mechanism", "answer": ["128 ÷ 3.720 = 34.4 req/s", "at 64: 64 ÷ 2.423 = 26.4 req/s, so doubling users gave 1.30× the rate", "each request took 1.54× longer because the bigger batch made every step slower"]},
+    {"q": "You need the highest request rate your server can hold with p95 TTFT under 1 s. You have time for one test design: fixed concurrency or fixed request rate. Which do you choose, and what does the other cost you?", "kind": "tradeoff", "answer": ["fixed request rate (open loop): the queue forms as it would with real users", "sweep rates around the expected maximum sustainable rate and read p95 TTFT at each", "fixed concurrency backs off when the server slows, so TTFT levels off and looks better than users would see", "cost of open loop: past the maximum sustainable rate the result depends on test length, so run long enough and report the length"]}
+  ],
+  "compare": [
+    {"with": "llm-request-scheduler/metrics-slos", "q": "The metrics card says open-loop load is the only way to measure capacity and quotes 40 req/s. What does this card add about why, and about how much to trust a capacity measured on a short trace?", "answer": ["a closed loop fixes requests in flight, so by Little's law it can only trade rate for time; its queue is bounded", "capacity here sits right at the maximum sustainable rate, where the result depends on test length", "at 40 req/s TTFT p95 is 523 ms over 3,000 requests and 2,810 ms over 6,000"]},
+    {"with": "perf-5-engines/benchmarking", "q": "The benchmarking card's Mac sweep is closed loop and TTFT grows 12× from 1 to 16 users. Is that the same knee as the one on this card? What is each curve actually showing?", "answer": ["the Mac sweep shows load turning into slower steps and prefills waiting behind each other inside the batch", "this card's knee is the running set filling, after which requests wait outside", "a closed loop can show the first; only a rate sweep shows the second growing without limit"]},
+    {"with": "llm-latency/tail-latency", "q": "The tail-latency card treats a slow p95 as something the caller defends against with hedging. Why does hedging not help with the p95 on this card?", "answer": ["a hedge helps when slowness is independent per call", "past the knee every request is slow for the same reason: the queue", "a hedged request adds load and lengthens the queue; the fix is headroom, shedding or more replicas"]}
+  ],
+  "predict": {
+    "q": "You lower the seat cap from 256 to 64 and repeat the closed-loop sweep at 64 and then 128 users. Commit before you reveal: at 128 users, what happens to the request rate, to TPOT, and to TTFT?",
+    "answer": "The running set now fills at 64, so 128 users means 64 run and 64 wait. In our simulation the rate stays flat (26.4 req/s at 64 users, 26.3 at 128), TPOT p50 does not move (9.0 ms both times, because the batch is still 64), and TTFT p50 jumps from 13.7 ms to 2,448 ms. Little's law gives the same wait: 64 waiting ÷ 26.3 req/s = 2.4 s."
+  },
+  "apply": {
+    "task": "Your closed-loop sweep (our simulation's numbers) reports mean end-to-end times of 1.806 s at 32 users, 3.720 s at 128 and 13.003 s at 512. Use Little's law to find the request rate each row delivered, say which row is past the knee and how you can tell from the rates alone, then pick an operating rate and name the test you would run next to confirm it.",
+    "done": "32 ÷ 1.806 = 17.7 req/s, 128 ÷ 3.720 = 34.4 req/s, 512 ÷ 13.003 = 39.4 req/s. From 128 to 512 the users went up 4× and the rate only 1.14×, so the rate has flattened near 39 req/s and the extra users became waiting time: 512 is past the knee. Operating point: 70 to 80% of 39 = 27 to 31 req/s. Next test: an open-loop rate sweep around that range, reading p95 TTFT.",
+    "hint": "Rate = users ÷ time. Compare how much the users grew with how much the rate grew."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: that the rate would stay flat, that TPOT would not move, or the size of the TTFT jump?",
+    "What could you not explain cleanly: why the wait is divided by 1 − ρ, or why a batching engine's knee comes later than the simple model's?",
+    "Which relationship is still fuzzy: running set full → queue → TTFT, or flat rate → more users → more time?",
+    "For the server you are about to test, which fills first, the seat cap or KV memory, and at how many requests?",
+    "When you read someone else's load test, what will you check first to tell a closed loop from an open one?"
+  ],
+  "revisit": ["llm-request-scheduler/metrics-slos", "llm-request-scheduler/kv-cache", "perf-2-scaling-book-inference/step-time"],
+  "prereq": ["llm-request-scheduler/metrics-slos"]
+}

@@ -90,5 +90,6 @@ request-level (static) batching vs iteration-level scheduling (continuous batchi
 | structured-outputs.html | Structured outputs inside the engine | XGrammar only (token-mask cache, context-independent tokens, persistent stack, CPU/GPU overlap, overhead numbers); links the existing structured-outputs course for everything else | [L] token-mask.py (toy grammar: precompute context-independent mask; count per-step work) |
 | multi-lora.html | Serving many LoRA adapters | S-LoRA + Punica: unified paging, SGMV, adapter batching | [L] lora-cost.py (bytes/FLOPs of LoRA vs base at rank r; adapters that fit) |
 | benchmarking.html | Benchmarking a server | MLPerf scenarios, BurstGPT burstiness, vllm bench serve metrics, goodput, our Mac throughput–latency sweep | [L] server-sweep.py (measured llama-server sweep) · [H] h100-vllm-bench.sh |
+| engine-counters.html | Reading the server's counters | vLLM /metrics page (names checked against docs.vllm.ai 2026-09-30), nvidia-smi sampling, queue/prefill/decode split, diagnosis table; example readings from Serving guide F03, F05, the rest marked illustrative | – |
 
 Siblings: all files above (relative hrefs).

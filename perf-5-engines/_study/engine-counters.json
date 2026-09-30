@@ -1,0 +1,67 @@
+{
+  "prime": {
+    "problem": "A load test hands you latency and throughput as seen from outside. When time to first token turns upward you can't tell whether requests queued, memory filled, the prefix cache missed, or the load never reached the server. Without the engine's own counters you end up turning knobs by guesswork.",
+    "fits": "Directly after Benchmarking a server. That card chose the traffic and the client-side numbers to report; this one adds the server's side of the same run, so you can explain the curve you just drew. It reuses the KV budget and preemption from the scheduler card.",
+    "expect": ["two views of one run: client numbers and server counters", "fetching the <code>/metrics</code> page once a second", "gauge, counter, histogram", "running, waiting, KV cache usage, preemptions, prefix hits", "a reading-to-diagnosis table"],
+    "goal": "Collect the engine's counters and GPU readings during a run, read each one correctly, and name the limit a run hit from which counter moved when latency did."
+  },
+  "attend": [
+    "Why is a throughput figure untrustworthy until the running count has been seen to reach the intended concurrency?",
+    "Requests waiting is rising. Which second reading separates 'memory is full' from 'the cap or compute is the limit', and why that one?",
+    "Why must a counter be read as a rise over the run while a gauge can be read directly?",
+    "What does the GPU utilization field actually measure, and why can't it tell you how much room the server has left?",
+    "How do the waiting-time and prefill-time histograms show that a slow tail is queueing and not slow compute?"
+  ],
+  "core": {
+    "must": [
+      "Client numbers show that latency rose, not why → the engine reports what it was doing each second (running, waiting, KV usage) → lining both up on one clock shows which counter moved when latency did → that counter names the limit",
+      "Running count never reaches the intended concurrency → the server never saw the batch → every throughput figure from that run describes a smaller test than the label says → check the running count before trusting any number",
+      "Waiting rises → requests arrive faster than the engine admits them → KV usage near 1 means memory stops admission, KV usage low means the cap on concurrent sequences, the per-step token budget or step time does → the fix differs, so read the pair together",
+      "Time to first token ≈ waiting + prefill → if the tail grows while prefill time stays put, the extra time is queue wait → optimising the model's compute won't help, lowering load or adding capacity will"
+    ],
+    "elevated": [
+      "A counter is a running total since server start → one reading is meaningless → subtract the reading at the start of the run from the one at the end (and for a histogram, rise in <code>_sum</code> ÷ rise in <code>_count</code> gives the run's average)",
+      "GPU utilization is the share of time anything was running, and vLLM reserves its memory pool at startup → utilization does not rise in step with load (a single stream can read from about 30% to near 100%) and memory used stays flat → neither can say how much room is left; running count and KV usage can"
+    ],
+    "reference": [
+      "the exact <code>vllm:</code> metric names, and the <code>_total</code>, <code>_bucket</code>, <code>_sum</code>, <code>_count</code> suffixes",
+      "the <code>nvidia-smi --query-gpu</code> field names and the <code>-l</code> flag",
+      "the shell loop that fetches the page each second",
+      "that Prometheus stores and Grafana draws the same data",
+      "the layout of the run record"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw the two views of a run (client, server) and list what each reports. Then write the diagnosis table as 'if I see X, the limit is Y' lines, without looking at the card.",
+    "checklist": [
+      "client view: time to first token, gap between tokens, throughput, goodput; server view: running, waiting, KV usage, preemptions, prefix hits, time histograms",
+      "the views must agree: token and request totals rise by what the client claims, and running reaches the target",
+      "running below target with nothing waiting → the client isn't sending the load",
+      "waiting rising + KV near full → memory; waiting rising + KV low → cap or compute",
+      "preemptions rising → KV pressure; prefix hits flat while queries climb → prompts don't share an identical prefix",
+      "slow tail with normal compute time → queueing"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain to a teammate why a result needs both the client's numbers and the server's counters, using the guide's F03 symptom (about 45 tokens/s at 1, 8 and 32 users).", "kind": "concept", "answer": ["the client's view alone looked like a finished three-point sweep", "the running count never went above 1, so the server saw the same one-at-a-time load in all three", "GPU utilization near 30% was the card idling between steps", "only the server's view shows whether the intended load arrived"]},
+    {"q": "Walk through how you would get the average waiting time and the prefix cache hit rate for one run from the once-a-second counter file.", "kind": "mechanism", "answer": ["take the first and last sample of the run", "waiting time: rise in the queue-time histogram's _sum divided by the rise in its _count", "hit rate: rise in prefix cache hits divided by rise in prefix cache queries, both counted in tokens", "never use a single reading of a counter, because it is a total since the server started"]},
+    {"q": "Requests waiting is climbing during your run. You could raise the cap on concurrent sequences or lower it. Which reading decides, and what does each choice cost if you pick wrong?", "kind": "tradeoff", "answer": ["KV cache usage decides", "KV low and running pinned at the cap: raising the cap lets more run at once, at the cost of slower tokens for each", "KV near 1: raising the cap makes the engine start more than fits, so preemptions rise and work is redone", "KV near 1: lower the cap or shorten contexts, and accept that the extra requests wait"]},
+    {"q": "Why is GPU utilization from the GPU sampler a weak signal for how loaded an LLM server is, and what is it still good for?", "kind": "concept", "answer": ["it is the share of the sample period in which at least one piece of GPU code was running, not how much of the GPU's capacity was used", "a single stream can read anywhere from about 30% to near 100% depending on CPU-side work between steps, and a full batch reads near 100%, so it does not scale with load", "a low reading is still useful: the GPU is idle between steps, so the limit is elsewhere, often the client", "use running count and KV usage for 'how full'"]}
+  ],
+  "compare": [
+    {"with": "perf-5-engines/benchmarking", "q": "Benchmarking a server warned that a closed-loop client hides queueing. Which server counters would reveal the difference between a closed-loop and an open-loop run at the same nominal load, and what would each run's waiting count look like past the knee?", "answer": ["closed loop caps requests in flight, so running + waiting can never exceed the concurrency setting and waiting stays bounded", "open loop keeps sending, so waiting keeps growing for as long as arrivals outpace the engine", "the queue-time histogram shows the wait the closed-loop client's numbers under-report", "both still need the running count checked against what was intended"]},
+    {"with": "llm-request-scheduler/metrics-slos", "q": "That card defines time to first token, TPOT, throughput and goodput at the client. What can the server's histograms add that those cannot, and what can only the client's numbers tell you?", "answer": ["the server splits time to first token into waiting and prefill, which the client cannot see", "the server's histograms pool all requests and stop at the engine's edge", "only the client sees network and gateway time and can judge each request against an SLO for goodput", "so the counters explain a result; the client numbers are the result"]},
+    {"with": "perf-5-engines/scheduler", "q": "The scheduler card described admission against a KV budget and preemption. Which counters are the visible trace of each of those decisions?", "answer": ["admission held back by memory: waiting rises while KV usage sits near 1", "admission held back by the cap on concurrent sequences: waiting rises while running is pinned at the cap and KV usage is low", "preemption: the preemption counter rises", "healthy: running equals the target, waiting is zero, preemptions flat"]}
+  ],
+  "predict": {"q": "Waiting is rising, KV cache usage reads 0.35 and running is pinned at the engine's cap. You double the cap. What do running, waiting and KV usage do next, and what new reading should you start watching? Commit before revealing.", "answer": "Running rises towards the new cap, waiting falls, and KV usage climbs roughly in proportion: about 0.70 if running doubles with similar requests. Each user's tokens slow down because every step now carries a bigger batch. The reading to watch is preemptions: if a later increase pushes KV usage to 1, the engine starts evicting running requests and total throughput can fall, which is the guide's 'more concurrency makes the server slower' failure."},
+  "apply": {"task": "Diagnose two runs from their readings, on paper. Run A: the client says it sent 500 requests of 256 output tokens each at concurrency 32. Over the run, the engine's output-token total rose by 32,000, and requests running peaked at 8. Run B (the guide's F05): at 6 requests/s, time to first token is 80 ms at p50 and 900 ms at p95, and step times look normal. For each run, say which row of the diagnosis table applies, what the numbers imply, and which one extra reading you would pull to confirm.", "done": "Run A: you state how many full-length requests the server actually completed and how far the running count fell short, and name the client as the suspect. Run B: you state how much of the p95 is waiting under the card's assumption, and name the histogram that would confirm it.", "hint": "A: 32,000 ÷ 256 = 125 full-length requests, a quarter of the 500 claimed (500 × 256 = 128,000 expected), and running peaked at 8 of an intended 32, so the client is not sending the load; check its concurrency setting and its error count. B: 900 − 80 = 820 ms of waiting if compute is the same 80 ms; the waiting-time histogram should have filled its upper bins while the prefill-time histogram did not move."},
+  "reflect": [
+    "Which prediction did you get wrong: what doubling the cap does to KV usage, or what to watch afterwards?",
+    "What couldn't you explain cleanly: why a counter needs a subtraction, or why utilization doesn't scale with load?",
+    "Which relationship is still fuzzy: waiting rising → memory limit, or waiting rising → cap or compute limit?",
+    "On your next run, which check will you do before you look at any throughput number?",
+    "Which line of your run record would a teammate need most to reproduce the run?"
+  ],
+  "revisit": ["perf-5-engines/benchmarking", "perf-5-engines/scheduler", "llm-request-scheduler/kv-cache", "llm-request-scheduler/metrics-slos"],
+  "prereq": ["perf-5-engines/benchmarking"]
+}

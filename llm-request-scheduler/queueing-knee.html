@@ -1,0 +1,507 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Queueing and the knee: why p95 explodes before the GPU is full</title>
+<style>
+
+:root{
+  --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
+  --text:#1c1f23; --muted:#6b7068; --faint:#b9b9b3;
+  --accent:#4a9d77; --accent-bg:#dcefdf; --accent-border:#8cc79c;
+  --red:#c0492b; --red-bg:#fbeceb;
+  --amber:#b7791f; --amber-bg:#f6ead3;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#15171a; --surface:#1d2024; --surface2:#24282d; --border:#32373d;
+    --text:#e6e8ea; --muted:#9aa1a9; --faint:#4a5057;
+    --accent:#5fb37f; --accent-bg:#1c2b22; --accent-border:#3f7a55;
+    --red:#e57368; --red-bg:#2e1f1e;
+    --amber:#d9a441; --amber-bg:#33291a;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text)}
+.card{max-width:820px;margin:0 auto;padding:28px 32px;font-family:-apple-system,"Inter",system-ui,sans-serif;line-height:1.45}
+h1{font-size:26px;font-weight:600;margin:0 0 6px;letter-spacing:-0.01em}
+.sub{font-size:15px;color:var(--muted);margin:0 0 20px}
+h2{font-size:17px;font-weight:600;margin:26px 0 10px}
+h2 small{font-size:13px;font-weight:400;color:var(--muted)}
+h3.sm{font-size:15px;font-weight:600;margin:18px 0 8px}
+h3.sm small{font-size:13px;font-weight:400;color:var(--muted)}
+p{font-size:15px;margin:0 0 10px}
+ul{font-size:15px;margin:0 0 10px;padding-left:20px}
+li{margin-bottom:4px}
+.cap{font-size:13px;color:var(--muted);margin:8px 0 0;text-align:center}
+.cap + p{margin-top:14px}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+
+/* Tables and formulas */
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border)}
+th{font-size:12px;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:none}
+.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.hi{color:var(--accent);font-weight:600} .lo{color:var(--red)} .mu{color:var(--muted)}
+tr.pick td{background:var(--accent-bg)}
+.formula{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin:10px 0;white-space:pre;overflow-x:auto;line-height:1.55}
+.formula .c{color:var(--muted)}
+.formula .g{color:var(--accent);font-weight:600}
+.formula .r{color:var(--red);font-weight:600}
+.tw{overflow-x:auto}
+.tw table{min-width:600px}
+
+/* MathML */
+.mathbox{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px 16px 12px;margin:10px 0;overflow-x:auto}
+.mathbox math{font-size:21px;color:var(--text);font-family:"STIX Two Math","Latin Modern Math","Cambria Math",math}
+.mathbox .t1{color:var(--text)} .mathbox .t2{color:var(--accent)} .mathbox .t3{color:var(--muted)}
+.mathbox .lab{font-size:12px;font-family:-apple-system,"Inter",system-ui,sans-serif;padding-top:3px;border-top:1.5px solid currentColor;margin-top:2px}
+.mathbox math + math{margin-top:14px}
+.legend{display:grid;grid-template-columns:auto 1fr auto;column-gap:14px;row-gap:5px;font-size:13px;margin-top:12px;align-items:baseline}
+.legend .sym{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;text-align:right}
+.legend .v{color:var(--muted);text-align:right;font-variant-numeric:tabular-nums}
+@media (max-width:560px){.legend{grid-template-columns:auto 1fr}.legend .v{display:none}}
+
+/* Two examples per term */
+.parts td{vertical-align:top} .parts td:first-child{font-weight:600}
+.parts .ex{font-size:13px} .parts .ex span{display:block;color:var(--muted)}
+.parts .what{font-size:13px}
+@media (max-width:560px){.parts .what{display:none}}
+
+/* Bar charts */
+.bars{display:grid;grid-template-columns:150px 1fr 110px;column-gap:10px;row-gap:9px;align-items:center;font-size:13px}
+.bars .nm{font-size:13px}
+.bars .track{display:flex;align-items:center}
+.bars .bar{height:18px;border-radius:3px;background:var(--faint)}
+.bars .bar.w{background:var(--accent)}
+.bars .bar.l{background:var(--red)}
+.bars .v{text-align:right;font-variant-numeric:tabular-nums}
+.bars .v.w{color:var(--accent);font-weight:600}
+.bars .v.l{color:var(--red)}
+
+/* 2x2 grid */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.cell{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.cell.win{background:var(--accent-bg);border-color:var(--accent-border)}
+.cell h3{font-size:16px;font-weight:600;margin:0 0 5px;display:flex;gap:8px;align-items:baseline}
+.cell p{font-size:14px;margin:0;color:var(--text)}
+.cell.win h3,.cell.win p{color:var(--accent)}
+.x{color:var(--red)} .ok{color:var(--accent)}
+
+/* Clarification box */
+.note{border:1px solid var(--border);border-radius:10px;padding:14px 18px;font-size:14px}
+.note p,.note li{font-size:14px} .note p:last-child{margin-bottom:0}
+
+.foot{margin-top:22px;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+.foot p{font-size:13px}
+.lab-link{display:inline-block;font-size:13px;border:1px solid var(--accent-border);background:var(--accent-bg);color:var(--accent);border-radius:6px;padding:4px 10px;margin:2px 0 10px;text-decoration:none}
+
+/* SVG */
+svg{display:block;max-width:100%;height:auto;margin-top:6px}
+.sl{font-size:12px;fill:var(--muted)} .st{font-size:13px;fill:var(--text)} .sh{font-size:13px;font-weight:600;fill:var(--text)}
+.slr{font-size:12px;fill:var(--red)}
+.bx{fill:var(--surface2);stroke:var(--faint);stroke-width:1}
+.bxa{fill:var(--accent-bg);stroke:var(--accent);stroke-width:1.2}
+.band{fill:var(--accent)}
+.dv{stroke:var(--border);stroke-width:1}
+.bxp{fill:var(--amber-bg);stroke:var(--amber);stroke-width:1.2}
+.sg{font-size:13px;font-weight:600;fill:var(--accent)}
+.dot{fill:var(--accent)} .dotr{fill:var(--red)}
+.charts{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.charts svg{border:1px solid var(--border);border-radius:10px;background:var(--surface);padding:6px}
+@media (max-width:560px){.charts{grid-template-columns:1fr}}
+@media (max-width:560px){.grid2{grid-template-columns:1fr}.card{padding:20px 16px}.bars{grid-template-columns:96px 1fr 80px}}
+a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+td code{white-space:nowrap}
+/* study:css */
+.prime{border:1px solid var(--accent-border,var(--border));background:var(--accent-bg);border-radius:10px;padding:10px 16px 6px;margin:12px 0 18px;font-size:14px}
+.prime p{margin:4px 0}
+.prime-k{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--accent);font-weight:600;margin-bottom:4px}
+.prime .chip{display:inline-block;border:1px solid var(--border);background:var(--surface);border-radius:999px;padding:0 8px;margin:1px 2px;font-size:12.5px}
+.prime ol{margin:2px 0 6px;padding-left:22px}
+.prime li{margin:2px 0}
+.study{border:1px solid var(--border);border-radius:12px;padding:12px 16px;margin:26px 0 18px;background:var(--surface)}
+.study-head{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:4px 12px}
+.study-head h2{margin:0;font-size:18px}
+.study-head span,.study-all-l{font-size:12.5px;color:var(--muted)}
+.study-all{margin:8px 4px 8px 0;vertical-align:middle}
+.study details.st{border-top:1px solid var(--border);padding:8px 0}
+.study details.st>summary{cursor:pointer;font-size:15px}
+.study details.st>summary span{color:var(--muted);font-size:13px}
+.study-all:not(:checked)~details.st:not([open])~details.st{display:none}
+.st-body{font-size:14px;padding:4px 0 2px 2px}
+.st-body p{margin:6px 0}
+.st-body ul,.st-body ol{margin:4px 0;padding-left:22px}
+.st-body li{margin:3px 0}
+.st-rule,.st-how{color:var(--muted);font-size:13px}
+.st-why{font-size:12px;color:var(--muted);text-align:right;margin:2px 0 0}
+.core{display:grid;grid-template-columns:3fr 2fr;gap:6px 18px}
+.core h4{margin:4px 0;font-size:13px}
+.core .muted{color:var(--muted)}
+.up{font-size:11px;border:1px solid var(--accent-border,var(--border));color:var(--accent);border-radius:4px;padding:0 4px;white-space:nowrap}
+.study .kind{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--accent);margin-right:4px}
+.study details.ref{margin:4px 0 8px;padding:4px 10px;border-left:3px solid var(--accent-border,var(--border));background:var(--surface2);border-radius:0 6px 6px 0}
+.study details.ref>summary{cursor:pointer;font-size:13px;color:var(--accent)}
+@media (max-width:620px){.core{grid-template-columns:1fr}}
+/* /study:css */
+/* series-nav */
+.sn{max-width:820px;margin:0 auto;padding:16px 32px 0;font-family:-apple-system,"Inter",system-ui,sans-serif;font-size:13px;line-height:1.5;color:var(--muted)}
+.sn a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
+.sn .crumbs{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 7px}
+.sn .crumbs b{color:var(--text);font-weight:600}
+.sn .sep{color:var(--faint,var(--border))}
+.sn .step{margin-left:auto;white-space:nowrap}
+.sn .dep{margin-top:5px;padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface)}
+.sn .dep .ok{color:var(--accent);font-weight:600}
+.snx{max-width:820px;margin:0 auto;padding:6px 32px 44px;font-family:-apple-system,"Inter",system-ui,sans-serif}
+.snx .nx{display:grid;grid-template-columns:280px 1fr;text-decoration:none;color:var(--text);background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.snx .nx:hover,.snx .nx:focus-visible{border-color:var(--accent-border,var(--accent));outline:none}
+.snx .mini{position:relative;height:210px;overflow:hidden;background:var(--bg);border-right:1px solid var(--border);padding:14px 16px}
+.snx .mini span{display:block}
+.snx .mini .m1{font-size:12.5px;font-weight:600;margin:0 0 4px;line-height:1.3}
+.snx .mini .m2{font-size:9px;color:var(--muted);margin:0 0 8px;line-height:1.4}
+.snx .mini .m3{font-size:8.5px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;margin:0 0 3px}
+.snx .mini .m4{font-size:9.5px;margin:0;line-height:1.45}
+.snx .tx{padding:16px 20px}
+.snx .lab{font-size:12px;font-weight:600;color:var(--accent);letter-spacing:.04em;text-transform:uppercase}
+.snx .tt{display:block;font-size:20px;font-weight:600;margin:5px 0 4px;line-height:1.25}
+.snx .ds{display:block;font-size:14px;color:var(--muted)}
+.snx .nd{display:block;font-size:13px;color:var(--muted);margin-top:10px}
+.snx .go{display:block;margin-top:12px;font-size:14px;font-weight:600;color:var(--accent)}
+.snx .aux{display:flex;justify-content:space-between;gap:12px;margin-top:10px;font-size:13px;color:var(--muted)}
+.snx .aux a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
+@media (max-width:560px){.sn,.snx{padding-left:16px;padding-right:16px}.snx .nx{grid-template-columns:1fr}.snx .mini{display:none}.sn .step{margin-left:0}}
+/* /series-nav */
+</style>
+</head>
+<body>
+<!-- series-nav:top -->
+<nav class="sn" aria-label="Course navigation"><div class="crumbs"><a href="../index.html" target="_top">All explainers</a><span class="sep">›</span><a href="index.html" target="_top">Build an LLM request scheduler</a><span class="sep">›</span><b>06 / 29</b><span class="step"><a href="index.html#metrics-slos" target="_top">← prev</a> · <a href="index.html#why-batch" target="_top">next →</a></span></div>
+</nav>
+<!-- /series-nav:top -->
+<article class="card">
+<h1>Queueing and the knee: why p95 explodes before the GPU is full</h1>
+<p class="sub">Also called utilisation (the Greek letter ρ, "rho"), saturation, the hockey-stick curve, Little's law, and open-loop versus closed-loop load. You are about to sweep a server's load and mark "the knee" on a plot of p95 time to first token (p95 is the value 95% of requests beat). This card says why the curve has a knee at all, where it sits on an engine with continuous batching, and why a concurrency sweep and a request-rate sweep are two different tests. The measured-looking numbers are our simulation (the course's scheduler with Llama-3.1-8B on one H100 at 100% of peak, so they are floors, not a benchmark).</p>
+<!-- study:prime -->
+<aside class="prime" aria-label="Prime: read this first">
+<div class="prime-k"><a href="../learning-principles/learning-principles.html#prime">Prime</a> · 2 minutes before you read</div>
+<p><b>The problem:</b> You sweep a server's load and p95 time to first token is flat, flat, flat, then ten times worse, while the token gap still looks healthy. Without a model of queueing you cannot say where that bend will be, why it is so sudden, or why two load tests of the same server disagree about it.</p>
+<p><b>Where it fits:</b> Group 1, straight after the metrics card. That card defined TTFT, TPOT and capacity and said a closed loop hides queueing; this one explains why the curve bends at all, using the running set that continuous batching and the KV cache cards fill in later.</p>
+<p class="prime-links"><b>Needs first:</b> <a href="metrics-slos.html">Measuring a server: TTFT, TPOT, throughput, goodput</a></p>
+<p class="prime-links"><b>Builds on:</b> <a href="metrics-slos.html">Measuring a server: TTFT, TPOT, throughput, goodput</a> · <a href="kv-cache.html">The KV cache: what it stores and why generation needs it</a> · <a href="../perf-2-scaling-book-inference/step-time.html">The step-time formula</a></p>
+<p><b>You'll meet:</b> <span class="chip">utilisation = arrival rate ÷ the most the server can finish</span> <span class="chip">the wait multiplier ρ ÷ (1 − ρ): 1, 4, 9, 19</span> <span class="chip">the running set: seat cap or KV memory</span> <span class="chip">Little's law: in flight = rate × time inside</span> <span class="chip">closed loop vs open loop</span></p>
+<p><b>By the end:</b> Predict where a server's knee will be, explain why TTFT breaks there while the token gap does not, turn a concurrency into the request rate it delivered, and pick an operating point below the knee.</p>
+<p class="prime-q"><b>Read with these questions</b> (answer them in your head as you go; don't take notes line by line):</p>
+<ol><li>From 50% to 95% utilisation the load grows 1.9× and the simple model's wait grows 19×. Which part of the formula causes that?</li><li>In the rate sweep, TPOT stops at 24.5 ms while TTFT p95 goes from 114 ms to 12.4 s. What is full, and why does that protect one number and wreck the other?</li><li>Why does the simple one-server formula give the right shape but the wrong numbers for an engine with continuous batching?</li><li>Concurrency 64 delivered 26.4 req/s. Which two numbers from the test give you that, and why does doubling to 128 not double it?</li><li>512 closed-loop users settle at a TTFT p95 of about 7 s, but at 44 req/s open loop the p95 is 4.7 s after 3,000 requests and 12.4 s after 6,000. What does each test do when the server slows down?</li><li>Why does bursty traffic reach the knee at a lower average rate than Poisson traffic?</li></ol>
+</aside>
+<!-- /study:prime -->
+
+<h2>In one breath</h2>
+<p>A server has a top speed: the most requests it can finish per second, second after second, without falling behind. This card calls it the <b>maximum sustainable rate</b>. <b>Utilisation</b> is how much of that rate the arriving traffic uses. Requests arrive in random clumps, not evenly, so the wait for a free place grows slowly at first and then very fast as utilisation nears 100%. The bend in that curve is <b>the knee</b>. On an LLM server the wait lands in time to first token (TTFT), so p95 TTFT blows up while tokens still stream smoothly and the GPU still seems to have room.</p>
+
+<h2>1. Utilisation: how much of the maximum sustainable rate is in use</h2>
+<p>Two rates matter. The <b>arrival rate</b> is how many requests show up per second. The <b>maximum sustainable rate</b> is the most requests the server can finish per second when it is never idle (queueing textbooks call it the service rate). Utilisation is the first divided by the second. It is not the same as "capacity" on the <a href="metrics-slos.html">Measuring a server</a> card: capacity is the highest rate that still meets the latency targets you promised (the SLO), so it can never be higher than the maximum sustainable rate.</p>
+<div class="mathbox">
+<math display="block">
+  <munder class="t2"><mi>&#961;</mi><mtext class="lab">utilisation</mtext></munder>
+  <mo>=</mo>
+  <mfrac>
+    <munder class="t1"><mi>&#955;</mi><mtext class="lab">requests arriving per second</mtext></munder>
+    <munder class="t3"><mi>&#956;</mi><mtext class="lab">most it can finish per second</mtext></munder>
+  </mfrac>
+</math>
+<div class="legend">
+  <span class="sym">λ</span><span>"lambda", the arrival rate: you choose it in a rate sweep</span><span class="v">20 req/s</span>
+  <span class="sym">μ</span><span>"mu", the maximum sustainable rate: you measure it</span><span class="v">about 39 req/s</span>
+  <span class="sym">ρ</span><span>"rho", utilisation: a share between 0 and 1</span><span class="v">20 ÷ 39 = 51%</span>
+</div>
+</div>
+<div class="formula">our simulated server finishes at most about 39 req/s
+20 req/s arriving:  20 ÷ 39 = 51%   <span class="c"># half its maximum rate</span>
+30 req/s arriving:  30 ÷ 39 = 77%
+36 req/s arriving:  36 ÷ 39 = <span class="g">92%</span>
+40 req/s arriving:  40 ÷ 39 = <span class="r">103%</span>  <span class="c"># more than it can ever finish</span></div>
+<p class="cap">Our simulation. The 39 req/s comes from flooding the simulator with 512 always-busy users and counting what it finishes: 39.4 req/s with 30,720 requests. With 15,360 requests it is 39.0, and 38.8 to 40.0 across seeds 0 to 3.</p>
+<p>Below 100% the server keeps up on average. Above 100% it never catches up. The surprise is how bad things get <i>just below</i> 100%.</p>
+
+<h2>2. Why the wait grows much faster than the load</h2>
+<p>If requests arrived on a perfect beat, and every job took the same time, a server at 95% would never make anyone wait. Real requests arrive in clumps: nothing for a moment, then three at once. A server with spare time clears each clump in the quiet gap that follows. A nearly full server has almost no quiet gaps, so the leftovers from one clump are still there when the next clump lands.</p>
+<p>The simplest textbook model makes this exact. It has one server that handles one job at a time, with random arrivals and random job lengths (its textbook name is M/M/1). In that model:</p>
+<div class="mathbox">
+<math display="block">
+  <munder class="t1"><mtext>mean wait in queue</mtext><mtext class="lab">before service starts</mtext></munder>
+  <mo>=</mo>
+  <munder class="t3"><mtext>service time</mtext><mtext class="lab">one job, alone</mtext></munder>
+  <mo>&#215;</mo>
+  <munder class="t2"><mfrac><mi>&#961;</mi><mrow><mn>1</mn><mo>&#8722;</mo><mi>&#961;</mi></mrow></mfrac><mtext class="lab">the multiplier</mtext></munder>
+</math>
+</div>
+<table>
+  <tr><th>Utilisation</th><th>The arithmetic, ρ ÷ (1 − ρ)</th><th class="num">Wait, in service times</th><th class="num">If one job takes 100 ms (illustrative)</th></tr>
+  <tr><td>50%</td><td>0.50 ÷ 0.50</td><td class="num hi">1×</td><td class="num">100 ms</td></tr>
+  <tr><td>80%</td><td>0.80 ÷ 0.20</td><td class="num">4×</td><td class="num">400 ms</td></tr>
+  <tr><td>90%</td><td>0.90 ÷ 0.10</td><td class="num lo">9×</td><td class="num">900 ms</td></tr>
+  <tr><td>95%</td><td>0.95 ÷ 0.05</td><td class="num lo">19×</td><td class="num">1,900 ms</td></tr>
+</table>
+<svg viewBox="0 0 640 250" role="img" aria-label="Wait multiplier against utilisation for the simplest one-server model: 1 at 50%, 4 at 80%, 9 at 90%, 19 at 95%">
+<line class="dv" x1="56" y1="205.0" x2="610" y2="205.0"/><text class="sl" x="50" y="209.0" text-anchor="end">0×</text>
+<line class="dv" x1="56" y1="158.8" x2="610" y2="158.8"/><text class="sl" x="50" y="162.8" text-anchor="end">5×</text>
+<line class="dv" x1="56" y1="112.5" x2="610" y2="112.5"/><text class="sl" x="50" y="116.5" text-anchor="end">10×</text>
+<line class="dv" x1="56" y1="66.2" x2="610" y2="66.2"/><text class="sl" x="50" y="70.2" text-anchor="end">15×</text>
+<line class="dv" x1="56" y1="20.0" x2="610" y2="20.0"/><text class="sl" x="50" y="24.0" text-anchor="end">20×</text>
+<text class="sl" x="56.0" y="222" text-anchor="middle">0%</text>
+<text class="sl" x="194.5" y="222" text-anchor="middle">25%</text>
+<text class="sl" x="333.0" y="222" text-anchor="middle">50%</text>
+<text class="sl" x="471.5" y="222" text-anchor="middle">75%</text>
+<text class="sl" x="610.0" y="222" text-anchor="middle">100%</text>
+<polyline points="56.0,205.0 58.2,205.0 60.4,204.9 62.6,204.9 64.9,204.8 67.1,204.8 69.3,204.8 71.5,204.7 73.7,204.7 75.9,204.7 78.2,204.6 80.4,204.6 82.6,204.5 84.8,204.5 87.0,204.5 89.2,204.4 91.5,204.4 93.7,204.3 95.9,204.3 98.1,204.2 100.3,204.2 102.5,204.2 104.8,204.1 107.0,204.1 109.2,204.0 111.4,204.0 113.6,203.9 115.8,203.9 118.0,203.8 120.3,203.8 122.5,203.7 124.7,203.7 126.9,203.6 129.1,203.6 131.3,203.5 133.6,203.5 135.8,203.4 138.0,203.4 140.2,203.3 142.4,203.3 144.6,203.2 146.9,203.2 149.1,203.1 151.3,203.1 153.5,203.0 155.7,203.0 157.9,202.9 160.2,202.9 162.4,202.8 164.6,202.7 166.8,202.7 169.0,202.6 171.2,202.6 173.4,202.5 175.7,202.5 177.9,202.4 180.1,202.3 182.3,202.3 184.5,202.2 186.7,202.1 189.0,202.1 191.2,202.0 193.4,201.9 195.6,201.9 197.8,201.8 200.0,201.8 202.3,201.7 204.5,201.6 206.7,201.5 208.9,201.5 211.1,201.4 213.3,201.3 215.6,201.3 217.8,201.2 220.0,201.1 222.2,201.0 224.4,201.0 226.6,200.9 228.8,200.8 231.1,200.7 233.3,200.6 235.5,200.6 237.7,200.5 239.9,200.4 242.1,200.3 244.4,200.2 246.6,200.1 248.8,200.1 251.0,200.0 253.2,199.9 255.4,199.8 257.7,199.7 259.9,199.6 262.1,199.5 264.3,199.4 266.5,199.3 268.7,199.2 271.0,199.1 273.2,199.0 275.4,198.9 277.6,198.8 279.8,198.7 282.0,198.6 284.2,198.5 286.5,198.4 288.7,198.3 290.9,198.2 293.1,198.1 295.3,198.0 297.5,197.8 299.8,197.7 302.0,197.6 304.2,197.5 306.4,197.4 308.6,197.2 310.8,197.1 313.1,197.0 315.3,196.9 317.5,196.7 319.7,196.6 321.9,196.5 324.1,196.3 326.4,196.2 328.6,196.0 330.8,195.9 333.0,195.8 335.2,195.6 337.4,195.4 339.6,195.3 341.9,195.1 344.1,195.0 346.3,194.8 348.5,194.7 350.7,194.5 352.9,194.3 355.2,194.1 357.4,194.0 359.6,193.8 361.8,193.6 364.0,193.4 366.2,193.2 368.5,193.0 370.7,192.8 372.9,192.6 375.1,192.4 377.3,192.2 379.5,192.0 381.8,191.8 384.0,191.6 386.2,191.4 388.4,191.1 390.6,190.9 392.8,190.7 395.0,190.4 397.3,190.2 399.5,189.9 401.7,189.6 403.9,189.4 406.1,189.1 408.3,188.8 410.6,188.6 412.8,188.3 415.0,188.0 417.2,187.7 419.4,187.4 421.6,187.0 423.9,186.7 426.1,186.4 428.3,186.0 430.5,185.7 432.7,185.3 434.9,185.0 437.2,184.6 439.4,184.2 441.6,183.8 443.8,183.4 446.0,183.0 448.2,182.6 450.4,182.1 452.7,181.7 454.9,181.2 457.1,180.7 459.3,180.2 461.5,179.7 463.7,179.2 466.0,178.7 468.2,178.1 470.4,177.5 472.6,177.0 474.8,176.3 477.0,175.7 479.3,175.1 481.5,174.4 483.7,173.7 485.9,173.0 488.1,172.2 490.3,171.4 492.6,170.6 494.8,169.8 497.0,168.9 499.2,168.0 501.4,167.1 503.6,166.1 505.8,165.0 508.1,164.0 510.3,162.9 512.5,161.7 514.7,160.5 516.9,159.2 519.1,157.8 521.4,156.4 523.6,155.0 525.8,153.4 528.0,151.8 530.2,150.0 532.4,148.2 534.7,146.2 536.9,144.2 539.1,142.0 541.3,139.7 543.5,137.2 545.7,134.5 548.0,131.7 550.2,128.6 552.4,125.3 554.6,121.7 556.8,117.9 559.0,113.7 561.2,109.1 563.5,104.1 565.7,98.6 567.9,92.5 570.1,85.8 572.3,78.2 574.5,69.7 576.8,60.1 579.0,49.1 581.2,36.4 583.4,21.5" fill="none" style="stroke:var(--accent);stroke-width:2"/>
+<line x1="610.0" y1="20" x2="610.0" y2="205" style="stroke:var(--red);stroke-width:1;stroke-dasharray:5 4"/>
+<text class="slr" x="604.0" y="16" text-anchor="end">100%: arrivals = the most it can finish</text>
+<circle class="dot" cx="333.0" cy="195.8" r="4"/><text class="st" x="333.0" y="185.8" text-anchor="middle">50%: wait 1×</text>
+<circle class="dot" cx="499.2" cy="168.0" r="4"/><text class="st" x="489.2" y="162.0" text-anchor="end">80%: 4×</text>
+<circle class="dotr" cx="554.6" cy="121.7" r="4"/><text class="st" x="544.6" y="119.7" text-anchor="end">90%: 9×</text>
+<circle class="dotr" cx="582.3" cy="29.3" r="4"/><text class="st" x="572.3" y="33.3" text-anchor="end">95%: 19×</text>
+<text class="sl" x="333" y="242" text-anchor="middle">utilisation (share of the maximum sustainable rate in use)</text>
+</svg>
+<p class="cap">Pure arithmetic from the formula. From 50% to 95% the load grew 1.9× (0.95 ÷ 0.50) and the wait grew 19×. The bottom of the fraction, 1 − ρ, is the spare capacity, and dividing by a number that is heading to zero is what makes the curve turn upward.</p>
+<p><b>An LLM server is not this simple model.</b> With continuous batching it serves many requests in the same step, not one at a time, and each step gets slower as more requests share it (the <a href="../perf-2-scaling-book-inference/step-time.html">step-time formula</a>). So take the <i>shape</i> from the formula, flat and then a wall near 100%, and do not use it to predict your numbers. The next section shows what the shape looks like on an engine.</p>
+
+<h2>3. Where the knee sits on a real engine</h2>
+<p>An engine keeps a <b>running set</b>: the requests it is generating tokens for right now. Two things limit its size. One is the engine's cap on concurrent sequences (the setting <code>--max-num-seqs</code> in vLLM, <code>max_num_seqs</code> in our simulator, 256 in these runs). The other is <a href="kv-cache.html">KV cache</a> memory: every running request holds memory for each of its tokens, and when no free blocks are left the next request cannot start.</p>
+<ul>
+  <li><b>While the running set has room,</b> a new request joins at the next step. Extra load makes each step bigger and slower, so everyone's tokens come a little slower: TPOT, the time per output token (the gap between two tokens), goes up. TTFT hardly moves.</li>
+  <li><b>Once the running set is full,</b> a new request has to wait outside until someone finishes. That wait happens before its first token, so it lands in TTFT. The requests already running keep the same batch size, so their token gaps stay where they were.</li>
+</ul>
+<p>Here is a request-rate sweep on our simulator: random (Poisson) arrivals, the course workload, 6,000 requests at each rate.</p>
+<div class="tw">
+<table>
+  <tr><th>Arriving</th><th class="num">Utilisation</th><th class="num">TPOT p50</th><th class="num">TTFT p95</th><th>What the extra load turned into</th></tr>
+  <tr><td>10 req/s</td><td class="num">26%</td><td class="num">5.8 ms</td><td class="num">43.8 ms</td><td class="mu">small batches</td></tr>
+  <tr><td>20 req/s</td><td class="num">51%</td><td class="num">7.5 ms</td><td class="num">56.7 ms</td><td class="mu">slower tokens</td></tr>
+  <tr class="pick"><td>30 req/s</td><td class="num">77%</td><td class="num">10.9 ms</td><td class="num hi">79.8 ms</td><td>slower tokens</td></tr>
+  <tr><td>36 req/s</td><td class="num">92%</td><td class="num">16.1 ms</td><td class="num">114.3 ms</td><td class="mu">slower tokens</td></tr>
+  <tr><td>38 req/s</td><td class="num">97%</td><td class="num">19.8 ms</td><td class="num lo">358.0 ms</td><td>running set fills now and then</td></tr>
+  <tr><td>40 req/s</td><td class="num lo">103%</td><td class="num">24.4 ms</td><td class="num lo">2,810 ms</td><td>queue time</td></tr>
+  <tr><td>44 req/s</td><td class="num lo">113%</td><td class="num">24.5 ms</td><td class="num lo">12,391 ms</td><td>queue time</td></tr>
+</table>
+</div>
+<div class="charts">
+<svg viewBox="0 0 410 290" role="img" aria-label="TPOT p50 against arrival rate: rises from 5.2 ms at 5 requests per second to 24.5 ms at 42, then stays flat">
+<text class="sh" x="58" y="16">Gap between tokens (TPOT p50)</text>
+<line class="dv" x1="58" y1="238.0" x2="390" y2="238.0"/><text class="sl" x="52" y="242.0" text-anchor="end">0</text>
+<line class="dv" x1="58" y1="168.7" x2="390" y2="168.7"/><text class="sl" x="52" y="172.7" text-anchor="end">10 ms</text>
+<line class="dv" x1="58" y1="99.3" x2="390" y2="99.3"/><text class="sl" x="52" y="103.3" text-anchor="end">20 ms</text>
+<line class="dv" x1="58" y1="30.0" x2="390" y2="30.0"/><text class="sl" x="52" y="34.0" text-anchor="end">30 ms</text>
+<text class="sl" x="58.0" y="254" text-anchor="middle">0</text>
+<text class="sl" x="130.2" y="254" text-anchor="middle">10</text>
+<text class="sl" x="202.3" y="254" text-anchor="middle">20</text>
+<text class="sl" x="274.5" y="254" text-anchor="middle">30</text>
+<text class="sl" x="346.7" y="254" text-anchor="middle">40</text>
+<text class="sl" x="224" y="272" text-anchor="middle">requests arriving per second</text>
+<line x1="339.5" y1="28" x2="339.5" y2="238" style="stroke:var(--muted);stroke-width:1;stroke-dasharray:3 3"/>
+<text class="sl" x="333.5" y="230" text-anchor="end">max sustainable ≈ 39 req/s</text><text class="st" x="266.5" y="152.4" text-anchor="end">rises smoothly…</text><text class="st" x="375.6" y="56.1" text-anchor="end">…then flat at 24.5</text>
+<polyline points="94.1,201.9 130.2,197.8 202.3,186.0 274.5,162.4 303.4,143.0 317.8,126.4 332.3,100.7 346.7,68.8 361.1,68.1 375.6,68.1" fill="none" style="stroke:var(--accent);stroke-width:2"/>
+<circle class="dot" cx="94.1" cy="201.9" r="3.5"/>
+<circle class="dot" cx="130.2" cy="197.8" r="3.5"/>
+<circle class="dot" cx="202.3" cy="186.0" r="3.5"/>
+<circle class="dot" cx="274.5" cy="162.4" r="3.5"/>
+<circle class="dot" cx="303.4" cy="143.0" r="3.5"/>
+<circle class="dot" cx="317.8" cy="126.4" r="3.5"/>
+<circle class="dot" cx="332.3" cy="100.7" r="3.5"/>
+<circle class="dotr" cx="346.7" cy="68.8" r="3.5"/>
+<circle class="dotr" cx="361.1" cy="68.1" r="3.5"/>
+<circle class="dotr" cx="375.6" cy="68.1" r="3.5"/>
+</svg>
+<svg viewBox="0 0 410 290" role="img" aria-label="TTFT p95 against arrival rate on a log scale: under 115 ms up to 36 requests per second, 2.8 seconds at 40 and 12.4 seconds at 44">
+<text class="sh" x="58" y="16">Wait for the first token (TTFT p95)</text>
+<line class="dv" x1="58" y1="238.0" x2="390" y2="238.0"/><text class="sl" x="52" y="242.0" text-anchor="end">10 ms</text>
+<line class="dv" x1="58" y1="186.0" x2="390" y2="186.0"/><text class="sl" x="52" y="190.0" text-anchor="end">100 ms</text>
+<line class="dv" x1="58" y1="134.0" x2="390" y2="134.0"/><text class="sl" x="52" y="138.0" text-anchor="end">1 s</text>
+<line class="dv" x1="58" y1="82.0" x2="390" y2="82.0"/><text class="sl" x="52" y="86.0" text-anchor="end">10 s</text>
+<line class="dv" x1="58" y1="30.0" x2="390" y2="30.0"/><text class="sl" x="52" y="34.0" text-anchor="end">100 s</text>
+<text class="sl" x="58.0" y="254" text-anchor="middle">0</text>
+<text class="sl" x="130.2" y="254" text-anchor="middle">10</text>
+<text class="sl" x="202.3" y="254" text-anchor="middle">20</text>
+<text class="sl" x="274.5" y="254" text-anchor="middle">30</text>
+<text class="sl" x="346.7" y="254" text-anchor="middle">40</text>
+<text class="sl" x="224" y="272" text-anchor="middle">requests arriving per second</text>
+<line x1="339.5" y1="28" x2="339.5" y2="238" style="stroke:var(--muted);stroke-width:1;stroke-dasharray:3 3"/>
+<line x1="58" y1="134.0" x2="390" y2="134.0" style="stroke:var(--red);stroke-width:1;stroke-dasharray:5 4"/><text class="slr" x="62" y="128.0">TTFT limit in the course SLO: 1 s</text><text class="st" x="274.5" y="213.1" text-anchor="end">barely moves…</text><text class="slr" x="336.7" y="87.7" text-anchor="end">…then the knee</text>
+<polyline points="94.1,207.3 130.2,204.6 202.3,198.8 274.5,191.1 303.4,185.8 317.8,183.0 332.3,157.2 346.7,110.7 361.1,87.7 375.6,77.2" fill="none" style="stroke:var(--accent);stroke-width:2"/>
+<circle class="dot" cx="94.1" cy="207.3" r="3.5"/>
+<circle class="dot" cx="130.2" cy="204.6" r="3.5"/>
+<circle class="dot" cx="202.3" cy="198.8" r="3.5"/>
+<circle class="dot" cx="274.5" cy="191.1" r="3.5"/>
+<circle class="dot" cx="303.4" cy="185.8" r="3.5"/>
+<circle class="dot" cx="317.8" cy="183.0" r="3.5"/>
+<circle class="dot" cx="332.3" cy="157.2" r="3.5"/>
+<circle class="dotr" cx="346.7" cy="110.7" r="3.5"/>
+<circle class="dotr" cx="361.1" cy="87.7" r="3.5"/>
+<circle class="dotr" cx="375.6" cy="77.2" r="3.5"/>
+</svg>
+</div>
+<p class="cap">Our simulation (a floor: real engines are slower). The right-hand axis is a log scale: each line up is 10× more. Red dots are past the maximum sustainable rate, and their values depend on how long the test ran (section 5). The dashed line is this course's TTFT target of 1 s; your lab's target is 500 ms, a little below it, and the curve crosses both between 38 and 40 req/s. The small TTFT rise below the knee is prompts sharing each step's token budget, not a queue.</p>
+<div class="formula">10 → 36 req/s  load 3.6×   TPOT 5.8 → 16.1 ms = <span class="g">2.8×</span>   TTFT p95 = 2.6×
+36 → 44 req/s  load 1.22×  TPOT 16.1 → 24.5, then flat
+                           TTFT p95 114.3 → 12,391 ms = <span class="r">108×</span>
+which limit was hit: all 256 seats taken. KV memory never ran out:
+256 requests × about 979 tokens = 250,624 of 487,504 tokens of KV</div>
+<p>This is why <b>TTFT breaks while the gap between tokens still looks fine</b>. Past the knee, TPOT sits at 24.5 ms, well inside a 50 ms target, because the batch cannot grow past 256. All the damage is in the queue. It is also why an engine's knee comes later and sharper than the simple model says. Compare growth with growth, from 26% to 92% utilisation:</p>
+<div class="formula">simple model:  0.256 ÷ 0.744 = 0.35×   →   0.923 ÷ 0.077 = 12×
+               the wait grows  12 ÷ 0.35 = <span class="r">about 34 times</span>
+our engine:    TTFT p95  43.8 → 114.3 ms = <span class="g">2.6 times</span></div>
+<p>Two things explain the gap. The growing batch soaked up the load. And any system that serves many requests at once has a later, sharper knee than the one-server model, because a newcomer only waits when every place is taken at the same moment.</p>
+<h3 class="sm">Predict your own knee before you run the test <small>worked for an H100, then estimated for an L40S</small></h3>
+<div class="formula">running set is full at  min( seat cap ,  KV tokens ÷ tokens per request )
+
+worked example: H100 (80 GB), Llama-3.1-8B
+487,504 tokens of KV                              <span class="c"># course facts</span>
+1,024-token prompts + 256 output tokens = 1,280 tokens at the end
+487,504 ÷ 1,280 = <span class="g">about 380 requests</span>           <span class="c"># memory limit</span>
+vLLM's default seat cap on an H100 API server: 1,024  <span class="c"># course facts</span>
+→ memory fills first, near 380 in flight
+
+your card: L40S (48 GB), the same model        <span class="c"># an estimate</span>
+48 GB × 0.92 (the share vLLM takes by default)  = 44.16 GB
+44.16 GB − 16.06 GB of weights                  = 28.10 GB for KV
+28.10 GB ÷ 128 KiB per token (131,072 bytes)    = 214,386 tokens
+214,386 ÷ 1,280 = <span class="g">about 167 requests</span>           <span class="c"># memory limit</span></div>
+<p class="cap">Predictions from arithmetic, not measurements. Both are rough estimates, and they can miss in either direction: the engine holds some memory back, so fewer requests fit, but requests are admitted before they reach full length, so more are admitted and some are then preempted. The 0.92, the 16.06 GB and the 128 KiB are from the course's facts file.</p>
+<p><b>Redo this with your own numbers.</b> Read your GPU's real KV capacity from the server's startup log, and use your own request sizes: a shared 800-token system prompt and a spread of lengths will not give 1,280 tokens each. Check the cap on concurrent sequences (<code>--max-num-seqs</code>) in the same startup log rather than assuming a default. On an L40S, a sweep from 1 to 128 users may sit close to the memory limit, so the top of your sweep may already show queue time. The engine's own count of waiting requests (vLLM exports it as <code>vllm:num_requests_waiting</code>) stays at zero until the running set fills.</p>
+
+<h2>4. Little's law: turn a concurrency into a request rate</h2>
+<p>A concurrency sweep fixes how many requests are in flight, and your benchmark tool prints the request rate it achieved. One line of arithmetic connects the two. It lets you check the printed rate, and it explains why that rate stops rising. In words: <b>the number of requests in flight equals the request rate times the time each request spends in the system</b> (waiting plus being served). A café that serves 2 customers a minute, each staying 5 minutes, has 2 × 5 = 10 customers inside (illustrative).</p>
+<div class="mathbox">
+<math display="block">
+  <munder class="t1"><mi>L</mi><mtext class="lab">requests in flight</mtext></munder>
+  <mo>=</mo>
+  <munder class="t2"><mi>&#955;</mi><mtext class="lab">requests per second</mtext></munder>
+  <mo>&#215;</mo>
+  <munder class="t3"><mi>W</mi><mtext class="lab">seconds each one spends inside</mtext></munder>
+  <mspace width="1.4em"/><mtext>so</mtext><mspace width="1.4em"/>
+  <mi>&#955;</mi><mo>=</mo><mfrac><mi>L</mi><mi>W</mi></mfrac>
+</math>
+</div>
+<p>A fixed-concurrency test pins <i>L</i>: it is the number you pass as the concurrency (<code>--max-concurrency</code> in vLLM's benchmark tool). If your tool reports the mean end-to-end time (you may have to ask for it), that is <i>W</i>. Divide, and you have the rate that test actually delivered. Our simulator, swept the way you will sweep the GPU:</p>
+<div class="tw">
+<table>
+  <tr><th class="num">Users in flight</th><th class="num">Mean time per request</th><th class="num">Users ÷ time</th><th class="num">Measured req/s</th><th class="num">Out tok/s</th><th class="num">TPOT p50</th><th class="num">TTFT p95</th></tr>
+  <tr><td class="num">1</td><td class="num">1.250 s</td><td class="num">0.80</td><td class="num">0.80</td><td class="num">206</td><td class="num">4.8 ms</td><td class="num">33.0 ms</td></tr>
+  <tr><td class="num">8</td><td class="num">1.372 s</td><td class="num">5.83</td><td class="num">5.84</td><td class="num">1,498</td><td class="num">5.3 ms</td><td class="num">38.6 ms</td></tr>
+  <tr><td class="num">16</td><td class="num">1.512 s</td><td class="num">10.58</td><td class="num">10.59</td><td class="num">2,713</td><td class="num">5.8 ms</td><td class="num">39.2 ms</td></tr>
+  <tr><td class="num">32</td><td class="num">1.806 s</td><td class="num">17.72</td><td class="num">17.85</td><td class="num">4,633</td><td class="num">6.8 ms</td><td class="num">40.1 ms</td></tr>
+  <tr class="pick"><td class="num">64</td><td class="num">2.423 s</td><td class="num hi">26.41</td><td class="num">26.40</td><td class="num">7,050</td><td class="num">9.0 ms</td><td class="num">47.3 ms</td></tr>
+  <tr><td class="num">128</td><td class="num">3.720 s</td><td class="num">34.41</td><td class="num">34.34</td><td class="num">9,243</td><td class="num">13.8 ms</td><td class="num">62.6 ms</td></tr>
+  <tr><td class="num">256</td><td class="num">6.570 s</td><td class="num">38.96</td><td class="num">38.95</td><td class="num">10,432</td><td class="num">24.5 ms</td><td class="num">86.2 ms</td></tr>
+  <tr><td class="num">512</td><td class="num">13.003 s</td><td class="num">39.38</td><td class="num">39.37</td><td class="num">10,491</td><td class="num">24.3 ms</td><td class="num lo">7,001 ms</td></tr>
+</table>
+</div>
+<div class="formula">"concurrency 64" delivered  64 ÷ 2.423 s = <span class="g">26.4 req/s</span>  (measured 26.40)
+64 → 128 users:   rate 26.4 → 34.3 = 1.30×   time 2.42 → 3.72 s = 1.54×
+256 → 512 users:  rate 39.0 → 39.4 = 1.01×   time 6.57 → 13.0 s = <span class="r">1.98×</span>
+at 512: 256 run, 256 wait.  256 waiting ÷ 39.4 req/s = 6.5 s of queue
+        measured TTFT p50 = 6.5 s</div>
+<p class="cap">Our simulation, closed loop, seat cap 256. Each user sends its next request the moment the last one finishes. Doubling the number of requests moved the rates and mean times by about 6% or less, and p95 TTFT at 16 users or fewer by up to 7 ms.</p>
+<p>Read the table twice. Up to 256 users, every added user made tokens slower (TPOT 4.8 → 24.5 ms) and TTFT stayed under 100 ms: the running set still had room. At 512 the running set was full, the rate stopped rising, and Little's law leaves only one place for the extra users to go: time. Once the rate is flat, doubling the users doubles how long each one waits.</p>
+
+<h2>5. Closed loop versus open loop: two different tests</h2>
+<div class="charts">
+<svg viewBox="0 0 410 190" role="img" aria-label="Closed loop: a fixed number of users, each waits for its reply before sending the next request">
+<text class="sh" x="16" y="18">Closed loop: fixed concurrency</text>
+<rect class="bx" x="16" y="52" width="120" height="56" rx="6"/><text class="st" x="76" y="76" text-anchor="middle">64 users</text><text class="sl" x="76" y="94" text-anchor="middle">1 request each</text>
+<rect class="bxa" x="274" y="52" width="120" height="56" rx="6"/><text class="st" x="334" y="76" text-anchor="middle">server</text><text class="sl" x="334" y="94" text-anchor="middle">64 in flight</text>
+<line x1="136" y1="68" x2="272" y2="68" style="stroke:var(--muted);stroke-width:1.4"/><polygon points="272.0,68.0 265.6,70.7 265.6,65.3" style="fill:var(--muted)"/>
+<text class="sl" x="205" y="60" text-anchor="middle">request</text>
+<line x1="274" y1="94" x2="138" y2="94" style="stroke:var(--accent);stroke-width:1.4"/><polygon points="138.0,94.0 144.4,91.3 144.4,96.7" style="fill:var(--accent)"/>
+<text class="sl" x="205" y="112" text-anchor="middle">reply, then the next</text>
+<text class="st" x="16" y="146">Server slows down → users send less often.</text>
+<text class="sl" x="16" y="166">The most that can ever wait: 64 minus the running set.</text>
+</svg>
+<svg viewBox="0 0 410 190" role="img" aria-label="Open loop: requests arrive on a clock whatever the server does, so past the maximum sustainable rate the queue keeps growing">
+<text class="sh" x="16" y="18">Open loop: fixed request rate</text>
+<rect class="bx" x="16" y="52" width="104" height="56" rx="6"/><text class="st" x="68" y="76" text-anchor="middle">a clock</text><text class="sl" x="68" y="94" text-anchor="middle">44 per second</text>
+<line x1="120" y1="80" x2="146" y2="80" style="stroke:var(--muted);stroke-width:1.4"/><polygon points="146.0,80.0 139.6,82.7 139.6,77.3" style="fill:var(--muted)"/>
+<rect class="bx" x="150" y="62" width="12" height="36" rx="2"/><rect class="bx" x="166" y="62" width="12" height="36" rx="2"/><rect class="bx" x="182" y="62" width="12" height="36" rx="2"/><rect class="bx" x="198" y="62" width="12" height="36" rx="2"/><rect class="bx" x="214" y="62" width="12" height="36" rx="2"/><rect class="bx" x="230" y="62" width="12" height="36" rx="2"/>
+<text class="slr" x="196" y="118" text-anchor="middle">queue: +5 every second</text>
+<line x1="246" y1="80" x2="266" y2="80" style="stroke:var(--muted);stroke-width:1.4"/><polygon points="266.0,80.0 259.6,82.7 259.6,77.3" style="fill:var(--muted)"/>
+<rect class="bxa" x="268" y="52" width="126" height="56" rx="6"/><text class="st" x="331" y="76" text-anchor="middle">server</text><text class="sl" x="331" y="94" text-anchor="middle">out: 39 per second</text>
+<text class="st" x="16" y="146">Server slows down → requests keep coming.</text>
+<text class="sl" x="16" y="166">Nothing limits the queue except the length of the test.</text>
+</svg>
+</div>
+<p class="cap">The 64, 44 and 39 are from the tables above. 44 − 39 = 5 extra requests join the queue every second.</p>
+<table>
+  <tr><th></th><th>Closed loop (fixed concurrency)</th><th>Open loop (fixed rate)</th></tr>
+  <tr><td><b>You set</b></td><td>how many requests are in flight, with <code>--max-concurrency</code></td><td>how many requests arrive per second, with <code>--request-rate</code></td></tr>
+  <tr><td><b>When the server slows</b></td><td>each user waits for its reply, so the test sends less. It throttles itself.</td><td>the clock keeps sending, whatever the server does</td></tr>
+  <tr><td><b>Past the maximum rate</b></td><td>the queue can never exceed the users who are not running, so latency levels off</td><td>the queue, and every latency, grow for as long as the test runs</td></tr>
+  <tr><td><b>Our simulation</b></td><td>512 users: TTFT p95 7.2 s with 15,360 requests, 7.0 s with 30,720. <span class="hi">Same answer.</span></td><td>44 req/s: TTFT p95 4.7 s with 3,000 requests, 12.4 s with 6,000. <span class="lo">No answer to converge to.</span></td></tr>
+  <tr><td><b>Good for</b></td><td>top throughput, and how tokens slow as the batch grows. Right for batch jobs, where a fixed pool of workers really does wait.</td><td>latency at a given traffic level, and the maximum sustainable rate. Right for live users, who do not wait for each other.</td></tr>
+</table>
+<div class="formula">open loop at 44 req/s against a server that finishes 39:
+backlog grows by 44 − 39 = 5 requests every second
+after 60 s:  5 × 60 = 300 requests waiting
+a new arrival then waits  300 ÷ 39 = <span class="r">7.7 s</span>, and it keeps climbing</div>
+<p>So a concurrency sweep can never show you an unbounded queue, however hard you push. Use it first, to find the maximum sustainable rate and watch tokens slow down. Then use Little's law to turn its best rows into request rates, and run a short rate sweep around them (for example 70%, 80%, 90% and 100% of that rate) to see where p95 TTFT bends. The flags and load shapes are covered on <a href="../perf-5-engines/benchmarking.html">benchmarking a server</a> in <i>Inside an inference engine</i>.</p>
+
+<h2>6. Where to set the operating point</h2>
+<p>Run <b>below the knee</b>: a common starting point is 70 to 80 percent of the maximum sustainable rate. For our simulated server that is 0.7 × 39 = 27 to 0.8 × 39 = 31 req/s. At 30 req/s, TTFT p95 is 79.8 ms and TPOT p50 is 10.9 ms. You give up about a quarter of the maximum rate and in return small surprises stay small: near the knee, going from 36 to 40 req/s (11% more traffic) takes TTFT p95 from 114 ms to 2.8 s.</p>
+<p><b>Bursty arrivals need more headroom.</b> The same average rate can arrive in tighter clumps, and a clump briefly pushes the server past 100% even when the average is well below it. Same simulator, same requests, only the spacing changed (the benchmark tool's <code>--burstiness</code> setting; 1 is Poisson, 0.25 is heavy bursts):</p>
+<table>
+  <tr><th>Average rate</th><th class="num">Utilisation</th><th class="num">TTFT p95, Poisson</th><th class="num">TTFT p95, bursty (0.25)</th></tr>
+  <tr><td>26 req/s</td><td class="num">67%</td><td class="num">71 to 72 ms</td><td class="num">119 to 144 ms</td></tr>
+  <tr><td>30 req/s</td><td class="num">77%</td><td class="num hi">80 to 82 ms</td><td class="num">141 to 174 ms</td></tr>
+  <tr><td>34 req/s</td><td class="num">87%</td><td class="num">98 to 103 ms</td><td class="num lo">184 to 1,217 ms</td></tr>
+</table>
+<p class="cap">Our simulation. Each cell is the range over 3,000-, 6,000- and 12,000-request traces. The Poisson cells barely move with test length. The bursty cells at 26 and 30 req/s drift up by about a fifth, because a longer test catches rarer, bigger clumps. At 34 req/s the bursty result swings more than 6×: that server is already on the knee, at a rate where Poisson arrivals are still steady (they hold to 36 req/s in section 3). With bursty traffic, 70% is the safer end of the range.</p>
+<p>What to do when traffic goes above the operating point (add replicas, or turn requests away early) is on <a href="routing-autoscaling.html">many replicas: routing, admission and autoscaling</a>.</p>
+
+<h2>Why running below the knee beats the alternatives</h2>
+<div class="grid2">
+  <div class="cell"><h3><span class="x">&#10007;</span> Run at the maximum rate</h3><p>The most tokens per GPU, and no slack at all. At 40 req/s against a maximum sustainable rate of about 39, TTFT p95 is 2.8 s after 6,000 requests and still growing.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Trust a concurrency sweep alone</h3><p>It throttles itself, so it cannot show a growing queue. 512 users settle at a TTFT p95 of about 7 s at either test length. An open loop at 44 req/s gives a p95 of 4.7 s after 3,000 requests, 12.4 s after 6,000, and still rising.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Watch the token gap only</h3><p>Past the knee TPOT sits at 24.5 ms, inside a 50 ms target, while TTFT p95 is over 100× worse. The queue is invisible in any per-token number.</p></div>
+  <div class="cell win"><h3>&#10003; Find the maximum rate, run at 70 to 80%</h3><p>A rate sweep finds the maximum sustainable rate (about 39 req/s here). At 30 req/s, TTFT p95 is 80 ms and a burst has a quarter of the server to land in.</p></div>
+</div>
+
+<h2>Is the knee one fixed number for my GPU?</h2>
+<div class="note">
+  <p><b>No. It is a property of the GPU, the engine settings and the traffic together.</b> Longer prompts or longer answers make each request cost more, so the maximum sustainable rate drops and the knee moves left. A lower seat cap or less KV memory fills the running set sooner. Burstier arrivals reach the knee at a lower average rate. Measure it with traffic shaped like yours, and measure it again when the traffic changes.</p>
+  <p><b>It is not the GPU utilisation percentage</b> that monitoring tools print. That number is the share of time the GPU was doing something. A single stream can read anywhere from about 30% to near 100%, depending on how much CPU-side work sits between steps, and a full batch reads near 100%. It does not rise in step with load, so it cannot tell you how much room is left. Utilisation on this card is the arrival rate divided by the maximum sustainable rate, which you have to measure with a sweep.</p>
+  <p><b>Near the edge, the answer depends on how long you test.</b> The course quotes a capacity of 40 req/s for this server, from 3,000-request traces. That rate sits right on the maximum sustainable rate: with 3,000 requests TTFT p95 is 523 ms, with 6,000 it is 2,810 ms. A short test flatters a server that is slowly falling behind.</p>
+  <p><b>When staying below the knee is the wrong goal:</b> offline batch work, such as evaluations or bulk summarising. Nobody is waiting on a first token, so run the server flat out and judge it on tokens per GPU-hour. There a closed-loop test is also the honest one. And p95 is only one point of the tail; how to read p50, p95 and p99 together is on <a href="../llm-latency/tail-latency.html">tail latency</a>.</p>
+</div>
+
+
+<!-- study:panel -->
+<section class="study" aria-label="Study this card">
+<div class="study-head"><h2>Study this card</h2><span>Open each step in order · <a href="../learning-principles/learning-principles.html">why this works</a></span></div>
+<input type="checkbox" id="study-all" class="study-all"><label for="study-all" class="study-all-l">show all steps (for revisiting)</label>
+<details class="st"><summary><b>1 · Core model</b> <span>what to internalise, what to just look up</span></summary><div class="st-body"><p class="st-rule">Keep it if it changes what you can <i>explain, predict, compare, choose, build or debug</i>. Otherwise it's reference.</p>
+<div class="core"><div><h4>Understand and remember</h4><ul><li>Arrivals come in random clumps → a server with spare time clears each clump in the next quiet gap → as utilisation nears 100% the gaps vanish and leftovers pile up → the wait grows like ρ ÷ (1 − ρ), far faster than the load</li><li>An engine adds new requests to the running set while it has seats and KV memory → extra load first becomes a bigger, slower step (TPOT rises) → once the running set is full, new requests wait outside before their first token → TTFT explodes while TPOT stays flat</li><li>Requests in flight = rate × time inside (Little's law) → a closed-loop test fixes the in-flight count → rate delivered = concurrency ÷ mean end-to-end time → once the rate is flat, more users only buy more time</li><li>A closed loop waits for each reply before sending again → it throttles itself and its queue is bounded → it cannot show the unbounded queue an open loop builds past the maximum sustainable rate → find that rate, then run at 70 to 80% of it</li><li><span class="up">detail that matters</span> Which limit fills the running set first decides where the knee is: min(seat cap, KV tokens ÷ tokens per request) → in our runs the 256 seats filled and memory never did → a sweep that stops below that number sees slower tokens but no queue knee</li></ul></div>
+<div><h4>Reference only</h4><ul class="muted"><li>the flag names <code>--max-concurrency</code>, <code>--request-rate</code>, <code>--burstiness</code> and <code>--max-num-seqs</code></li><li>the textbook name M/M/1 and the symbols λ, μ, ρ, L, W</li><li>the exact simulated values (39 req/s maximum sustainable rate, 24.5 ms TPOT ceiling, 380-request H100 memory estimate)</li><li>the metric name <code>vllm:num_requests_waiting</code></li></ul></div></div><p class="st-why"><a href="../learning-principles/learning-principles.html#layers">Why this step?</a></p></div></details>
+<details class="st"><summary><b>2 · Compress</b> <span>write it yourself first</span></summary><div class="st-body"><p>From memory, sketch p95 TTFT and TPOT against request rate for one engine and mark the knee. Then write four sentences: what utilisation is, why the wait bends upward, what fills on the engine at the knee, and what a closed-loop test cannot show.</p><p class="st-how">On paper or in your notes, in your own words, without scrolling up. Aim for the smallest thing that still explains it.</p>
+<details class="ref"><summary>Then compare with this checklist</summary><ul><li>utilisation = arrival rate ÷ maximum sustainable rate</li><li>wait ∝ ρ ÷ (1 − ρ): dividing by the spare capacity, which heads to zero</li><li>below the knee load becomes slower tokens; above it, queue time in TTFT</li><li>the knee is where the running set fills: seat cap or KV memory</li><li>in flight = rate × time inside, so rate = concurrency ÷ end-to-end time</li><li>closed loop throttles itself; open loop past the maximum sustainable rate grows without limit</li></ul><p class="st-how">Missing a point? Reread only the section about it, not the whole card.</p></details><p class="st-why"><a href="../learning-principles/learning-principles.html#compress">Why this step?</a></p></div></details>
+<details class="st"><summary><b>3 · Retrieve</b> <span>from memory, card closed</span></summary><div class="st-body"><ol class="qs"><li><span class="kind">concept</span> Explain why a server at 90% utilisation makes requests wait far longer than one at 50%, even though it still finishes work faster than work arrives.<details class="ref"><summary>Check</summary><ul><li>arrivals are clumpy, so short bursts exceed the service rate even when the average does not</li><li>the backlog from a burst is cleared in idle gaps, and at 90% there is little idle time</li><li>simple model: 0.9 ÷ 0.1 = 9× the service time, against 0.5 ÷ 0.5 = 1×</li></ul></details></li><li><span class="kind">mechanism</span> Walk through what happens to a new request, and to the requests already running, when it arrives at an engine whose running set is full.<details class="ref"><summary>Check</summary><ul><li>it cannot join the next step: no free seat, or no free KV blocks</li><li>it waits outside until a running request finishes and frees its place</li><li>that wait is before its first token, so it is added to its TTFT</li><li>running requests keep the same batch size, so their token gaps do not change</li></ul></details></li><li><span class="kind">mechanism</span> A closed-loop run at concurrency 128 reports a mean end-to-end time of 3.720 s. What request rate did it deliver, and why was that not twice the rate at concurrency 64 (2.423 s)?<details class="ref"><summary>Check</summary><ul><li>128 ÷ 3.720 = 34.4 req/s</li><li>at 64: 64 ÷ 2.423 = 26.4 req/s, so doubling users gave 1.30× the rate</li><li>each request took 1.54× longer because the bigger batch made every step slower</li></ul></details></li><li><span class="kind">tradeoff</span> You need the highest request rate your server can hold with p95 TTFT under 1 s. You have time for one test design: fixed concurrency or fixed request rate. Which do you choose, and what does the other cost you?<details class="ref"><summary>Check</summary><ul><li>fixed request rate (open loop): the queue forms as it would with real users</li><li>sweep rates around the expected maximum sustainable rate and read p95 TTFT at each</li><li>fixed concurrency backs off when the server slows, so TTFT levels off and looks better than users would see</li><li>cost of open loop: past the maximum sustainable rate the result depends on test length, so run long enough and report the length</li></ul></details></li></ol><p class="st-why"><a href="../learning-principles/learning-principles.html#retrieve">Why this step?</a></p></div></details>
+<details class="st"><summary><b>4 · Compare</b> <span>against what you already know</span></summary><div class="st-body"><p><b>vs <a href="metrics-slos.html">Measuring a server: TTFT, TPOT, throughput, goodput</a>:</b> The metrics card says open-loop load is the only way to measure capacity and quotes 40 req/s. What does this card add about why, and about how much to trust a capacity measured on a short trace?</p><details class="ref"><summary>Check</summary><ul><li>a closed loop fixes requests in flight, so by Little's law it can only trade rate for time; its queue is bounded</li><li>capacity here sits right at the maximum sustainable rate, where the result depends on test length</li><li>at 40 req/s TTFT p95 is 523 ms over 3,000 requests and 2,810 ms over 6,000</li></ul></details><p><b>vs <a href="../perf-5-engines/benchmarking.html">Benchmarking a server</a>:</b> The benchmarking card's Mac sweep is closed loop and TTFT grows 12× from 1 to 16 users. Is that the same knee as the one on this card? What is each curve actually showing?</p><details class="ref"><summary>Check</summary><ul><li>the Mac sweep shows load turning into slower steps and prefills waiting behind each other inside the batch</li><li>this card's knee is the running set filling, after which requests wait outside</li><li>a closed loop can show the first; only a rate sweep shows the second growing without limit</li></ul></details><p><b>vs <a href="../llm-latency/tail-latency.html">Tail latency (p50 vs p95 vs p99)</a>:</b> The tail-latency card treats a slow p95 as something the caller defends against with hedging. Why does hedging not help with the p95 on this card?</p><details class="ref"><summary>Check</summary><ul><li>a hedge helps when slowness is independent per call</li><li>past the knee every request is slow for the same reason: the queue</li><li>a hedged request adds load and lengthens the queue; the fix is headroom, shedding or more replicas</li></ul></details><p class="st-why"><a href="../learning-principles/learning-principles.html#interleave">Why this step?</a></p></div></details>
+<details class="st"><summary><b>5 · Predict</b> <span>commit to an answer before revealing</span></summary><div class="st-body"><p>You lower the seat cap from 256 to 64 and repeat the closed-loop sweep at 64 and then 128 users. Commit before you reveal: at 128 users, what happens to the request rate, to TPOT, and to TTFT?</p><details class="ref"><summary>Reveal</summary><p>The running set now fills at 64, so 128 users means 64 run and 64 wait. In our simulation the rate stays flat (26.4 req/s at 64 users, 26.3 at 128), TPOT p50 does not move (9.0 ms both times, because the batch is still 64), and TTFT p50 jumps from 13.7 ms to 2,448 ms. Little's law gives the same wait: 64 waiting ÷ 26.3 req/s = 2.4 s.</p></details><p class="st-why"><a href="../learning-principles/learning-principles.html#predict">Why this step?</a></p></div></details>
+<details class="st"><summary><b>6 · Apply</b> <span>use the model, don't restate it</span></summary><div class="st-body"><p>Your closed-loop sweep (our simulation's numbers) reports mean end-to-end times of 1.806 s at 32 users, 3.720 s at 128 and 13.003 s at 512. Use Little's law to find the request rate each row delivered, say which row is past the knee and how you can tell from the rates alone, then pick an operating rate and name the test you would run next to confirm it.</p><p><b>Done when:</b> 32 ÷ 1.806 = 17.7 req/s, 128 ÷ 3.720 = 34.4 req/s, 512 ÷ 13.003 = 39.4 req/s. From 128 to 512 the users went up 4× and the rate only 1.14×, so the rate has flattened near 39 req/s and the extra users became waiting time: 512 is past the knee. Operating point: 70 to 80% of 39 = 27 to 31 req/s. Next test: an open-loop rate sweep around that range, reading p95 TTFT.</p><details class="ref"><summary>Hint</summary><p>Rate = users ÷ time. Compare how much the users grew with how much the rate grew.</p></details><p class="st-why"><a href="../learning-principles/learning-principles.html#apply">Why this step?</a></p></div></details>
+<details class="st"><summary><b>7 · Reflect</b> <span>and decide whether to move on</span></summary><div class="st-body"><ul><li>Which prediction did you get wrong: that the rate would stay flat, that TPOT would not move, or the size of the TTFT jump?</li><li>What could you not explain cleanly: why the wait is divided by 1 − ρ, or why a batching engine's knee comes later than the simple model's?</li><li>Which relationship is still fuzzy: running set full → queue → TTFT, or flat rate → more users → more time?</li><li>For the server you are about to test, which fills first, the seat cap or KV memory, and at how many requests?</li><li>When you read someone else's load test, what will you check first to tell a closed loop from an open one?</li></ul><p class="st-how">Repair what came up: reopen only that section, then retry the question you missed. Tutor mode: <code>/study llm-request-scheduler/queueing-knee</code> in Claude Code grades your answers and walks you through each stage.</p><p class="st-why"><a href="../learning-principles/learning-principles.html#reflect">Why this step?</a></p></div></details>
+</section>
+<!-- /study:panel --><div class="foot">
+<p><a class="lab-link" href="https://github.com/seyonv/explainers/blob/main/llm-request-scheduler/labs/knee.py">Code: labs/knee.py</a> The sweeps on this card drive the course simulator (<code>Scheduler</code>, <code>CostModel</code> and <code>poisson_trace</code> from <code>labs/scheduler.py</code>) with two small loops: a closed loop (each user resends on completion) and an open loop with Poisson or Gamma-spaced arrivals. <code>uv run --python 3.12 knee.py 2</code> prints every simulated figure on this card; its last section, the fixed-length checks, prints the mean request size, the seed range and the test-length comparisons.</p>
+<p><b>Read next:</b> <a href="why-batch.html">Why batching works: one weight read, many tokens</a> (why a bigger batch is nearly free at first, then is not) · <a href="../perf-5-engines/benchmarking.html">Inside an inference engine: benchmarking a server</a> (load shapes, burstiness, the flags)</p>
+<p><b>Related:</b> <a href="metrics-slos.html">Measuring a server: TTFT, TPOT, throughput, goodput</a> · <a href="kv-cache.html">The KV cache</a> · <a href="continuous-batching.html">Continuous batching</a> · <a href="admission-preemption.html">Admission, preemption and thrashing</a> · <a href="routing-autoscaling.html">Many replicas: routing, admission and autoscaling</a> · <a href="../llm-latency/tail-latency.html">LLM speed and reliability: tail latency</a> · <a href="../perf-2-scaling-book-inference/step-time.html">The math of serving an LLM: the step-time formula</a></p>
+<p><b>Sources:</b> The wait formula for the one-server model (M/M/1) and Little's law are standard queueing theory: L. Kleinrock, <i>Queueing Systems, Volume 1</i> (1975); J. D. C. Little, "A proof for the queuing formula L = λW", <i>Operations Research</i> 9(3), 1961. 487,504 tokens of KV, the 1,024 default seat cap on an H100 API server, the SLO (TTFT ≤ 1 s, TPOT ≤ 50 ms) and the 40 req/s capacity: the course's facts file and <a href="https://github.com/seyonv/explainers/blob/main/llm-request-scheduler/labs/results.md">labs/results.md</a>. What <code>--max-concurrency</code>, <code>--request-rate</code> and <code>--burstiness</code> do: vLLM's benchmark docs, as summarised on the <a href="../perf-5-engines/benchmarking.html">benchmarking card</a>. Everything else is our simulation: <a href="https://github.com/seyonv/explainers/blob/main/llm-request-scheduler/labs/scheduler.py">labs/scheduler.py</a> with its defaults (seat cap 256, token budget 2,048, 30,469 KV blocks), seed 2, latencies taken over the middle 60% of requests, 100%-of-peak cost model (a floor). The 100 ms job and the café are illustrative. The 380-request and 167-request knees are predictions, not measurements; the L40S line assumes 48 GB and vLLM's default memory share of 0.92 from the facts file.</p>
+</div>
+</article>
+
+<!-- series-nav:bottom -->
+<div class="snx"><a class="nx" href="index.html#why-batch" target="_top">
+<span class="mini" aria-hidden="true"><span class="m1">Why batching works: one weight read, many tokens</span><span class="m2">Also called batch size, arithmetic intensity or the critical batch size. In this course it is the mechanism under everything else: every batching strategy and every scheduler decision later on exists…</span><span class="m3">In one breath</span><span class="m4">Producing one token means reading all 16.06 GB of weights from memory, and that read takes about 4.8 ms whether the step computes 1 token or 200. So if you run many requests in the same step, they share that one read: total throughput goes up almost in proportion to the batch, and each user's speed drops only a little. Two…</span></span>
+<span class="tx"><span class="lab">Next up · 07 / 29</span><span class="tt">Why batching works: one weight read, many tokens</span><span class="ds">205 → 9,973 tok/s from the same step</span><span class="go">Continue →</span></span></a><div class="aux"><span><a href="index.html#metrics-slos" target="_top">← Measuring a server: TTFT, TPOT, throughput, goodput</a></span><a href="index.html" target="_top">All cards in Build an LLM request scheduler</a></div></div>
+<!-- /series-nav:bottom -->
+</body>
+</html>
