@@ -1,0 +1,80 @@
+{
+  "prime": {
+    "problem": "After tokenizing, the model has only integers, and integers carry no meaning: ID 6747 (India) sits between <code>Category</code> and <code>_event</code>. Without some way to say \"India is like China\", the model would have to learn everything about every token separately.",
+    "fits": "Stop 3 on the route. The tokenizer (stop 2) turned the question into seven IDs; this stop turns each ID into a vector of 896 numbers, which is what the blocks actually work on. It builds on the idea that an embedding lookup is just indexing.",
+    "expect": ["embedding table (one learned row per token)", "one-hot × table = row lookup", "cosine similarity", "word2vec: skip-gram and CBOW", "vector analogies (king − man + woman)"],
+    "goal": "Explain why a model looks up a row instead of using the ID, why training puts similar words close together, and what the raw table can and can't tell you, using numbers measured on Qwen2.5-0.5B."
+  },
+  "attend": [
+    "Why is multiplying a one-hot vector by the table exactly the same as reading one row, and why do models index instead?",
+    "What in skip-gram's training objective forces two words that share contexts to get similar vectors?",
+    "Why are the nearest rows to <code>␣India</code> in Qwen's table spellings of India rather than other countries?",
+    "Why does queen winning king − man + woman say less about the offset than it seems to?",
+    "If <code>␣bank</code> has a single row, where does the model tell the river bank apart from the money bank?"
+  ],
+  "core": {
+    "must": [
+      "token ID is an arbitrary label → numeric distance between IDs means nothing (6746 <code>Category</code>, 6747 <code>␣India</code>, 6748 <code>_event</code>) → replace each ID with a learned row of 896 numbers → rows can point the same way, and cosine similarity measures it",
+      "training predicts surrounding or next tokens → tokens used in similar contexts must produce similar predictions → their rows end up pointing the same way → India·China 0.449 and Delhi·Mumbai 0.483, against a random-pair baseline of 0.153",
+      "one row per token, whatever the sentence → <code>␣bank</code> and <code>␣capital</code> carry every sense at once → identical vectors before any block (1.000) → the blocks separate the senses (river · money bank 0.494 after 6 blocks)",
+      "the tokenizer gives one word many IDs (space, capitals, plural, other languages) → those rows share contexts most of all → they are each other's nearest neighbours → meaning-level neighbours like China come after them"
+    ],
+    "elevated": [
+      "one-hot × table equals table[id] exactly → the lookup is a linear layer with a 0/1 input → models implement it as indexing, skipping 136 million wasted multiplications",
+      "Qwen2.5-0.5B ties input and output embeddings → the same 151,936 × 896 table both starts the forward pass and scores every next token at the end → 27.6% of all weights serve both ends"
+    ],
+    "reference": [
+      "Qwen2.5-0.5B table: 151,936 rows × 896 = 136,134,656 weights; 151,665 real tokens, the rest padding rows",
+      "<code>␣India</code> = ID 6747; row starts −0.0049, 0.0103, −0.0171",
+      "word2vec CBOW: 4 words before + 4 after predict the middle (1301.3781 §3.1); skip-gram: predict words up to C = 10 away (§3.2)",
+      "Analogy accuracy, semantic / syntactic: skip-gram 55 / 59%, CBOW 24 / 64% (Table 3, 640-dim); skip-gram 1000-dim on 6B words 66.1 / 65.1% (Table 6)",
+      "Analogy test: 8,869 semantic + 10,675 syntactic questions, single-token words only, exact match, input words skipped (§4, §4.1)",
+      "Qwen measurements: king − man + woman → <code>␣queen</code> rank 1 skipping inputs (0.652; <code>␣king</code> itself 0.690); Paris − France + India → <code>␣Delhi</code> rank 5"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, explain in 3–5 sentences how a token ID becomes a vector and why similar words end up close together. Or redraw the hero sketch: ID → row → point among its neighbours.",
+    "checklist": [
+      "the ID picks one row of a learned table (equivalently one-hot × table)",
+      "IDs have no meaningful distance; rows can point in similar directions",
+      "cosine similarity compares direction, and its baseline here is about 0.15, not 0",
+      "training to predict context pushes words with similar contexts to similar rows",
+      "rows are context-free: one per token, so senses are separated later by the blocks",
+      "multi-token words have no row of their own"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why the model can't just feed token ID 6747 into the blocks as a number, and what a row of the table gives it instead.", "kind": "concept", "answer": ["IDs are arbitrary labels, so 6746 and 6748 being near 6747 means nothing", "a row of 896 learned numbers can be shaped by training", "rows of tokens that behave alike point the same way, measurable by cosine similarity"]},
+    {"q": "Walk through what skip-gram does with the sentence fragment \"trade with India grew\" during one training step, and how that moves the India vector.", "kind": "mechanism", "answer": ["take India as the input word and look up its vector", "predict each neighbouring word (trade, with, grew) from it", "nudge the India vector so those neighbours become more likely", "China gets nudged by the same neighbours in other sentences, so the two vectors drift together"]},
+    {"q": "You want to find documents about river banks. Compare using raw input rows of an LLM with using its hidden states after the blocks. What does each cost and where does each fail?", "kind": "tradeoff", "answer": ["raw rows are free to read (one lookup), but context-free: <code>␣bank</code> is the same row in every sentence", "hidden states need a forward pass through the blocks, but separate senses (river · money bank 0.494 after 6 blocks)", "raw rows also cluster by spelling first, which adds noise to search", "a model trained to embed sentences is usually better than either for search"]},
+    {"q": "Paris − France + India puts <code>␣Delhi</code> 5th in Qwen's table. What fills the first four places, and what does that tell you about this table?", "kind": "mechanism", "answer": ["once the inputs are skipped: <code>India</code>, <code>␣Indian</code> and other India spellings", "adding India's vector pulls the result toward India's own spelling cluster", "the table clusters by surface form before meaning, so exact-match analogy tests are harsh on it"]}
+  ],
+  "compare": [
+    {"with": "z2h-4-mlp/bengio-embeddings", "q": "Bengio's 2003 model learned its embedding table while training a full language model; word2vec threw away the hidden layer to train on billions of words. What did each choice buy, and how does Qwen's table relate to both?", "answer": ["Bengio: embeddings learned jointly with a non-linear predictor, but expensive, so less data", "word2vec: a log-linear model with no hidden layer, cheap enough for billions of words, which gave better analogies", "Qwen is like Bengio's set-up at huge scale: the table is trained along with the whole model to predict the next token", "the same pressure applies in all three: shared contexts lead to similar rows"]},
+    {"with": "text-to-answer/positions", "q": "The embedding row says which token this is. What does it leave out that the next stop has to add, and why can't the table hold it?", "answer": ["the row is identical wherever the token appears, so it carries no position", "attention on its own can't tell first from last", "position has to be added separately (learned positions, sinusoids, or RoPE rotating Q and K)", "putting position in the table would need one row per (token, position) pair"]}
+  ],
+  "predict": {
+    "q": "After 6 blocks, <code>␣bank</code> in a river sentence and in a money sentence has cosine 0.494. Commit first: after all 24 blocks, will that cosine be lower than 0.494, about the same, or higher?",
+    "answer": "Higher: 0.744 after 24 blocks (12 blocks: 0.623), while the two river-sense banks stay around 0.85. The senses are furthest apart in the middle of the model. One likely reason: the final layers are shaped for predicting the next token, and hidden states there share large common directions, which lifts all cosines. The ordering (same sense more alike than different senses) holds at every depth the lab checks: 6, 12 and 24 blocks."
+  },
+  "apply": {
+    "task": "Modify the lab's analogy list to add Tokyo − Japan + France with target <code>␣Paris</code>. Before running, predict its rank once the inputs are skipped. Then run it and explain what beat Paris.",
+    "done": "Your run shows <code>␣Paris</code> 2nd after skipping the inputs (cosine 0.519), behind <code>France</code> without a leading space (0.559), and you can say why: the result vector stays close to France's own spelling cluster.",
+    "hint": "Add the tuple <code>(\" Tokyo\", \" Japan\", \" France\", \" Paris\")</code> to the list in section 4 of <code>labs/embedding-space.py</code>."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: the nearest row to <code>␣India</code>, or how far the analogy moved queen?",
+    "What couldn't you explain cleanly: why sharing contexts makes vectors similar, or why the lookup equals a one-hot multiply?",
+    "Which relationship is still fuzzy: shared contexts → similar rows, or one row per token → the blocks must add meaning in context?",
+    "Where would you have used raw input rows before reading this, and what would you use now?",
+    "What would change if the tokenizer merged <code>␣New␣Delhi</code> into a single token?"
+  ],
+  "revisit": [
+    "z2h-4-mlp/embedding-lookup",
+    "z2h-4-mlp/bengio-embeddings",
+    "z2h-9-tokenizer/why-tokenization"
+  ],
+  "prereq": [
+    "text-to-answer/the-whole-route"
+  ]
+}

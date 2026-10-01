@@ -1,0 +1,66 @@
+{
+  "prime": {
+    "problem": "If you think of a transformer as \"attention\", you'll misjudge where its weights live and where its time goes. Every estimate of memory, speed or cost, and every argument for mixture of experts, starts from the fact that the feed-forward parts are most of the model.",
+    "fits": "Stop 6 of the route. The tokens are now vectors (stop 3) that know their order (stop 4) and have read each other through attention (stop 5). This card covers the other half of every block, then how the biggest models split that half into experts.",
+    "expect": ["residual stream (add, don't overwrite)", "feed-forward network (FFN) with SwiGLU", "parameters vs FLOPs per token", "mixture of experts: router, top-1, capacity, load balancing", "total vs active parameters"],
+    "goal": "Say what attention does that the FFN can't (and the reverse), count where Qwen2.5-0.5B's weights and FLOPs go, and work out total vs active weights for a mixture-of-experts version."
+  },
+  "attend": [
+    "If the FFN sees only one token's vector, how does context ever reach it?",
+    "Why does the FFN's share of FLOPs per token match its share of weights, while the embedding table's doesn't quite?",
+    "Which way does the balance between attention and FFN move as the input gets longer, and where is the crossover for Qwen?",
+    "Copying the FFN 8 times multiplies the total weights by 5.45, not 8, and the work per token by almost nothing. Which number decides each?",
+    "What happens to a token whose chosen expert is already full, and what keeps that from happening often?"
+  ],
+  "core": {
+    "must": [
+      "Attention is the only step that reads other tokens → the FFN gets one token's vector and applies the same weights at every position → context must already be in the vector when the FFN sees it → running the FFN on <code>·India</code> alone gives the same output (difference 0.000034)",
+      "Each FFN is three 896 × 4,864 matrices → 24 of them = 313.8 M of 494.0 M weights (63.5%) → a matrix multiply costs 2 FLOPs per weight per token → the FFN is also 63.5% of the 989 M FLOPs per token at short context",
+      "Attention scores cost grows with the number of earlier tokens, FFN cost doesn't → at 7 tokens attention is about 9% of the work → at 7,296 tokens of context the scores alone match the FFN",
+      "The FFN works on tokens independently → each token can go to a different FFN → a router picks one expert (top-1) → total weights grow with the number of experts, but work per token stays one FFN → memory pays for every expert (8 experts: 0.99 → 5.38 GB in bfloat16)"
+    ],
+    "elevated": [
+      "Each block <i>adds</i> its output to the residual stream → the FFN's update is a nudge (0.21–0.52× the residual for <code>·India</code> in layers 1–23) → a dropped token in a Switch layer simply skips the FFN and keeps its vector",
+      "Expert capacity = tokens ÷ experts × capacity factor → an unbalanced router overflows popular experts and drops tokens → a load-balancing loss (α = 0.01) and a capacity factor near 1.0–1.25 keep drops low (typically under 1%)"
+    ],
+    "reference": [
+      "Qwen2.5-0.5B FFN modules: <code>gate_proj</code> and <code>up_proj</code> 896 → 4,864, <code>down_proj</code> 4,864 → 896, no biases; SwiGLU = silu(gate) × up",
+      "Weights: embedding 136,134,656 (27.6%), attention 44,067,840 (8.9%), FFN 313,786,368 (63.5%), norms 43,904",
+      "FLOPs per token (7-token input): FFN 627.6 M, output layer 272.3 M, attention projections 88.1 M, attention scores 0.6 M",
+      "<code>·India</code> at layer 23: top 7 of 4,864 hidden units carry half the squared activity, top 50 carry 90%",
+      "Switch results: 7× faster than T5-Base at equal FLOPs (§3.2), 2.5× faster than T5-Large (§3.3), Switch-C 1.6 T weights and 2,048 experts 4× faster than T5-XXL (Table 9); experts every other layer in Base/Large/XXL",
+      "Load-balancing loss = α · N · Σ fᵢ · Pᵢ, with fᵢ the share of tokens sent to expert i and Pᵢ the share of router probability"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, explain in 3–5 sentences what the FFN does that attention doesn't, why it dominates the weight count, and why that makes it the part mixture of experts copies. Or redraw the block sketch with lanes, attention, FFNs and the adds, and mark where an 8-expert router would go.",
+    "checklist": [
+      "attention moves information between tokens; the FFN transforms each token alone with shared weights",
+      "both add their output to the residual stream instead of replacing it",
+      "the FFN is three big matrices per layer, about two-thirds of Qwen's weights and FLOPs per token",
+      "because tokens are independent in the FFN, each can be sent to a different expert",
+      "top-1 routing keeps work per token about the same while total weights (and memory) grow"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why the FFN can't by itself connect <code>·India</code> with <code>capital</code>, and what has to happen first in the block for its output to depend on <code>capital</code>.", "kind": "concept", "answer": ["the FFN only gets one token's vector", "attention runs first and adds information read from earlier tokens into that vector", "so whatever the FFN 'knows' about context arrived through attention"]},
+    {"q": "Walk the 896 numbers of one token through Qwen's FFN, naming each shape and what happens at each step, and say what the output is added to.", "kind": "mechanism", "answer": ["896 → gate (4,864) and up (4,864) by two matrices", "silu(gate) multiplied by up, number by number (SwiGLU)", "down matrix 4,864 → 896", "the result is added to the token's residual vector, not swapped in"]},
+    {"q": "You must make a model better without more compute per token. Argue for converting its FFNs to 8 experts with top-1 routing, and name the costs you take on.", "kind": "tradeoff", "answer": ["more weights at the same FLOPs per token; Switch got 7× faster training at equal FLOPs", "memory grows with every expert (5.45× the weights for Qwen with 8 experts)", "the router must be balanced with an extra loss; overflow drops tokens", "serving splits batches across experts, and small/edge deployments are memory-bound"]},
+    {"q": "Explain how the capacity factor trades dropped tokens against wasted compute.", "kind": "mechanism", "answer": ["capacity = tokens ÷ experts × capacity factor", "too small: popular experts overflow and tokens skip the layer", "too large: experts reserve empty slots that cost compute and memory", "Switch did best at 1.0–1.25 with the load-balancing loss on"]}
+  ],
+  "compare": [
+    {"with": "perf-6-scaling-out/moe-basics", "q": "This card reached MoE from \"where are the weights?\"; that card reaches it from serving. What extra problems appear once a batch is spread across experts on different chips that you don't see in the total-vs-active count?", "answer": ["each expert's matmul sees only its share of the batch, so it's less efficient", "tokens must travel between chips to reach their expert and back", "imbalance turns into stragglers: the busiest expert sets the pace", "the active-parameter count says nothing about these costs"]},
+    {"with": "text-to-answer/embedding-space", "q": "The embedding table and the FFNs both hold lots of weights. Why does the table cost almost nothing per token on the way in, while the FFNs cost 2 FLOPs per weight?", "answer": ["the embedding lookup reads one row; no multiply over the whole table", "every FFN weight is multiplied for every token", "the same table costs 272 M FLOPs per token on the way out, when it scores all 151,936 tokens"]}
+  ],
+  "predict": {"q": "Instead of 8 experts with top-1, a designer uses 16 experts and sends each token to its top 2. Before computing: does work per token stay near the dense model's, and roughly how big do total weights get?", "answer": "Work per token roughly doubles in the FFN, because two experts run for each token: about 808 M weights used per token, 1.64× the dense 494 M. Total weights reach about 5.20 billion, 10.53× the dense model, because only the FFN (63.5%) is copied 16 times."},
+  "apply": {"task": "In <code>labs/ffn-and-experts.py</code>, change the what-if to <code>E = 16</code> and make each token use its top 2 experts (the active count then includes two FFNs per layer instead of one). Print total weights, weights used per token, and bfloat16 memory.", "done": "You get 5,201,172,352 total weights, 808,163,200 used per token, and 10.40 GB in bfloat16.", "hint": "Active = everything that isn't the FFN + 24 × (2 × 13,074,432 + the 896 × 16 router)."},
+  "reflect": [
+    "Which prediction did you get wrong: the FFN's share of the weights, or how little the FFN changes the vector in one layer?",
+    "What couldn't you explain cleanly: why the FFN can ignore other tokens, or why top-1 routing keeps the work flat?",
+    "Which relationship is still fuzzy: FFN is most of the weights → MoE copies the FFN, or copies → memory cost?",
+    "Where would long context change your answer about which half of the block to optimise?",
+    "What would you measure first if an MoE model you trained was underperforming?"
+  ],
+  "revisit": ["text-to-answer/embedding-space", "text-to-answer/positions", "z2h-8-gpt/feedforward-residual"],
+  "prereq": ["z2h-8-gpt/attention-notes"]
+}

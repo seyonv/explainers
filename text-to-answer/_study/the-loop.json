@@ -1,0 +1,132 @@
+{
+  "prime": {
+    "problem": "One forward pass gives a probability for one next token. An answer is many tokens, so something has to run the model again and again, decide when to stop, and avoid redoing the same work every time.",
+    "fits": "This is the last stop on the route. The previous card chose one token from the model's probabilities; this card puts that choice in a loop, and shows what the loop costs and how the text around the question changes the very first step.",
+    "expect": ["autoregressive generation", "the end-of-text token and length limits", "probability of an answer = product of step probabilities (sum of logs)", "the KV cache", "chat templates vs base models"],
+    "goal": "Trace the loop for our question step by step, compute an answer's probability from its steps, explain why the KV cache gives the same output faster, and predict how a base model reacts to a chat template."
+  },
+  "attend": [
+    "What exactly goes into the model on step 5 of our answer, and what comes out?",
+    "Why does an answer whose tokens are mostly above 0.9 end up with a probability of only 0.11?",
+    "Which property of attention makes it safe to keep the keys and values of earlier tokens?",
+    "Why is the very first pass over the question different from every later step?",
+    "Why did <code>Q: … A:</code> help this base model while the chat template made its first token worse?"
+  ],
+  "core": {
+    "must": [
+      "The model only predicts P(next token | all earlier tokens) → pick one → append it → run the whole model again on the longer text → repeat until the end-of-text token or a length limit → an n-token answer costs n forward passes",
+      "Each step is a conditional probability → chain rule: P(answer) = product of the step probabilities → one uncertain step (<i>The</i> at 0.277) drags the whole answer to 0.111 → products underflow for long texts → code sums log-probabilities instead (−2.58 here)",
+      "Causal mask: a token attends only to itself and earlier tokens → its keys and values never change when text is appended → store them (KV cache) → each later step pushes 1 token through the layers instead of all of them → same output, about 4× faster for 32 tokens here, and the gap grows with length → at the price of 12 KB per token in bf16",
+      "The model continues whatever text it is given → plain question = ambiguous, first token only 0.277 → GPT-3-style <code>A:</code> makes an answer the likely continuation (<i>New</i> 0.797) → a chat template only works on a model trained on it → the base model answers <i>ratulations</i> 0.127"
+    ],
+    "elevated": [
+      "Later steps process one token but still read all 494 million weights each time → per-step time is set mostly by memory traffic, not by the one token's arithmetic → that's why decode is slow per token (the prefill-vs-decode card)"
+    ],
+    "reference": [
+      "<code>&lt;|endoftext|&gt;</code> is token 151643 in Qwen2.5",
+      "KV cache size: 24 layers × 2 KV heads × 64 × 2 (K and V) × 2 bytes = 12,288 B per token in bf16; 24,576 B in float32",
+      "Measured timings (M3 CPU, float32, median of 5, busy machine): first pass 167 ms, cached step 38 ms, 32 tokens 1,374 ms with cache vs 5,900 ms without",
+      "Qwen's chat template: <code>&lt;|im_start|&gt;</code>role, newline, text, <code>&lt;|im_end|&gt;</code>; built by <code>tokenizer.apply_chat_template</code>",
+      "GPT-3: 175 billion parameters, 2,048-token context, 10 to 100 few-shot examples (§2), <code>Answer: </code>/<code>A: </code> prefix and per-token likelihood for multiple choice (§2.4)"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, in 4–5 sentences: how does a next-token predictor produce a whole answer, how likely is that answer, and what makes the loop affordable? Or redraw the nine-row loop sketch and mark where the KV cache saves work.",
+    "checklist": [
+      "predict one token, append it, run again, until end-of-text or a length limit",
+      "answer probability = product of step probabilities; use summed logs to avoid underflow",
+      "earlier tokens' keys and values never change (causal mask), so the KV cache stores them",
+      "with the cache each later step processes only the newest token; the output is identical",
+      "the text around the question (Q/A pattern, chat template) changes the first-token distribution, and a chat template only works on a model trained with it"
+    ]
+  },
+  "retrieve": [
+    {
+      "kind": "concept",
+      "q": "Explain what \"autoregressive\" means for a language model, using the step that produced <i>Delhi</i>.",
+      "answer": [
+        "the model's input at that step was the question plus <i>The capital of India is New</i>",
+        "it gave a probability for every token; <i>Delhi</i> had 0.994 and was picked",
+        "<i>Delhi</i> was appended and became input for the next step",
+        "each output token is conditioned only on the tokens before it"
+      ]
+    },
+    {
+      "kind": "mechanism",
+      "q": "Walk through step 4 of our answer with a KV cache: what is stored, what goes through the 24 layers, and what is added to the cache?",
+      "answer": [
+        "stored: keys and values of the 7 question tokens plus <i>The</i> and <i>capital</i> (9 tokens) at every layer",
+        "only the newest token, <i>of</i>, goes through the layers",
+        "at each layer its query attends over the stored keys and values plus its own",
+        "its own K and V are appended to the cache; the output is <i>India</i>, the same as without a cache"
+      ]
+    },
+    {
+      "kind": "tradeoff",
+      "q": "A server holds many long conversations at once. What does the KV cache buy and what does it cost, and what happens if you drop it?",
+      "answer": [
+        "buys: no recomputation, each step processes one new token (about 4× faster for 32 tokens here, more for longer text)",
+        "costs: memory that grows with every token of every conversation (12 KB per token for this model in bf16; 48 MB for 4,096 tokens)",
+        "dropping it saves memory but makes step n re-read all n tokens, so long answers get much slower"
+      ]
+    },
+    {
+      "kind": "tradeoff",
+      "q": "You must get short factual answers out of a base model. Would you use a chat template or a Q/A pattern, and why?",
+      "answer": [
+        "a Q/A or few-shot pattern: text like it is common in pre-training data",
+        "measured here: <i>New</i> at 0.797 first with <code>A:</code>, versus junk (<i>ratulations</i>) with the chat template",
+        "the chat template would be the right choice for the instruction-tuned model that was trained on it"
+      ]
+    }
+  ],
+  "compare": [
+    {
+      "with": "text-to-answer/decoding",
+      "q": "The decoding card picks one token from a distribution; this card loops that choice. How does the decoding rule affect the loop's output and its probability, and where does each go wrong?",
+      "answer": [
+        "decoding decides <i>which</i> token at each step; the loop feeds that choice back as input",
+        "greedy gives the highest-probability token per step, not necessarily the most likely whole answer (beam search searches for that)",
+        "a bad early pick is never revised, because every later step conditions on it",
+        "decoding fails by being dull or incoherent; the loop fails by not stopping or by growing slow and memory-hungry"
+      ]
+    },
+    {
+      "with": "perf-1-foundations/prefill-vs-decode-mac",
+      "q": "This card measured a 167 ms first pass and 38 ms later steps. What does the prefill-vs-decode card add about why later steps are limited the way they are?",
+      "answer": [
+        "prefill processes many tokens per pass, so the weights read from memory are reused across tokens",
+        "decode processes one token per pass but still reads every weight, so it is limited by memory bandwidth",
+        "the KV cache is what makes decode one token per pass in the first place"
+      ]
+    },
+    {
+      "with": "speculative-decoding/speculative-decoding",
+      "q": "Speculative decoding produces several tokens per big-model pass. How does that fit with \"one token at a time\", and when does it fail to help?",
+      "answer": [
+        "a small model guesses a few tokens; the big model checks them in one pass and keeps the accepted prefix",
+        "the result has the same distribution as the plain loop, so it's still one token per position",
+        "it helps because checking k tokens costs about as much as generating one when decode is memory-bound",
+        "if the small model's guesses are often rejected, you pay for the extra work and gain little"
+      ]
+    }
+  ],
+  "predict": {
+    "q": "Without a cache, the loop pushed 7 + 8 + … + 38 = 720 token positions through the model for 32 new tokens; with a cache, 7 + 31 = 38. That's 19× fewer, yet the measured time was only about 4× faster. Commit to a reason before revealing. And for 64 new tokens, is the token-position ratio bigger or smaller than 19×?",
+    "answer": "Each forward pass has a large fixed cost: it reads all 494 million weights whatever the number of tokens, so a 38-token pass (200 ms) isn't 38× a 1-token pass (38 ms). The extra tokens are partly 'free' while the weights are being read. For 64 new tokens the counts are 7 + … + 70 = 2,464 versus 70, about 35×, so the gap keeps widening as the text grows and the per-token work starts to dominate."
+  },
+  "apply": {
+    "task": "Run <code>labs/the-loop.py</code>, then change the plain question to <code>Q: What is the capital of India?\\nA:</code> in part 1 and record each step's probability until the end-of-text token. Compute the answer's probability as a product and as exp(sum of logs), and compare it with the plain question's 0.076.",
+    "done": "You have a list of step probabilities ending with <code>&lt;|endoftext|&gt;</code>, the product and exp(sum of logs) agree to 3 decimals, and you can say which wrapper made the model more confident in its whole answer and why.",
+    "hint": "The Q/A wrapper's greedy answer is <i>New Delhi</i> followed by the end-of-text token, and its first step is 0.797. Use <code>ids = tok(\"Q: \" + PROMPT + \"\\nA:\")[\"input_ids\"]</code> and slice the decoded answer after that many tokens."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: the 11% guess before reading, or the 19× versus 4× puzzle?",
+    "What couldn't you explain cleanly: why the KV cache gives identical output, or why log-probabilities are used?",
+    "Which relationship is still fuzzy: causal mask → keys and values never change, or KV cache → one token per step → memory-bound decode?",
+    "Where have you seen a chat app stop mid-sentence or ramble, and was it a length limit, a missing end token, or a template mismatch?",
+    "What would you change in the lab to measure the cache's benefit on a 1,000-token input?"
+  ],
+  "revisit": ["text-to-answer/decoding", "text-to-answer/the-whole-route", "z2h-10-gpt2/sampling"],
+  "prereq": ["text-to-answer/decoding"]
+}

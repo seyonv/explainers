@@ -1,0 +1,63 @@
+{
+  "prime": {
+    "problem": "The model's last layer gives a score to every one of its 151,936 vocabulary rows, not a word. Something has to turn those scores into one token, and different rules give different answers to the same question, from \"New Delhi\" to a 46-token loop to \"not Delhi\".",
+    "fits": "Stops 8–9 of the route. The earlier stops built the logits for the step after <i>…? The capital of India is</i>; this card is the step between those logits and the token the next card (<i>One token at a time</i>) feeds back in. It builds on softmax from the toolkit cards.",
+    "expect": ["softmax over logits", "greedy and beam search (maximise probability)", "temperature, top-k, top-p (reshape or cut, then sample)", "degeneration: loops vs the unreliable tail"],
+    "goal": "Compute a softmax, a temperature change and a top-p cut by hand on real logits, explain why greedy text loops and pure sampling wanders, and pick a decoder for a factual answer, code, brainstorming or pass@k."
+  },
+  "attend": [
+    "Why does the leftover 0.138 of probability (everything except New and Delhi) matter more over 400 tokens than over one?",
+    "Temperature reweights tokens but never removes one. Which decoders actually remove tokens, and how does each decide where to cut?",
+    "On the largest-planet question, which single early choice sent greedy to Mercury, and what did beam search keep that greedy threw away?",
+    "If greedy text has a perplexity of 1.50 and human text 12.38, what does that say about whether people write the most probable next word?",
+    "Which of the decoders here would you use for pass@100, and what goes wrong if you use greedy for it?"
+  ],
+  "core": {
+    "must": [
+      "softmax raises e to each logit and divides by the total → a logit gap of 1.45 becomes a 4.3× probability ratio → the top token dominates (New 0.698) but 151,928 tail tokens still hold 0.065 together",
+      "temperature divides logits by T before softmax → T &lt; 1 widens gaps (T 0.5: New 0.946) and T &gt; 1 narrows them (T 1.5: tail 0.484) → T → 0 is greedy; temperature reshapes but never cuts",
+      "greedy commits to the single best token each step → one early pick can lock in a worse whole answer (<code>-</code> 0.141 → Mercury, log P −10.14) → beam search keeps 4 partial answers and ranks by summed log P (Jupiter, −6.14)",
+      "always taking the most probable continuation → a repeated phrase becomes more probable each time → loops (our greedy run repeats a 46-token block from token 225; paper: greedy 73.66% repetition) → while sampling everything picks tail tokens and wanders → top-p cuts the tail and keeps variety (0.36%, closest to human)"
+    ],
+    "elevated": [
+      "top-p keeps the fewest top tokens reaching p, so the kept list follows the model's confidence (here 2, 5 or 12 tokens at p 0.8, 0.9, 0.95) → unlike top-k, it doesn't let junk in when the model is sure or starve it when the model is unsure"
+    ],
+    "reference": [
+      "subtract the largest logit before exponentiating (same result, no overflow)",
+      "API parameter names <code>temperature</code>, <code>top_p</code>, <code>top_k</code>; in Hugging Face <code>generate</code>, <code>num_beams</code> and <code>do_sample</code>",
+      "Holtzman Table 1 perplexities: human 12.38, greedy 1.50, beam 16 1.48, pure sampling 22.73, top-p 0.95 13.13; HUSE top-p 0.97 vs pure 0.67",
+      "Codex best temperatures: 0.2 for pass@1, 0.8 for pass@100 (679M model)"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, explain in 3–5 sentences how a decoder turns logits into one token, and why maximising probability and pure sampling fail in opposite ways. Or redraw the one-step bar sketch and mark where greedy, top-k 2, top-p 0.9 and pure sampling each cut.",
+    "checklist": [
+      "softmax turns logits into probabilities that sum to 1; the tail of many tiny tokens still adds up",
+      "greedy takes the top token; beam keeps several partial answers ranked by summed log-probability",
+      "temperature reshapes (T → 0 is greedy); top-k and top-p cut, then renormalise and sample",
+      "maximising gives bland, looping long text; pure sampling falls into the unreliable tail",
+      "top-p sits between: keep the confident head, drop the tail"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain the difference between reshaping the distribution (temperature) and truncating it (top-k, top-p), using what each does to the 0.065 tail at our step.", "kind": "concept", "answer": ["temperature changes every probability but keeps all tokens: the tail shrinks to 0.0052 at T 0.7 or grows to 0.484 at T 1.5", "top-k and top-p set the tail to exactly 0 and rescale the kept rows to sum to 1", "so only truncation guarantees a tail token can't be drawn"]},
+    {"q": "Walk through beam search with 4 beams on <i>What is the largest planet?</i> for the first two steps: what is kept, what is scored, and why it can end up somewhere greedy can't.", "kind": "mechanism", "answer": ["step 1: keep the 4 best first tokens (<code>-</code> 0.141, <code>The</code> 0.115, <code>A</code> 0.067, <code>What</code> 0.061)", "step 2: extend each by every token, score each by summed log P, keep the best 4 overall", "a beam that started lower (<code>The</code>) can overtake later: final −6.14 vs greedy's −10.14", "greedy kept only <code>-</code>, so it could never reach the Jupiter answer"]},
+    {"q": "You must pick one decoder for a production service that answers short factual questions and also writes long product descriptions. What do you choose for each, and what does each choice cost?", "kind": "tradeoff", "answer": ["factual: greedy or low temperature; cost: no variety, and still not bit-for-bit repeatable on batched GPUs", "long text: top-p around 0.9–0.95; cost: some randomness, occasional off-topic tokens", "greedy on long text risks loops (73.66% repetition in the paper); pure sampling risks gibberish"]}
+  ],
+  "compare": [
+    {"with": "nucleus-sampling/nucleus-sampling", "q": "That card goes deep on top-p alone. Using this card's step (2, 5 or 12 tokens kept at p 0.8, 0.9, 0.95), what does top-p do differently from top-k, and in which kind of step would top-k 40 go wrong?", "answer": ["top-p's list size follows the model's confidence; top-k's is fixed", "on a peaked step like ours, top-k 40 would keep 35+ tokens the model barely believes and boost them by renormalising", "on a flat step with hundreds of good options, a small k would cut good words"]},
+    {"with": "paper-2107-03374/sampling-temperature", "q": "Why does the best temperature for pass@100 (0.8) differ from pass@1 (0.2), and how does that match the decision table here?", "answer": ["pass@1 needs the single draw to be right, so stay close to greedy", "pass@100 rewards any success, so diversity across draws pays", "same split as factual answer vs evaluation in this card's table"]},
+    {"with": "text-to-answer/the-loop", "q": "This card picks one token; the next card feeds it back in. How does a small per-step chance of a bad token turn into a big chance over a long answer?", "answer": ["each step multiplies in another probability, so risks compound over length", "pure sampling at our step has 0.138 chance of neither New nor Delhi, and many steps like it add up", "greedy avoids that but loops over long outputs, since the loop also compounds"]}
+  ],
+  "predict": {"q": "A chat-tuned model gives <code>New</code> 0.99 at this same step. How different are greedy, top-p 0.9 and T 0.7 sampling now, and where would you still expect them to differ?", "answer": "At this step they become the same: top-p 0.9 keeps only <code>New</code> (0.99 ≥ 0.9), and T 0.7 pushes it even closer to 1. Decoders matter where the model is unsure, so they'd still differ on open-ended steps (descriptions, stories) and over long outputs, where greedy can still loop."},
+  "apply": {"task": "Using only the probabilities on the card (New 0.698, Delhi 0.164, known 0.018, Mumbai 0.015, not 0.013, then 0.0095, 0.0094, 0.0087), find by hand how many tokens top-p 0.9 keeps and what probability <code>New</code> has after renormalising. Then change the lab's top-p list to include 0.85 and predict its answer before running it.", "done": "You get 5 tokens (running total 0.698, 0.862, 0.880, 0.895, 0.908) and New ≈ 0.769, matching the lab's printed 0.907 and 0.769 to rounding; for p 0.85 you predicted 2 tokens before running it.", "hint": "Add rows from the top until the running total first reaches 0.9; then divide New by that total."},
+  "reflect": [
+    "Which prediction did you get wrong: the 1-in-7 leftover, or whether beam would ever beat greedy on such short answers?",
+    "What couldn't you explain cleanly: why lowering temperature makes text repeat, or why a repeated phrase gets more likely?",
+    "Which relationship is still fuzzy: logits → probabilities (softmax) or probabilities → token (the decoder)?",
+    "Where have you used a temperature or top_p setting without knowing what it cut?",
+    "Before the next card, can you say what gets fed back into the model after the decoder picks <code>New</code>?"
+  ],
+  "revisit": ["z2h-1-toolkit/softmax-and-cross-entropy", "z2h-10-gpt2/sampling"],
+  "prereq": ["z2h-1-toolkit/softmax-and-cross-entropy"]
+}

@@ -1,0 +1,73 @@
+{
+  "prime": {
+    "problem": "Attention mixes tokens with a weighted sum, and a sum ignores order. Without something that marks position, a transformer can't tell \"the capital of India\" from \"India of the capital\".",
+    "fits": "Stop 4 on the route. The embedding card turned each token into a vector that says <i>what</i> it is; this card adds <i>where</i> it is, just before the vectors enter the attention layers.",
+    "expect": ["shuffle in, shuffle out (permutation equivariance)", "the causal mask as an order leak", "sinusoids and learned position tables", "RoPE: turning queries and keys", "ALiBi: a distance penalty on scores"],
+    "goal": "Explain why attention alone is order-blind, show with numbers why RoPE scores depend only on the gap between tokens, and choose a position scheme for a model that must read longer inputs than it trained on."
+  },
+  "attend": [
+    "Which inputs go into one attention score, and why does none of them mention a slot number?",
+    "Why did the demo have to turn the causal mask off, and what order information does the mask leak on its own?",
+    "When RoPE turns a query by m × θ and a key by n × θ, what happens to the angle between them?",
+    "Why does RoPE need 32 pairs at different speeds instead of one pair?",
+    "Which schemes write position into the input once, and which write it into every attention layer? How does that relate to handling longer inputs?"
+  ],
+  "core": {
+    "must": [
+      "A score is query · key, built from two tokens' contents only → softmax and the weighted sum treat the tokens as a set → shuffling the input just shuffles the output (measured: largest change 0.0000014)",
+      "RoPE turns the query by m × θ and the key by n × θ → a dot product depends only on lengths and the angle between → the angle shifts by (m − n) × θ → the score depends on the gap, not the slot (1.598 at slots 5/3 and at 105/103)",
+      "A causal mask lets each token see only earlier tokens → shuffling changes what each token can see → outputs change even without positions (6 of 7 in our test) → but the mask gives a set of earlier tokens, not their order or distance",
+      "A learned table has one row per trained slot → no row past the training length → no extrapolation; ALiBi subtracts m × distance from scores → the same rule works at any length → best at about 2× the trained length in its paper"
+    ],
+    "elevated": [
+      "RoPE turns queries and keys but never values → what a token hands over carries no position stamp → position only shapes <i>who</i> attends to whom",
+      "Each pair turns at its own speed (Qwen: from one turn per 6.3 positions to one per 4,080,185) → fast pairs resolve nearby gaps, slow pairs tell far gaps apart → together they avoid the wrap-around of a single angle"
+    ],
+    "reference": [
+      "Qwen2.5-0.5B: RoPE base 1,000,000 (<code>rope_theta</code>), head size 64 → 32 pairs; Qwen pairs dimension i with i + 32",
+      "Sinusoids: PE(pos, 2i) = sin(pos / 10000<sup>2i/d</sup>), PE(pos, 2i+1) = cos(…); wavelengths 2π to 10,000 × 2π (Vaswani §3.5)",
+      "ALiBi slopes for 8 heads: 1/2, 1/4, …, 1/256; for n heads a geometric sequence starting at 2<sup>−8/n</sup> (Press §3)",
+      "Learned vs sinusoidal in 2017: 25.7 vs 25.8 BLEU (Table 3 row E)",
+      "ALiBi headline: 1.3B model trained on 1,024 tokens matches a sinusoid model trained on 2,048, 11% faster and 11% less memory"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, explain in 3–5 sentences why attention needs position information and how RoPE supplies it. Or redraw one RoPE dial with the query and key arrows and say what stays the same when both slots shift by 100.",
+    "checklist": [
+      "each score is a dot product of two contents; the sum over tokens ignores order",
+      "without positions (and without a mask), a shuffle in is a shuffle out",
+      "RoPE turns query and key by angles proportional to their slots",
+      "the angle between them, so the score, depends only on the gap",
+      "many pairs at different speeds avoid wrap-around",
+      "the causal mask leaks some order but not distance"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why permutation equivariance follows from how an attention score is computed.", "kind": "concept", "answer": ["score = query of one token · key of another, both from contents only", "softmax and the weighted sum of values don't depend on the order of the terms", "move a token and its query, key and value move with it, so its output is the same, just in a new slot"]},
+    {"q": "Walk through what RoPE does to the score between a query at slot 5 and a key at slot 3, pair by pair.", "kind": "mechanism", "answer": ["split each 64-number query and key into 32 pairs", "turn each query pair by 5 × that pair's speed, each key pair by 3 × that speed", "each pair's dot product now depends on the starting angle plus 2 × speed", "sum the 32 pair products to get the score; values are not turned"]},
+    {"q": "You're training a model on 2,048-token inputs but must serve 4,096-token documents. Compare a learned table, RoPE and ALiBi for this, and name what each costs.", "kind": "tradeoff", "answer": ["learned table: impossible past 2,048 without retraining (no rows)", "ALiBi: strongest evidence of working at about 2× length, no parameters, but its gains are in perplexity and partly from fewer short-context tokens", "RoPE: some headroom (used by Qwen2.5 and Llama 3.1), usually stretched with scaling methods for long context"]},
+    {"q": "With the causal mask on and no position encoding, which token's output survives a shuffle that keeps the last token in place, and why?", "kind": "mechanism", "answer": ["the last token sees every token in both orders", "it sees the same set, and a set has no order", "earlier tokens see different prefixes, so their outputs change"]}
+  ],
+  "compare": [
+    {"with": "text-to-answer/embedding-space", "q": "The embedding table and a learned position table are both lookups added together. What does each row encode, and why can one be used at any length while the other can't?", "answer": ["token rows encode what a token is; position rows encode which slot", "the token vocabulary is fixed and covers any text", "the position table only has rows for slots seen in training", "relative schemes (RoPE, ALiBi) have no table to run out of"]},
+    {"with": "reasoning-models/modern-block", "q": "The modern-block card calls RoPE one of four upgrades. What problem with the 2017 sinusoids does RoPE fix, and which design choice causes the fix?", "answer": ["2017 adds absolute position once at the input; the score sees slot numbers mixed into contents", "RoPE turns queries and keys inside every layer, so the score sees only the gap", "the cause is multiplication by a rotation instead of addition of a vector", "both add no parameters"]}
+  ],
+  "predict": {
+    "q": "Swap only India and capital in the input (slots 3 and 5) and keep the causal mask on with no position encoding. How many of the 7 token outputs stay the same, and which ones?",
+    "answer": "Four: What, is, the and ?. The first three see exactly the same earlier tokens as before; ? is last and sees all 7 either way. India, of and capital now see different prefixes, so they change (measured: largest change 0.016). Turn RoPE on as well and ? changes too, leaving three."
+  },
+  "apply": {
+    "task": "Copy <code>labs/positions.py</code>, change <code>perm</code> to <code>[0, 1, 2, 5, 4, 3, 6]</code> (swap India and capital) and run it. Before running, write down how many outputs you expect to stay unchanged in each of the four settings. Then explain each row from what each token can see and whether RoPE is on.",
+    "done": "Your table reads 7, 0, 4, 3 tokens unchanged (no positions/no mask; RoPE/no mask; no positions/mask; RoPE + mask), and you can say why ? survives the mask-only row but not the real-model row.",
+    "hint": "With RoPE on and the mask on, What, is and the still see the same tokens at the same slots, so nothing about them changed."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: that a shuffle would change attention's output, or that the mask alone would?",
+    "What couldn't you explain cleanly: why the angle between two turned arrows depends only on the gap, or why one pair isn't enough?",
+    "Which relationship is still fuzzy: rotation → angle shifts by (m − n)θ, or angle → dot product → attention weight?",
+    "Where else have you met a sum or a set that throws away order, and how was order put back?",
+    "If you designed a position scheme for code, where indentation and line distance both matter, what would you write position into?"
+  ],
+  "revisit": ["text-to-answer/embedding-space", "z2h-8-gpt/embeddings-and-positions", "z2h-8-gpt/self-attention-head"],
+  "prereq": ["z2h-8-gpt/self-attention-head"]
+}
