@@ -42,6 +42,7 @@ for (const slug of readdirSync(root).sort()) {
     description: clip(override.description || text(html, /<p class="sub">([\s\S]*?)<\/p>/), 170),
     kind: override.kind === "paper" ? "paper" : isCurriculum ? "curriculum" : "single",
     cards: cards.length,
+    tags: override.tags || [],
     date: override.date || firstCommitDate(slug) || new Date(statSync(join(dir, main)).mtimeMs).toISOString().slice(0, 10),
   });
 }
@@ -83,7 +84,6 @@ if (existsSync(join(root, "study-path.json"))) {
         d.ids = d.stages.flatMap((s) => s.ids);
       }
       path.days = path.days.filter((d) => d.ids.length);
-      for (const e of entries.filter((x) => x.slug === path.roadmap)) e.series = path.title;
       continue;
     }
     path.days = path.days.filter((d) => entries.some((e) => e.slug === d.plan) && entries.some((e) => e.slug === d.flow));
@@ -112,23 +112,30 @@ for (const path of paths.filter((p) => !p.roadmap && p.short)) {
       if (!u.days.includes(d.label)) u.days.push(d.label);
     }
   }
-  for (const e of entries.filter((x) => x.kind === "curriculum" && !x.pathNote)) {
+  for (const e of entries.filter((x) => x.kind === "curriculum" && !x.inPath)) {
     const total = readdirSync(join(root, e.slug)).filter(isCard).length;
     const u = used[e.slug], later = path.later?.courses?.[e.slug];
-    if (u && u.cards.size >= total) e.pathNote = `All of it is in the ${path.short}, ${dayRange(u.days)}`;
-    else if (u && later) e.pathNote = `${u.cards.size} of ${total} cards are in the ${path.short}, ${dayRange(u.days)}; the rest is ${later}`;
-    else if (later === "optional") e.pathNote = `Not in the ${path.short}: optional`;
-    else if (later) e.pathNote = `Coming in the ${path.short}, ${later}`;
+    const p = (state, label, title) => (e.inPath = { path: path.id, state, label, title });
+    if (u && u.cards.size >= total) p("all", `✓ ${path.short} · ${dayRange(u.days)}`, `All of it is in the ${path.short.toLowerCase()}, ${dayRange(u.days)}. No need to read it separately.`);
+    else if (u && later) p("part", `${path.short} · ${u.cards.size}/${total} · rest ${later}`, `${u.cards.size} of ${total} cards are in the ${path.short.toLowerCase()}, ${dayRange(u.days)}; the rest is planned for ${later}.`);
+    else if (later === "optional") p("optional", "Optional", `Not in the ${path.short.toLowerCase()}: read it if you want the extra depth.`);
+    else if (later) p("later", `${path.short} · ${later}`, `Planned for ${later} of the ${path.short.toLowerCase()}.`);
   }
 }
 for (const map of entries.filter((e) => e.kind === "series")) {
-  for (const c of map.courses) c.note = entries.find((e) => e.slug === c.slug)?.pathNote;
+  for (const c of map.courses) c.inPath = entries.find((e) => e.slug === c.slug)?.inPath;
 }
+
+// hub-topics.json files every folder under one topic (exact slug, or a prefix ending in *); the grid groups by it.
+const topics = existsSync(join(root, "hub-topics.json")) ? JSON.parse(readFileSync(join(root, "hub-topics.json"), "utf8")).topics : [];
+const topicOf = (slug) => topics.find((t) => t.slugs.some((p) => (p.endsWith("*") ? slug.startsWith(p.slice(0, -1)) : slug === p)))?.id || "other";
+for (const e of entries) e.topic = topicOf(e.slug);
 
 const page = readFileSync(join(root, "hub-template.html"), "utf8")
   .replace("/*ENTRIES*/[]", () => JSON.stringify(entries, null, 1).replace(/</g, "\\u003c"))
+  .replace("/*TOPICS*/[]", () => JSON.stringify(topics.map(({ id, label, blurb }) => ({ id, label, blurb }))).replace(/</g, "\\u003c"))
   .replace("/*PATHS*/[]", () => JSON.stringify(paths).replace(/</g, "\\u003c"))
-  .replace("<!--COUNT-->", () => `${entries.length} explainer${entries.length === 1 ? "" : "s"}, ${entries.reduce((n, e) => n + e.cards, 0)} cards`);
+  .replace("<!--COUNT-->", () => `${entries.length} explainer${entries.length === 1 ? "" : "s"} · ${entries.reduce((n, e) => n + e.cards, 0)} cards · ${paths.length} study paths`);
 writeFileSync(join(root, "index.html"), page);
 writeFileSync(join(root, "hub.json"), JSON.stringify({
   explainers: entries.length,
