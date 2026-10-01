@@ -1,0 +1,571 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Day 6: Memory is the product: attention and the KV cache, on one page</title>
+<style>
+:root{
+  --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
+  --text:#1c1f23; --muted:#6b7068; --faint:#b9b9b3;
+  --accent:#4a9d77; --accent-bg:#dcefdf; --accent-border:#8cc79c;
+  --red:#c0492b; --red-bg:#fbeceb;
+  --blue:#3b6fb0; --blue-bg:#e3ecf7; --amber:#a66a00; --amber-bg:#f8ecd2;
+  --sbw:300px;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#15171a; --surface:#1d2024; --surface2:#24282d; --border:#32373d;
+    --text:#e6e8ea; --muted:#9aa1a9; --faint:#4a5057;
+    --accent:#5fb37f; --accent-bg:#1c2b22; --accent-border:#3f7a55;
+    --red:#e57368; --red-bg:#2e1f1e;
+    --blue:#7fa8de; --blue-bg:#1c2533; --amber:#e0a84a; --amber-bg:#2e2616;
+  }
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+@media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,"Inter",system-ui,sans-serif;line-height:1.45}
+a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+a:hover{text-decoration-color:var(--accent)}
+.ext{font-size:11px;color:var(--faint)}
+.n{color:var(--muted);font-weight:400}
+
+/* Layout: sidebar + flow */
+.side{position:fixed;inset:0 auto 0 0;width:var(--sbw);background:var(--surface);border-right:1px solid var(--border);overflow-y:auto;padding:14px 14px 40px;z-index:20;transition:transform .2s}
+.flow{margin-left:var(--sbw);min-width:0;transition:margin .2s}
+html.closed .side{transform:translateX(-100%)}
+.grip{position:fixed;top:0;bottom:0;left:calc(var(--sbw) - 4px);width:8px;z-index:21;cursor:col-resize;touch-action:none}
+.grip::after{content:"";position:absolute;top:0;bottom:0;left:3px;width:2px;background:transparent;transition:background .15s}
+.grip:hover::after,.grip:focus-visible::after,html.dragging .grip::after{background:var(--accent)}
+.grip:focus-visible{outline:none}
+html.closed .grip{display:none}
+html.dragging,html.dragging *{cursor:col-resize!important;user-select:none}
+html.dragging iframe,html.dragging object{pointer-events:none}
+html.dragging .side,html.dragging .flow{transition:none}
+html.closed .flow{margin-left:0}
+@media (prefers-reduced-motion:reduce){.side,.flow{transition:none}}
+.opener{position:fixed;left:12px;bottom:12px;z-index:15;display:none;font:inherit;font-size:13px;font-weight:600;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:6px 10px;cursor:pointer;box-shadow:0 1px 4px rgb(0 0 0/.08)}
+html.closed .opener{display:block}
+.opener .oc{font-weight:400;color:var(--muted);font-variant-numeric:tabular-nums}
+@media (max-width:900px){
+  .grip{display:none}
+  .flow{margin-left:0}
+  .side{box-shadow:4px 0 20px rgb(0 0 0/.15)}
+  .opener{display:block}
+  html:not(.closed) .opener{display:none}
+}
+
+/* Sidebar */
+.shead{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.shead .k{font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--accent);text-decoration:none}
+.close{font:inherit;font-size:13px;color:var(--muted);background:none;border:1px solid var(--border);border-radius:6px;padding:2px 8px;cursor:pointer}
+.close:hover,.close:focus-visible{color:var(--text);border-color:var(--muted);outline:none}
+.daynav{display:flex;gap:4px;margin:10px 0 2px;font-size:12px}
+.daynav>*{flex:1;text-align:center;padding:3px 0;border:1px solid var(--border);border-radius:6px;text-decoration:none;color:var(--muted)}
+.daynav>a:hover{border-color:var(--accent-border);color:var(--text)}
+.daynav b{background:var(--accent-bg);border-color:var(--accent-border);color:var(--accent)}
+.daynav>.dl0{flex:0 0 auto;align-self:center;border:0;padding:0 2px 0 4px}
+.daynav>a.ov{flex:0 0 auto;padding:3px 8px;color:var(--accent);border-color:var(--accent-border)}
+.side h1{font-size:16px;margin:8px 0 8px}
+.overall{font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
+.track{height:4px;border-radius:2px;background:var(--surface2);margin:5px 0 8px;overflow:hidden}
+.track i{display:block;height:100%;width:0;background:var(--accent);transition:width .25s}
+.resume{display:none;font-size:13px;margin:0 0 6px}
+.resume.on{display:block}
+.side details{font-size:12.5px;color:var(--muted);margin:4px 0 10px}
+.side details summary{cursor:pointer}
+.side details ol{padding-left:18px;margin:6px 0}
+.legend{display:flex;flex-wrap:wrap;gap:4px;margin:6px 0 2px}
+.side>ol{list-style:none;margin:0;padding:0}
+.sp{margin-top:12px}
+.sph{display:flex;flex-direction:column;text-decoration:none;font-size:13px;font-weight:600;padding:2px 4px}
+.spm{font-size:11.5px;font-weight:400;color:var(--muted);font-variant-numeric:tabular-nums}
+.sp ol{list-style:none;margin:4px 0 0;padding:0}
+.si{display:grid;grid-template-columns:18px 1fr;gap:6px;align-items:start;padding:3px 4px 3px 5px;border-radius:6px;border-left:3px solid transparent}
+.si input{margin:3px 0 0;accent-color:var(--accent);cursor:pointer}
+.si a{text-decoration:none;font-size:13px;display:flex;gap:6px;align-items:baseline}
+.si .st{min-width:0}
+.si.done .st{color:var(--muted);text-decoration:line-through;text-decoration-color:var(--faint)}
+.si.cur{background:var(--accent-bg);border-left-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent-border)}
+.si.cur .st{font-weight:700;color:var(--text)}
+.si.cur .st::after{content:"← now";margin-left:6px;font-size:10px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--accent);white-space:nowrap}
+.sp.cur>.sph>span:first-child{color:var(--accent)}
+.keys{font-size:11.5px;color:var(--faint);margin-top:18px}
+kbd{font:inherit;border:1px solid var(--border);border-radius:4px;padding:0 4px;color:var(--muted)}
+
+/* Mode chips */
+.chip{flex:none;font-size:10px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;border-radius:4px;padding:1px 5px;white-space:nowrap}
+.chip.read{background:var(--accent-bg);color:var(--accent)}
+.chip.skim{background:var(--blue-bg);color:var(--blue)}
+.chip.test,.chip.check{background:var(--amber-bg);color:var(--amber)}
+.chip.opt{background:var(--surface2);color:var(--muted)}
+.chip.task{background:var(--red-bg);color:var(--red)}
+
+/* Flow */
+.wrap{max-width:884px;margin:0 auto;padding:0 0 80px}
+.top{padding:28px 32px 8px}
+.back{font-size:13px;color:var(--muted);text-decoration:none}
+.eyebrow{font-size:12px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--accent);margin:14px 0 0}
+.top h2{font-size:26px;font-weight:600;margin:4px 0 6px;letter-spacing:-0.01em}
+.sub{font-size:15px;color:var(--muted);margin:0 0 16px}
+.box{border:1px solid var(--border);background:var(--surface);border-radius:10px;padding:12px 18px;margin:0 0 12px;font-size:14px}
+.box.g{border-color:var(--accent-border);background:var(--accent-bg)}
+.box .k,.primer .k,.also .k{font-size:11px;letter-spacing:.06em;text-transform:uppercase;font-weight:600;margin-bottom:4px;color:var(--muted)}
+.box.g .k{color:var(--accent)}
+.box ul,.box ol{margin:4px 0 2px;padding-left:20px}.box li{margin:3px 0}
+.why{border:1px solid var(--border);border-radius:10px;margin:0 0 12px;overflow:hidden}
+.why .whead{padding:12px 18px 10px;background:var(--surface)}
+.why .whead .k{font-size:11px;letter-spacing:.06em;text-transform:uppercase;font-weight:600;color:var(--accent);margin-bottom:4px}
+.why .whead p{margin:0;font-size:15px}
+.why dl{margin:0}
+.why .wr{display:grid;grid-template-columns:minmax(0,34%) 1fr;gap:4px 18px;padding:10px 18px;border-top:1px solid var(--border);font-size:14px}
+.why dt{font-weight:600}
+.why dt span{display:block;font-weight:400;font-size:13px;color:var(--muted);margin-top:2px}
+.why dd{margin:0}
+@media (max-width:640px){.why .wr{grid-template-columns:1fr}}
+.phase{padding:40px 32px 0}
+.ph{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:2px 12px}
+.ph h2,.after h2{font-size:22px;font-weight:600;margin:0}
+.meta{font-size:13px;color:var(--muted);font-variant-numeric:tabular-nums}
+.pintro{font-size:15px;color:var(--muted);margin:0 0 12px}
+.primer{border:1px solid var(--amber);background:var(--amber-bg);border-radius:10px;padding:12px 18px;font-size:14px;margin-bottom:8px}
+.primer .k{color:var(--amber)}
+.primer p{margin:4px 0}
+.bte{margin:4px 0 8px;padding-left:20px}.bte li{margin:4px 0}
+.pretest summary{cursor:pointer}
+.pretest[open] summary{margin-bottom:8px}
+.pretest .cf{border:1px solid var(--border);border-radius:8px}
+
+.it{margin:28px -32px 0}
+.ibar{position:sticky;top:0;z-index:5;background:color-mix(in srgb,var(--bg) 92%,transparent);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);border-top:2px solid var(--border);border-bottom:1px solid var(--border);padding:8px 32px 7px}
+.it.cur .ibar{border-top-color:var(--accent)}
+.ib1{display:flex;align-items:center;gap:8px}
+.ib1 h3{font-size:16px;font-weight:600;margin:0;flex:1;min-width:0}
+.num{font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
+.ins{font-size:13.5px;color:var(--muted);margin:3px 0 0}
+.ins b{color:var(--text);font-weight:600}
+.done{display:inline-flex;align-items:center;gap:5px;font-size:13px;color:var(--muted);cursor:pointer;white-space:nowrap}
+.done input{width:16px;height:16px;margin:0;accent-color:var(--accent);cursor:pointer}
+.it.isdone .ib1 h3{color:var(--muted)}
+.ibody{padding:0 32px}
+.cf{display:block;width:calc(100% + 64px);margin:0 -32px;border:0;min-height:70vh;background:var(--bg)}
+.cf.ready{min-height:0}
+.xf{margin:14px 0;border:1px solid var(--border);border-radius:10px;overflow:hidden}
+.xbar{display:flex;justify-content:space-between;gap:8px;font-size:12.5px;color:var(--muted);background:var(--surface);padding:6px 12px;border-bottom:1px solid var(--border)}
+.xf iframe{display:block;width:100%;height:80vh;border:0;background:#fff}
+.fintro{font-size:15px;margin:14px 0}
+.paper{margin-top:14px;background:#fdfcf8;border:1px solid var(--border);border-radius:12px;padding:10px;overflow-x:auto}
+.paper object{display:block;width:100%;min-width:760px;aspect-ratio:1569.3/2036}
+.figlinks{font-size:13px;color:var(--muted);margin:8px 0}
+.key dl{margin:8px 0 0;display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:8px 18px}
+.key dt{font-weight:600;font-size:14px}
+.key dd{margin:2px 0 0 30px;font-size:13.5px}
+.kb{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;background:#e03131;color:#fff;font-size:12px;font-weight:700;margin-right:4px}
+.write{margin:14px 0;display:flex;flex-direction:column;gap:10px}
+.wq{display:flex;flex-direction:column;gap:4px;font-size:14px;font-weight:600}
+.wq textarea{font:inherit;font-size:15px;font-weight:400;padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--text);resize:vertical}
+.wq textarea:focus{outline:none;border-color:var(--accent-border)}
+.was{font-size:13px;font-weight:400;color:var(--muted)}
+.also{border:1px solid var(--accent-border);background:var(--accent-bg);border-radius:10px;padding:12px 16px;margin:14px 0;font-size:14px}
+.also .k{color:var(--accent)}
+.also p{margin:0 0 6px}
+.also .xf{background:var(--bg)}
+.deep{margin:14px 0 0;font-size:14px;border:1px solid var(--border);border-radius:10px;padding:8px 14px}
+.deep>summary{cursor:pointer;color:var(--accent);font-weight:600}
+.dnote{font-size:13.5px;color:var(--muted);margin:8px 0}
+.dl{list-style:none;margin:6px 0 2px;padding:0}
+.dl li{padding:5px 0;border-top:1px solid var(--border)}
+.dl li:first-child{border-top:0}
+.drow{display:flex;justify-content:space-between;gap:10px;align-items:baseline}
+.show{flex:none;font:inherit;font-size:12px;color:var(--accent);background:none;border:1px solid var(--accent-border);border-radius:6px;padding:1px 8px;cursor:pointer}
+.show:hover,.show:focus-visible{background:var(--accent-bg);outline:none}
+.dl .cf{width:100%;margin:8px 0 4px;border:1px solid var(--border);border-radius:8px}
+.endrow{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:8px;margin:14px 0 0;padding:10px 0;border-top:1px dashed var(--border);font-size:13px}
+.endrow a{color:var(--muted)}
+.done.big{font-size:14px;color:var(--text);font-weight:600;white-space:normal;align-items:flex-start}
+.done.big input{flex:none;margin-top:2px}
+.reset{font:inherit;font-size:12px;color:var(--muted);background:none;border:1px solid var(--border);border-radius:6px;padding:2px 8px;cursor:pointer;margin-top:4px}
+.reset:hover,.reset:focus-visible{border-color:var(--red);color:var(--red);outline:none}
+.after{padding:48px 32px 0}
+.after ul{list-style:none;margin:0;padding:0;border-top:1px solid var(--border)}
+.after li{padding:9px 0;border-bottom:1px solid var(--border);font-size:14px}
+.after .links{display:block;font-size:13px;color:var(--muted);margin-top:2px}
+.nextday{margin:40px 32px 0;display:flex;flex-wrap:wrap;justify-content:space-between;gap:10px;font-size:14px}
+.nextday a{display:block;padding:12px 16px;border:1px solid var(--border);border-radius:10px;text-decoration:none;background:var(--surface);flex:1;min-width:220px}
+.nextday a:hover{border-color:var(--accent-border)}
+.nextday a.nx{text-align:right}
+.nextday small{display:block;font-size:12px;color:var(--muted)}
+.foot{margin:24px 32px 0;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+@media (max-width:560px){
+  .top,.phase,.after{padding-left:16px;padding-right:16px}
+  .it{margin-left:-16px;margin-right:-16px}
+  .ibar,.ibody{padding-left:16px;padding-right:16px}
+  .cf{width:calc(100% + 32px);margin:0 -16px}
+  .num{display:none}
+  .foot,.nextday{margin-left:16px;margin-right:16px}
+}
+</style>
+</head><body>
+<script>try{const w=+localStorage.getItem("study-flow:sbw");if(w>=220&&w<=640)document.documentElement.style.setProperty("--sbw",w+"px")}catch{}</script>
+<script>try{if(localStorage.getItem("study-flow:side")==="closed"||innerWidth<=900)document.documentElement.classList.add("closed")}catch{if(innerWidth<=900)document.documentElement.classList.add("closed")}</script>
+<button class="opener" id="open" type="button" aria-controls="side">☰ Plan <span class="oc" data-allcount></span></button>
+<nav class="side" id="side" aria-label="Study plan">
+<div class="shead"><a class="k" href="../study-path-overview/study-path-overview.html">The study path</a><button class="close" id="close" type="button" aria-label="Hide the plan">Hide ‹</button></div>
+<nav class="daynav" aria-label="Study path days"><a class="ov" href="../study-path-overview/study-path-overview.html" title="What each day covers and why">Overview</a><span class="dl0">Day</span><a href="../llm-speed-study-flow/llm-speed-study-flow.html" title="Day 1: LLM speed study plan">1</a><a href="../study-flow-day-1-5/study-flow-day-1-5.html" title="Day 1.5: Just enough about the model">1.5</a><a href="../study-flow-day-2/study-flow-day-2.html" title="Day 2: Inside the GPU and the engine loop">2</a><a href="../study-flow-day-3/study-flow-day-3.html" title="Day 3: The math of serving">3</a><a href="../study-flow-day-4/study-flow-day-4.html" title="Day 4: Measure a real server">4</a><a href="../study-flow-day-5/study-flow-day-5.html" title="Day 5: Build the scheduler">5</a><b aria-current="page">6</b><a href="../study-flow-day-7/study-flow-day-7.html" title="Day 7: Cheaper decode: inside engines, and structured output">7</a><a href="../study-flow-day-8/study-flow-day-8.html" title="Day 8: Scale out: one model on many GPUs">8</a><a href="../study-flow-day-9/study-flow-day-9.html" title="Day 9: Operate and price a fleet">9</a></nav>
+<h1>Day 6: Memory is the product: attention and the KV cache</h1>
+<div class="overall"><span data-allcount>0 done</span></div>
+<div class="track" aria-hidden="true"><i id="allbar"></i></div>
+<p class="resume" id="resume">Last here: <a href="#"></a></p>
+<details><summary>The routine for every phase</summary><ol><li><b>Prime:</b> read the phase's “Before you read” box. Each card's green Prime box at its top is part of priming too.</li><li><b>Pretest:</b> try its checkpoint cold.</li><li><b>Read in order.</b> After each card, work through its “Study this card” box at the bottom without scrolling back.</li><li><b>Checkpoint for real.</b> Open “Go deeper” only for cards you missed.</li></ol></details>
+<div class="legend"><span class="chip skim">Skim</span><span class="chip read">Read</span><span class="chip test">Pretest</span><span class="chip check">Checkpoint</span><span class="chip opt">Optional</span><span class="chip task">Task</span></div>
+<ol><li class="sp" data-phase-side="p0"><a class="sph" href="#p0"><span>Phase 0 · Prime the day</span><span class="spm"><span data-count>0/2</span> · ~15 min</span></a><ol><li class="si" data-side="d6-overview"><input type="checkbox" data-id="d6-overview" aria-label="Done: KV memory is the currency of serving"><a href="#i-d6-overview"><span class="chip skim">Skim</span><span class="st">KV memory is the currency of serving</span></a></li><li class="si" data-side="d6-pretest"><input type="checkbox" data-id="d6-pretest" aria-label="Done: Try Checkpoint 3 cold"><a href="#i-d6-pretest"><span class="chip test">Pretest</span><span class="st">Try Checkpoint 3 cold</span></a></li></ol></li><li class="sp" data-phase-side="p1"><a class="sph" href="#p1"><span>Phase 1 · Attention without the N×N matrix</span><span class="spm"><span data-count>0/8</span> · ~1 h</span></a><ol><li class="si" data-side="online-softmax"><input type="checkbox" data-id="online-softmax" aria-label="Done: Online softmax"><a href="#i-online-softmax"><span class="chip read">Read</span><span class="st">Online softmax</span></a></li><li class="si" data-side="flashattention-tiling"><input type="checkbox" data-id="flashattention-tiling" aria-label="Done: FlashAttention I: tiling and recomputation"><a href="#i-flashattention-tiling"><span class="chip read">Read</span><span class="st">FlashAttention I: tiling and recomputation</span></a></li><li class="si" data-side="flashattention-io"><input type="checkbox" data-id="flashattention-io" aria-label="Done: FlashAttention II: the IO-complexity argument"><a href="#i-flashattention-io"><span class="chip opt">Optional</span><span class="st">FlashAttention II: the IO-complexity argument</span></a></li><li class="si" data-side="flashattention-backward-results"><input type="checkbox" data-id="flashattention-backward-results" aria-label="Done: FlashAttention III: backward pass and results"><a href="#i-flashattention-backward-results"><span class="chip opt">Optional</span><span class="st">FlashAttention III: backward pass and results</span></a></li><li class="si" data-side="flashattention-2-algorithm"><input type="checkbox" data-id="flashattention-2-algorithm" aria-label="Done: FlashAttention-2 I: fewer non-matmul FLOPs"><a href="#i-flashattention-2-algorithm"><span class="chip opt">Optional</span><span class="st">FlashAttention-2 I: fewer non-matmul FLOPs</span></a></li><li class="si" data-side="flashattention-2-parallelism"><input type="checkbox" data-id="flashattention-2-parallelism" aria-label="Done: FlashAttention-2 II: parallelism and work partitioning"><a href="#i-flashattention-2-parallelism"><span class="chip opt">Optional</span><span class="st">FlashAttention-2 II: parallelism and work partitioning</span></a></li><li class="si" data-side="flashattention-3-4-flashinfer"><input type="checkbox" data-id="flashattention-3-4-flashinfer" aria-label="Done: FlashAttention-3, -4 and FlashInfer"><a href="#i-flashattention-3-4-flashinfer"><span class="chip opt">Optional</span><span class="st">FlashAttention-3, -4 and FlashInfer</span></a></li><li class="si" data-side="d6-checkpoint-1"><input type="checkbox" data-id="d6-checkpoint-1" aria-label="Done: Checkpoint 1: attention without the N×N matrix"><a href="#i-d6-checkpoint-1"><span class="chip check">Checkpoint</span><span class="st">Checkpoint 1: attention without the N×N matrix</span></a></li></ol></li><li class="sp" data-phase-side="p2"><a class="sph" href="#p2"><span>Phase 2 · Smaller KV, fuller pool</span><span class="spm"><span data-count>0/7</span> · ~1.75 h</span></a><ol><li class="si" data-side="gqa"><input type="checkbox" data-id="gqa" aria-label="Done: Grouped-query attention"><a href="#i-gqa"><span class="chip read">Read</span><span class="st">Grouped-query attention</span></a></li><li class="si" data-side="mla"><input type="checkbox" data-id="mla" aria-label="Done: Multi-head latent attention (DeepSeek)"><a href="#i-mla"><span class="chip read">Read</span><span class="st">Multi-head latent attention (DeepSeek)</span></a></li><li class="si" data-side="kv-quantization"><input type="checkbox" data-id="kv-quantization" aria-label="Done: Quantizing the KV cache"><a href="#i-kv-quantization"><span class="chip read">Read</span><span class="st">Quantizing the KV cache</span></a></li><li class="si" data-side="paged-memory"><input type="checkbox" data-id="paged-memory" aria-label="Done: PagedAttention I: KV memory as pages"><a href="#i-paged-memory"><span class="chip read">Read</span><span class="st">PagedAttention I: KV memory as pages</span></a></li><li class="si" data-side="paged-sharing"><input type="checkbox" data-id="paged-sharing" aria-label="Done: PagedAttention II: sharing, copy-on-write and preemption"><a href="#i-paged-sharing"><span class="chip read">Read</span><span class="st">PagedAttention II: sharing, copy-on-write and preemption</span></a></li><li class="si" data-side="paged-results"><input type="checkbox" data-id="paged-results" aria-label="Done: PagedAttention III: implementation and results"><a href="#i-paged-results"><span class="chip read">Read</span><span class="st">PagedAttention III: implementation and results</span></a></li><li class="si" data-side="d6-checkpoint-2"><input type="checkbox" data-id="d6-checkpoint-2" aria-label="Done: Checkpoint 2: smaller KV, fuller pool"><a href="#i-d6-checkpoint-2"><span class="chip check">Checkpoint</span><span class="st">Checkpoint 2: smaller KV, fuller pool</span></a></li></ol></li><li class="sp" data-phase-side="p3"><a class="sph" href="#p3"><span>Phase 3 · Reusing KV, and long context</span><span class="spm"><span data-count>0/7</span> · ~2.5 h</span></a><ol><li class="si" data-side="radixattention"><input type="checkbox" data-id="radixattention" aria-label="Done: RadixAttention I: the radix tree of KV caches"><a href="#i-radixattention"><span class="chip read">Read</span><span class="st">RadixAttention I: the radix tree of KV caches</span></a></li><li class="si" data-side="cache-aware-scheduling"><input type="checkbox" data-id="cache-aware-scheduling" aria-label="Done: RadixAttention II: cache-aware scheduling"><a href="#i-cache-aware-scheduling"><span class="chip read">Read</span><span class="st">RadixAttention II: cache-aware scheduling</span></a></li><li class="si" data-side="mooncake-store"><input type="checkbox" data-id="mooncake-store" aria-label="Done: Mooncake I: trading storage for computation"><a href="#i-mooncake-store"><span class="chip read">Read</span><span class="st">Mooncake I: trading storage for computation</span></a></li><li class="si" data-side="mooncake-scheduling"><input type="checkbox" data-id="mooncake-scheduling" aria-label="Done: Mooncake II: KV-centric scheduling"><a href="#i-mooncake-scheduling"><span class="chip opt">Optional</span><span class="st">Mooncake II: KV-centric scheduling</span></a></li><li class="si" data-side="long-context"><input type="checkbox" data-id="long-context" aria-label="Done: Long context: sliding windows, ring and sparse attention"><a href="#i-long-context"><span class="chip read">Read</span><span class="st">Long context: sliding windows, ring and sparse attention</span></a></li><li class="si" data-side="d6-checkpoint-3"><input type="checkbox" data-id="d6-checkpoint-3" aria-label="Done: Checkpoint 3: reuse, move and stretch the KV cache"><a href="#i-d6-checkpoint-3"><span class="chip check">Checkpoint</span><span class="st">Checkpoint 3: reuse, move and stretch the KV cache</span></a></li><li class="si" data-side="d6-st4"><input type="checkbox" data-id="d6-st4" aria-label="Done: Serving station 4: memory is the product"><a href="#i-d6-st4"><span class="chip task">Task</span><span class="st">Serving station 4: memory is the product</span></a></li></ol></li><li class="sp" data-phase-side="p4"><a class="sph" href="#p4"><span>Phase 4 · Consolidate</span><span class="spm"><span data-count>0/2</span> · ~20 min</span></a><ol><li class="si" data-side="d6-draw"><input type="checkbox" data-id="d6-draw" aria-label="Done: Draw one request's KV memory"><a href="#i-d6-draw"><span class="chip task">Task</span><span class="st">Draw one request's KV memory</span></a></li><li class="si" data-side="d6-principles"><input type="checkbox" data-id="d6-principles" aria-label="Done: Reread the 15 principles"><a href="#i-d6-principles"><span class="chip task">Task</span><span class="st">Reread the 15 principles</span></a></li></ol></li></ol>
+<button class="reset" id="reset" type="button">Clear ticks</button>
+<p class="keys"><kbd>j</kbd> <kbd>k</kbd> next / previous step · <kbd>[</kbd> show or hide the plan · drag the plan's right edge to resize it</p>
+</nav>
+<div class="grip" id="grip" role="separator" aria-orientation="vertical" aria-controls="side" aria-label="Resize the plan (double-click to reset)" tabindex="0"></div>
+<main class="flow"><div class="wrap">
+<header class="top">
+<a class="back" href="../study-path-overview/study-path-overview.html">← The study path overview</a>
+<p class="eyebrow">Study path · Day 6 · one page</p>
+<h2>Memory is the product: attention and the KV cache</h2>
+<p class="sub">Day 6 of the inference study plan: how attention is computed without storing every score, how to make each token's KV smaller, how engines manage KV memory in pages, and how they reuse it across requests. It covers the Attention and the KV cache course and Serving station 4. Everything is inline: just scroll. Ticks are shared with the <a href="../study-plan-day-6/study-plan-day-6.html">checklist version</a>.</p>
+<section class="why" aria-label="What today uses, and why"><div class="whead"><div class="k">What today uses, and why</div><p>Day 3 showed that KV memory, not maths, decides how many users fit. Day 6 is about that memory: computing attention without wasting it, making each token's share smaller, packing it in pages and reusing it across requests.</p></div><dl><div class="wr"><dt>Attention and the KV cache course<span>Course 4 of the Fast LLM inference series: FlashAttention, GQA and MLA, PagedAttention, RadixAttention, Mooncake.</span></dt><dd>Each paper is walked section by section. The FlashAttention internals are optional; the memory-management half is the core.</dd></div><div class="wr"><dt>Serving station 4: memory is the product<span>A field-guide lesson with read-with questions and a closed-book check.</span></dt><dd>It checks the day against real engines' paged and cached memory.</dd></div></dl></section>
+<aside class="box"><div class="k">By the end of today, you'll be able to</div><ul><li>Explain how FlashAttention computes exact attention without storing the full score matrix, and why that saves memory traffic rather than maths.</li><li>Compare grouped-query attention, multi-head latent attention and a quantized KV cache by bytes per token and what each costs.</li><li>Explain PagedAttention: KV memory as pages, sharing with copy-on-write, and why it lets a bigger batch fit.</li><li>Explain how RadixAttention and Mooncake reuse KV across requests, and when reuse pays for itself.</li><li>Say what changes for long contexts: sliding windows, ring attention and sparse attention.</li></ul></aside>
+<aside class="box g"><div class="k">How to use this page</div><ol>
+<li>Scroll. The bar pinned at the top always says what the current step is and <b>how</b> to read it: <span class="chip skim">Skim</span> <span class="chip read">Read</span> <span class="chip test">Pretest</span> <span class="chip check">Checkpoint</span> <span class="chip opt">Optional</span> <span class="chip task">Task</span>.</li>
+<li>Each phase with a checkpoint opens with a <b>Before you read</b> box: prime, then try the checkpoint cold.</li>
+<li>Every card has two study boxes. The green <b>Prime</b> box at its top is read <i>before</i> the card. <b>Study this card</b> at its bottom is done <i>after</i> it, on Read steps only; Skim steps hide it.</li>
+<li>Tick <b>Done</b> as you finish a step. Take a break after each checkpoint.</li>
+<li>“Go deeper” sources stay closed. Open them only for a card whose questions you missed; <b>Show here</b> loads one inline.</li>
+</ol></aside>
+</header>
+<section class="phase" id="p0" data-phase><div class="ph"><h2>Phase 0 · Prime the day</h2><span class="meta">~15 min · <span data-count>0 / 2</span></span></div>
+<div class="track" aria-hidden="true"><i data-bar></i></div>
+<p class="pintro">The course's one idea, and a checkpoint cold.</p>
+<section class="it" id="i-d6-overview" data-item="d6-overview">
+<div class="ibar"><div class="ib1"><span class="chip skim">Skim</span><span class="num">01 / 26</span><h3>KV memory is the currency of serving</h3><label class="done"><input type="checkbox" data-id="d6-overview"> Done</label></div>
+<p class="ins"><b>Skim only. Don't try to learn the details yet, and skip “Study this card”.</b> The course on one card. Every section today either makes KV smaller, packs it better or reuses it.</p></div>
+<div class="ibody"><iframe class="cf" src="../perf-4-attention-kv/_overview.html" title="KV memory is the currency of serving" data-nostudy></iframe>
+<div class="endrow"><label class="done big"><input type="checkbox" data-id="d6-overview"> Done with KV memory is the currency of serving</label><a href="../perf-4-attention-kv/_overview.html" target="_blank" rel="noopener">Open the card on its own ↗</a></div></div>
+</section>
+<section class="it" id="i-d6-pretest" data-item="d6-pretest">
+<div class="ibar"><div class="ib1"><span class="chip test">Pretest</span><span class="num">02 / 26</span><h3>Try Checkpoint 3 cold</h3><label class="done"><input type="checkbox" data-id="d6-pretest"> Done</label></div>
+<p class="ins"><b>Answer cold, before reading anything.</b> Five minutes, no reading first.</p></div>
+<div class="ibody"><iframe class="cf" src="../perf-4-attention-kv/checkpoint-3.html" title="Try Checkpoint 3 cold" data-nostudy></iframe>
+<div class="endrow"><label class="done big"><input type="checkbox" data-id="d6-pretest"> Done with Try Checkpoint 3 cold</label><a href="../perf-4-attention-kv/checkpoint-3.html" target="_blank" rel="noopener">Open the card on its own ↗</a></div></div>
+</section>
+</section>
+<section class="phase" id="p1" data-phase><div class="ph"><h2>Phase 1 · Attention without the N×N matrix</h2><span class="meta">~1 h · <span data-count>0 / 8</span></span></div>
+<div class="track" aria-hidden="true"><i data-bar></i></div>
+<p class="pintro">How attention runs in small tiles that fit in fast memory. Read the first two cards; the rest are for kernel writers.</p><div class="primer"><div class="k">Before you read · 2 steps</div>
+<p><b>1 · Prime · 2 min.</b> Read this list of what each card will let you do. Don't open the cards yet.</p>
+<ul class="bte"><li><b>Online softmax.</b> Hand-trace online softmax over a short vector, merge two partial results with ⊕, and explain why this one trick is what makes tiled attention possible.</li><li><b>FlashAttention I: tiling and recomputation.</b> Walk through Algorithm 1's inner step, say what is stored in HBM and what never leaves SRAM, and explain why doing more FLOPs still makes it faster.</li></ul>
+<details class="pretest" data-src="../perf-4-attention-kv/checkpoint-1.html" data-title="Checkpoint 1"><summary><b>2 · Pretest · 5 min:</b> try Checkpoint 1 cold <span class="n">(opens here)</span></summary></details></div>
+<section class="it" id="i-online-softmax" data-item="online-softmax">
+<div class="ibar"><div class="ib1"><span class="chip read">Read</span><span class="num">03 / 26</span><h3>Online softmax</h3><label class="done"><input type="checkbox" data-id="online-softmax"> Done</label></div>
+<p class="ins"><b>Read it all, then open “Study this card” at the bottom and work through it, at least to step 3 · Retrieve, without scrolling back up.</b> The trick that makes tiling possible: a softmax computed one block at a time. Its Needs-first link points into the optional Kernels course; you can skip it, and skim any step about GPU threads.</p></div>
+<div class="ibody"><iframe class="cf" src="../perf-4-attention-kv/online-softmax.html" title="Online softmax"></iframe>
+<div class="endrow"><label class="done big"><input type="checkbox" data-id="online-softmax"> Done with Online softmax</label><a href="../perf-4-attention-kv/online-softmax.html" target="_blank" rel="noopener">Open the card on its own ↗</a></div></div>
+</section>
+<section class="it" id="i-flashattention-tiling" data-item="flashattention-tiling">
+<div class="ibar"><div class="ib1"><span class="chip read">Read</span><span class="num">04 / 26</span><h3>FlashAttention I: tiling and recomputation</h3><label class="done"><input type="checkbox" data-id="flashattention-tiling"> Done</label></div>
+<p class="ins"><b>Read it all, then open “Study this card” at the bottom and work through it, at least to step 3 · Retrieve, without scrolling back up.</b> Exact attention without writing the score matrix to slow memory.</p></div>
+<div class="ibody"><iframe class="cf" src="../perf-4-attention-kv/flashattention-tiling.html" title="FlashAttention I: tiling and recomputation"></iframe>
+<div class="endrow"><label class="done big"><input type="checkbox" data-id="flashattention-tiling"> Done with FlashAttention I: tiling and recomputation</label><a href="../perf-4-attention-kv/flashattention-tiling.html" target="_blank" rel="noopener">Open the card on its own ↗</a></div></div>
+</section>
+<section class="it" id="i-flashattention-io" data-item="flashattention-io">
+<div class="ibar"><div class="ib1"><span class="chip opt">Optional</span><span class="num">05 / 26</span><h3>FlashAttention II: the IO-complexity argument</h3><label class="done"><input type="checkbox" data-id="flashattention-io"> Done</label></div>
+<p class="ins"><b>Skip unless it applies to you.</b> Why it is faster, counted in memory reads.</p></div>
+<div class="ibody"><iframe class="cf" src="../perf-4-attention-kv/flashattention-io.html" title="FlashAttention II: the IO-complexity argument"></iframe>
+<div class="endrow"><label class="done big"><input type="checkbox" data-id="flashattention-io"> Done with FlashAttention II: the IO-complexity argument</label><a href="../perf-4-attention-kv/flashattention-io.html" target="_blank" rel="noopener">Open the card on its own ↗</a></div></div>
+</section>
+<section class="it" id="i-flashattention-backward-results" data-item="flashattention-backward-results">
+<div class="ibar"><div class="ib1"><span class="chip opt">Optional</span><span class="num">06 / 26</span><h3>FlashAttention III: backward pass and results</h3><label class="done"><input type="checkbox" data-id="flashattention-backward-results"> Done</label></div>
+<p class="ins"><b>Skip unless it applies to you.</b> Training-side detail and the paper's numbers.</p></div>
+<div class="ibody"><iframe class="cf" src="../perf-4-attention-kv/flashattention-backward-results.html" title="FlashAttention III: backward pass and results"></iframe>
+<div class="endrow"><label class="done big"><input type="checkbox" data-id="flashattention-backward-results"> Done with FlashAttention III: backward pass and results</label><a href="../perf-4-attention-kv/flashattention-backward-results.html" target="_blank" rel="noopener">Open the card on its own ↗</a></div></div>
+</section>
+<section class="it" id="i-flashattention-2-algorithm" data-item="flashattention-2-algorithm">
+<div class="ibar"><div class="ib1"><span class="chip opt">Optional</span><span class="num">07 / 26</span><h3>FlashAttention-2 I: fewer non-matmul FLOPs</h3><label class="done"><input type="checkbox" data-id="flashattention-2-algorithm"> Done</label></div>
+<p class="ins"><b>Skip unless it applies to you.</b> Kernel internals.</p></div>
+<div class="ibody"><iframe class="cf" src="../perf-4-attention-kv/flashattention-2-algorithm.html" title="FlashAttention-2 I: fewer non-matmul FLOPs"></iframe>
+<div class="endrow"><label class="done big"><input type="checkbox" data-id="flashattention-2-algorithm"> Done with FlashAttention-2 I: fewer non-matmul FLOPs</label><a href="../perf-4-attention-kv/flashattention-2-algorithm.html" target="_blank" rel="noopener">Open the card on its own ↗</a></div></div>
+</section>
+<section class="it" id="i-flashattention-2-parallelism" data-item="flashattention-2-parallelism">
+<div class="ibar"><div class="ib1"><span class="chip opt">Optional</span><span class="num">08 / 26</span><h3>FlashAttention-2 II: parallelism and work partitioning</h3><label class="done"><input type="checkbox" data-id="flashattention-2-parallelism"> Done</label></div>
+<p class="ins"><b>Skip unless it applies to you.</b> Kernel internals.</p></div>
+<div class="ibody"><iframe class="cf" src="../perf-4-attention-kv/flashattention-2-parallelism.html" title="FlashAttention-2 II: parallelism and work partitioning"></iframe>
+<div class="endrow"><label class="done big"><input type="checkbox" data-id="flashattention-2-parallelism"> Done with FlashAttention-2 II: parallelism and work partitioning</label><a href="../perf-4-attention-kv/flashattention-2-parallelism.html" target="_blank" rel="noopener">Open the card on its own ↗</a></div></div>
+</section>
+<section class="it" id="i-flashattention-3-4-flashinfer" data-item="flashattention-3-4-flashinfer">
+<div class="ibar"><div class="ib1"><span class="chip opt">Optional</span><span class="num">09 / 26</span><h3>FlashAttention-3, -4 and FlashInfer</h3><label class="done"><input type="checkbox" data-id="flashattention-3-4-flashinfer"> Done</label></div>
+<p class="ins"><b>Skip unless it applies to you.</b> What engines ship today. Skim it if you want the names.</p></div>
+<div class="ibody"><iframe class="cf" src="../perf-4-attention-kv/flashattention-3-4-flashinfer.html" title="FlashAttention-3, -4 and FlashInfer"></iframe>
+<div class="endrow"><label class="done big"><input type="checkbox" data-id="flashattention-3-4-flashinfer"> Done with FlashAttention-3, -4 and FlashInfer</label><a href="../perf-4-attention-kv/flashattention-3-4-flashinfer.html" target="_blank" rel="noopener">Open the card on its own ↗</a></div></div>
+</section>
+<section class="it" id="i-d6-checkpoint-1" data-item="d6-checkpoint-1">
+<div class="ibar"><div class="ib1"><span class="chip check">Checkpoint</span><span class="num">10 / 26</span><h3>Checkpoint 1: attention without the N×N matrix</h3><label class="done"><input type="checkbox" data-id="d6-checkpoint-1"> Done</label></div>
+<p class="ins"><b>Answer every question before opening its answer. Note which card each miss points to.</b> Answer what the first two cards cover; skip questions about the optional ones.</p></div>
+<div class="ibody"><iframe class="cf" src="../perf-4-attention-kv/checkpoint-1.html" title="Checkpoint 1: attention without the N×N matrix" data-nostudy></iframe>
+<div class="endrow"><label class="done big"><input type="checkbox" data-id="d6-checkpoint-1"> Done with Checkpoint 1: attention without the N×N matrix</label><a href="../perf-4-attention-kv/checkpoint-1.html" target="_blank" rel="noopener">Open the card on its own ↗</a></div></div>
+</section>
+</section>
+<section class="phase" id="p2" data-phase><div class="ph"><h2>Phase 2 · Smaller KV, fuller pool</h2><span class="meta">~1.75 h · <span data-count>0 / 7</span></span></div>
+<div class="track" aria-hidden="true"><i data-bar></i></div>
+<p class="pintro">Three ways to shrink each token's KV, then paging, which stops memory being wasted between requests.</p><div class="primer"><div class="k">Before you read · 2 steps</div>
+<p><b>1 · Prime · 2 min.</b> Read this list of what each card will let you do. Don't open the cards yet.</p>
+<ul class="bte"><li><b>Grouped-query attention.</b> Compute KV bytes, sequences that fit and decode throughput for any G, and explain why the paper picks 8 groups over MQA.</li><li><b>Multi-head latent attention (DeepSeek).</b> Compute MLA's KV per token, explain how absorption means per-head K and V are never built, and say why RoPE needs its own small key.</li><li><b>Quantizing the KV cache.</b> Compute capacity and throughput for FP8, INT4 and KIVI-2, and explain why keys go per-channel and values per-token.</li><li><b>PagedAttention I: KV memory as pages.</b> Name the three kinds of waste, trace a block table through a few decode steps, and compute how many requests fit with reserve-max versus paged allocation.</li><li><b>PagedAttention II: sharing, copy-on-write and preemption.</b> Count blocks with and without sharing for samples and beams, trace copy-on-write, and choose between swap and recompute when memory runs out.</li><li><b>PagedAttention III: implementation and results.</b> Explain the source of vLLM's speedup, read a normalized-latency curve, and predict how many KV blocks vLLM allocates on an H100.</li></ul>
+<details class="pretest" data-src="../perf-4-attention-kv/checkpoint-2.html" data-title="Checkpoint 2"><summary><b>2 · Pretest · 5 min:</b> try Checkpoint 2 cold <span class="n">(opens here)</span></summary></details></div>
+<section class="it" id="i-gqa" data-item="gqa">
+<div class="ibar"><div class="ib1"><span class="chip read">Read</span><span class="num">11 / 26</span><h3>Grouped-query attention</h3><label class="done"><input type="checkbox" data-id="gqa"> Done</label></div>
+<p class="ins"><b>Read it all, then open “Study this card” at the bottom and work through it, at least to step 3 · Retrieve, without scrolling back up.</b> Fewer key and value heads, shared by many query heads. Llama-3.1-8B uses it.</p></div>
+<div class="ibody"><iframe class="cf" src="../perf-4-attention-kv/gqa.html" title="Grouped-query attention"></iframe>
+<div class="endrow"><label class="done big"><input type="checkbox" data-id="gqa"> Done with Grouped-query attention</label><a href="../perf-4-attention-kv/gqa.html" target="_blank" rel="noopener">Open the card on its own ↗</a></div></div>
+</section>
+<section class="it" id="i-mla" data-item="mla">
+<div class="ibar"><div class="ib1"><span class="chip read">Read</span><span class="num">12 / 26</span><h3>Multi-head latent attention (DeepSeek)</h3><label class="done"><input type="checkbox" data-id="mla"> Done</label></div>
+<p class="ins"><b>Read it all, then open “Study this card” at the bottom and work through it, at least to step 3 · Retrieve, without scrolling back up.</b> Store a small compressed version of K and V instead.</p></div>
+<div class="ibody"><iframe class="cf" src="../perf-4-attention-kv/mla.html" title="Multi-head latent attention (DeepSeek)"></iframe>
+<div class="endrow"><label class="done big"><input type="checkbox" data-id="mla"> Done with Multi-head latent attention (DeepSeek)</label><a href="../perf-4-attention-kv/mla.html" target="_blank" rel="noopener">Open the card on its own ↗</a></div></div>
+</section>
+<section class="it" id="i-kv-quantization" data-item="kv-quantization">
+<div class="ibar"><div class="ib1"><span class="chip read">Read</span><span class="num">13 / 26</span><h3>Quantizing the KV cache</h3><label class="done"><input type="checkbox" data-id="kv-quantization"> Done</label></div>
+<p class="ins"><b>Read it all, then open “Study this card” at the bottom and work through it, at least to step 3 · Retrieve, without scrolling back up.</b> Fewer bits per stored number, and what it can cost in quality.</p></div>
+<div class="ibody"><iframe class="cf" src="../perf-4-attention-kv/kv-quantization.html" title="Quantizing the KV cache"></iframe>
+<div class="endrow"><label class="done big"><input type="checkbox" data-id="kv-quantization"> Done with Quantizing the KV cache</label><a href="../perf-4-attention-kv/kv-quantization.html" target="_blank" rel="noopener">Open the card on its own ↗</a></div></div>
+</section>
+<section class="it" id="i-paged-memory" data-item="paged-memory">
+<div class="ibar"><div class="ib1"><span class="chip read">Read</span><span class="num">14 / 26</span><h3>PagedAttention I: KV memory as pages</h3><label class="done"><input type="checkbox" data-id="paged-memory"> Done</label></div>
+<p class="ins"><b>Read it all, then open “Study this card” at the bottom and work through it, at least to step 3 · Retrieve, without scrolling back up.</b> The paper behind yesterday's block manager.</p></div>
+<div class="ibody"><iframe class="cf" src="../perf-4-attention-kv/paged-memory.html" title="PagedAttention I: KV memory as pages"></iframe>
+<div class="endrow"><label class="done big"><input type="checkbox" data-id="paged-memory"> Done with PagedAttention I: KV memory as pages</label><a href="../perf-4-attention-kv/paged-memory.html" target="_blank" rel="noopener">Open the card on its own ↗</a></div></div>
+</section>
+<section class="it" id="i-paged-sharing" data-item="paged-sharing">
+<div class="ibar"><div class="ib1"><span class="chip read">Read</span><span class="num">15 / 26</span><h3>PagedAttention II: sharing, copy-on-write and preemption</h3><label class="done"><input type="checkbox" data-id="paged-sharing"> Done</label></div>
+<p class="ins"><b>Read it all, then open “Study this card” at the bottom and work through it, at least to step 3 · Retrieve, without scrolling back up.</b> Pages shared between requests until one of them writes.</p></div>
+<div class="ibody"><iframe class="cf" src="../perf-4-attention-kv/paged-sharing.html" title="PagedAttention II: sharing, copy-on-write and preemption"></iframe>
+<div class="endrow"><label class="done big"><input type="checkbox" data-id="paged-sharing"> Done with PagedAttention II: sharing, copy-on-write and preemption</label><a href="../perf-4-attention-kv/paged-sharing.html" target="_blank" rel="noopener">Open the card on its own ↗</a></div></div>
+</section>
+<section class="it" id="i-paged-results" data-item="paged-results">
+<div class="ibar"><div class="ib1"><span class="chip read">Read</span><span class="num">16 / 26</span><h3>PagedAttention III: implementation and results</h3><label class="done"><input type="checkbox" data-id="paged-results"> Done</label></div>
+<p class="ins"><b>Read it all, then open “Study this card” at the bottom and work through it, at least to step 3 · Retrieve, without scrolling back up.</b> How much bigger a batch fits, measured.</p></div>
+<div class="ibody"><iframe class="cf" src="../perf-4-attention-kv/paged-results.html" title="PagedAttention III: implementation and results"></iframe>
+<div class="endrow"><label class="done big"><input type="checkbox" data-id="paged-results"> Done with PagedAttention III: implementation and results</label><a href="../perf-4-attention-kv/paged-results.html" target="_blank" rel="noopener">Open the card on its own ↗</a></div></div>
+</section>
+<section class="it" id="i-d6-checkpoint-2" data-item="d6-checkpoint-2">
+<div class="ibar"><div class="ib1"><span class="chip check">Checkpoint</span><span class="num">17 / 26</span><h3>Checkpoint 2: smaller KV, fuller pool</h3><label class="done"><input type="checkbox" data-id="d6-checkpoint-2"> Done</label></div>
+<p class="ins"><b>Answer every question before opening its answer. Note which card each miss points to.</b> Break after this one.</p></div>
+<div class="ibody"><iframe class="cf" src="../perf-4-attention-kv/checkpoint-2.html" title="Checkpoint 2: smaller KV, fuller pool" data-nostudy></iframe>
+<div class="endrow"><label class="done big"><input type="checkbox" data-id="d6-checkpoint-2"> Done with Checkpoint 2: smaller KV, fuller pool</label><a href="../perf-4-attention-kv/checkpoint-2.html" target="_blank" rel="noopener">Open the card on its own ↗</a></div></div>
+</section>
+</section>
+<section class="phase" id="p3" data-phase><div class="ph"><h2>Phase 3 · Reusing KV, and long context</h2><span class="meta">~2.5 h · <span data-count>0 / 7</span></span></div>
+<div class="track" aria-hidden="true"><i data-bar></i></div>
+<p class="pintro">Keeping KV after a request ends so the next one can reuse it, and what changes when the context is very long.</p>
+<section class="it" id="i-radixattention" data-item="radixattention">
+<div class="ibar"><div class="ib1"><span class="chip read">Read</span><span class="num">18 / 26</span><h3>RadixAttention I: the radix tree of KV caches</h3><label class="done"><input type="checkbox" data-id="radixattention"> Done</label></div>
+<p class="ins"><b>Read it all, then open “Study this card” at the bottom and work through it, at least to step 3 · Retrieve, without scrolling back up.</b> How SGLang finds the longest shared prefix in a tree of cached KV.</p></div>
+<div class="ibody"><iframe class="cf" src="../perf-4-attention-kv/radixattention.html" title="RadixAttention I: the radix tree of KV caches"></iframe>
+<div class="endrow"><label class="done big"><input type="checkbox" data-id="radixattention"> Done with RadixAttention I: the radix tree of KV caches</label><a href="../perf-4-attention-kv/radixattention.html" target="_blank" rel="noopener">Open the card on its own ↗</a></div></div>
+</section>
+<section class="it" id="i-cache-aware-scheduling" data-item="cache-aware-scheduling">
+<div class="ibar"><div class="ib1"><span class="chip read">Read</span><span class="num">19 / 26</span><h3>RadixAttention II: cache-aware scheduling</h3><label class="done"><input type="checkbox" data-id="cache-aware-scheduling"> Done</label></div>
+<p class="ins"><b>Read it all, then open “Study this card” at the bottom and work through it, at least to step 3 · Retrieve, without scrolling back up.</b> Serving requests in an order that keeps cache hits high.</p></div>
+<div class="ibody"><iframe class="cf" src="../perf-4-attention-kv/cache-aware-scheduling.html" title="RadixAttention II: cache-aware scheduling"></iframe>
+<div class="endrow"><label class="done big"><input type="checkbox" data-id="cache-aware-scheduling"> Done with RadixAttention II: cache-aware scheduling</label><a href="../perf-4-attention-kv/cache-aware-scheduling.html" target="_blank" rel="noopener">Open the card on its own ↗</a></div></div>
+</section>
+<section class="it" id="i-mooncake-store" data-item="mooncake-store">
+<div class="ibar"><div class="ib1"><span class="chip read">Read</span><span class="num">20 / 26</span><h3>Mooncake I: trading storage for computation</h3><label class="done"><input type="checkbox" data-id="mooncake-store"> Done</label></div>
+<p class="ins"><b>Read it all, then open “Study this card” at the bottom and work through it, at least to step 3 · Retrieve, without scrolling back up.</b> Keeping KV in CPU memory and on disk so it never has to be recomputed.</p></div>
+<div class="ibody"><iframe class="cf" src="../perf-4-attention-kv/mooncake-store.html" title="Mooncake I: trading storage for computation"></iframe>
+<div class="endrow"><label class="done big"><input type="checkbox" data-id="mooncake-store"> Done with Mooncake I: trading storage for computation</label><a href="../perf-4-attention-kv/mooncake-store.html" target="_blank" rel="noopener">Open the card on its own ↗</a></div></div>
+</section>
+<section class="it" id="i-mooncake-scheduling" data-item="mooncake-scheduling">
+<div class="ibar"><div class="ib1"><span class="chip opt">Optional</span><span class="num">21 / 26</span><h3>Mooncake II: KV-centric scheduling</h3><label class="done"><input type="checkbox" data-id="mooncake-scheduling"> Done</label></div>
+<p class="ins"><b>Skip unless it applies to you.</b> A whole cluster scheduled around where KV lives. Day 9 comes back to routing on KV.</p></div>
+<div class="ibody"><iframe class="cf" src="../perf-4-attention-kv/mooncake-scheduling.html" title="Mooncake II: KV-centric scheduling"></iframe>
+<div class="endrow"><label class="done big"><input type="checkbox" data-id="mooncake-scheduling"> Done with Mooncake II: KV-centric scheduling</label><a href="../perf-4-attention-kv/mooncake-scheduling.html" target="_blank" rel="noopener">Open the card on its own ↗</a></div></div>
+</section>
+<section class="it" id="i-long-context" data-item="long-context">
+<div class="ibar"><div class="ib1"><span class="chip read">Read</span><span class="num">22 / 26</span><h3>Long context: sliding windows, ring and sparse attention</h3><label class="done"><input type="checkbox" data-id="long-context"> Done</label></div>
+<p class="ins"><b>Read it all, then open “Study this card” at the bottom and work through it, at least to step 3 · Retrieve, without scrolling back up.</b> What breaks at very long contexts, and the three ways around it.</p></div>
+<div class="ibody"><iframe class="cf" src="../perf-4-attention-kv/long-context.html" title="Long context: sliding windows, ring and sparse attention"></iframe>
+<div class="endrow"><label class="done big"><input type="checkbox" data-id="long-context"> Done with Long context: sliding windows, ring and sparse attention</label><a href="../perf-4-attention-kv/long-context.html" target="_blank" rel="noopener">Open the card on its own ↗</a></div></div>
+</section>
+<section class="it" id="i-d6-checkpoint-3" data-item="d6-checkpoint-3">
+<div class="ibar"><div class="ib1"><span class="chip check">Checkpoint</span><span class="num">23 / 26</span><h3>Checkpoint 3: reuse, move and stretch the KV cache</h3><label class="done"><input type="checkbox" data-id="d6-checkpoint-3"> Done</label></div>
+<p class="ins"><b>Answer every question before opening its answer. Note which card each miss points to.</b> Skip the questions on Mooncake II if you didn't read it. Compare it with your cold attempt from this morning.</p></div>
+<div class="ibody"><iframe class="cf" src="../perf-4-attention-kv/checkpoint-3.html" title="Checkpoint 3: reuse, move and stretch the KV cache" data-nostudy></iframe>
+<div class="endrow"><label class="done big"><input type="checkbox" data-id="d6-checkpoint-3"> Done with Checkpoint 3: reuse, move and stretch the KV cache</label><a href="../perf-4-attention-kv/checkpoint-3.html" target="_blank" rel="noopener">Open the card on its own ↗</a></div></div>
+</section>
+<section class="it" id="i-d6-st4" data-item="d6-st4">
+<div class="ibar"><div class="ib1"><span class="chip task">Task</span><span class="num">24 / 26</span><h3>Serving station 4: memory is the product</h3><label class="done"><input type="checkbox" data-id="d6-st4"> Done</label></div>
+<p class="ins"><b>Work through it actively. Don't just read it.</b> The check that the day stuck, on real engines. Give it about 45 minutes: answer its read-with questions, open a source only when today's cards can't answer a question, then do its closed-book check.</p></div>
+<div class="ibody"><div class="xf"><div class="xbar"><span>agents-inference-software-factory.svas.workers.dev · scrolls inside this frame</span><a href="https://agents-inference-software-factory.svas.workers.dev/serving/#kv-memory" target="_blank" rel="noopener">Open in a new tab ↗</a></div><iframe src="https://agents-inference-software-factory.svas.workers.dev/serving/#kv-memory" title="Serving station 4: memory is the product" loading="lazy"></iframe></div>
+<div class="endrow"><label class="done big"><input type="checkbox" data-id="d6-st4"> Done with Serving station 4: memory is the product</label></div></div>
+</section>
+</section>
+<section class="phase" id="p4" data-phase><div class="ph"><h2>Phase 4 · Consolidate</h2><span class="meta">~20 min · <span data-count>0 / 2</span></span></div>
+<div class="track" aria-hidden="true"><i data-bar></i></div>
+<p class="pintro">Close everything and rebuild the day from memory.</p>
+<section class="it" id="i-d6-draw" data-item="d6-draw">
+<div class="ibar"><div class="ib1"><span class="chip task">Task</span><span class="num">25 / 26</span><h3>Draw one request's KV memory</h3><label class="done"><input type="checkbox" data-id="d6-draw"> Done</label></div>
+<p class="ins"><b>Work through it actively. Don't just read it.</b> Use the Serving guide's drawing prompts: one request's KV from first token to last, in pages, with a second request sharing its prefix.</p></div>
+<div class="ibody"><div class="xf"><div class="xbar"><span>agents-inference-software-factory.svas.workers.dev · scrolls inside this frame</span><a href="https://agents-inference-software-factory.svas.workers.dev/serving/#draw" target="_blank" rel="noopener">Open in a new tab ↗</a></div><iframe src="https://agents-inference-software-factory.svas.workers.dev/serving/#draw" title="Draw one request's KV memory" loading="lazy"></iframe></div>
+<div class="endrow"><label class="done big"><input type="checkbox" data-id="d6-draw"> Done with Draw one request's KV memory</label></div></div>
+</section>
+<section class="it" id="i-d6-principles" data-item="d6-principles">
+<div class="ibar"><div class="ib1"><span class="chip task">Task</span><span class="num">26 / 26</span><h3>Reread the 15 principles</h3><label class="done"><input type="checkbox" data-id="d6-principles"> Done</label></div>
+<p class="ins"><b>Work through it actively. Don't just read it.</b> Count how many you can now back with a number.</p></div>
+<div class="ibody"><div class="xf"><div class="xbar"><span>agents-inference-software-factory.svas.workers.dev · scrolls inside this frame</span><a href="https://agents-inference-software-factory.svas.workers.dev/serving/#principles" target="_blank" rel="noopener">Open in a new tab ↗</a></div><iframe src="https://agents-inference-software-factory.svas.workers.dev/serving/#principles" title="Reread the 15 principles" loading="lazy"></iframe></div>
+<div class="endrow"><label class="done big"><input type="checkbox" data-id="d6-principles"> Done with Reread the 15 principles</label></div></div>
+</section>
+</section>
+
+<nav class="nextday" aria-label="Previous and next day"><a href="../study-flow-day-5/study-flow-day-5.html"><small>← Previous</small>Day 5: Build the scheduler</a><a class="nx" href="../study-flow-day-7/study-flow-day-7.html"><small>Next →</small>Day 7: Cheaper decode: inside engines, and structured output</a></nav>
+<p class="foot">About 6 hours. The FlashAttention cards after the first are kernel internals, marked optional: read them only if you want to write GPU code. Tutor mode for any card: <code>/study &lt;course&gt;/&lt;card&gt;</code> in Claude Code.</p>
+</div></main>
+<script>
+(() => {
+  const KEY = "study-plan-day-6:v1", SIDE = "study-flow:side", LAST = "study-flow-day-6:last", WKEY = "study-plan-day-6:sentences";
+  const get = (k) => { try { return localStorage.getItem(k); } catch { return null; } };
+  const set = (k, v) => { try { localStorage.setItem(k, v); } catch {} };
+  let done = {};
+  try { done = JSON.parse(get(KEY)) || {}; } catch {}
+  const html = document.documentElement;
+  const boxes = [...document.querySelectorAll("input[data-id]")];
+  const ids = [...new Set(boxes.map((b) => b.dataset.id))];
+  const items = [...document.querySelectorAll(".it")];
+
+  const paint = () => {
+    for (const b of boxes) b.checked = !!done[b.dataset.id];
+    for (const s of document.querySelectorAll("[data-side]")) s.classList.toggle("done", !!done[s.dataset.side]);
+    for (const s of items) s.classList.toggle("isdone", !!done[s.dataset.item]);
+    for (const s of document.querySelectorAll("[data-phase]")) {
+      const its = [...s.querySelectorAll(".it")], k = its.filter((i) => done[i.dataset.item]).length;
+      s.querySelector("[data-count]").textContent = k + " / " + its.length;
+      s.querySelector("[data-bar]").style.width = (100 * k / its.length) + "%";
+      const sp = document.querySelector('[data-phase-side="' + s.id + '"] [data-count]');
+      if (sp) sp.textContent = k + "/" + its.length;
+    }
+    const k = ids.filter((i) => done[i]).length;
+    for (const e of document.querySelectorAll("[data-allcount]")) e.textContent = k + " / " + ids.length + " done";
+    document.getElementById("allbar").style.width = (100 * k / ids.length) + "%";
+  };
+  for (const b of boxes) b.addEventListener("change", () => { if (b.checked) done[b.dataset.id] = 1; else delete done[b.dataset.id]; set(KEY, JSON.stringify(done)); paint(); });
+  // Another tab (e.g. the checklist version) changed the ticks.
+  addEventListener("storage", (e) => { if (e.key === KEY) { try { done = JSON.parse(e.newValue) || {}; } catch { done = {}; } paint(); } });
+  const reset = document.getElementById("reset");
+  let armed = false;
+  reset.addEventListener("click", () => {
+    if (!armed) { armed = true; reset.textContent = "Click again to clear"; setTimeout(() => { armed = false; reset.textContent = "Clear ticks"; }, 3000); return; }
+    done = {}; set(KEY, "{}"); paint(); armed = false; reset.textContent = "Clear ticks";
+  });
+
+  // Written answers (Day 1.5's five sentences), saved as you type.
+  let wr = {};
+  try { wr = JSON.parse(get(WKEY)) || {}; } catch {}
+  const showPre = () => { for (const e of document.querySelectorAll("[data-pre]")) e.textContent = (wr.pre || [])[e.dataset.pre] || "(nothing written yet)"; };
+  for (const blk of document.querySelectorAll("[data-write]")) {
+    const which = blk.dataset.write;
+    for (const t of blk.querySelectorAll("textarea")) {
+      t.value = (wr[which] || [])[t.dataset.i] || "";
+      t.addEventListener("input", () => { (wr[which] ||= [])[t.dataset.i] = t.value; set(WKEY, JSON.stringify(wr)); showPre(); });
+    }
+  }
+  showPre();
+
+  // Sidebar
+  const narrow = () => innerWidth <= 900;
+  const toggle = (open) => { html.classList.toggle("closed", !open); if (!narrow()) set(SIDE, open ? "open" : "closed"); };
+  document.getElementById("close").addEventListener("click", () => toggle(false));
+  document.getElementById("open").addEventListener("click", () => toggle(true));
+  document.getElementById("side").addEventListener("click", (e) => { if (narrow() && e.target.closest("a[href^='#']")) toggle(false); });
+
+  // Drag the sidebar's right edge to resize it; arrow keys nudge, double-click resets.
+  const grip = document.getElementById("grip");
+  const setW = (w) => { w = Math.round(Math.max(220, Math.min(640, w, innerWidth * 0.6))); html.style.setProperty("--sbw", w + "px"); set("study-flow:sbw", w); grip.setAttribute("aria-valuenow", w); };
+  grip.addEventListener("pointerdown", (e) => {
+    e.preventDefault(); grip.setPointerCapture(e.pointerId); html.classList.add("dragging");
+    const move = (m) => setW(m.clientX);
+    const up = () => { html.classList.remove("dragging"); grip.removeEventListener("pointermove", move); grip.removeEventListener("pointerup", up); grip.removeEventListener("pointercancel", up); };
+    grip.addEventListener("pointermove", move); grip.addEventListener("pointerup", up); grip.addEventListener("pointercancel", up);
+  });
+  grip.addEventListener("dblclick", () => setW(300));
+  grip.addEventListener("keydown", (e) => {
+    const w = document.getElementById("side").offsetWidth;
+    if (e.key === "ArrowLeft") { setW(w - 20); e.preventDefault(); } else if (e.key === "ArrowRight") { setW(w + 20); e.preventDefault(); }
+  });
+
+  // Same-origin cards: hide their course navigation, open their links in new tabs, grow to fit.
+  const fit = (f) => {
+    const d = f.contentDocument;
+    if (!d || !d.body || d.__fitted) return;
+    d.__fitted = true;
+    const st = d.createElement("style");
+    st.textContent = ".sn,.snx{display:none!important}html,body{overflow:hidden!important}" + (f.hasAttribute("data-nostudy") ? ".study{display:none!important}" : "");
+    d.head.append(st);
+    for (const l of d.querySelectorAll("a[href]")) if (!l.getAttribute("href").startsWith("#")) { l.target = "_blank"; l.rel = "noopener"; }
+    const size = () => { f.style.height = Math.ceil(d.documentElement.getBoundingClientRect().height) + "px"; };
+    new ResizeObserver(size).observe(d.body);
+    size();
+    f.classList.add("ready");
+  };
+  const wire = (f) => { f.addEventListener("load", () => fit(f)); if (f.contentDocument?.readyState === "complete" && f.contentDocument.body?.childElementCount) fit(f); };
+  const esc = (s) => s.replace(/"/g, "&quot;");
+  const makeFrame = (src, title) => {
+    if (src.startsWith("../")) { const f = document.createElement("iframe"); f.className = "cf"; f.src = src; f.title = title; wire(f); return f; }
+    const w = document.createElement("div"); w.className = "xf";
+    w.innerHTML = '<div class="xbar"><span>' + new URL(src).host + ' · scrolls inside this frame</span><a href="' + esc(src) + '" target="_blank" rel="noopener">Open in a new tab ↗</a></div><iframe src="' + esc(src) + '" title="' + esc(title) + '"></iframe>';
+    return w;
+  };
+  document.querySelectorAll("iframe.cf").forEach(wire);
+  for (const d of document.querySelectorAll("details.pretest")) d.addEventListener("toggle", () => { if (d.open && !d.querySelector("iframe")) d.append(makeFrame(d.dataset.src, d.dataset.title)); });
+  for (const b of document.querySelectorAll("button.show")) b.addEventListener("click", () => {
+    const li = b.closest("li"), old = li.querySelector(".cf,.xf");
+    if (old) { old.remove(); b.textContent = "Show here"; return; }
+    li.append(makeFrame(b.dataset.src, b.dataset.title)); b.textContent = "Hide";
+  });
+
+  // Current step: the last one whose top has passed a third of the way down the screen.
+  const sideOf = (id) => document.querySelector('[data-side="' + id + '"]');
+  let cur = null;
+  const track = () => {
+    const y = innerHeight / 3;
+    let c = null;
+    for (const s of items) { if (s.getBoundingClientRect().top <= y) c = s; else break; }
+    if (c === cur) return;
+    cur?.classList.remove("cur"); if (cur) { const o = sideOf(cur.dataset.item); o?.classList.remove("cur"); o?.closest(".sp")?.classList.remove("cur"); }
+    cur = c;
+    if (!c) return;
+    c.classList.add("cur");
+    const si = sideOf(c.dataset.item);
+    si?.classList.add("cur");
+    si?.closest(".sp")?.classList.add("cur");
+    const side = document.getElementById("side");
+    if (si && !narrow()) { const r = si.getBoundingClientRect(); if (r.top < 60 || r.bottom > innerHeight - 20) side.scrollTop += r.top - innerHeight / 2; }
+    set(LAST, c.dataset.item);
+  };
+  addEventListener("scroll", () => requestAnimationFrame(track), { passive: true });
+
+  const last = get(LAST), res = document.getElementById("resume");
+  if (last && !location.hash && document.getElementById("i-" + last)) {
+    const a = res.querySelector("a");
+    a.href = "#i-" + last; a.textContent = document.querySelector("#i-" + last + " h3").textContent;
+    res.classList.add("on");
+  }
+
+  const go = (d) => {
+    const i = cur ? items.indexOf(cur) : -1, t = items[Math.max(0, Math.min(items.length - 1, i + d))];
+    t.scrollIntoView({ block: "start" });
+  };
+  addEventListener("keydown", (e) => {
+    if (e.metaKey || e.ctrlKey || e.altKey || /INPUT|TEXTAREA|SELECT/.test(e.target.tagName)) return;
+    if (e.key === "j") go(1); else if (e.key === "k") go(-1);
+    else if (e.key === "[") toggle(html.classList.contains("closed"));
+  });
+
+  // Frames above a linked step change height as they load, so land on it again once they're in.
+  if (location.hash) addEventListener("load", () => document.querySelector(location.hash)?.scrollIntoView({ block: "start" }));
+  paint(); track();
+})();
+</script>
+</body></html>
