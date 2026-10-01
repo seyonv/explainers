@@ -72,6 +72,20 @@ let paths = [];
 if (existsSync(join(root, "study-path.json"))) {
   paths = JSON.parse(readFileSync(join(root, "study-path.json"), "utf8")).paths;
   for (const path of paths) {
+    // A roadmap path groups an existing roadmap's stages into tiles instead of pointing at day plans. Each stage's
+    // tick ids come from the data-ids on its link in the roadmap's index.html; all stages share one localStorage key.
+    if (path.roadmap) {
+      const html = readFileSync(join(root, path.roadmap, "index.html"), "utf8");
+      const stages = Object.fromEntries([...html.matchAll(/href="([^"]+)" data-stage="([^"]+)" data-ids="([^"]+)"/g)]
+        .map((m) => [m[2], { href: `${path.roadmap}/${m[1]}`, ids: m[3].split(" ") }]));
+      for (const d of path.days) {
+        d.stages = d.stages.map((s) => stages[s]).filter(Boolean);
+        d.ids = d.stages.flatMap((s) => s.ids);
+      }
+      path.days = path.days.filter((d) => d.ids.length);
+      for (const e of entries.filter((x) => x.slug === path.roadmap)) e.series = path.title;
+      continue;
+    }
     path.days = path.days.filter((d) => entries.some((e) => e.slug === d.plan) && entries.some((e) => e.slug === d.flow));
     for (const d of path.days) {
       for (const e of entries.filter((x) => x.slug === d.plan || x.slug === d.flow)) e.series = path.title;
