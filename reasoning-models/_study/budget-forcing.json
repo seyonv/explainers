@@ -1,0 +1,71 @@
+{
+  "prime": {
+    "problem": "A reasoning model decides for itself when to stop thinking. It sometimes stops early on a wrong answer, and you have no exact way to make it think longer or shorter. Asking in the prompt doesn't work because the model can't count its own tokens.",
+    "fits": "Builds on chain of thought and test-time compute: spending more tokens at inference can buy accuracy. s1 is the simplest version of that idea, with one sequential trace whose length is controlled from outside, on a model fine-tuned on only 1,000 examples.",
+    "expect": ["thinking tokens and the end-of-thinking marker", "budget forcing (force the stop / block it and append “Wait”)", "s1K: picking 1,000 examples by quality, difficulty and diversity", "distillation by fine-tuning (SFT)", "the scaling curve and where it flattens"],
+    "goal": "Explain how blocking one token makes a model re-check its answer, read the paper's scaling curve and say where and why it flattens, and argue why this works only on a model that has already learned to reason."
+  },
+  "attend": [
+    "Why does editing the decoding loop give exact control over thinking length when a length instruction in the prompt doesn't?",
+    "What makes the model treat an appended “Wait” as a cue to re-check, and why did “Hmm” and “Alternatively” do worse?",
+    "Which of the three s1K filters does the most work, and what does the 59K-vs-1K result say about data quantity?",
+    "Why does accuracy stop rising after four “Wait”s instead of climbing forever?",
+    "How much of s1-32B's ability comes from the teacher model's traces rather than from budget forcing?"
+  ],
+  "core": {
+    "must": [
+      "The model ends thinking by emitting an end-of-thinking token → budget forcing controls that one token from outside → insert it to cut thinking short, block it and append “Wait” to stretch it → exact control with no retraining (100% control vs 40% for a length instruction in the prompt)",
+      "Training traces often say “Wait” before a re-check → after fine-tuning, the model continues an appended “Wait” by re-reading its work → it can catch a slip (raspberry: 2 → 3) → AIME24 50.0% → 53.3% (×2) → 56.7% (×4)",
+      "Extra thinking only re-uses what the model already knows → after a few re-checks there is nothing new to find, and blocking the stop more often causes repetitive loops → the curve is flat from ×4 to ×6, and the context window sets a hard cap",
+      "Picking hard, varied, clean questions matters more than quantity → s1K (1,000) scores 50.0% vs 53.3% for all 59K at 56× less training compute, while random or longest-only sets of 1,000 score 26.7–36.7% → a short fine-tune switches on reasoning the pretrained model already has"
+    ],
+    "elevated": [
+      "The traces were distilled from Gemini 2.0 Flash Thinking → the habit of re-checking was copied from a stronger reasoner → s1.1, trained on DeepSeek-R1 traces, reaches 56.7% with no forcing, so the teacher matters as much as the “Wait”s",
+      "AIME24 has 30 problems → each one is 3.3 points → the whole budget-forcing gain (50.0 → 56.7) is two problems, so small differences between methods are noisy"
+    ],
+    "reference": [
+      "Pool: 59,029 questions from 16 sources → 51,581 after the quality filters → 24,496 after the difficulty filter (drop anything Qwen2.5-7B or 32B solves) → 1,000 across 50 domains",
+      "Fine-tuning Qwen2.5-32B-Instruct: 5 epochs, 315 steps, 26 minutes on 16 H100s (7 GPU-hours); 59K took 394 GPU-hours",
+      "Delimiters: <code>&lt;|im_start|&gt;think</code> and <code>&lt;|im_start|&gt;answer</code>",
+      "Table 1 (AIME24 / MATH500 / GPQA): s1-32B 56.7 / 93.0 / 59.6; o1-preview 44.6 / 85.5 / 73.3; Qwen2.5-32B-Instruct 26.7 / 84.0 / 49.0",
+      "Only 53.6% of s1K traces reach the right answer; the wrong ones were kept on purpose"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, explain in 3–5 sentences how s1 gets a model to think longer and why the gain stops. Or redraw the raspberry sketch and mark where budget forcing acts.",
+    "checklist": [
+      "fine-tune on 1,000 hard, varied traces from a stronger model",
+      "the model signals the end of thinking with one special token",
+      "force that token to stop early; block it and append “Wait” to continue",
+      "the model re-checks and sometimes fixes its answer",
+      "gains flatten after a few “Wait”s (loops, nothing new to check) and the context window caps it"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why a budget written into the prompt (“think for up to 2,048 tokens”) gives poor control while budget forcing gives exact control.", "kind": "concept", "answer": ["the model can't count its own tokens, so it overshoots the requested length", "budget forcing acts on the decoder, not on the model's judgement", "the end-of-thinking token is inserted or blocked by code, so the limit holds every time"]},
+    {"q": "Walk through what happens, token by token, when s1-32B tries to end its thinking and you want it to think more.", "kind": "mechanism", "answer": ["the model's most likely next token is the end-of-thinking marker", "the decoder drops that token and appends the text “Wait”", "the model continues from “Wait” as if it chose it, usually re-reading its work", "repeat N times, then let it stop and write the answer"]},
+    {"q": "You have a fixed inference budget for a maths product. Argue when you would spend it on more “Wait”s for one trace, and when on several shorter traces with a vote.", "kind": "tradeoff", "answer": ["“Wait” helps until the knee (×4 in the paper), and is cheap to add", "past the knee it adds tokens and latency with no gain, and can loop", "one trace is capped by the context window; parallel traces aren't", "the paper's Figure 7: search or voting over parallel traces kept scaling past where one sequential trace stopped"]}
+  ],
+  "compare": [
+    {"with": "reasoning-models/test-time-compute", "q": "Snell et al. spend test-time compute on search and revision; s1 spends it on one longer trace. What is fundamentally different, and when would you pick each?", "answer": ["s1 is purely sequential: one trace stretched by “Wait”", "search samples many candidates and needs a verifier or reward model", "sequential reuses earlier reasoning but flattens and hits the context limit", "pick search when you have a good verifier and parallel hardware; pick budget forcing when you want a simple, exact dial"]},
+    {"with": "reasoning-models/r1-zero", "q": "R1-Zero learned to re-check through RL; s1 copies re-checking from distilled traces and triggers it with “Wait”. Which one creates the habit, and how does each fail?", "answer": ["RL creates the behaviour from reward; s1 imitates a teacher that already had it", "s1 is capped by its teacher and its training traces (only 53.6% correct)", "RL is costly and unstable but can go past the teacher (r1 79.8% vs s1-32B 56.7% on AIME24)", "budget forcing can sit on top of an RL model too, which the paper lists as future work"]}
+  ],
+  "predict": {
+    "q": "Take the original Qwen2.5-32B-Instruct, with no s1K fine-tuning, and append “Wait” every time it tries to stop. Would you expect it to gain as much as s1-32B did? Commit before revealing.",
+    "answer": "Probably not. The base model never learned that “Wait” starts a re-check, and it doesn't use the think/answer markers that budget forcing acts on. The paper only applies budget forcing to fine-tuned s1 models. Its explanation (§6.1) is that the fine-tune switches on reasoning from pretraining and “Wait” then extends it. Without that switch there is little to extend. This is an inference from the paper, not a result it reports."
+  },
+  "apply": {
+    "task": "Using Table 5 (s1-32B on AIME24: no forcing 50.0%, “Wait” ×1 53.3%, ×2 53.3%, ×4 56.7%) and the fact that AIME24 has 30 problems, convert each score to problems solved. Then write a one-paragraph recommendation for how many “Wait”s to ship, noting how much of the evidence is one problem's worth.",
+    "done": "You have 15, 16, 16 and 17 problems, you name ×4 as the best measured setting, and you say the gain between settings is one problem each time, so it needs a bigger test set to trust.",
+    "hint": "Problems solved = accuracy × 30 / 100."
+  },
+  "reflect": [
+    "Which prediction did you get wrong before reading: which one word helps the model find its own mistake?",
+    "What couldn't you explain cleanly: why prompting for a length fails, or why the curve flattens?",
+    "Which relationship is still fuzzy: teacher traces → re-checking habit, or appended “Wait” → re-check → corrected answer?",
+    "Where else would an exact thinking-length dial be worth more than a bit of extra accuracy?",
+    "What would you have to measure before claiming budget forcing works on a non-maths task?"
+  ],
+  "revisit": ["reasoning-models/chain-of-thought", "reasoning-models/self-consistency", "llm-latency/thinking-tokens"],
+  "prereq": ["reasoning-models/test-time-compute"]
+}

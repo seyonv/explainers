@@ -1,0 +1,70 @@
+{
+  "prime": {
+    "problem": "RLHF teaches a model people's preferences by training a separate reward model and then running reinforcement learning against it. That means extra models, sampling inside the training loop, and a pipeline the DPO paper calls complex and often unstable.",
+    "fits": "Builds on the RLHF card (reward model from preference pairs, then PPO with a KL leash). DPO keeps the same goal and the same pairs, but replaces both stages with one classification-style loss.",
+    "expect": ["preference pair (chosen vs rejected)", "frozen reference model", "implicit reward = β × log(policy ÷ reference)", "loss = −log σ(margin)", "offline vs on-policy training"],
+    "goal": "Compute the DPO loss for one pair by hand, say which way and how hard each step pushes, and decide when DPO fits better than RLHF or RL with verifiable rewards."
+  },
+  "attend": [
+    "Why can the reward be read off the policy's own log-probs once you have a frozen reference?",
+    "Why is the loss exactly log 2 before training, even when the reference ranks the pair backwards?",
+    "What sets how hard one step pushes on a pair, and why does that weighting stop the model degenerating?",
+    "What does DPO give up by learning only from pairs collected in advance, compared with PPO sampling as it trains?",
+    "What does the dial β change about how far the policy moves from the reference?"
+  ],
+  "core": {
+    "must": [
+      "RLHF's goal (high reward, small drift from the reference) has a closed-form best policy → flip it and reward = β × log(policy ÷ reference) + a term that cancels within a pair → train the policy on pairs directly, no reward model, no RL loop",
+      "Implicit reward measures movement from the frozen reference → at the start the policy equals the reference → both rewards 0, margin 0, loss log 2 = 0.693, whatever the reference preferred",
+      "Loss = −log σ(margin) → gradient raises the chosen log-prob and lowers the rejected one with weight σ(−margin) → backwards pairs get pushed hardest (0.057 at margin −0.30 vs 0.035 at +0.60) → the paper found dropping this weight made the model degenerate",
+      "Pairs are collected up front (offline) → the policy never tries and gets judged on fresh answers during training → DPO is only as good as its pairs and can over-fit them; checkable tasks suit RL with verifiable rewards instead"
+    ],
+    "elevated": [
+      "Log-probs are summed over the answer's tokens → the reference's forward pass on each pair can be computed once, since it never changes → training costs about the same as ordinary fine-tuning on two answers per prompt"
+    ],
+    "reference": [
+      "Paper defaults (App. B): β = 0.1 (0.5 for TL;DR), batch 64, RMSprop, learning rate 1e-6 with 150 warmup steps",
+      "Reddit TL;DR (GPT-J): DPO ≈61% vs PPO 57% GPT-4 win rate against human summaries (§6.2); humans preferred DPO over PPO 58% (Table 2)",
+      "CNN/DailyMail out of distribution: DPO 0.36 vs PPO 0.26 win rate at temperature 0 (Table 1)",
+      "IMDb sentiment (GPT-2-large): DPO's reward-vs-KL frontier dominates PPO, even PPO with the true reward (§6.1, Fig. 2)",
+      "Bradley-Terry: the preference model behind the pairwise loss; tested up to 6B parameters"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, explain in 3–5 sentences how DPO trains on a preference pair without a reward model. Or redraw the one-pair sketch: reference and policy log-probs for both answers, the implicit rewards, the margin and the loss.",
+    "checklist": [
+      "the RLHF objective's best policy can be written down, so reward = β × log(policy ÷ reference) up to a term that cancels in a pair",
+      "implicit reward = β × change in log-prob vs the frozen reference, for chosen and rejected",
+      "margin = chosen reward − rejected reward; loss = −log σ(margin)",
+      "each step raises chosen and lowers rejected, pushed harder when the pair is ordered wrongly",
+      "offline pairs: no reward model, no sampling in training, but limited to and possibly over-fitting the collected pairs"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain what DPO's \"implicit reward\" is and why it needs a frozen reference model to exist.", "kind": "concept", "answer": ["implicit reward = β × (log π_policy(answer) − log π_ref(answer))", "it measures how far training has moved the policy on that answer", "without the reference there is no anchor: the loss would push raw probabilities with nothing like RLHF's drift penalty"]},
+    {"q": "Walk through one DPO training step on one pair, from the four log-probs to the update.", "kind": "mechanism", "answer": ["compute policy and reference log-probs for chosen and rejected", "implicit rewards = β × (policy − reference) for each", "margin = chosen reward − rejected reward; loss = −log σ(margin)", "gradient raises the chosen log-prob and lowers the rejected one, scaled by β × σ(−margin)"]},
+    {"q": "Your team has 50k human preference pairs for a chat assistant and a tight GPU budget. Argue for DPO over PPO-based RLHF, and name what you give up.", "kind": "tradeoff", "answer": ["DPO: one supervised-style loss, no reward model, no sampling in the loop, fewer moving parts", "paper: matched or beat PPO on summaries and dialogue up to 6B", "you give up on-policy exploration: the model never tries new answers and gets them scored", "you can't inspect or reuse a separate reward model, and DPO can over-fit the fixed pairs"]}
+  ],
+  "compare": [
+    {"with": "reasoning-models/reward-models-rlhf", "q": "RLHF with PPO and DPO optimise the same objective. What is fundamentally different in how each one reaches it, which design choice causes that, and how does each one fail?", "answer": ["RLHF fits an explicit reward model, then runs RL that samples from the policy", "DPO rewrites the reward in terms of the policy, so a single loss on fixed pairs is enough", "RLHF fails through reward hacking and an unstable, expensive RL loop", "DPO fails by over-fitting the collected pairs and never exploring beyond them"]},
+    {"with": "reasoning-models/r1-zero", "q": "R1-Zero trained reasoning with rule-checked rewards, not preference pairs. When would you pick that over DPO, and why can't DPO do what it did?", "answer": ["pick rule-checked RL when answers can be verified (maths, code tests)", "it samples fresh attempts and learns from its own successes, so it can discover long reasoning", "DPO only reshuffles probability between answers already in the pairs", "pick DPO when quality is a matter of taste that only people can judge"]}
+  ],
+  "predict": {
+    "q": "Take the worked pair after training (policy log-probs −11.0 chosen, −15.0 rejected; reference −14.0 and −12.0). If β were 0.5 instead of 0.1, what would the margin and loss be, and what does that suggest about how far the policy needs to move under a bigger β?",
+    "answer": "Rewards become +1.50 and −1.50, so the margin is 3.00 and the loss −log σ(3.00) ≈ 0.049. The same movement now counts five times as much, so with a bigger β the loss is satisfied after a smaller drift from the reference: β acts as the leash."
+  },
+  "apply": {
+    "task": "A pair has reference log-probs −20.0 (chosen) and −18.0 (rejected), and current policy log-probs −19.0 (chosen) and −16.0 (rejected), with β = 0.1. Compute both implicit rewards, the margin, the loss, and the push β × σ(−margin) on each log-prob. Say whether this pair is currently ordered right.",
+    "done": "You get rewards +0.10 and +0.20, margin −0.10, loss ≈ 0.744, push ≈ 0.0525, and conclude the pair is ordered backwards (the rejected answer gained more).",
+    "hint": "Both answers went up. What matters is which went up more relative to the reference."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: the loss before training, or which pair gets the bigger push?",
+    "What couldn't you explain cleanly: why the reward can be read off the policy, or why the reference must stay frozen?",
+    "Which relationship is still fuzzy: policy change vs reference → implicit reward, or margin → loss → push?",
+    "Where in your own work would preference pairs be easier to collect than a rule that checks answers?",
+    "What would you watch during DPO training to catch it over-fitting the pairs?"
+  ],
+  "revisit": ["reasoning-models/reward-models-rlhf", "reasoning-models/policy-gradient", "z2h-1-toolkit/softmax-and-cross-entropy"],
+  "prereq": ["reasoning-models/reward-models-rlhf"]
+}

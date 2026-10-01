@@ -1,0 +1,72 @@
+{
+  "prime": {
+    "problem": "A pretrained model predicts internet text instead of helping, and \"helpful\" can't be checked by a rule. Without a learned stand-in for people's judgement there is no reward to run RL against.",
+    "fits": "Builds on the policy-gradient card: step 3 here is a policy gradient (PPO) whose reward comes from a model trained on human comparisons. The DPO card later reaches the same goal without the reward model.",
+    "expect": ["SFT (copy demonstrations)", "reward model trained on pairwise comparisons", "loss −log σ(r_chosen − r_rejected)", "PPO with a KL penalty to the SFT model", "reward over-optimisation"],
+    "goal": "Walk one prompt through SFT, reward-model training and PPO, compute a pairwise loss by hand, and explain why the KL leash exists."
+  },
+  "attend": [
+    "Why does InstructGPT collect rankings of several answers instead of asking for a score out of 10?",
+    "Why does only the gap between two reward scores enter the loss, and what does that force the paper to do before RL?",
+    "Why did shuffling the pairs from one ranking as separate examples make the reward model overfit?",
+    "What would the policy learn to do if the KL penalty were removed?",
+    "Whose preferences does InstructGPT actually follow, by the paper's own account?"
+  ],
+  "core": {
+    "must": [
+      "People can't write a rule for \"helpful\" but can say which of two answers is better → rank K answers → C(K,2) pairs → train a reward model with −log σ(r_chosen − r_rejected) → a number you can do RL against",
+      "Loss depends only on the score gap → biggest when the scorer disagrees with the person (D > C at −0.2 costs 0.798) → training fixes the pairs it gets wrong first; scores have no fixed zero, so the paper re-centres them before RL",
+      "Reward model is an imperfect copy (72.4% agreement with its labellers) → the policy finds answers the scorer overrates → reward over-optimisation → a per-token KL penalty (β = 0.02) to the SFT model keeps the policy where the scorer still holds",
+      "Same architecture + human-feedback fine-tuning → 1.3B InstructGPT preferred over 175B GPT-3 → the training signal mattered more than 100× the parameters for following instructions"
+    ],
+    "elevated": [
+      "All C(K,2) pairs from one prompt go in one batch element → one forward pass per answer and no repeated data within an epoch → no overfitting after one pass",
+      "PPO-ptx mixes pretraining next-word updates into RL → repairs most of the benchmark drop (the \"alignment tax\") that a stronger KL alone couldn't fix"
+    ],
+    "reference": [
+      "Datasets: SFT ~13k, RM 33k, PPO 31k training prompts (§3.2, Table 6)",
+      "About 40 labellers; inter-labeller agreement 72.6 ± 1.5% (§3.4)",
+      "6B reward model, one epoch, up to 2,304 comparisons per batch (Appendix C.2)",
+      "PPO: β = 0.02, clip ratio 0.2, 256k episodes, value model initialised from the RM (Appendix C.4)",
+      "175B InstructGPT preferred to 175B GPT-3 85 ± 3%, to few-shot GPT-3 71 ± 4%; hallucination 21% vs 41% (§1)"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, explain the three steps of RLHF in 3–5 sentences, saying what data each step uses and why the third step needs a leash. Or redraw the three-step sketch for one prompt.",
+    "checklist": [
+      "SFT: fine-tune on demonstrations people wrote",
+      "reward model: trained on pairs from people's rankings with −log σ(gap)",
+      "PPO: policy gradient against the reward model's score",
+      "KL penalty to the SFT model stops the policy exploiting the scorer's mistakes",
+      "the result follows a specific group's preferences, not universal values"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why a reward model is trained on comparisons rather than on absolute scores.", "kind": "concept", "answer": ["people give inconsistent absolute scores but more consistent \"A beats B\" judgements", "a ranking of K answers yields C(K,2) labelled pairs cheaply", "the loss only needs the score gap, so no fixed scale is needed"]},
+    {"q": "Walk through one PPO training episode in InstructGPT, from prompt to weight update.", "kind": "mechanism", "answer": ["sample a prompt, the policy writes a response", "the reward model scores it", "subtract β × the log-ratio to the SFT model for each token", "the value model's expectation acts as a baseline", "update with clipped steps so probabilities can't move far at once"]},
+    {"q": "You're choosing the KL weight β. What happens at 0 and at a very large value, and what did the paper find?", "kind": "tradeoff", "answer": ["β = 0: the policy over-optimises the reward model and people rate it poorly", "very large β (2): the policy barely moves from SFT, also rated poorly", "the best was around 0.01–0.02 (Appendix E.7)"]}
+  ],
+  "compare": [
+    {"with": "reasoning-models/policy-gradient", "q": "Step 3 is a policy gradient. What does PPO add to plain REINFORCE, and which problem does each addition solve?", "answer": ["a value-model baseline: cuts noise", "clipping the probability ratio to 0.8–1.2: stops one step from moving too far from the data's policy", "the KL penalty to SFT (InstructGPT's addition): stops reward hacking"]},
+    {"with": "reasoning-models/dpo", "q": "DPO optimises the same preferences with no reward model and no RL. What does RLHF keep that DPO drops, and when would you still pick RLHF?", "answer": ["RLHF keeps an explicit reward model and samples new answers during training", "DPO trains directly on fixed preference pairs with a classification-style loss", "RLHF can score fresh samples and reuse the RM; DPO is simpler and cheaper"]},
+    {"with": "reasoning-models/r1-zero", "q": "DeepSeek-R1-Zero used rule-based rewards instead of a learned reward model. Why can't it be reward-hacked the same way, and why can't InstructGPT do that?", "answer": ["a rule (answer check, format check) can't be flattered", "InstructGPT's goal (helpful, honest) has no rule to check", "so it needs a learned scorer and a KL leash"]}
+  ],
+  "predict": {
+    "q": "Suppose labellers agreed with each other only 50% of the time on some kind of prompt. What accuracy could a reward model reach on those prompts, and what would PPO end up chasing there?",
+    "answer": "About 50%: a coin flip, because the labels themselves are random. The reward model's scores there are mostly noise and quirks, so PPO would chase whatever quirks the scorer happens to have. That's reward hacking with no real signal underneath, and only the KL leash limits the damage."
+  },
+  "apply": {
+    "task": "Take the card's ranking D > C > A > B but give the reward model the scores D 1.1, C 0.9, A 0.4, B −0.6, so it now agrees with the labeller on every pair. Compute the loss for all six pairs and their mean.",
+    "done": "Your losses are D>C 0.598, D>A 0.403, D>B 0.168, C>A 0.474, C>B 0.201, A>B 0.313, with a mean of about 0.360 (down from 0.393).",
+    "hint": "loss = −log(1 / (1 + e^(−gap))); D>C has a gap of +0.2."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: did you expect the 175B GPT-3 to win?",
+    "What couldn't you explain cleanly: why only the score gap matters, or why the KL leash is needed?",
+    "Which relationship is still fuzzy: comparisons → reward model, or reward model → policy behaviour?",
+    "Where have you seen a metric optimised so hard that it stopped meaning what it used to?",
+    "Whose preferences would you want a model you use every day to follow, and who decided?"
+  ],
+  "revisit": ["reasoning-models/policy-gradient", "perf-7-training-economics/post-training"],
+  "prereq": ["reasoning-models/policy-gradient"]
+}

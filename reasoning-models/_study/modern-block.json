@@ -1,0 +1,70 @@
+{
+  "prime": {
+    "problem": "If you learned the 2017 transformer block, a 2025 model card full of RoPE, RMSNorm, SwiGLU and GQA looks like a new architecture. It isn't, but without knowing what each part replaced you can't tell which one shrinks memory, which one changes quality, or why Llama's KV cache is 128 KiB per token.",
+    "fits": "A refresher between the transformer basics (self-attention, the forward pass) and the reasoning cards. It reuses the residual stream and attention heads from earlier cards and swaps four parts of the block.",
+    "expect": ["RoPE (rotary position)", "RMSNorm and pre-norm", "SwiGLU (gated feed-forward)", "grouped-query attention (GQA)", "KV cache per token"],
+    "goal": "Name what each of the four upgrades replaced and why, and compute Llama-3.1-8B's KV cache per token with and without GQA."
+  },
+  "attend": [
+    "Why does turning q and k by their positions make the attention score depend only on the gap between tokens?",
+    "What changes for the residual stream when the norm moves from after the add to before each sublayer?",
+    "Why does SwiGLU need a smaller hidden width than a ReLU feed-forward network to cost the same?",
+    "Which number in the KV-cache formula does GQA shrink, and what does that buy a serving GPU?",
+    "Which of the four swaps change cost, and which change quality at the same cost?"
+  ],
+  "core": {
+    "must": [
+      "RoPE turns q and k by an angle set by position → a dot product of two turned vectors depends only on their angle difference → attention scores depend on relative distance, with no added parameters",
+      "Pre-norm normalises only the copy entering each sublayer (x + f(norm(x))) → the residual stream is only ever added to → a clean path runs from the first block to the last; RMSNorm drops mean-centring → same job, less work (7%–64% faster in its paper)",
+      "SwiGLU multiplies a Swish-gated projection by a second projection → three matrices instead of two → width shrinks to keep parameters equal → better perplexity at equal cost (1.636 vs 1.677), for reasons the author couldn't explain",
+      "KV per token = 2 × layers × KV heads × head size × bytes → GQA cuts KV heads from 32 to 8 while keeping 32 query heads → 512 KiB → 128 KiB per token → 4× more long conversations fit in GPU memory, at almost no quality cost (47.1 vs 47.2 in the GQA paper)"
+    ],
+    "elevated": [
+      "RoPE's speed base sets the slowest pair's period → Llama raised it from 10,000 to 500,000 → the slowest pair takes about 2.56M tokens per turn (before Llama 3.1's extra 8× long-context stretch), so far-apart positions still look different"
+    ],
+    "reference": [
+      "Llama-3.1-8B: 32 layers, D = 4096, FFN 14,336, 32 query heads, 8 KV heads, head size 128, vocab 128,256",
+      "2017 base model: d_model 512, d_ff 2048, 8 heads, post-norm LayerNorm(x + Sublayer(x)), sinusoidal positions",
+      "RMSNorm gains: 2 × 4096 = 8,192 per layer; SwiGLU MLP 176.16M per layer; attention 41.94M (GQA) vs 67.11M (MHA) per layer",
+      "GQA paper Table 1 (T5-XXL): MHA 47.2 / 1.51 s, GQA-8 47.1 / 0.28 s, MQA 46.6 / 0.24 s",
+      "RoFormer Table 1: WMT14 En-De BLEU 27.5 vs 27.3"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, sketch the 2017 block and the 2025 block side by side and mark the four swaps. For each, write one line: what it replaced and the one number that shows why.",
+    "checklist": [
+      "RoPE: position moves from a wave added once to rotating q and k; scores depend on distance",
+      "RMSNorm, pre-norm: no mean-centring, applied before each sublayer; the stream stays untouched",
+      "SwiGLU: gated FFN with three matrices; better quality at equal parameters",
+      "GQA: groups of query heads share K/V heads; Llama's KV cache 128 KiB vs 512 KiB per token",
+      "the skeleton (attention + FFN + residual adds) is unchanged"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why RoPE makes attention care about the distance between two tokens instead of their absolute positions.", "kind": "concept", "answer": ["q and k are each turned by an angle proportional to their position", "a dot product depends only on the angle between the two vectors", "so turning both by their positions leaves only the difference, the gap, in the score"]},
+    {"q": "Walk through computing Llama-3.1-8B's KV cache per token, first with 32 KV heads and then with GQA's 8.", "kind": "mechanism", "answer": ["2 (K and V) × 32 layers × KV heads × 128 numbers × 2 bytes", "32 heads: 524,288 bytes = 512 KiB", "8 heads: 131,072 bytes = 128 KiB", "for an 8,192-token chat: 4.29 GB vs 1.07 GB"]},
+    {"q": "You're designing a model for long-context serving on a memory-limited GPU. Which of the four swaps matters most, and what would going further (one shared KV head) cost you?", "kind": "tradeoff", "answer": ["GQA: it directly sets KV bytes per token, which caps how many long sequences fit", "one shared head (MQA) shrinks the cache 32× instead of 4×", "but costs quality: 46.6 vs 47.1 (GQA-8) vs 47.2 (MHA) in the GQA paper", "the other swaps barely change per-request memory"]}
+  ],
+  "compare": [
+    {"with": "perf-4-attention-kv/gqa", "q": "This card gives GQA one line and one number; the GQA card walks the whole paper. What does the deeper card add that changes a real decision, and what does this card's side-by-side view show that it doesn't?", "answer": ["the GQA card: uptraining an existing checkpoint, the quality curve across group counts, throughput on an H100", "this card: GQA is one of four independent swaps on the same skeleton", "decision: a serving team can't change G after training; a model designer picks it alongside the other three"]},
+    {"with": "z2h-8-gpt/self-attention-head", "q": "The self-attention head you built from scratch used learned position embeddings and one head with its own K and V. Which two of this card's swaps would change that code, and how?", "answer": ["RoPE: drop the position embedding table and rotate q and k inside attention instead", "GQA: compute fewer K and V projections and let several query heads index the same one", "the score, softmax and weighted sum of values stay the same"]}
+  ],
+  "predict": {
+    "q": "A hypothetical Llama-3.1-8B variant keeps 32 query heads but uses only 2 KV heads. Before computing: what is its KV cache per token, and what would you expect to happen to quality, based on the GQA paper?",
+    "answer": "2 × 32 × 2 × 128 × 2 bytes = 32 KiB per token, 4× smaller again (an 8,192-token chat drops to about 0.27 GB). Quality would probably sit between GQA-8 and MQA: the GQA paper found one shared head lost noticeable quality (46.6 vs 47.2), so fewer KV heads trades capacity for memory."
+  },
+  "apply": {
+    "task": "Using the same RoPE toy as the card (q = (1.0, 0.5), k = (0.8, −0.4), turned 30° per position), compute the score for q at position 3 and k at position 0, then for q at 10 and k at 7. Then compute it for q at 0 and k at 3. Explain which pairs must match and why.",
+    "done": "Gap 3 gives −0.80 for both (3, 0) and (10, 7); (0, 3) is a gap of −3 and gives +0.80, so the direction of the gap matters, not just its size.",
+    "hint": "q starts at 26.6°, k at −26.6°, and |q| × |k| = 1.0. The score is cos of the final angle between them."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: the 512 KiB cache, or what one shared KV head would cost?",
+    "What couldn't you explain cleanly: why turned vectors only see the angle difference, or why pre-norm leaves the stream untouched?",
+    "Which relationship is still fuzzy: KV heads → bytes per token, or bytes per token → conversations per GPU?",
+    "Which swap would you check first when reading a new model's config, and what number would you look for?",
+    "Where in your own from-scratch GPT would each swap go?"
+  ],
+  "revisit": ["perf-1-foundations/attention", "perf-1-foundations/transformer-forward", "perf-4-attention-kv/gqa", "z2h-8-gpt/self-attention-head"],
+  "prereq": ["perf-1-foundations/transformer-forward"]
+}

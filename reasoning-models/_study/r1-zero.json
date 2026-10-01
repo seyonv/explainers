@@ -1,0 +1,74 @@
+{
+  "prime": {
+    "problem": "Teaching reasoning by copying human-written solutions is slow, expensive, and caps the model at the reasoning it was shown. Without another source of signal, a base model never learns to think at length.",
+    "fits": "The capstone of the course. It reuses policy gradients (make good samples more likely), the group baseline from GRPO, and the outcome-vs-process reward debate from the PRM card, and shows them producing a full reasoning model.",
+    "expect": ["GRPO: advantage relative to the group", "rule-based rewards (accuracy + format)", "response length growing during RL", "the R1 multi-stage pipeline", "distillation into small models"],
+    "goal": "Compute GRPO advantages for a group by hand, explain why rule rewards were chosen over a learned scorer, say why R1-Zero's thinking grew longer, and explain why R1 adds SFT stages back and why distillation wins on small models."
+  },
+  "attend": [
+    "Why does a sample with a positive reward sometimes get pushed down in GRPO?",
+    "What exactly is rewarded in R1-Zero, and what is never rewarded even though it grew?",
+    "Why did DeepSeek refuse a neural reward model for maths but accept one for helpfulness?",
+    "Which R1-Zero defects does each R1 stage target, and which stage costs reasoning accuracy?",
+    "Why did RL on a 32B base lose to simply fine-tuning that 32B on R1's outputs?"
+  ],
+  "core": {
+    "must": [
+      "Sample a group of answers per question → score each with rules → advantage = (reward − group mean) / group std → raise the probability of above-average answers, lower below-average ones → no separate critic model is needed",
+      "Reward = rule-checked answer + format → rules can't be flattered → no reward hacking on maths and code → RL can run for thousands of steps → AIME 2024 pass@1 15.6% → 71.0% (v1) / 77.9% (2026 revision)",
+      "Only the final answer is paid → longer, self-checking chains are right more often → those chains get reinforced → response length and words like \"wait\" rise during training without being rewarded",
+      "Nothing pays for readability → R1-Zero mixes languages and is hard to read → R1 adds a small cold-start SFT set, a language-consistency reward, rejection-sampled SFT (~600k reasoning + ~200k other) and a final RL stage with reward models for helpfulness"
+    ],
+    "elevated": [
+      "A question where all samples get the same reward gives every sample advantage 0 → it teaches nothing → useful training questions are the ones the model sometimes solves",
+      "Learned preference rewards were switched on only for the last 400 of 1,700 RL steps → longer training on them led to reward hacking → a learned scorer is a resource you spend carefully"
+    ],
+    "reference": [
+      "Base model: DeepSeek-V3-Base, MoE, 671B total, 37B active per token",
+      "2026 run: 16 samples per question, 32 questions per step, lr 3e-6, KL 0.001, 10,400 steps, length cap 32,768 → 65,536 at step 8.2k",
+      "Majority vote on AIME: 86.7% (cons@64 in v1, cons@16 in the revision)",
+      "Table 3 (2026) AIME / AlpacaEval: R1-Zero 77.9/24.7, Dev1 59.0/50.1, Dev2 74.0/55.8, Dev3 78.1/62.1, R1 79.8/87.6",
+      "Distillation, Qwen2.5-32B AIME: RL from base 47.0 vs SFT on R1 data 72.6; Distill-Qwen-1.5B 28.9 vs GPT-4o 9.3",
+      "RL cost at $2/H800-hour: R1-Zero 101K h ($202K), SFT data 5K h, R1 41K h; total $294K, excluding pretraining"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, explain in 3–5 sentences how R1-Zero learned to reason with no worked examples. Or redraw the one-problem GRPO sketch: group, rule rewards, mean, advantages, update.",
+    "checklist": [
+      "start from a base model, no SFT",
+      "sample a group per question; rewards come from rules (answer check + think tags)",
+      "advantage is reward relative to the group mean, scaled by the std",
+      "longer, self-checking answers win more often, so length and reflection grow",
+      "R1-Zero is hard to read and mixes languages, which is why R1 adds SFT stages and a language reward"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why GRPO doesn't need a critic model, and what it uses instead.", "kind": "concept", "answer": ["a critic estimates how good a typical answer is, to use as a baseline", "GRPO samples several answers to the same question", "the group's mean reward is the baseline; dividing by the std sets the scale"]},
+    {"q": "Walk through one GRPO step for a group of rewards 2, 2, 1, 0: the mean, the std, each advantage, and the direction of each update.", "kind": "mechanism", "answer": ["mean 1.25, population std ≈ 0.83", "advantages +0.90, +0.90, −0.30, −1.51", "the first two become more likely, the third slightly less, the fourth much less"]},
+    {"q": "You want to apply R1-Zero-style RL to essay writing. What breaks, and what did R1 do in the equivalent situation?", "kind": "tradeoff", "answer": ["no rule can check an essay, so you need a learned reward model", "the policy learns to game a learned scorer (reward hacking)", "R1 used SFT data reused from DeepSeek-V3 for such tasks and only a few hundred RL steps with reward models"]},
+    {"q": "Why did the cold-start stage lower AIME accuracy, and why was it still worth it?", "kind": "tradeoff", "answer": ["the cold-start set is small (thousands of examples), so reasoning dipped (59.0)", "it made outputs readable and lifted chat quality", "the next reasoning-RL stage recovered AIME to 74.0"]}
+  ],
+  "compare": [
+    {"with": "reasoning-models/process-rewards", "q": "The PRM paper showed step grading beats outcome grading. Why did R1 train with outcome rules anyway?", "answer": ["the PRM paper used scorers to pick answers, not to train with RL", "a learned step scorer is costly to label and can be hacked during RL", "a rule-checked outcome is exact and free, so RL can run for thousands of steps"]},
+    {"with": "reasoning-models/star", "q": "STaR and R1's rejection-sampling stage both keep the model's own correct answers. What is different about how R1-Zero itself learns from right and wrong answers?", "answer": ["STaR and stage 3 fine-tune only on correct samples (wrong ones are thrown away)", "GRPO also pushes wrong samples down, with a negative advantage", "GRPO weighs each sample against its group, so a right answer in a group of right answers teaches nothing"]},
+    {"with": "reasoning-models/budget-forcing", "q": "R1-Zero's \"wait\" emerged from RL; budget forcing inserts \"Wait\" at inference. When would you choose each?", "answer": ["RL changes the weights, so the habit is built in, but it needs big compute and a checkable reward", "budget forcing needs no RL and controls thinking length directly at inference", "pick RL to build the skill; pick forcing to stretch an existing reasoning model cheaply"]}
+  ],
+  "predict": {
+    "q": "Suppose the format reward were dropped and only the accuracy reward kept. For a group where all four answers are correct but two skip the <code>&lt;think&gt;</code> tags, what advantages does GRPO give them?",
+    "answer": "All four rewards are equal, so every advantage is zero and nothing is learned from that question. With the format reward, the two tagged answers would score 2 against 1 for the others, get advantages of +1 and −1, and the tags would be reinforced."
+  },
+  "apply": {
+    "task": "A group of 6 samples gets rule rewards 2, 2, 2, 1, 0, 0. Compute the mean, the population std and each advantage by hand, and say which samples get pushed up and which down.",
+    "done": "Mean ≈ 1.17, std ≈ 0.90, advantages ≈ +0.93 (×3), −0.19, −1.30 (×2): the three full-score samples go up, the rest go down.",
+    "hint": "Population std: square root of the average squared distance from the mean."
+  },
+  "reflect": [
+    "Which prediction did you get wrong before reading: did you expect the answers to get longer without a length reward?",
+    "What couldn't you explain cleanly: why a positive reward can give a negative advantage, or why the cold start lowered AIME?",
+    "Which relationship is still fuzzy: rule reward → no hacking → long RL, or long RL → longer chains → higher accuracy?",
+    "Which task in your own work has an answer a program could check, and could you train with it?",
+    "What would you need to believe that the \"aha moment\" is real reasoning rather than a learned verbal habit?"
+  ],
+  "revisit": ["reasoning-models/policy-gradient", "reasoning-models/process-rewards", "reasoning-models/star", "the-group-is-the-baseline/the-group-is-the-baseline"],
+  "prereq": ["reasoning-models/policy-gradient"]
+}
