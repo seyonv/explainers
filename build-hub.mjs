@@ -60,7 +60,7 @@ for (const f of readdirSync(root).filter((f) => f.endsWith("-series.json"))) {
     const e = entries.find((x) => x.slug === c.slug);
     if (!e || e === map) continue;
     e.series = series.title;
-    map.courses.push({ n: c.n, title: c.short, href: e.href, cards: e.cards });
+    map.courses.push({ slug: e.slug, n: c.n, title: c.short, href: e.href, cards: e.cards });
   }
   map.total = map.courses.reduce((n, c) => n + c.cards, map.cards);
 }
@@ -95,6 +95,34 @@ if (existsSync(join(root, "study-path.json"))) {
     for (const e of entries.filter((x) => x.slug === path.overview)) e.series = path.title;
   }
   paths = paths.filter((p) => p.days.length);
+}
+
+// Tell each course how much of it a study path already walks through, from the card links in the day plans,
+// plus the day the path's roadmap assigns to the rest (path.later.courses), so nobody reads it twice.
+const isCard = (f) => f.endsWith(".html") && f !== "index.html" && !f.startsWith("_") && !f.startsWith("checkpoint");
+const dayRange = (ls) => ls.length === 1 ? ls[0] : `Days ${ls[0].replace(/^Day /, "")}–${ls[ls.length - 1].replace(/^Day /, "")}`;
+for (const path of paths.filter((p) => !p.roadmap && p.short)) {
+  const used = {};
+  for (const d of path.days) {
+    const html = readFileSync(join(root, d.plan, d.plan + ".html"), "utf8");
+    for (const [, slug, card] of html.matchAll(/href="(?:\.\.\/)?([a-z0-9-]+)\/([^"\/#?]+\.html)/g)) {
+      if (!isCard(card) || !existsSync(join(root, slug, card))) continue;
+      const u = (used[slug] ||= { days: [], cards: new Set() });
+      u.cards.add(card);
+      if (!u.days.includes(d.label)) u.days.push(d.label);
+    }
+  }
+  for (const e of entries.filter((x) => x.kind === "curriculum" && !x.pathNote)) {
+    const total = readdirSync(join(root, e.slug)).filter(isCard).length;
+    const u = used[e.slug], later = path.later?.courses?.[e.slug];
+    if (u && u.cards.size >= total) e.pathNote = `All of it is in the ${path.short}, ${dayRange(u.days)}`;
+    else if (u && later) e.pathNote = `${u.cards.size} of ${total} cards are in the ${path.short}, ${dayRange(u.days)}; the rest is ${later}`;
+    else if (later === "optional") e.pathNote = `Not in the ${path.short}: optional`;
+    else if (later) e.pathNote = `Coming in the ${path.short}, ${later}`;
+  }
+}
+for (const map of entries.filter((e) => e.kind === "series")) {
+  for (const c of map.courses) c.note = entries.find((e) => e.slug === c.slug)?.pathNote;
 }
 
 const page = readFileSync(join(root, "hub-template.html"), "utf8")
