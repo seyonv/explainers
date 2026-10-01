@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Compaction is a lossy state change</title>
+<style>
+:root{
+  --bg:#fbfbf9; --surface:#f4f4f1; --surface2:#ecece8; --border:#dedcd6;
+  --text:#1c1f23; --muted:#6b7068; --faint:#b9b9b3;
+  --accent:#4a9d77; --accent-bg:#dcefdf; --accent-border:#8cc79c;
+  --red:#c0492b; --red-bg:#fbeceb;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#15171a; --surface:#1d2024; --surface2:#24282d; --border:#32373d;
+    --text:#e6e8ea; --muted:#9aa1a9; --faint:#4a5057;
+    --accent:#5fb37f; --accent-bg:#1c2b22; --accent-border:#3f7a55;
+    --red:#e57368; --red-bg:#2e1f1e;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text)}
+.card{max-width:820px;margin:0 auto;padding:28px 32px;font-family:-apple-system,"Inter",system-ui,sans-serif;line-height:1.45}
+h1{font-size:26px;font-weight:600;margin:0 0 6px;letter-spacing:-0.01em}
+.sub{font-size:15px;color:var(--muted);margin:0 0 20px}
+h2{font-size:17px;font-weight:600;margin:26px 0 10px}
+p{font-size:15px;margin:0 0 10px}
+.cap{font-size:13px;color:var(--muted);margin:8px 0 0;text-align:center}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+
+/* Horizontal bar chart with cutoff */
+.bars{display:grid;grid-template-columns:200px 1fr 90px;column-gap:14px;row-gap:10px;align-items:center;font-size:14px}
+.bars .hd{font-size:13px;color:var(--muted)}
+.bars .hd.r,.bars .tot{text-align:right;font-variant-numeric:tabular-nums}
+.bars .tok{font-size:14px}
+.bars .track{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted)}
+.bars .bar{height:18px;border-radius:3px;background:var(--accent)}
+.bars .tot{font-size:14px}
+.bars .lost,.bars .lost .tok,.bars .tot.lost{color:var(--red)}
+.bars .track.lost .bar{background:var(--red)}
+.cutoff{grid-column:1 / -1;border-top:2px dashed var(--red);margin-top:2px;padding-top:6px;text-align:center;font-size:13px;color:var(--red)}
+
+/* Tables and formulas */
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border)}
+th{font-size:12px;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:none}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+.hi{color:var(--accent);font-weight:600} .lo{color:var(--red)}
+.formula{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin:10px 0;white-space:pre;overflow-x:auto;line-height:1.55}
+
+/* 2x2 grid */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.cell{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.cell.win{background:var(--accent-bg);border-color:var(--accent-border)}
+.cell h3{font-size:16px;font-weight:600;margin:0 0 5px;display:flex;gap:8px;align-items:baseline}
+.cell p{font-size:14px;margin:0;color:var(--text)}
+.cell.win h3,.cell.win p{color:var(--accent)}
+.x{color:var(--red)} .ok{color:var(--accent)}
+
+/* Clarification box */
+.note{border:1px solid var(--border);border-radius:10px;padding:14px 18px;font-size:14px}
+.note p{font-size:14px} .note p:last-child{margin-bottom:0}
+
+.foot{margin-top:22px;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+.foot p{font-size:13px;margin:0 0 6px}
+svg{display:block;max-width:100%}
+@media (max-width:560px){.grid2{grid-template-columns:1fr}.bars{grid-template-columns:110px 1fr 56px}}
+a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+
+/* Course-specific */
+.code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;line-height:1.5;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin:10px 0;white-space:pre;overflow-x:auto;tab-size:4;color:var(--text)}
+.code .k{color:var(--accent);font-weight:600}.code .c{color:var(--muted)}.code .o{color:var(--muted)}
+.known{font-size:13px;color:var(--muted);margin:-8px 0 14px}
+.known a{color:var(--muted)}
+.predict{border-left:3px solid var(--faint);padding:4px 0 4px 12px;font-size:14px;margin:12px 0 4px}
+.pres td,.pres th{font-size:13.5px;vertical-align:top}
+.pres td:first-child{font-weight:600}
+.pres td small{display:block;font-weight:400;color:var(--muted);font-size:12.5px}
+.pres .y{color:var(--accent);font-weight:600} .pres .n{color:var(--red);font-weight:600}
+.pres .gr{color:var(--muted)}
+.chips{display:flex;flex-wrap:wrap;gap:5px;align-items:center;margin:10px 0 0}
+.chips span{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;padding:3px 7px;border-radius:4px;border:1px solid var(--border);background:var(--surface)}
+.chips .a{background:var(--accent-bg);border-color:var(--accent-border);color:var(--accent)}
+.chips .t{background:var(--surface2);color:var(--muted)}
+.chips .gap{border:none;background:none;color:var(--muted);font-family:inherit}
+.parts td{vertical-align:top;font-size:13.5px} .parts td:first-child{font-weight:600}
+.parts .ex span{display:block;color:var(--muted);font-size:12.5px}
+.keep td{vertical-align:top;font-size:13.5px;width:50%}
+.keep th.v{color:var(--accent)}
+.inv{border:1px solid var(--accent-border);background:var(--accent-bg);border-radius:10px;padding:12px 16px;margin:12px 0 0;font-size:14px}
+.inv p{font-size:14px;margin:0 0 6px} .inv p:last-child{margin:0}
+.inv b.ok{color:var(--accent)}
+.papers td{vertical-align:top;font-size:13.5px}
+.papers td:first-child{font-weight:600;width:30%}
+.papers td:first-child small{display:block;font-weight:400;color:var(--muted);font-size:12.5px}
+@media (max-width:560px){.pres .gr2,.parts .exb{display:none}.papers td:first-child{width:38%}}
+/* study:css */
+.prime{border:1px solid var(--accent-border,var(--border));background:var(--accent-bg);border-radius:10px;padding:10px 16px 6px;margin:12px 0 18px;font-size:14px}
+.prime p{margin:4px 0}
+.prime-k{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--accent);font-weight:600;margin-bottom:4px}
+.prime .chip{display:inline-block;border:1px solid var(--border);background:var(--surface);border-radius:999px;padding:0 8px;margin:1px 2px;font-size:12.5px}
+.prime ol{margin:2px 0 6px;padding-left:22px}
+.prime li{margin:2px 0}
+.study{border:1px solid var(--border);border-radius:12px;padding:12px 16px;margin:26px 0 18px;background:var(--surface)}
+.study-head{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:4px 12px}
+.study-head h2{margin:0;font-size:18px}
+.study-head span,.study-all-l{font-size:12.5px;color:var(--muted)}
+.study-all{margin:8px 4px 8px 0;vertical-align:middle}
+.study details.st{border-top:1px solid var(--border);padding:8px 0}
+.study details.st>summary{cursor:pointer;font-size:15px}
+.study details.st>summary span{color:var(--muted);font-size:13px}
+.study-all:not(:checked)~details.st:not([open])~details.st{display:none}
+.st-body{font-size:14px;padding:4px 0 2px 2px}
+.st-body p{margin:6px 0}
+.st-body ul,.st-body ol{margin:4px 0;padding-left:22px}
+.st-body li{margin:3px 0}
+.st-rule,.st-how{color:var(--muted);font-size:13px}
+.st-why{font-size:12px;color:var(--muted);text-align:right;margin:2px 0 0}
+.core{display:grid;grid-template-columns:3fr 2fr;gap:6px 18px}
+.core h4{margin:4px 0;font-size:13px}
+.core .muted{color:var(--muted)}
+.up{font-size:11px;border:1px solid var(--accent-border,var(--border));color:var(--accent);border-radius:4px;padding:0 4px;white-space:nowrap}
+.study .kind{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--accent);margin-right:4px}
+.study details.ref{margin:4px 0 8px;padding:4px 10px;border-left:3px solid var(--accent-border,var(--border));background:var(--surface2);border-radius:0 6px 6px 0}
+.study details.ref>summary{cursor:pointer;font-size:13px;color:var(--accent)}
+@media (max-width:620px){.core{grid-template-columns:1fr}}
+/* /study:css */
+/* series-nav */
+.sn{max-width:820px;margin:0 auto;padding:16px 32px 0;font-family:-apple-system,"Inter",system-ui,sans-serif;font-size:13px;line-height:1.5;color:var(--muted)}
+.sn a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
+.sn .crumbs{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 7px}
+.sn .crumbs b{color:var(--text);font-weight:600}
+.sn .sep{color:var(--faint,var(--border))}
+.sn .step{margin-left:auto;white-space:nowrap}
+.sn .dep{margin-top:5px;padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface)}
+.sn .dep .ok{color:var(--accent);font-weight:600}
+.snx{max-width:820px;margin:0 auto;padding:6px 32px 44px;font-family:-apple-system,"Inter",system-ui,sans-serif}
+.snx .nx{display:grid;grid-template-columns:280px 1fr;text-decoration:none;color:var(--text);background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.snx .nx:hover,.snx .nx:focus-visible{border-color:var(--accent-border,var(--accent));outline:none}
+.snx .mini{position:relative;height:210px;overflow:hidden;background:var(--bg);border-right:1px solid var(--border);padding:14px 16px}
+.snx .mini span{display:block}
+.snx .mini .m1{font-size:12.5px;font-weight:600;margin:0 0 4px;line-height:1.3}
+.snx .mini .m2{font-size:9px;color:var(--muted);margin:0 0 8px;line-height:1.4}
+.snx .mini .m3{font-size:8.5px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;margin:0 0 3px}
+.snx .mini .m4{font-size:9.5px;margin:0;line-height:1.45}
+.snx .tx{padding:16px 20px}
+.snx .lab{font-size:12px;font-weight:600;color:var(--accent);letter-spacing:.04em;text-transform:uppercase}
+.snx .tt{display:block;font-size:20px;font-weight:600;margin:5px 0 4px;line-height:1.25}
+.snx .ds{display:block;font-size:14px;color:var(--muted)}
+.snx .nd{display:block;font-size:13px;color:var(--muted);margin-top:10px}
+.snx .go{display:block;margin-top:12px;font-size:14px;font-weight:600;color:var(--accent)}
+.snx .aux{display:flex;justify-content:space-between;gap:12px;margin-top:10px;font-size:13px;color:var(--muted)}
+.snx .aux a{color:inherit;text-decoration-color:var(--faint,var(--border));text-underline-offset:2px}
+@media (max-width:560px){.sn,.snx{padding-left:16px;padding-right:16px}.snx .nx{grid-template-columns:1fr}.snx .mini{display:none}.sn .step{margin-left:0}}
+/* /series-nav */
+</style>
+</head>
+<body>
+<!-- series-nav:top -->
+<nav class="sn" aria-label="Course navigation"><div class="crumbs"><a href="../stack-0-map/index.html" target="_top">The Agent Stack</a><span class="sep">›</span><a href="index.html" target="_top">2 · Context and memory</a><span class="sep">›</span><b>04 / 7</b><span class="step"><a href="index.html#prompt-snapshots" target="_top">← prev</a> · <a href="index.html#memory-lifecycle" target="_top">next →</a></span></div>
+<div class="dep"><span class="ok">Stands alone.</span> You can jump in here without reading earlier cards.</div></nav>
+<!-- /series-nav:top -->
+<article class="card">
+<h1>Compaction is a lossy state change</h1>
+<p class="sub">Also called context compression, summarization or <code>/compact</code>. The harness swaps older history for a summary so the run can keep going. Govindarajan traced it step by step in OpenCode v1.18.30 and Hermes v0.20.1; here it is applied to the Tuesday run's step-7 summary.</p>
+<!-- study:prime -->
+<aside class="prime" aria-label="Prime: read this first">
+<div class="prime-k"><a href="../learning-principles/learning-principles.html#prime">Prime</a> · 2 minutes before you read</div>
+<p><b>The problem:</b> A long run hits the context limit, the harness summarizes the past, and the agent carries on. If you treat that as housekeeping, a failing test can come out the other side as "tests passing", and nothing in the transcript tells you where the fact went.</p>
+<p><b>Where it fits:</b> The previous cards showed the working set is assembled per call and that snapshots trade freshness for stability. Compaction is the moment the harness rewrites that working set for good. It sets up the memory card (what must be written somewhere durable) and the capstone's question about false success claims.</p>
+<p class="prime-links"><b>Needs first:</b> <a href="../agents-basics/what-the-model-sees.html">What the model sees on each call</a></p>
+<p class="prime-links"><b>Builds on:</b> <a href="../agents-basics/what-the-model-sees.html">What the model sees on each call</a> · <a href="assembled-context.html">Context is assembled, not given</a> · <a href="../stack-1-runs/done-chain.html">'Done' is a chain of states</a></p>
+<p><b>You'll meet:</b> <span class="chip">head and tail, summary request and continuation</span> <span class="chip">the serialization cut (2,000 characters in OpenCode)</span> <span class="chip">status inflation</span> <span class="chip">flush before discard</span> <span class="chip">carry verbatim vs paraphrase</span></p>
+<p><b>By the end:</b> Given a compaction that lost a fact, name the boundary where it stopped flowing, and design a summary contract that carries status and open obligations verbatim.</p>
+<p class="prime-q"><b>Read with these questions</b> (answer them in your head as you go; don't take notes line by line):</p>
+<ol><li>In OpenCode, why did the nested <code>src/AGENTS.md</code> rule never reach the summarizer, even though it reached an ordinary request?</li><li>Why do the global and root rules come back after compaction while the attached note does not?</li><li>Why does pytest's output layout make a head-only cut especially bad for test status?</li><li>What has to be true of the workspace for "flush before discard" to be enforceable?</li><li>If the full record is still on disk after compaction, in what sense has anything been lost?</li></ol>
+</aside>
+<!-- /study:prime -->
+
+<p class="known">You already know: <a href="../agents-basics/what-the-model-sees.html">what the model sees on each call</a> (what compaction is, when to trigger it, what a summary should keep). This card is about what it costs.</p>
+
+<p><b>In one breath.</b> When the history gets too big, the harness splits it into an older <i>head</i> and a recent <i>tail</i>, has a model summarize the head, and continues with summary plus tail. That buys forward progress and pays in fidelity: whatever the summary leaves out, and whatever was cut before the summarizer even saw it, is gone from every later request, even if the full record is still on disk.</p>
+
+<p class="predict"><b>Predict first.</b> At step 6, <code>pytest</code> prints a long failure and exits 1. A compactor keeps only the first 2,000 characters of each old tool result. Which survive to the summarizer: the <code>F</code> in the progress line, the failing test's name, the "1 failed, 41 passed" line, the exit code?</p>
+
+<h2>Where state stopped flowing in OpenCode</h2>
+<p>Govindarajan ran the real OpenCode CLI against a scripted provider and forced a compaction. Compaction makes two calls that see different things: a <b>summary request</b> (the head, serialized as text) and a <b>continuation</b> (summary plus retained tail).</p>
+<table class="pres">
+<tr><th>What</th><th>Ordinary request</th><th>Summary request</th><th class="gr2">Continuation</th></tr>
+<tr><td>Start of the old <code>src/slug.mjs</code> read</td><td class="y">in</td><td class="y">in</td><td class="gr2 n">out<small>the fixed summary left it out</small></td></tr>
+<tr><td>End of that read, plus the nested <code>src/AGENTS.md</code> rule appended to it</td><td class="y">in</td><td class="n">out<small>tool result cut to 2,000 characters first</small></td><td class="gr2 n">out<small>until a reread attaches the rule again</small></td></tr>
+<tr><td>The attached note</td><td class="y">in</td><td class="y">in</td><td class="gr2 n">out<small>the fixed summary left it out</small></td></tr>
+<tr><td>Global, root and configured rules</td><td class="y">in</td><td class="n">out</td><td class="gr2 y">in<small>reloaded by ordinary instruction assembly</small></td></tr>
+<tr><td>Most recent turn (the <code>recent.txt</code> read)</td><td class="y">in</td><td class="gr">kept out (tail)</td><td class="gr2 y">in<small>retained tail</small></td></tr>
+</table>
+<div class="chips"><span class="gap">continuation =</span><span class="t">user: "What did we do so far?"</span><span>assistant: summary</span><span>retained tail</span><span class="t">user: "Continue if you have next steps, or stop and ask…"</span></div>
+<p class="cap">Rebuilt from the post's text. No model ran: the provider returned a fixed summary ("Earlier inspection completed. Re-read mutable files before continuing."), so this shows <i>where</i> information stopped, not how well a real model summarizes. Two different losses: cut before the summarizer saw it, and seen but left out of the summary. The full old read stays in the session export; it just stops being selected.</p>
+
+<h2>Worked example: the Tuesday run, step 7</h2>
+<p>The Tuesday run is <b>illustrative</b>. Apply OpenCode's 2,000-character cut to its step-6 <code>pytest</code> result (a made-up but typical 2,260-character output). pytest prints its verdict <i>last</i>, so the cut lands on exactly the lines a later step needs.</p>
+<div class="bars">
+  <div class="hd">Fact in the step-6 result</div><div class="hd">Where it sits (character position out of 2,260)</div><div class="hd r">Char</div>
+  <div class="tok"><code>F</code> in the progress line</div><div class="track"><div class="bar" style="width:9.5%"></div>kept</div><div class="tot">215</div>
+  <div class="tok">a traceback (AssertionError)</div><div class="track"><div class="bar" style="width:24.8%"></div>kept</div><div class="tot">560</div>
+  <div class="cutoff">2,000-character cap: the summarizer sees nothing below this line</div>
+  <div class="lost"><span class="tok">failing test name</span></div><div class="track lost"><div class="bar" style="width:94.4%"></div></div><div class="tot lost">2,134</div>
+  <div class="lost"><span class="tok">"1 failed, 41 passed"</span></div><div class="track lost"><div class="bar" style="width:97.7%"></div></div><div class="tot lost">2,208</div>
+  <div class="lost"><span class="tok">exit code 1</span></div><div class="track lost"><div class="bar" style="width:99.3%"></div></div><div class="tot lost">2,245</div>
+</div>
+<div class="code"><span class="c">$ python3 code/compaction-lossy.py</span>
+<span class="o">tool result: 2,260 chars; kept: 2,000; cut: 260
+  kept  at char   215  an F in the progress line
+  kept  at char   560  a traceback (AssertionError)
+  CUT   at char 2,134  failing test name
+  CUT   at char 2,208  1 failed, 41 passed
+  CUT   at char 2,245  exit code 1
+pinned before clipping: {'cmd': 'pytest', 'counts': '1 failed, 41 passed', 'exit': 1}
+step-7 summary inflated? True</span></div>
+<p class="cap">Bar width = position ÷ 2,260. Where an exit code sits in a tool result depends on the harness; here it is appended after the output, the same position OpenCode gave the nested rule. The summarizer still saw an <code>F</code> and a traceback, so it <i>could</i> have caught the failure. It wrote "Fixed due-date parsing; tests passing." anyway: <b class="lo">status inflation</b>, failed upgraded to passed. Step 9 then repeats it as "all tests pass".</p>
+
+<h2>Five places a fact can stop</h2>
+<table class="parts">
+<tr><th>Boundary</th><th>Example A: in the posts</th><th class="exb">Example B: the Tuesday run (illustrative)</th></tr>
+<tr><td>Read limit</td><td class="ex">OpenCode's read tool has its own line and byte limits<span>bounds an observation when it is first read; not hit in the experiment</span></td><td class="ex exb">a huge pytest log is capped by the tool at step 6<span>the model at least sees the cut happen</span></td></tr>
+<tr><td>Pruning (tool-result clearing)</td><td class="ex">OpenCode can swap old tool output for a cleared-output placeholder<span>optional, disabled in the experiment; Wolfe: less likely to lose essentials, but can't on its own keep the window from filling</span></td><td class="ex exb">step 6's output becomes a placeholder in later calls<span>still on disk, no longer sent</span></td></tr>
+<tr><td>Serialization cut</td><td class="ex">OpenCode cuts completed tool results to 2,000 characters before the summary request<span>this dropped the nested rule</span></td><td class="ex exb">cuts the verdict and exit code<span>computed above</span></td></tr>
+<tr><td>The summary itself</td><td class="ex">the fixed OpenCode summary left out the attached note<span>Hermes: a summary is not durable memory, and abort-or-fallback on a failed summary is a policy choice</span></td><td class="ex exb">"tests passing"<span>status inflation</span></td></tr>
+<tr><td>Selection after compaction</td><td class="ex">Hermes: active SQLite rows went from 28 to 12 (plus 28 marked compacted), yet the kept tail still reached the next request<span>the database view and the request differ; nothing was deleted</span></td><td class="ex exb">the step-6 record is still in the transcript<span>but no later call selects it</span></td></tr>
+</table>
+<p class="cap">Govindarajan's debugging rule: when a detail goes missing, don't ask "did summarization lose it?", ask where it stopped flowing, and inspect the summary's <i>input</i> as well as its output.</p>
+
+<h2>What a summary must carry verbatim</h2>
+<table class="keep">
+<tr><th class="v">Copy exactly, never paraphrase</th><th>May paraphrase or drop</th></tr>
+<tr><td>The last check's command, exit code and counts: <code>pytest</code> → exit 1, 1 failed, 41 passed</td><td>How the agent got there: files explored, dead ends, one line each</td></tr>
+<tr><td>Open obligations: the failing test's name, unfinished to-dos, what the user asked for</td><td>Tool output that has served its purpose</td></tr>
+<tr><td>Unknowns as unknown: a killed command is "killed, exit 143", not "confirmed"</td><td>The model's reasoning along the way</td></tr>
+<tr><td>Where each fact came from, and "reread before trusting" for files that can change</td><td>Decisions already acted on, as long as the reason is kept</td></tr>
+</table>
+<p class="cap">This split is the card's recommendation, not any one source's. It builds on Anthropic's compaction prompt as quoted by Wolfe (keep architectural decisions, unresolved bugs and implementation details; drop redundant tool output; continue with the summary plus the five most recently accessed files) and on Govindarajan's ask that a summary stay traceable to the observations it came from.</p>
+<div class="inv">
+<p><b class="ok">The invariant: flush before discard.</b> Before context is discarded, persist whatever must survive (OpenClaw Part 3). OpenClaw runs a silent turn (<code>NO_REPLY</code>) as compaction nears that nudges the model to write durable notes. The post's caveat: in a read-only sandbox there is nowhere to write, so the invariant can't be enforced.</p>
+<p>For the Tuesday run: the harness records <code>{cmd: pytest, exit: 1, counts: "1 failed, 41 passed"}</code> from the full step-6 result <i>before</i> step 7, and carries it verbatim. A one-line check (in the script) then flags the summary.</p>
+</div>
+
+<h2>Published evidence</h2>
+<table class="papers">
+<tr><th>Paper</th><th>What it found</th></tr>
+<tr><td>Compaction as Epistemic Failure<small>Tamba, 2026 · arXiv 2607.13071</small></td><td>A Claude Code case study: partial output from timed-out commands (exit 143) was written into compaction summaries as confirmed results. One case, no run counts.</td></tr>
+<tr><td>Governance Decay<small>Chen, 2026 · arXiv 2606.22528</small></td><td>Constraints, not claims: across 1,323 episodes and 7 model families, rule violations rise from 0% to 30% after compaction (59% for some models). Proposes "Constraint Pinning".</td></tr>
+<tr><td>The Compaction Cliff<small>Zerhoudi, Mitrovic, Granitzer, 2026 · arXiv 2608.22752</small></td><td>Runs Claude Code's <code>/compact</code> prompt offline on Sonnet 4.6 over 20 production agent configurations: 53% of safety rules survive one round, 10% survive five.</td></tr>
+</table>
+<p class="cap">As summarized in the series' novelty check. Rules lost in compaction are measured; <b>whether compaction causes false success claims is not</b>: only one case study exists, with no run counts. That gap is the <a href="../stack-7-capstone/index.html">capstone</a>'s question.</p>
+
+<h2>Why it beats the alternatives</h2>
+<div class="grid2">
+  <div class="cell"><h3><span class="x">&#10007;</span> Never compact</h3><p>The window eventually fills, and long contexts recall worse. Without compaction OpenCode's control run kept both the old and the new file read, with the conflict unresolved.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Free-form summary only</h3><p>Smooth to continue from, but whatever the summarizer drops is gone, and it can upgrade "failed" to "passing", as at step 7.</p></div>
+  <div class="cell"><h3><span class="x">&#10007;</span> Clear old tool results only</h3><p>Wolfe: less likely to lose essential information, but it can't on its own stop the window from filling.</p></div>
+  <div class="cell win"><h3><span class="ok">&#10003;</span> Flush, pin, then summarize</h3><p>Write durable notes first, carry status and open obligations verbatim, let the summary paraphrase the rest, and reread mutable files before acting on them.</p></div>
+</div>
+
+<h2>Is a better summary prompt the fix?</h2>
+<div class="note">
+  <p>Only partly. Some losses happen before any prompt runs (the 2,000-character cut), and some aren't losses at all: OpenCode reloads instruction files after compaction through ordinary assembly, so rules in <code>AGENTS.md</code> come back while facts that lived only in the conversation do not. Hermes's compression reloads only the user profile and memory; it is not a universal refresh.</p>
+  <p>Be careful with the evidence. The OpenCode run used no model, so it shows where information can stop, not how often real summarizers lose it. The Tuesday run is constructed. And compaction isn't always worth having: a short run that never nears the limit needs none, and when you can, a fresh session rebuilt from durable notes is a cleaner restart than a summary. Hermes calls a fresh prompt build the reliable point at which durable state reaches the model again.</p>
+</div>
+
+
+<!-- study:panel -->
+<section class="study" aria-label="Study this card">
+<div class="study-head"><h2>Study this card</h2><span>Open each step in order · <a href="../learning-principles/learning-principles.html">why this works</a></span></div>
+<input type="checkbox" id="study-all" class="study-all"><label for="study-all" class="study-all-l">show all steps (for revisiting)</label>
+<details class="st"><summary><b>1 · Core model</b> <span>what to internalise, what to just look up</span></summary><div class="st-body"><p class="st-rule">Keep it if it changes what you can <i>explain, predict, compare, choose, build or debug</i>. Otherwise it's reference.</p>
+<div class="core"><div><h4>Understand and remember</h4><ul><li>History outgrows the window → the harness summarizes the older head and keeps the tail → later calls see only summary + tail → anything not carried into the summary is gone from every later request, even though storage still has it</li><li>The serializer cuts each old tool result to a fixed length before summarizing → anything appended late in a result (a nested rule, pytest's verdict line, an exit code) never reaches the summarizer → no summary prompt can recover it; only extracting it before the cut can</li><li>The summarizer sees a failure only as scattered evidence and writes a fluent one-line status → "failed" or "unknown" becomes "passing" (status inflation) → the final message repeats it → a false success claim the checker catches</li><li>Instruction files are reloaded by ordinary prompt assembly after compaction → rules in <code>AGENTS.md</code> come back → facts that lived only in the conversation (test results, user asks, decisions) do not → those are what must be flushed or pinned before the discard</li><li><span class="up">detail that matters</span> Where the harness places an appended item inside a tool result (before or after the body) decides whether a head-only cut keeps it → OpenCode appended the nested rule after the file, so the cut dropped it</li></ul></div>
+<div><h4>Reference only</h4><ul class="muted"><li>OpenCode's exact continuation wording ("What did we do so far?", "Continue if you have next steps…")</li><li>Hermes's 28 → 12 active SQLite rows plus 28 compacted after <code>/compress here 2</code></li><li>OpenClaw's <code>agents.defaults.compaction.memoryFlush</code> setting and the <code>NO_REPLY</code> convention</li><li>the paper figures (1,323 episodes; 0% → 30%; 53% and 10% rule survival)</li><li>OpenCode v1.18.30 and Hermes v0.20.1 version pins</li></ul></div></div><p class="st-why"><a href="../learning-principles/learning-principles.html#layers">Why this step?</a></p></div></details>
+<details class="st"><summary><b>2 · Compress</b> <span>write it yourself first</span></summary><div class="st-body"><p>Card closed: draw the path a fact takes from a tool result to the call after compaction, mark the two places it can be lost, and in 3–4 sentences explain how the Tuesday run's "tests passing" summary happened and what would have prevented it.</p><p class="st-how">On paper or in your notes, in your own words, without scrolling up. Aim for the smallest thing that still explains it.</p>
+<details class="ref"><summary>Then compare with this checklist</summary><ul><li>path: tool result → history → head/tail split → serializer cut → summary request → summary → continuation (summary + tail)</li><li>loss 1: cut before the summarizer sees it; loss 2: seen but left out or rewritten by the summary</li><li>pytest prints its verdict and the exit code comes last, so a head-only cut drops them</li><li>"tests passing" is status inflation: failed upgraded to passed</li><li>prevention: extract and pin <code>{cmd, exit, counts}</code> before the cut (flush before discard), carry it verbatim, reread or rerun before claiming done</li></ul><p class="st-how">Missing a point? Reread only the section about it, not the whole card.</p></details><p class="st-why"><a href="../learning-principles/learning-principles.html#compress">Why this step?</a></p></div></details>
+<details class="st"><summary><b>3 · Retrieve</b> <span>from memory, card closed</span></summary><div class="st-body"><ol class="qs"><li><span class="kind">concept</span> Explain why Govindarajan calls compaction a state transition rather than housekeeping, using what a later call can and cannot see.<details class="ref"><summary>Check</summary><ul><li>it replaces what later calls are built from, not just what is displayed</li><li>later calls see summary + tail; the old records stay in storage but are no longer selected</li><li>so like any state mutation it needs a trigger, a commit point, recovery and observability</li></ul></details></li><li><span class="kind">mechanism</span> Walk through OpenCode's compaction in the experiment: what goes into the summary request, what is cut, and what the continuation request contains.<details class="ref"><summary>Check</summary><ul><li>the older head is serialized as text; the most recent user turn is kept as the tail</li><li>completed tool results are cut to 2,000 characters, so the end of the old read and the appended nested rule are lost</li><li>continuation: a "What did we do so far?" user message, the summary, the retained tail, then a "Continue…" user message</li><li>ordinary instruction files are reloaded alongside it</li></ul></details></li><li><span class="kind">tradeoff</span> A colleague proposes fixing status inflation with a stronger summary prompt ("never claim tests pass unless you saw it"). What does that fix, and what can it not fix?<details class="ref"><summary>Check</summary><ul><li>it can reduce the summarizer rewriting a failure it did see</li><li>it cannot recover facts cut before the summarizer saw them (the verdict line, the exit code)</li><li>it is still a model judgment; pinning status from the full result before the cut is deterministic</li></ul></details></li><li><span class="kind">mechanism</span> Hermes's database showed 12 active rows after compression, yet the recent tail still reached the next request. Which surface would you inspect to debug a "forgotten" fact, and why not just the database?<details class="ref"><summary>Check</summary><ul><li>the actual provider request (and the summary's input), because that is what the model saw</li><li>the active-row view differs from live selected history after compression</li><li>compare persisted history, live history and the outbound request to find where it stopped</li></ul></details></li></ol><p class="st-why"><a href="../learning-principles/learning-principles.html#retrieve">Why this step?</a></p></div></details>
+<details class="st"><summary><b>4 · Compare</b> <span>against what you already know</span></summary><div class="st-body"><p><b>vs <a href="../agents-basics/tool-call.html">Anatomy of a tool call</a>:</b> A read limit cuts a tool result when it is acquired; the compaction serializer cuts it later, before summarizing. What is fundamentally different about the two cuts, and how does each one fail?</p><details class="ref"><summary>Check</summary><ul><li>the read-time cut happens in the open: the model sees the truncated result at that step and can ask for more</li><li>the compaction cut is invisible to the model: it happens inside the summary request and later calls only see the summary</li><li>read-time cuts fail as missing detail the agent can notice; compaction cuts fail silently, which is how status can inflate</li></ul></details><p><b>vs <a href="prompt-snapshots.html">Prompt snapshots and freshness</a>:</b> Hermes's prompt snapshot keeps an old USER.md; compaction drops an old test result. Both make the model see something other than the current truth. What choice causes each, and which is easier to repair?</p><details class="ref"><summary>Check</summary><ul><li>snapshot: stale by design, for stability and caching; the durable file still has the truth and a rebuild brings it back</li><li>compaction: lossy by design, for space; if the fact lived only in the conversation there is no durable source to rebuild from</li><li>so compaction needs the flush-before-discard step and the snapshot does not</li></ul></details><p><b>vs <a href="../stack-1-runs/done-chain.html">'Done' is a chain of states</a>:</b> Which link of the claim chain does the step-7 summary break, and why can't a checker that only reads the transcript after step 7 catch it?</p><details class="ref"><summary>Check</summary><ul><li>it asserts "command succeeded" when the command exited 1</li><li>after compaction the transcript the model sees contains the summary, not the exit code</li><li>the checker must rerun pytest or read the stored full step-6 result, i.e. check the world, not the summary</li></ul></details><p class="st-why"><a href="../learning-principles/learning-principles.html#interleave">Why this step?</a></p></div></details>
+<details class="st"><summary><b>5 · Predict</b> <span>commit to an answer before revealing</span></summary><div class="st-body"><p>The Compaction Cliff reports 53% of safety rules surviving one round of <code>/compact</code> and 10% surviving five. If each round dropped rules independently at the same rate, what would five rounds give? Is the reported 10% higher or lower, and what might that say?</p><details class="ref"><summary>Reveal</summary><p>Independent rounds: 0.53<sup>5</sup> ≈ 0.042, about 4%. The reported 10% is higher, which would fit rules that survive one round being likelier to survive the next (some rules are stickier). This is our arithmetic on the summarized figures, not the paper's analysis; check its methods before leaning on it.</p></details><p class="st-why"><a href="../learning-principles/learning-principles.html#predict">Why this step?</a></p></div></details>
+<details class="st"><summary><b>6 · Apply</b> <span>use the model, don't restate it</span></summary><div class="st-body"><p>Open <code>code/compaction-lossy.py</code>. First change <code>CAP</code> to the smallest value that keeps the "1 failed, 41 passed" line, then change it back and instead move the <code>[exit code: 1]</code> line to the <i>front</i> of <code>RESULT</code>. Rerun both and record which facts survive.</p><p><b>Done when:</b> You found that a cap of 2,227 characters (2,208 + the 19 characters of "1 failed, 41 passed") keeps the counts but still cuts the exit code at 2,245, and that putting the exit code first makes it survive the 2,000 cap.</p><details class="ref"><summary>Hint</summary><p>A fact survives only if all of its characters lie before the cap: start position + length ≤ CAP. When you prepend the exit-code line, every later position shifts by its 15 characters.</p></details><p class="st-why"><a href="../learning-principles/learning-principles.html#apply">Why this step?</a></p></div></details>
+<details class="st"><summary><b>7 · Reflect</b> <span>and decide whether to move on</span></summary><div class="st-body"><ul><li>Which prediction did you get wrong: which pytest facts survive the cut, or the five-round survival rate?</li><li>What couldn't you explain cleanly: why instruction files come back after compaction but conversation facts don't?</li><li>Which relationship is still fuzzy: serialization cut → missing verdict, or missing verdict → status inflation?</li><li>In your own harness, where does the exit code sit in a tool result, and would a head-only cut keep it?</li><li>What would you write in a pre-compaction flush for your last long agent run?</li></ul><p class="st-how">Repair what came up: reopen only that section, then retry the question you missed. Tutor mode: <code>/study stack-2-context-memory/compaction-lossy</code> in Claude Code grades your answers and walks you through each stage.</p><p class="st-why"><a href="../learning-principles/learning-principles.html#reflect">Why this step?</a></p></div></details>
+</section>
+<!-- /study:panel --><div class="foot">
+<p><b>Source:</b> Govindarajan, <a href="https://theagentstack.substack.com/p/opencode-architecture-part-2-repository">OpenCode Architecture, Part 2: Repository Context and Compaction</a> ("Compaction creates a different kind of request", "The rule disappeared before the summary was written") · <a href="https://theagentstack.substack.com/p/hermes-agent-prompt-assembly-compression">Hermes Agent Architecture, Part 2</a> ("Compression Is a State Transition") · <a href="https://theagentstack.substack.com/p/openclaw-architecture-part-3-memory">OpenClaw Architecture, Part 3</a> (flush before discard) · Wolfe, <a href="https://cameronrwolfe.substack.com/p/agent-evals">Agent Evaluation: A Detailed Guide</a> (Compaction), quoting <a href="https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents">Anthropic, Effective context engineering</a> · <a href="https://arxiv.org/abs/2607.13071">arXiv 2607.13071</a> · <a href="https://arxiv.org/abs/2606.22528">arXiv 2606.22528</a> · <a href="https://arxiv.org/abs/2608.22752">arXiv 2608.22752</a>. The pytest output and character positions are illustrative, computed by the script.</p>
+<p><b>Run it:</b> <a href="https://github.com/seyonv/explainers/blob/main/stack-2-context-memory/code/compaction-lossy.py">code/compaction-lossy.py</a></p>
+<p><b>Related:</b> <a href="assembled-context.html">Context is assembled, not given</a> · <a href="memory-lifecycle.html">Memory is owned state</a> · <a href="../stack-1-runs/done-chain.html">'Done' is a chain of states</a> · <a href="../stack-3-authority/untrusted-output.html">Tool output is untrusted input</a></p>
+</div>
+</article>
+<!-- series-nav:bottom -->
+<div class="snx"><a class="nx" href="index.html#memory-lifecycle" target="_top">
+<span class="mini" aria-hidden="true"><span class="m1">Memory is owned state</span><span class="m2">Also called long-term memory, durable memory or, in Hermes, the self-improvement loop. Govindarajan defines it narrowly: state kept outside the model and put back into a later turn. His Hermes Part 3…</span></span>
+<span class="tx"><span class="lab">Next up · 05 / 7</span><span class="tt">Memory is owned state</span><span class="ds">Propose, approve, commit, activate: each with its own proof</span><span class="nd">Stands alone.</span><span class="go">Continue →</span></span></a><div class="aux"><span><a href="index.html#prompt-snapshots" target="_top">← Prompt snapshots and freshness</a></span><a href="index.html" target="_top">All cards in 2 · Context and memory</a></div></div>
+<!-- /series-nav:bottom -->
+</body>
+</html>

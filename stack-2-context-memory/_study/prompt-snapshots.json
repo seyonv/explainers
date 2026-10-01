@@ -1,0 +1,66 @@
+{
+  "prime": {
+    "problem": "You tell an agent something durable (edit <code>USER.md</code>, save a memory, add a rule) and it keeps acting as if you hadn't. The write succeeded; the model just never saw it. Without a model of <i>when</i> a write reaches a request, you debug prompt compliance when the real fault is a stale copy.",
+    "fits": "The previous card showed that the working set is assembled for each call. This card asks how often the assembler rereads its sources, and what caching and reproducibility cost you if it rereads too often. The next card, compaction, turns out to be one of the moments the snapshot refreshes.",
+    "expect": ["prompt snapshot", "refresh boundary (new session, compaction)", "snapshot cache vs provider cache hit", "refresh vs reconcile", "four refresh policies"],
+    "goal": "Given a harness and a durable write, say which call first carries the new value, what that refresh costs in cache misses, and which stale copies are left behind in history."
+  },
+  "attend": [
+    "In the AMBER/COBALT test, why does an unchanged system-prompt digest prove the file edit never reached the model?",
+    "Why does compaction make a cheap moment to rebuild the snapshot, compared with an arbitrary turn?",
+    "A per-turn rebuild with no clock costs 39,000 prefilled tokens but one with a timestamp costs 125,400. What single design choice causes the gap?",
+    "After the Tuesday run's refresh at call 7, which copy of the truth is still wrong, and why doesn't the refresh fix it?",
+    "Why did Govindarajan keep the prompt digest and the provider's cached-token count as two separate metrics?"
+  ],
+  "core": {
+    "must": [
+      "The runtime builds the system prompt once and reuses it → a write to <code>USER.md</code> changes the disk but not the next request → the model keeps the old value until a refresh boundary (a new session, or compaction in Hermes) rebuilds the snapshot",
+      "Provider caches reuse the longest unchanged prefix → any changed byte in the system prompt invalidates everything after it → rebuilding every turn is only as cheap as the prompt's least stable byte (a clock makes every call a full miss)",
+      "Compaction rewrites history anyway → everything after the system prompt is a cache miss at that call regardless → rebuilding the snapshot there costs only the system prompt's own tokens, not the whole history behind it, which is why it is a natural refresh point",
+      "Refreshing puts the new value in the request → but summaries, tool results and earlier replies still hold the old value or decisions made under it → refreshing a fact and reconciling its stale copies in history are separate jobs"
+    ],
+    "elevated": [
+      "Inject-on-change appends a note at the tail → the cached prefix survives (33,650 vs 33,600 tokens in the Tuesday run) → but the old value stays in the snapshot, so the model sees two conflicting copies",
+      "A cached prompt object and a provider cache hit are different caches → an unchanged digest says the runtime didn't rebuild, not that the provider served from cache → you need both metrics to debug either"
+    ],
+    "reference": [
+      "Hermes's three prompt tiers (stable, context, volatile) and which files sit in each",
+      "the <code>/compress here 2</code> command",
+      "marker words AMBER and COBALT; 22 calls, 16 turns, 2 sessions",
+      "15,872 cached tokens on repeated requests",
+      "the illustrative sizes in the simulation (10,000 / 1,800 / 1,000 / 50)"
+    ]
+  },
+  "compress": {
+    "prompt": "Card closed: draw the four states a value passes through, from file to model, and mark where a snapshot sits and what moves it. Then, in 3–4 sentences, explain why a harness would choose to let the model see stale data.",
+    "checklist": [
+      "durable source → cached prompt snapshot → selected live history → provider-bound request",
+      "a write changes the source; only a refresh boundary (new session, compaction) changes the snapshot",
+      "the snapshot keeps prompt bytes stable → cacheable, reproducible, no change under an in-flight request",
+      "per-turn rebuild breaks the cache whenever any byte changes",
+      "refresh ≠ reconcile: stale copies in history survive a refresh",
+      "a write receipt should say both whether the source changed and when the model will see it"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain to a teammate why \"I updated <code>USER.md</code> and the agent ignored it\" is usually not a model-compliance problem in Hermes v0.20.1.", "kind": "concept", "answer": ["<code>USER.md</code> is an input to a session-level snapshot, not a live lookup", "the next request still carried the old profile; the prompt digest was unchanged", "the fix is a refresh boundary (new session, or compression for memory and profile), not a stronger instruction"]},
+    {"q": "Walk through what happens to the Tuesday run's new <code>USER.md</code> rule under a snapshot-per-session harness, call by call, from the edit after step 4 to call 9.", "kind": "mechanism", "answer": ["calls 5 and 6 still carry the old snapshot and hit the provider cache", "compaction before call 7 rebuilds the prompt with the rule and writes the summary", "calls 7–9 carry the rule, but also the summary \"tests passing\"", "the rule arrives two calls late, and the stale claim is not corrected"]},
+    {"q": "You must choose a refresh policy for an agent whose memory changes a few times a session. Compare snapshot-per-session, per-turn rebuild and inject-on-change on freshness, cache cost and the risk each one carries.", "kind": "tradeoff", "answer": ["snapshot: cheapest and stable, but lagged until the next boundary", "per-turn rebuild: fresh next call, one full re-prefill per change, a full miss every call if anything volatile like a clock is in the prompt", "inject-on-change: fresh and cache-cheap, but leaves two conflicting copies", "pick by how urgent the fact is: a revocation can't wait; a profile tweak can"]},
+    {"q": "A dashboard shows the system-prompt digest unchanged between two calls. What can you conclude, and what can't you?", "kind": "mechanism", "answer": ["you can conclude the runtime didn't rebuild the prompt", "you can't conclude the provider served it from cache: check cache-read tokens in usage metadata", "Hermes showed 0 cached tokens on fresh sessions and 15,872 on repeats, a separate signal"]}
+  ],
+  "compare": [
+    {"with": "llm-latency/prompt-caching", "q": "The prompt-caching card treats a stable prefix as a speed win. This card treats it as a freshness cost. What is the one mechanism behind both, and when does the freshness cost win the argument?", "answer": ["the same thing: reuse requires identical leading bytes", "speed side: unchanged bytes skip prefill", "freshness side: unchanged bytes mean new facts can't enter the prefix", "freshness wins when a fact must act now (revocation, stop), so you pay the miss or inject at the tail"]},
+    {"with": "agents-basics/what-the-model-sees", "q": "That card says put stable parts first and changes last. Where does a profile file like <code>USER.md</code> belong under that rule, and what does Hermes's choice to snapshot it reveal about how \"stable\" is decided?", "answer": ["Hermes places it in the volatile tier, near the end of the system prompt", "stability is decided by lifecycle (how often it changes per session), not by importance", "snapshotting turns a volatile source into stable bytes for the session, trading freshness for cache and reproducibility"]}
+  ],
+  "predict": {"q": "A harness snapshots per session, and a subagent is spawned at call 6 of the Tuesday run, after the <code>USER.md</code> edit. Does the subagent see the new rule? Commit before revealing.", "answer": "Not knowable from the parent's snapshot alone. In Hermes v0.20.1 a delegated child gets a separately constructed prompt, not the parent's copy, so if that construction rereads <code>USER.md</code> the child sees the new rule while the parent still doesn't. Two contexts in one run can then disagree. The post defers the details to Part 4; treat it as something to test, not assume."},
+  "apply": {"task": "Run <code>code/prompt-snapshots.py</code>, then move the <code>USER.md</code> edit to just before compaction (set <code>EDIT_AFTER = 6</code>) and rerun. Explain why the gap between snapshot and per-turn rebuild (no clock) changes, and what the delay in calls becomes.", "done": "Your rerun shows snapshot and no-clock rebuild both first seeing the edit at step 7, with the same 33,600 prefilled tokens: the edit and the refresh boundary coincide, so the snapshot loses nothing.", "hint": "The no-clock rebuild only pays extra at the first call after the edit, and with <code>EDIT_AFTER = 6</code> that call is the compaction call, which misses anyway."},
+  "reflect": [
+    "Which prediction did you get wrong: the subagent question, or how expensive a clock in the prompt is?",
+    "What couldn't you explain cleanly: why a snapshot is reproducible, or why compaction is a cheap refresh?",
+    "Which relationship is still fuzzy: write → snapshot (when it refreshes) or snapshot → stale copies in history (why refresh doesn't fix them)?",
+    "In a harness you use, what is the refresh boundary for memory files, and how would you find out?",
+    "Is this solid enough to read the compaction card, where the refresh happens alongside lost state?"
+  ],
+  "revisit": ["agents-basics/what-the-model-sees", "llm-latency/prompt-caching"],
+  "prereq": ["agents-basics/what-the-model-sees"]
+}

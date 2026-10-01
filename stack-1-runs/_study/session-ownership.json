@@ -1,0 +1,63 @@
+{
+  "prime": {
+    "problem": "Messages, webhooks and timers arrive whenever they like, but a session can only take one change at a time. Without a part of the system that owns the session, two runs write the same transcript, a redelivered message triggers a second run, and a mid-run correction is either ignored or cuts into a running tool.",
+    "fits": "First card of the Runs course. The agent loop showed what happens <i>inside</i> one turn; this card is the layer that decides which turn runs, on which session, and when. The next card (retry, replay, resume) is the runtime underneath it.",
+    "expect": ["control plane vs runtime", "session key vs session ID", "one writer per session + global throttle", "dedupe, debounce, idempotency keys", "busy policy: collect, followup, steer, interrupt"],
+    "goal": "Trace any burst of inbound messages through the control plane and say, for each one, which invariant handles it and when it reaches the model under each busy policy."
+  },
+  "attend": [
+    "Why does one writer per session need a separate global cap, when each session is already serialized?",
+    "In the Tuesday timeline, which invariant stops the 14.0 s redelivery, and what would happen to it if only debounce existed?",
+    "Under steer, why does the correction wait until <code>pytest</code> finishes instead of landing at 11.8 s?",
+    "Why does Hermes treat SQLite's one-writer rule and the gateway's one-active-turn rule as two different things?",
+    "If you ran two gateway processes behind a load balancer, which guarantee on this card would you stop trusting first?"
+  ],
+  "core": {
+    "must": [
+      "One run per session lane → a correction can't start a parallel run on the same transcript → no interleaved tool calls or duplicate sends → but now something must decide <i>when</i> the waiting message gets in (the busy policy)",
+      "Busy policy is a setting, not model behaviour → collect/followup wait for the run to end (correction lands after the damage) → interrupt aborts at once (preempts inside a tool call) → steer checks after each tool call and skips the rest of that message's calls (safe boundary, small delay)",
+      "Real channels redeliver and humans type in bursts → dedupe on (channel, peer, session, message id) drops repeats and debounce merges a burst into one turn → each human intent becomes exactly one queued turn → fewer surprise runs",
+      "Serialization covers one session's history only → two sessions, non-idempotent tools and stale assumptions are untouched → idempotency keys on side effects and a global cap are separate guarantees, and none of them makes a 'Done' true"
+    ],
+    "elevated": [
+      "OpenClaw's queue is small and in-process → its one-writer guarantee is (my reading) process-local → run two gateway processes and the lane no longer stops two writers; that is the distributed lease problem behind Hermes issue #83736"
+    ],
+    "reference": [
+      "the five queue mode names and which one is default (<code>collect</code>)",
+      "<code>messages.inbound.debounceMs</code>, <code>agents.defaults.maxConcurrent</code>, lane names <code>session:&lt;key&gt;</code> and <code>main</code>",
+      "Hermes key shapes like <code>agent:main:telegram:dm:…</code> and the <code>state.db</code> location",
+      "the illustrative timings (10.0 s, 10.8 s, 11.8 s, 13.0 s, 14.0 s, 30.0 s) and 1.0 s debounce window"
+    ]
+  },
+  "compress": {
+    "prompt": "Card closed: draw the path an inbound message takes from the channel to the agent loop, naming each box, then write two sentences on what the busy policy decides and why steer is the middle option.",
+    "checklist": [
+      "dedupe → debounce → resolve session key → session lane (one writer) → global lane (cap) → runtime",
+      "the control plane decides what the run is; the runtime decides how the turn proceeds",
+      "busy policy decides when a queued message reaches the model: after the run, at the next tool boundary, or by aborting",
+      "steer avoids both ignoring the correction and preempting inside a tool call",
+      "idempotency keys protect retried side effects; serialization alone does not"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why a session is an isolation boundary and not just chat history, using the user-ID-as-session-key failure.", "kind": "concept", "answer": ["a session is where writes commit in one order and scratch state stays separate", "one user can have many sessions, so keying by user ID merges unrelated tasks", "they then share transcript and scratch state and the system looks fine until it acts wrongly"]},
+    {"q": "Walk the three Slack deliveries of the Tuesday example (10.0 s, 10.8 s, 14.0 s) through the control plane under <code>steer</code>. When does the model see the correction, and what tool call doesn't run?", "kind": "mechanism", "answer": ["10.0 and 10.8 are new ids and 0.8 s apart → debounced into one turn, ready at 11.8 s", "the session lane is busy, so no second run; steer waits for the current tool call", "pytest ends at 13.0 s → queue checked → the test-file edit is skipped → correction injected before the next reply", "the 14.0 s redelivery has the same message id → dropped by dedupe"]},
+    {"q": "You run a support agent where a duplicated refund is costly and corrections are rare. Pick a busy policy and name the extra guarantee you still need.", "kind": "tradeoff", "answer": ["collect or followup: deterministic, the run finishes as planned before reading new input", "or steer if corrections must stop a planned action, accepting a wait until the tool boundary", "avoid interrupt: aborting mid-tool can leave a refund half-done", "regardless: an idempotency key on the refund call, because one writer per session doesn't stop a retried side effect"]},
+    {"q": "Hermes's SQLite store already allows only one writer at a time. Why does the gateway still need its own one-active-turn rule?", "kind": "concept", "answer": ["the database rule is per write; a turn is many writes", "two turns could alternate writes and both be 'valid' to SQLite", "the semantic rule is about who owns the conversation, not storage locking"]}
+  ],
+  "compare": [
+    {"with": "agents-basics/agent-loop", "q": "The agent loop card owned the loop from one request to 'Done'. What does that card silently assume that this card makes explicit, and how does each fail when the assumption breaks?", "answer": ["the loop assumes one caller and a conversation nobody else writes to", "the control plane enforces that: one run per session, ordered inbound events", "the loop fails inside a turn (bad stop reason, budget); the control plane fails between turns (two writers, duplicate run, lost correction)"]},
+    {"with": "stack-1-runs/durable-execution", "q": "Dedupe on message id and idempotency keys on side effects both make 'the same thing twice' happen once. What is fundamentally different about where each sits and what it protects?", "answer": ["dedupe sits at the door and protects against a second <i>run</i> being started", "idempotency keys sit at the side effect and protect against a retried <i>action</i> in the world", "a run can be correctly single and still retry a send, so you need both", "durable execution adds the runtime's view: replaying a step must not redo its effect"]}
+  ],
+  "predict": {"q": "Keep the Tuesday timeline but shrink the debounce window to 0.5 s (the two messages are 0.8 s apart). Under <code>steer</code>, how many separate turns get queued, when does the model first see a correction, and does the test edit still get skipped?", "answer": "Two turns: 0.8 s is longer than the window, so m1 flushes alone at 10.5 s and m2 at 11.3 s. Both are queued before <code>pytest</code> ends at 13.0 s, so steer still checks at 13.0 s, skips the test edit and injects what is waiting. The first correction still reaches the model at 13.0 s. What changes is message boundaries: the model gets two queued messages instead of one merged turn, and under <code>followup</code> they could become two follow-up turns."},
+  "apply": {"task": "Open <code>code/session-ownership.py</code>. Add a third mode, <code>no-lane</code>, in which the debounced batch starts its own run at its ready time while the Tuesday run keeps going. Print the merged list of tool calls in start-time order for both runs.", "done": "Your output shows the second run starting at 11.8 s while <code>pytest</code> (9.0–13.0 s) and the test edit (13.0–14.5 s) still belong to the first run, so two runs write the same session at once: the failure the single-writer rule prevents.", "hint": "Give the second run one illustrative tool call, say a read of the parser starting at 11.8 s, and sort all calls by start time with a run label."},
+  "reflect": [
+    "Which prediction did you get wrong: the number of turns with a smaller debounce window, or when steer lets the correction in?",
+    "What couldn't you explain cleanly: why the session lane and the global lane are two separate caps?",
+    "Which relationship is still fuzzy: one writer → busy policy needed, or one writer → still not safe for side effects?",
+    "In an agent you have built, which of the five invariants is missing, and what would a duplicated webhook do to it?",
+    "Is your own single-writer guarantee process-local or distributed, and how would you know?"
+  ],
+  "revisit": ["agents-basics/agent-loop"],
+  "prereq": ["agents-basics/agent-loop"]
+}

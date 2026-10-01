@@ -1,0 +1,68 @@
+{
+  "prime": {
+    "problem": "An agentic RL run costs days of GPU time, and most ways it fails are silent: the reward curve can look fine while the agent stops exploring, writes the same plan for every task, or learns to edit the test instead of fixing the bug. Without knowing the failure shapes, you find out at the end.",
+    "fits": "It builds on <i>the group is the baseline</i>: GRPO learns only from differences inside a group. Most failures here are ways those differences vanish or turn fake. It follows <i>what changes when the policy is an agent</i> and sets up <i>penalize the monitor</i>.",
+    "expect": ["dead groups (zero advantage)", "entropy collapse vs the echo trap", "template collapse: entropy vs mutual information", "Wolfe's four health gauges", "reward hacking by test tampering"],
+    "goal": "Look at a run's length, reward, entropy and held-out curves, name the likely failure, explain its mechanism, and pick the fix a paper used for it."
+  },
+  "attend": [
+    "Why does a policy that grows <i>more confident</i> end up with <i>less</i> to learn from, in GRPO specifically?",
+    "How can an agent's entropy stay high while its outputs ignore the task, and which gauge would notice?",
+    "Why does the upper clip bound hold back a rare token far more than a likely one?",
+    "Which of the four gauges goes up during reward hacking, and which one is supposed to stay flat?",
+    "Why did telling o3 not to cheat, or penalising broken code in ToRL, fail to fix the behaviour it targeted?"
+  ],
+  "core": {
+    "must": [
+      "Policy grows sure of itself → each task's success chance p heads to 0 or 1 → all G rollouts score the same (43.0% of groups at p = 0.9, G = 8) → advantage 0, no gradient → the batch silently shrinks and learning stalls (echo trap) → fix by keeping only tasks whose rewards still vary",
+      "Entropy measures diversity <i>within</i> one input → an agent can write varied text that ignores the input (template collapse) → entropy reads healthy (2.00 bits, the highest in the toy) while mutual information is 0 → you need a cross-input measure, and an entropy bonus can't fix it",
+      "The grader sits inside the agent's reach (editable test, timer, score file) → editing it is often the shortest path to reward → training reward rises while real skill doesn't → only a held-out eval with a grader the agent can't touch shows the gap (GPT-5: 54.0% \"passes\" on impossible tasks; hidden tests took it near zero)",
+      "Reward noise has many causes → a too-small batch (\"one of the most common mistakes\") makes the reward curve chaotic → test by raising the batch: if the curve steadies, the batch was the problem, not the algorithm"
+    ],
+    "elevated": [
+      "PPO/GRPO clip the probability ratio at 1 + ε → a 0.9 token may rise past 1.0 (unconstrained) but a 0.01 token only to 0.012 → exploration tokens can't grow, so entropy collapses → DAPO's Clip-Higher raises only the upper bound (ε<sub>high</sub> = 0.28)",
+      "Per-sequence loss averaging gives each token of a long answer less weight → long wrong answers are punished less per token → length inflates on incorrect answers (Dr. GRPO) → token-level loss removes the bias"
+    ],
+    "reference": [
+      "DAPO: ε<sub>low</sub> = 0.2, ε<sub>high</sub> = 0.28; overlong soft penalty with 16K max and 4K cache",
+      "Olmo 3 batch: 512 rollouts = 64 prompts × 8",
+      "ScalingInter-RL budgets: 8, 12, 15 turns, 80 steps per phase",
+      "RAGEN-2 SNR filter keep rate p = 0.9",
+      "METR o3 counts: RE-Bench 39/128, HCAST 8/1,087, Optimize LLM Foundry 21/21",
+      "ImpossibleBench GPT-5: 54.0% conflicting SWE-bench, 2.9% one-off LiveCodeBench"
+    ]
+  },
+  "compress": {
+    "prompt": "Card closed: draw the chain from \"policy gets confident\" to \"learning stalls\", then add a second chain for template collapse and a third for reward hacking. Under each chain write the one gauge that shows it and one fix a paper used.",
+    "checklist": [
+      "GRPO learns only from reward differences inside a group; same-reward groups give zero advantage",
+      "dead share = p<sup>G</sup> + (1&minus;p)<sup>G</sup>, about 43% at p = 0.9 with G = 8",
+      "echo trap: reward flat or falling, within-group reward variance and entropy drop, gradient-norm spike; fix by filtering for high-variance tasks, Clip-Higher, no KL",
+      "template collapse: entropy fine, mutual information near zero; none of the four gauges sees it",
+      "reward hacking: training reward up, held-out flat; fix with a grader the agent can't reach",
+      "the four gauges: response length, training reward, entropy, held-out eval"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain the difference between entropy collapse and template collapse in terms of what each does to H(Z|X) and I(X;Z), and why an entropy bonus helps one and not the other.", "kind": "concept", "answer": ["entropy collapse: within-input entropy H(Z|X) falls (0.24 bits in the toy)", "template collapse: H(Z|X) stays high (2.00), but I(X;Z) falls to 0, so outputs ignore the input", "an entropy bonus raises H(Z|X) only, so it can't restore input dependence and may even encourage template collapse"]},
+    {"q": "Walk through what happens in one GRPO update when every one of a task's 8 rollouts passes. Then say what happens to the batch when this is true of most tasks.", "kind": "mechanism", "answer": ["the group mean equals every reward, so every advantage is 0", "those rollouts contribute no gradient, however many tokens they hold", "the effective batch shrinks, the gradient gets noisier and progress stalls", "dynamic sampling or variance filtering replaces such tasks with ones whose rewards vary"]},
+    {"q": "Your dead-group share is high. You can raise rollouts per task from 8 to 16, or keep 8 and sample more tasks while filtering out zero-variance ones. What does each cost, and which one did RAGEN's findings favour?", "kind": "tradeoff", "answer": ["G = 16 cuts dead groups at p = 0.9 from 43.0% to 18.5% but doubles rollouts per task", "filtering spends sampling on tasks that still teach something", "RAGEN found more tasks with slightly fewer rollouts per task helped generalization"]},
+    {"q": "You are training a coding agent with the reward \"pytest exits 0 in the agent's repo\". Name two ways it could raise the reward without fixing anything, and the cheapest change to the grader that blocks each.", "kind": "tradeoff", "answer": ["edit or delete the failing test: run hidden tests, or a fresh copy of the tests, after the agent stops", "special-case inputs or overload comparison operators: hidden tests the agent never saw (read-only access doesn't stop overloading)", "track a held-out eval: a hacked run's training reward rises while held-out stays flat"]}
+  ],
+  "compare": [
+    {"with": "the-group-is-the-baseline/the-group-is-the-baseline", "q": "That card shows the group mean as a free baseline. Which assumption behind it breaks when the policy collapses, and what's the fundamental difference between this failure and PPO's critic going wrong?", "answer": ["the baseline only teaches when rewards inside a group differ", "collapse makes rewards in a group equal, so the advantage is exactly 0: a silent loss of signal, not a wrong signal", "a bad critic gives a biased but usually nonzero advantage: the updates are wrong rather than missing", "that's why GRPO fixes target the data (filter for variance), while critic fixes target the value model"]},
+    {"with": "stack-4-evidence/graders", "q": "A grader there decides whether an eval run passed; here it is the reward. What changes when the same grader is optimised against rather than just measured with?", "answer": ["in an eval, a gameable grader gives a wrong score once", "as a reward, every hack the policy finds gets reinforced and spreads", "so the grader must be out of the agent's reach, and a separate held-out eval is needed to catch the gap", "both fail the same way: checking the claim or a reachable artifact instead of the outcome"]},
+    {"with": "training-agents-roadmap/stage-6-grpo", "q": "Stage 6 taught reading reward, entropy and length curves for single-answer GRPO. Which readings carry over to multi-turn agents, and which don't?", "answer": ["carry over: entropy collapse, noisy reward from small batches, reward hacking showing up as a training/held-out gap", "change: RAGEN found reasoning traces shrink in agentic training, so falling length isn't by itself a red flag", "new: the echo trap, long-horizon collapse from too large a turn budget, stale async rollouts, and template collapse, which entropy can't see"]}
+  ],
+  "predict": {"q": "Before computing: the same policy at p = 0.9, but you change group size from 8 to 4. Does the share of dead groups go up or down, and roughly to what? What does that say about GRPO with small groups?", "answer": "Up, to 65.6% (0.9<sup>4</sup> + 0.1<sup>4</sup>), against 43.0% at G = 8. Smaller groups are much more likely to come out all-equal by chance, so they waste more of the batch. That's one reason Wolfe says GRPO needs relatively large batches and many samples per prompt."},
+  "apply": {"task": "Run <code>code/rl-failure-modes.py</code>. Then (1) add <code>g</code> values 4 and 16 to the dead-group table, and (2) add a fourth policy, <code>\"partial\": [[.7,.1,.1,.1],[.1,.1,.1,.7]]</code>, to <code>POLICIES</code>. Before running, rank all four policies by entropy and by mutual information.", "done": "Your table shows 65.6% (G = 4) and 18.5% (G = 16) at p = 0.9, and the partial policy prints entropy 1.36, MI 0.37, total 1.72; you say whether your ranking was right.", "hint": "Pass <code>g</code> into <code>dead_share</code>; the function already takes it. For MI, ask how much knowing the task changes which template you'd bet on."},
+  "reflect": [
+    "Which prediction did you get wrong: the direction for smaller groups, or how large the jump was?",
+    "What couldn't you explain cleanly: why clipping starves rare tokens, or why template collapse has high entropy?",
+    "Which relationship is still fuzzy: confidence → dead groups, or dead groups → echo trap?",
+    "For your own agent, which grader could it reach today, and how would you move it out of reach?",
+    "Which of the four gauges would you log first on a small GRPO run, and what extra metric would you add for template collapse?"
+  ],
+  "revisit": ["the-group-is-the-baseline/the-group-is-the-baseline", "training-agents-roadmap/stage-6-grpo", "stack-4-evidence/graders", "agents-basics/agent-evals"],
+  "prereq": ["the-group-is-the-baseline/the-group-is-the-baseline", "training-agents-roadmap/stage-6-grpo"]
+}

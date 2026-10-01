@@ -1,0 +1,141 @@
+{
+  "prime": {
+    "problem": "An agent run that pushes a branch, waits for CI and asks for approval can be interrupted at any point. If the worker restarts and nothing recorded what already happened, the system either starts over (and pushes, emails or charges twice) or guesses where it was.",
+    "fits": "Second card of the Runs course. <i>Owning the session</i> gave the control plane the source of truth for the run; this card gives the <b>runtime</b> its job: moving that run forward across time without repeating side effects. It builds on the agent loop you already know, which is only the hot path inside one run.",
+    "expect": [
+      "retry vs replay vs resume vs idempotency",
+      "the gap between an effect happening and progress being recorded",
+      "waits and approvals as persisted state",
+      "at-least-once delivery vs workflow progress"
+    ],
+    "goal": "Given a multi-step agent run, say which steps can safely run twice, where progress must be recorded, what a pending approval must be tied to, and predict how many duplicate effects a recovery strategy will cause."
+  },
+  "attend": [
+    "Why does even a journalled run re-execute the push step after a crash, and which mechanism actually stops the second push?",
+    "Restart-plus-key shows zero duplicates in the table. What does it still get wrong for a model-driven step like the edit?",
+    "What exactly must an approval record point at, so that a changed diff invalidates it?",
+    "Why is an at-least-once queue a delivery guarantee and not a progress guarantee?",
+    "In which kind of agent task is a plain loop enough, according to the post?"
+  ],
+  "core": {
+    "must": [
+      "A side effect happens in the outside world → the runtime can only record it a moment later → a crash in that gap leaves the run unsure whether the effect landed → re-running the step duplicates it unless the effect carries an idempotency key the outside system dedupes",
+      "Progress kept only in process memory → a restart forgets which steps finished → the run starts over → every earlier side effect repeats and every model step is re-rolled (14.10 steps per run vs 7.50 with a journal at a 0.2 crash rate)",
+      "Journal and key solve different problems → the key removes duplicate effects, the journal removes rework → you need both (journal alone 0.50 duplicates per run, key alone 14.10 steps per run)",
+      "Replay re-executes workflow code against recorded history → any non-deterministic call inside it (model, API, random choice) gives a new answer → workflow logic must be deterministic and side effects must sit behind recorded step boundaries"
+    ],
+    "elevated": [
+      "Waits and approvals are written down as state tied to one pending action in one run (run, step, action, the diff it was asked about) → a restart doesn't lose them, and an approval for an old diff can be detected as stale instead of silently applied"
+    ],
+    "reference": [
+      "product names: Temporal Event History, Restate and DBOS journals, LangGraph checkpoints, threads and interrupts, OpenAI Agents SDK interruptions",
+      "SQS standard queue semantics (at-least-once, possibly out of order)",
+      "OpenClaw's inbound dedupe cache and its retry policy setting names",
+      "the illustrative crash probability 0.2 and the six step names"
+    ]
+  },
+  "compress": {
+    "prompt": "Card closed. In 3–5 sentences, explain why a crash right after a branch push is dangerous and what two mechanisms together make recovery safe. Or draw the six-step run with the crash, and mark where the journal and the key each act.",
+    "checklist": [
+      "the effect lands before progress is recorded, so a crash leaves the run ambiguous",
+      "restart from scratch repeats every side effect and re-rolls model steps",
+      "a journal lets the run resume at the first unrecorded step (less rework)",
+      "an idempotency key lets the outside system ignore the repeated effect (no duplicate)",
+      "retry, replay, resume and idempotency are separate tools that each fail without the others",
+      "durability records progress; it doesn't verify the run was correct"
+    ]
+  },
+  "retrieve": [
+    {
+      "q": "Explain the difference between replay and resume, with one example of each from the card.",
+      "kind": "concept",
+      "answer": [
+        "replay rebuilds the run's state from recorded history or checkpoints (Temporal Event History)",
+        "resume continues the run after a wait, approval, crash or restart (OpenAI Agents SDK resuming from saved run state after an approval)",
+        "replay is how you get state back; resume is what you do next"
+      ]
+    },
+    {
+      "q": "Walk through the 'journal + key' trace after the crash: what is skipped, what re-runs, what does the git host do, and why?",
+      "kind": "mechanism",
+      "answer": [
+        "edit and test are recorded, so they are skipped",
+        "push was not recorded (the crash came first), so it re-runs",
+        "the push carries key <code>run-1:push</code>; the host has seen it and creates no new effect",
+        "the run then continues to wait for CI, approval and open PR"
+      ]
+    },
+    {
+      "q": "Why does the journal-only strategy give 0.50 duplicate effects per run at a 0.2 crash rate? Derive it.",
+      "kind": "mechanism",
+      "answer": [
+        "each step runs until it survives: 1/(1−0.2) = 1.25 times on average",
+        "so each side-effect step runs 0.25 extra times",
+        "two side-effect steps × 0.25 = 0.50"
+      ]
+    },
+    {
+      "q": "Your team proposes 'just put every step on an SQS queue with retries' instead of adopting a workflow engine. What do you gain, what do you still lack, and what would you add?",
+      "kind": "tradeoff",
+      "answer": [
+        "gain: buffering, decoupling, redelivery after failure",
+        "lack: knowledge of which step of the run finished, persisted waits and approvals",
+        "at-least-once delivery means duplicates, so consumers must be idempotent",
+        "add a recorded run state or workflow on top; delivery is not progress"
+      ]
+    }
+  ],
+  "compare": [
+    {
+      "with": "agents-basics/agent-loop",
+      "q": "The agent loop and a durable workflow both 'call the model, run a tool, repeat'. What is fundamentally different, which design choice causes it, and how does each fail?",
+      "answer": [
+        "the loop keeps its state in process memory for one turn; the workflow records progress outside the process",
+        "the loop fails by forgetting on restart and repeating effects; the workflow fails if its logic is non-deterministic or effects sit outside step boundaries",
+        "pick the loop for one-turn tasks with no waits or side effects, the workflow when a run crosses time"
+      ]
+    },
+    {
+      "with": "stack-1-runs/done-chain",
+      "q": "This card makes a run survive a crash; that card asks whether the run actually succeeded. Why can a perfectly durable run still deliver a false success claim?",
+      "answer": [
+        "the journal records that a step ran and what it returned, not whether the world matches the claim",
+        "replay or resume reproduces the false claim faithfully (the Tuesday run's exit 1 and 'all tests pass')",
+        "verification is a separate link in the claim chain: effect verified"
+      ]
+    },
+    {
+      "with": "stack-3-authority/approval-not-isolation",
+      "q": "This card stores an approval as state bound to one pending action in one run; that card puts the approval right next to the side effect and says it contains nothing. What does each card ask an approval to carry, and how does each fail when it is missing?",
+      "answer": [
+        "here: run, step, action and the diff's sha, so a restart doesn't lose it and a changed diff invalidates it",
+        "there: what, as whom, where, what is sent or changed, undo, and the evidence it rests on",
+        "missing binding: an old yes is silently applied to a re-rolled diff after a resume",
+        "missing containment: a path that never calls the approval still reaches the world, however well the approval is recorded"
+      ]
+    }
+  ],
+  "predict": {
+    "q": "Change the run so there are four side-effect steps instead of two (push, open PR, post a CI status, email the maintainer), still with a journal and no keys and a 0.2 crash rate. Commit to a number: duplicate effects per run, and the share of runs with at least one duplicate.",
+    "answer": "Each side-effect step runs 0.25 extra times on average, so 4 × 0.25 = 1.00 duplicate per run. The chance no side-effect step crashes is 0.8^4 = 0.41, so about 59% of runs have at least one duplicate. More side effects make keys more important, not less; the journal alone doesn't help with the gap."
+  },
+  "apply": {
+    "task": "Run <code>code/durable-execution.py</code> with <code>P_CRASH = 0.1</code>. Before running, predict the journal strategy's duplicates per run and steps per run with the formulas on the card, and the restart strategy's steps per run.",
+    "done": "Your predictions match the output: journal 0.22 duplicates and 6.66 steps per run (formula 6.67), restart 8.80 steps per run (formula 8.82), and 18.9% of journal runs with a duplicate.",
+    "hint": "journal: duplicates = 2 × p/(1−p), steps = 6/(1−p); restart: (1/q^6 − 1)/(1 − q) with q = 0.9. Runs with a duplicate: 1 − 0.9 × 0.9."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: the four-side-effect duplicates, or the 0.1 crash-rate numbers?",
+    "What couldn't you explain cleanly: why the journal still re-runs the push, or why restart-plus-key is not enough?",
+    "Which relationship is still fuzzy: unrecorded effect → duplicate, or non-deterministic replay → a different diff?",
+    "In an agent you have built, which step would double an effect if the worker restarted right after it?",
+    "Where would you store the pending-approval record in your own harness today?"
+  ],
+  "revisit": [
+    "agents-basics/agent-loop",
+    "stack-1-runs/session-ownership"
+  ],
+  "prereq": [
+    "agents-basics/agent-loop"
+  ]
+}

@@ -1,0 +1,68 @@
+{
+  "prime": {
+    "problem": "Agentic RL gives a whole run one pass/fail reward and masks every tool output from the loss. When every run in a group fails, the advantages are all zero and the model learns nothing, even though each step recorded exactly how the environment reacted.",
+    "fits": "You know from <i>The reward becomes a place</i> that tool outputs are masked, and from <i>The group is the baseline</i> that GRPO scores a run against its group. This card asks whether the masked tokens should be trained on too, and what happens if a model plays the environment instead.",
+    "expect": ["action tokens vs observation tokens", "the environment loss and its weight λ", "ECHO, Prime Intellect's study and PaW", "learned simulators (SimRL)", "overfitting on memorisable tools"],
+    "goal": "Explain why a small loss on tool outputs gives signal when rewards are sparse, set or debug its weight, say when to keep the mask, and say whether it would catch a false success claim."
+  },
+  "attend": [
+    "Why does a GRPO group where every run fails produce zero gradient under masking, but not under ECHO?",
+    "What stops the observation loss from swamping the reward: which three knobs (weight, normaliser, token choice) does ECHO use?",
+    "Why did training on code-execution output beat training on all tools in forth-lang, and what does that say about documentation and web pages?",
+    "Why does PaW replace cross-entropy with a clipped MAE, and which tokens does that stop dominating?",
+    "Qwen-AgentWorld trains a separate model to play the environment: what made SimRL work, and what made it fail?",
+    "Since ECHO changes only training, where would the Tuesday run's false claim have to be caught?"
+  ],
+  "core": {
+    "must": [
+      "Outcome reward is one number per run and GRPO subtracts the group mean → an all-fail group has every advantage at 0 → masked training gets no gradient from it → putting a small loss on observation tokens keeps every step teaching (1,920 of 2,400 tokens live in the toy group)",
+      "A supervised loss is an RL loss with a constant positive advantage → one per-token weight (advantage on actions, λ on observations) covers both → it reuses log-probabilities already computed, so there are no extra rollouts or forward passes and inference is unchanged",
+      "The observation loss is dense and the reward is sparse → a large λ lets prediction win → the model drifts toward runs whose tool output is easy to predict, so keep λ small (ECHO: 0.01–0.05) and normalise the two losses separately",
+      "Memorisable outputs (web pages, docs) can be learned by rote instead of by rule → the dense loss overfits them fast (deepdive: after one epoch) → train on outputs that are complex but predictable, such as code execution, and watch held-out scores fall while training reward jumps"
+    ],
+    "elevated": [
+      "Cross-entropy's gradient grows like 1/p (100 at p = 0.01) → rare, noisy observation tokens dominate the update → PaW uses a bounded MAE loss and drops tokens already above p = 0.2 so the model does not memorise them",
+      "A learned simulator's quality caps the agent → an off-the-shelf model as the simulator gave no gain, and injected errors and pagination were needed → SimRL can replace real environments only if the simulator reproduces their failures"
+    ],
+    "reference": [
+      "ECHO's normaliser Z counts all observation tokens, including unselected ones",
+      "ECHO drops the harness's fixed <code>WARNINGS:</code> prefix from the loss",
+      "PaW keeps the top 75% of transitions by action entropy",
+      "Qwen-AgentWorld's reward: 5 rubric criteria scored 1–5, averaged and ×5 (range 5–25), mixed 9:1 with executable checks",
+      "ECHO's setup: 8,870 tasks, at most 16 turns, Harbor harness, batch of 16 prompts × 16 rollouts"
+    ]
+  },
+  "compress": {
+    "prompt": "Card closed: in 3–5 sentences, explain why masking tool outputs wastes signal, what ECHO changes in the loss, and what can go wrong. Or draw step 6 of the Tuesday run as two rows of tokens, masked and modelled, and label which ones get a gradient and with what weight.",
+    "checklist": [
+      "action tokens get the RL advantage; observation tokens are masked in standard agentic RL",
+      "an all-fail group gives all-zero advantages, so there is no gradient under masking",
+      "ECHO adds λ × next-token loss on chosen observation tokens, reusing the same forward pass",
+      "λ must stay small (0.01–0.05) or prediction crowds out reward",
+      "memorisable tools overfit; pick complex but predictable outputs",
+      "inference is unchanged, so it does not itself check a final claim"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain in your own words why Wolfe calls observation tokens a dense signal and the reward a sparse one.", "kind": "concept", "answer": ["the reward is one number for a whole multi-step run", "every step produces an observation that shows what the action caused", "so every step, even in a failed run, gives a prediction target"]},
+    {"q": "Walk through the toy group in <code>code/world-models.py</code> with rewards [0, 0, 0, 0]: compute the advantages, then say which tokens carry a gradient under masking and under ECHO.", "kind": "mechanism", "answer": ["mean is 0, so every advantage is (0 − 0)/std = 0", "masked: action tokens have weight 0 and observations are masked, so 0 of 2,400 tokens carry a gradient", "ECHO: the 4 × 480 = 1,920 observation tokens carry weight λ"]},
+    {"q": "You're adding ECHO to a deep-research agent whose main tool fetches web pages, and you plan 5 epochs. What do you change, and what do you watch for?", "kind": "tradeoff", "answer": ["web pages are memorisable, so deepdive overfit after one epoch", "consider leaving the fetch tool out of the loss, using fewer epochs, or stopping early", "warning sign: held-out score drops while training reward jumps"]},
+    {"q": "Why is a cross-entropy loss on observations risky, and what does PaW do instead?", "kind": "mechanism", "answer": ["the cross-entropy gradient grows like 1/p, so rare noisy tokens dominate", "PaW uses a bounded MAE-style loss", "and masks tokens already above p = 0.2 as learned, so it doesn't memorise them"]}
+  ],
+  "compare": [
+    {"with": "training-agents-roadmap/stage-7-environments", "q": "That stage masks tool outputs because the environment wrote them. What assumption does ECHO reject, and in which kind of environment is the old rule still right?", "answer": ["masking assumes only the model's own tokens should be trained on", "ECHO argues that the environment's reply is an on-policy prediction target, not just context", "keep the mask when outputs are trivially predictable or memorisable (pages, docs), or when there's no RL to pair it with"]},
+    {"with": "the-group-is-the-baseline/the-group-is-the-baseline", "q": "The group baseline makes advantages relative. Why is that the exact reason a hard task stalls, and how do PaW's per-group λ and ECHO's constant λ differ in response?", "answer": ["if every run in the group fails (or every one passes), every advantage is 0", "ECHO gives every observation token the same λ whatever the group did", "PaW raises λ for low-return groups and lowers it for groups near the maximum, so world modelling fills in exactly where the reward is silent"]},
+    {"with": "stack-4-evidence/graders", "q": "A grader re-runs <code>pytest</code> after the run; a world-model-trained agent learned to expect <code>pytest</code>'s output during training. Why does only one of them reliably catch the Tuesday run's false claim?", "answer": ["the grader checks the outcome at evaluation time, outside the agent", "ECHO and PaW change only training; at inference the agent emits no prediction to compare", "the step-9 claim is an action token, judged only by the reward, so catching it needs a grader or a predict-then-compare harness step"]}
+  ],
+  "predict": {"q": "A team swaps its flaky real search backend for a learned simulator but skips the control instructions that inject API errors and pagination. The simulator returns clean, complete results every time. Predict what the agent learns, and how it fails when deployed against the real backend.", "answer": "It learns a policy for a world without failures: one call, trust the result, no retries, no follow-up page requests. Wolfe reports that these perturbations were necessary for SimRL to give meaningful gains, and a weak simulator (an off-the-shelf Qwen3.6) gave none. In deployment you'd expect it to fail on exactly the partial failures the simulator never produced: a timeout or a truncated page treated as the full answer. The general lesson is that a simulator teaches only the dynamics it reproduces."},
+  "apply": {"task": "In <code>code/world-models.py</code>: (a) change <code>LAM</code> to <code>0.0</code> and run it; then (b) set it back to <code>0.05</code> and add <code>report(\"all pass\", [1, 1, 1, 1])</code> to the demo. Before running (b), predict how many of the 2,400 tokens carry a gradient under masking and under ECHO.", "done": "(a) ECHO's numbers equal the masked ones: 0 / 2400 for all fail, 480 / 2400 for one passes. (b) all pass: advantages all 0, masked 0 / 2400, ECHO 1920 / 2400.", "hint": "The advantage is the reward minus the group mean. A group that all agrees, whether it all passes or all fails, has nothing to rank."},
+  "reflect": [
+    "Which prediction did you get wrong: the all-pass token count, or what the simulator without injected errors teaches?",
+    "What couldn't you explain cleanly: why a supervised loss is an RL loss with a constant advantage, or why a big λ drifts toward easy tool calls?",
+    "Which relationship is still fuzzy: dense observation loss → overfitting, or memorisable tool → overfitting faster?",
+    "In your own agent harness, which tool's output is complex but predictable enough to be worth modelling, and which would you keep masked?",
+    "Where would you put a predict-then-compare check so a false success claim can't slip through?"
+  ],
+  "revisit": ["training-agents-roadmap/stage-7-environments", "the-group-is-the-baseline/the-group-is-the-baseline", "stack-4-evidence/graders", "stack-2-context-memory/compaction-lossy"],
+  "prereq": ["the-group-is-the-baseline/the-group-is-the-baseline"]
+}

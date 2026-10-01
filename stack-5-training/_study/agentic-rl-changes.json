@@ -1,0 +1,148 @@
+{
+  "prime": {
+    "problem": "Take an RL recipe built for one-shot answers and point it at an agent, and it quietly trains on the wrong things: the model learns to imitate <code>pytest</code> logs it never wrote, the trainer scores tokens the policy never sampled, one domain's reward scale swamps the rest, and compaction leaves GRPO comparing rollouts that no longer line up.",
+    "fits": "Stage 3 of the training roadmap showed why agent RL is harder (long rollouts, a sandbox each, async generation) and the GRPO card showed the group as the baseline. This card is what the frameworks do about it, and it opens the course: the next cards ask what the reward should be and how training goes wrong.",
+    "expect": [
+      "state = context + environment, with random transitions",
+      "step-level records with exact tokens (retokenization drift)",
+      "the action mask",
+      "advantage normalization per task or environment",
+      "PPO's critic when compaction splits a run"
+    ],
+    "goal": "Take any agent run, say which of its tokens get loss and what advantage they carry, and name which framework choice prevents each way the update could go wrong."
+  },
+  "attend": [
+    "Why does a tool call make the transition random when appending a token never was?",
+    "If the trainer re-encodes a stored chat transcript, which token's probability does it end up pushing?",
+    "In the Tuesday run, why do the good <code>pytest</code> call and the false final claim get the same advantage?",
+    "What does compaction do to a GRPO group that a learned critic doesn't care about?",
+    "Why would a task the agent always fails, or always passes, teach it nothing?"
+  ],
+  "core": {
+    "must": [
+      "Tool calls change an environment the model can't see in full → the state is context plus environment, and the transition can be random → each rollout needs its own copy of the environment, and the same action can earn different rewards",
+      "A trajectory mixes agent tokens with tool, prompt and summary tokens → the action mask gives loss only to agent-written tokens → the model learns its own moves instead of learning to predict <code>pytest</code> logs (17.2% of the Tuesday trace gets loss)",
+      "The loss pushes the probability of the exact sampled token → storing chat text and re-encoding it can produce different tokens (<code>pass</code>+<code>ed</code> → <code>passed</code>) → store step-level records with the exact action tokens (Agent-R1)",
+      "Compaction splits a long rollout into a varying number of sub-traces → rollouts of one prompt no longer line up as a group → GRPO's group comparison breaks → GLM-5.2 moved to PPO, whose critic scores tokens without a group"
+    ],
+    "elevated": [
+      "An outcome reward is broadcast to every agent token in the run → the Tuesday run's good step-6 call and its false step-9 claim both get −1 → process rewards look like the fix, but ToRL's −0.5 code-error penalty didn't help",
+      "Different domains have different reward scales → normalizing advantages within each task or environment (AgentRL, ERPO) → no single domain dominates the update"
+    ],
+    "reference": [
+      "framework names and their interfaces: AgentGym-RL's HTTP API, Agent-R1's <code>Tool</code>/<code>ToolEnv.step()</code>, AgentRL's function-call API",
+      "ScalingInter-RL's schedule: 3 phases of 80 iterations at 8, 12 and 15 turns",
+      "ToRL's reward values (+1, −1, −0.5) and its tool-call cap C",
+      "DeepSWE's 512 containers per iteration and the move to Kubernetes",
+      "RAGEN-2's keep rate p = 0.9"
+    ]
+  },
+  "compress": {
+    "prompt": "Card closed: draw the Tuesday run as a row of token blocks, colour the ones that get loss, write the advantage they carry, and mark the two places (the stored record, the compaction) where a naive pipeline would train on the wrong thing. Then say in 3 sentences what the frameworks change and why.",
+    "checklist": [
+      "state = context + environment; tool calls can make the transition random",
+      "only agent-written tokens get loss (action mask); tool output, prompt and summary are context",
+      "with an outcome reward, every agent token in the run shares one advantage (−1 here), good steps included",
+      "exact sampled tokens are stored per step, or re-encoding drifts",
+      "compaction makes sub-trace counts differ per rollout, so group comparison breaks; PPO's critic doesn't need a group",
+      "advantages normalized per task or environment; tasks chosen so the group's rewards vary"
+    ]
+  },
+  "retrieve": [
+    {
+      "q": "Explain why Wolfe's agentic MDP treats the environment as part of the state, and what that means for the transition function.",
+      "kind": "concept",
+      "answer": [
+        "tool calls change files, databases or browsers the model can't fully see in its context",
+        "so the state is the joint (context, environment), not just the tokens",
+        "text still appends deterministically, but a tool call's effect and observation can be random",
+        "so the same actions can lead to different rewards, and each rollout needs an isolated environment"
+      ]
+    },
+    {
+      "q": "Walk through what happens to the Tuesday run's tokens in one GRPO update: which get loss, what advantage they get, and what never gets trained.",
+      "kind": "mechanism",
+      "answer": [
+        "the checker's exit 1 makes the reward 0; in a group with rewards 0, 1, 1, 0 its advantage is −1",
+        "that −1 is broadcast to the 940 agent-written tokens (the mask), the step-6 call and the false claim alike",
+        "the prompt, tool outputs, the pytest log and the compaction summary have mask 0 and get no loss",
+        "the update multiplies each agent token's log-probability, of the exact sampled token, by −1"
+      ]
+    },
+    {
+      "q": "You train a coding agent with long rollouts that compact several times. When would you keep GRPO, and when switch to PPO? Name the cost of each.",
+      "kind": "tradeoff",
+      "answer": [
+        "GRPO: no critic to train, and the most common choice; Agent-R1 found it best on most of its tasks",
+        "but it needs rollouts of a prompt that can be compared; varying sub-trace counts after compaction break that",
+        "PPO: a critic estimates per-token advantages from single rollouts, which is why GLM-5.2 switched",
+        "cost: a second model to train and keep accurate"
+      ]
+    },
+    {
+      "q": "ToRL's −0.5 penalty for code that won't run sounds like free extra signal. Why might it hurt, and what does that say about process rewards in general?",
+      "kind": "tradeoff",
+      "answer": [
+        "outcome-only rewards matched or beat it",
+        "the authors' guess: the penalty made the model overly cautious about writing code",
+        "process rewards shape behaviour you didn't intend; Wolfe: they don't always give a clear benefit"
+      ]
+    }
+  ],
+  "compare": [
+    {
+      "with": "the-group-is-the-baseline/the-group-is-the-baseline",
+      "q": "That card scores a group of single answers and nudges every token by its advantage. What breaks when the answers are agent rollouts, and which choice fixes each break?",
+      "answer": [
+        "not every token is the model's own: tool output must be masked out",
+        "the stored record must hold the exact sampled tokens, or the update pushes the wrong token",
+        "compaction makes rollouts split into different numbers of pieces, so the group no longer lines up; GLM-5.2 used PPO's critic",
+        "several domains in one batch need advantages scaled per task or environment"
+      ]
+    },
+    {
+      "with": "stack-2-context-memory/compaction-lossy",
+      "q": "Both cards treat compaction as a problem. What does it break at run time, what does it break at training time, and why can the second be fixed while the first can't be fixed the same way?",
+      "answer": [
+        "run time: the summary loses facts or inflates status, and the model acts on what it sees",
+        "training time: it splits the trajectory into sub-traces of different counts and lengths, breaking group comparison",
+        "training can keep the full step-level record and choose an optimizer that doesn't need groups",
+        "the model at run time only has the summary; the lost fact is gone from its working set"
+      ]
+    },
+    {
+      "with": "stack-4-evidence/graders",
+      "q": "A grader in an eval and a reward in agentic RL can be the same <code>pytest</code> run. What's different about how each is used, and how does each fail?",
+      "answer": [
+        "eval: the verdict is reported and read by people; a bad grader misleads a decision",
+        "RL: the verdict is multiplied into every agent token's update; a bad reward is optimized against",
+        "both check the outcome, not the agent's claim, so neither alone punishes the false 'all tests pass' specifically"
+      ]
+    }
+  ],
+  "predict": {
+    "q": "Suppose the <code>invoice-tools</code> environment is flaky: a network-dependent test makes <code>pytest</code> pass or fail at random about one time in five, whatever the agent did. Before reading on, what happens to the GRPO advantages for a group of rollouts, and what does the agent learn?",
+    "answer": "The rewards now carry noise that has nothing to do with the agent's actions, so some advantages are positive or negative by luck. On average the noise cancels, but each update pushes random runs' tokens up or down, so learning slows and the agent can pick up habits that merely coincided with lucky passes. This is the random transition from the card's MDP showing up as reward noise. The usual fixes are to make the environment deterministic (pin or remove the flaky test), re-run the checker, or use larger groups; process rewards don't help because the noise is in the outcome itself."
+  },
+  "apply": {
+    "task": "Run <code>code/agentic-rl-changes.py</code>. Then change the group's rewards from <code>[0, 1, 1, 0]</code> to <code>[0, 0, 0, 0]</code> and rerun. Finally, edit <code>TUESDAY</code> so the step-6 <code>pytest</code> output is 5,000 tokens instead of 560.",
+    "done": "You can say why the all-zero group gives every token advantage 0 (no learning signal from a task the agent always fails), and that the loss share falls from 17.2% to 940 ÷ 9,900 = 9.5% while the agent's own tokens and their advantage are unchanged.",
+    "hint": "With all rewards equal, the group mean equals every reward, so every <code>r − mean</code> is 0."
+  },
+  "reflect": [
+    "Did you predict the step-6 <code>pytest</code> call would be rewarded? Which prediction did you get wrong?",
+    "What couldn't you explain cleanly: why the mask exists, or why exact tokens must be stored?",
+    "Which relationship is still fuzzy: compaction → uneven sub-traces, or uneven sub-traces → why GRPO needs a critic instead?",
+    "Which of the design principles would you check first in an RL framework you were evaluating?",
+    "The outcome reward never reads the step-9 claim. What would you want the next card's rewards to do about that?"
+  ],
+  "revisit": [
+    "training-agents-roadmap/stage-3-rl-for-agents",
+    "the-group-is-the-baseline/the-group-is-the-baseline",
+    "agents-basics/agent-loop",
+    "stack-2-context-memory/compaction-lossy"
+  ],
+  "prereq": [
+    "training-agents-roadmap/stage-3-rl-for-agents"
+  ]
+}
