@@ -1,0 +1,122 @@
+{
+  "prime": {
+    "problem": "Training needs examples with right answers, and nobody has labelled the internet. Without a way to turn raw text into graded examples, and to grade many of them per pass, a language model can't be trained at all.",
+    "fits": "The first build stop. The basics path traced one prediction through a trained model; this card shows where the training examples come from, and the single number (the loss) that training pushes down. It prepares Raschka §2.6 and §5.1.",
+    "expect": ["input/target pairs shifted by one token", "the causal mask: n predictions in one pass", "context length, stride and overlap", "batches of shape (batch, context)", "per-position loss, its mean, and perplexity"],
+    "goal": "Build input/target pairs by hand, count chunks for any context length and stride, explain why one pass gives n graded guesses, and read a per-position loss table."
+  },
+  "attend": [
+    "Where do the right answers come from when nobody labelled the text?",
+    "What stops position 4 from simply reading token 5 off its own input?",
+    "Why does stride 4 give 56 predictions but still only 32 different targets?",
+    "Why does cutting the text into 8-token chunks raise the loss on the very same targets?",
+    "Why are the question's tokens so much harder to predict than the answer's?"
+  ],
+  "core": {
+    "must": [
+      "The next token in the text is the right answer → targets = inputs shifted by one (<code>tokens[0:n]</code>, <code>tokens[1:n+1]</code>) → every position is a labelled example → no human labels needed",
+      "Causal mask: position t reads only tokens 0…t → its guess for token t+1 is honest even though t+1 is in the input → one pass gives n guesses identical to n prefix passes → training is n× more efficient per pass than generation, which must create each token before predicting the next",
+      "Loss at a position = −ln p(target) → mean over all positions = the training loss → e<sup>loss</sup> = perplexity, roughly how many tokens the model was choosing between → lower means the real next tokens got more probability",
+      "Sliding window: stride = context → every target once; smaller stride → more rows but repeated targets → more updates on the same text, not more information; and every chunk restarts with no context, so the context length caps what any guess can use (4.873 vs 4.145 on the same 32 targets)"
+    ],
+    "elevated": [
+      "The model outputs (batch, context, vocabulary) scores → the book flattens batch and positions into one list before cross-entropy → the mean is over every graded position in the batch, so each token counts equally",
+      "Hugging Face's <code>labels=</code> shifts internally → shifting by hand as well trains the model to predict two tokens ahead → shift in exactly one place"
+    ],
+    "reference": [
+      "Chunk count for N tokens, context n, stride S: starts are range(0, N − n, S), i.e. ceil((N − n) / S) chunks",
+      "Our text: 143 characters → 33 Qwen tokens; context 8: stride 8 → 4 chunks / 32 predictions, stride 4 → 7 chunks / 56 predictions, 32 distinct targets either way",
+      "Measured: first chunk losses 11.79 … 5.48, mean 5.742; whole text mean 4.145 (perplexity 63.1); question+answer mean 1.157 (perplexity 3.18)",
+      "Uniform guess: ln(151,936) = 11.93 for Qwen, ln(50,257) = 10.82 for GPT-2",
+      "Book names: <code>max_length</code> and <code>stride</code> in §2.6, <code>context_length</code> in the model config; end-of-text separator in §2.4"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, in 4–5 sentences: how does raw text become graded training examples, how many does one forward pass grade, and what does the stride change? Or redraw the inputs/model/targets/loss sketch for a 5-token chunk of your own.",
+    "checklist": [
+      "targets are the inputs shifted by one token; the text supplies its own labels",
+      "the causal mask keeps each position from seeing its target, so one pass grades all n positions",
+      "the loss per position is −ln p(target); their mean is the training loss; e<sup>loss</sup> is perplexity",
+      "a window of n tokens (plus 1 extra) slides by the stride; stride = n uses each target once, smaller repeats them",
+      "chunks stack into (batch, context) tensors, and each chunk starts with no earlier context"
+    ]
+  },
+  "retrieve": [
+    {
+      "kind": "concept",
+      "q": "Explain why pretraining needs no human labels, using the first chunk of the baker text.",
+      "answer": [
+        "inputs are tokens 0–7 (<i>The baker opened the shop at six .</i>), targets are tokens 1–8 (<i>baker … She</i>)",
+        "the target at each position is just the token that came next in the text",
+        "so every token after the first is a free label"
+      ]
+    },
+    {
+      "kind": "mechanism",
+      "q": "Walk through what happens at position 5 of the first chunk during one training forward pass.",
+      "answer": [
+        "position 5 can attend to tokens 0–5 only (<i>The baker opened the shop at</i>), never token 6",
+        "the model outputs a probability for every vocabulary token there; the target <i>six</i> got 0.0005",
+        "the loss there is −ln 0.0005 ≈ 7.65",
+        "it is averaged with the other 7 positions' losses into the chunk's loss, 5.74"
+      ]
+    },
+    {
+      "kind": "tradeoff",
+      "q": "You have a short text and want more training rows. Would you lower the stride, and what does it cost?",
+      "answer": [
+        "a lower stride gives more chunks (7 vs 4 here) and more graded positions (56 vs 32)",
+        "but the number of different targets stays the same (32), so many are graded twice",
+        "you get more updates on the same information, which makes overfitting a small text more likely"
+      ]
+    },
+    {
+      "kind": "tradeoff",
+      "q": "Why might a longer context length lower the loss on exactly the same targets, and what does it cost?",
+      "answer": [
+        "each chunk starts with no context, so its first positions guess blind",
+        "measured: the same 32 targets scored 4.873 as four 8-token chunks vs 4.145 in one 33-token pass",
+        "a longer context costs more compute and memory per chunk, because attention compares every position with every earlier one"
+      ]
+    }
+  ],
+  "compare": [
+    {
+      "with": "text-to-answer/the-loop",
+      "q": "Generation and training both produce next-token probabilities. Why does generation need one pass per token while training needs one pass per chunk, and what does each cost?",
+      "answer": [
+        "in generation the next token doesn't exist until it's picked, so each pass waits on the last",
+        "in training every next token is already in the text (teacher forcing), and the causal mask keeps guesses honest",
+        "measured here: 32 predictions in one pass took about 0.1 s vs about 1.25 s as 32 cached one-token passes",
+        "the answer tokens' probabilities are identical either way (0.277, 0.964, …)"
+      ]
+    },
+    {
+      "with": "z2h-8-gpt/batches-of-chunks",
+      "q": "Karpathy's loader draws random offsets; the book's §2.6 loader slides a window with a stride. What is fundamentally the same, and how do they differ in which text gets repeated?",
+      "answer": [
+        "both build x and y as windows of the same token stream, y shifted by one, and stack them into (batch, context)",
+        "random offsets can repeat or skip text by chance; a fixed stride repeats it on purpose (stride < context) or not at all (stride = context)",
+        "both grade every position of every row"
+      ]
+    }
+  ],
+  "predict": {
+    "q": "Slide a window of 8 over our 33 tokens with stride 1. How many chunks, graded predictions and different targets do you get? And would the mean loss over all those rows be closer to 4.145 (one long pass) or to 4.873 (four separate chunks)?",
+    "answer": "25 chunks (starts 0 to 24), 200 predictions, still 32 different targets. Measured mean loss: 4.819, close to the separate-chunk number, because every row still has at most 8 tokens of context and restarts from nothing. Overlap gives more rows, not more context."
+  },
+  "apply": {
+    "task": "Change <code>CTX</code> in <code>labs/training-pairs.py</code> to 4 and work out by hand, before running, how many chunks and predictions stride 4 and stride 2 give on the 33-token text. Then run the lab and check your counts against its output.",
+    "done": "Your hand counts match the lab: stride 4 → 8 chunks and 32 predictions; stride 2 → 15 chunks and 60 predictions, with 32 different targets in both cases.",
+    "hint": "Chunk starts are 0, S, 2S, … while start < N − n, here 33 − 4 = 29."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: the number of graded guesses per pass, or whether overlap lowers the loss?",
+    "What couldn't you explain cleanly: why one pass equals n prefix passes, or why the first token is never a target?",
+    "Which relationship is still fuzzy: causal mask → honest guesses at every position, or stride → repeated targets → overfitting?",
+    "When you code §2.6, which line would you print first to prove the shift is right?",
+    "What would you expect to change if the text were two unrelated documents joined by an end-of-text token?"
+  ],
+  "revisit": ["text-to-answer/the-loop", "z2h-8-gpt/batches-of-chunks", "z2h-1-toolkit/softmax-and-cross-entropy", "z2h-8-gpt/masked-softmax"],
+  "prereq": ["text-to-answer/the-loop"]
+}

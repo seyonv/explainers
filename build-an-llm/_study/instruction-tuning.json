@@ -1,0 +1,133 @@
+{
+  "prime": {
+    "problem": "A base model continues text: given a request, it may answer, or just keep writing the letter the request seems to start. Training it on instruction examples fixes that, but only if the batch is built so the loss grades the answers instead of the filler used to line examples up.",
+    "fits": "Builds on training pairs (every position predicts the next token) and on wrappers like <code>Q: … A:</code> from the basics course. Instruction tuning keeps the same next-token loss and changes only the data and which targets count. It is step 1 of the RLHF recipe.",
+    "expect": [
+      "instruction template",
+      "padding to the longest",
+      "targets = inputs shifted by one",
+      "ignore index −100",
+      "masking the instruction (optional)"
+    ],
+    "goal": "Build one instruction batch by hand, say which targets get −100 and why, predict how the mean loss moves under each masking choice, and spot the bug that stops a fine-tuned model from ending its answers."
+  },
+  "attend": [
+    "What does the fixed marker before the response let the model learn that free-form examples would not?",
+    "Why does an unmasked padding position cost a base model so much more than an answer token?",
+    "Why must the first end-of-text token after the answer stay a target while the copies after it are masked?",
+    "What changes in what the model learns, not just in the loss number, when you also mask the instruction?",
+    "Why can right padding be left unmasked in attention, as long as it is masked in the loss?"
+  ],
+  "core": {
+    "must": [
+      "every example rendered into one fixed template → the same marker always precedes the answer → the model learns 'after this marker, write the answer, then the end token' → at use time you render a new request and stop after the marker",
+      "rows have different lengths → pad with the end token to the longest → targets = inputs shifted by one → padding becomes targets asking for 'end token after end token' → a base model expects a new document there → 51 padding targets made 83% of the loss (mean 17.2 vs 1.2 on answers)",
+      "set padding targets to −100 → cross_entropy skips them (ignore_index default) → the mean covers real tokens only (8.21 → 2.35) → gradient goes to the answer, not to predicting padding",
+      "keep the first end token after each response as a target → the model is graded on stopping → mask it too and the fine-tuned model runs on past its answer"
+    ],
+    "elevated": [
+      "Masking the instruction as well grades only response tokens (2.35 → 1.20 on 29 of 129 positions) → less signal per example; the book leaves it off, and its exercise found the masked model about 4 points worse, as Shi et al. 2024 did",
+      "The mean is over counted tokens, not examples → one long answer (23 of 29 counted tokens in our batch) outweighs short ones"
+    ],
+    "reference": [
+      "Alpaca-style markers: <code>### Instruction:</code>, <code>### Input:</code> (optional), <code>### Response:</code>; the book adds a one-line preamble",
+      "PyTorch: <code>F.cross_entropy(..., ignore_index=-100)</code> is the default",
+      "Book setup: 1,100 instruction–response pairs, 85/10/5 split, GPT-2 medium (355M), end token ID 50256 as padding",
+      "Book evaluation (§7.8): instruction-tuned Llama 3 8B via Ollama scores each answer 0–100 against the reference"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, explain in 3–5 sentences how one instruction batch is built and graded. Or redraw the 'reads → must predict → counted / −100' table for one short example.",
+    "checklist": [
+      "fields rendered into one fixed template, ending with the end token",
+      "rows padded with the end token to the longest, targets = inputs shifted by one",
+      "padding targets set to −100, which cross_entropy ignores",
+      "the first end token after the answer stays counted so the model learns to stop",
+      "masking the instruction is optional; the book doesn't, and found masking slightly worse"
+    ]
+  },
+  "retrieve": [
+    {
+      "q": "Explain why a base model needs instruction tuning even though it was trained on far more text than any instruction dataset.",
+      "kind": "concept",
+      "answer": [
+        "pretraining teaches continuing text, not answering",
+        "a bare request can be continued in many ways (a letter, another question)",
+        "instruction data shows one format where an answer and a stop always follow the marker"
+      ]
+    },
+    {
+      "q": "Walk through what happens to the 16-token example 'Name the capital of India.' → 'New Delhi.' when it shares a batch with a 44-token example.",
+      "kind": "mechanism",
+      "answer": [
+        "padded with 28 end tokens to length 44",
+        "inputs = tokens 0–42, targets = tokens 1–43",
+        "target 14 is the real end token: kept",
+        "targets 15–42 are padding: set to −100",
+        "optionally the template and instruction targets are set to −100 too"
+      ]
+    },
+    {
+      "q": "Your dataset has long instructions and one-word answers, and only 500 examples. Do you mask the instruction? Argue it, and name the cost.",
+      "kind": "tradeoff",
+      "answer": [
+        "leaning towards not masking: Shi et al. found loss over instructions helps most in exactly this case",
+        "masking would leave very few counted tokens per example",
+        "the cost of not masking: some capacity goes to modelling instructions, and the loss number mixes instruction and answer quality"
+      ]
+    }
+  ],
+  "compare": [
+    {
+      "with": "build-an-llm/training-pairs",
+      "q": "Pretraining and instruction tuning both use inputs shifted by one. What is fundamentally different about which targets count, and why?",
+      "answer": [
+        "pretraining counts every position: all text is worth predicting",
+        "instruction tuning has padding (never worth predicting) and optionally instructions it chooses not to grade",
+        "both use the same cross-entropy; only the −100 mask differs"
+      ]
+    },
+    {
+      "with": "text-to-answer/the-loop",
+      "q": "The Q/A wrapper and the instruction template both steer a base model with text. What does training on the template add that the wrapper alone can't?",
+      "answer": [
+        "the wrapper relies on patterns the model happened to see in pretraining",
+        "training makes the marker → answer → end-token pattern reliable for new kinds of request",
+        "training also teaches the stop, which a wrapper can't guarantee"
+      ]
+    },
+    {
+      "with": "reasoning-models/reward-models-rlhf",
+      "q": "SFT is step 1 of RLHF. What can preference training do that SFT's loss cannot?",
+      "answer": [
+        "SFT rewards matching written responses token by token, so it can only imitate",
+        "preference training scores whole answers and can push beyond the examples",
+        "SFT first makes the model produce answers in the right format to be scored at all"
+      ]
+    }
+  ],
+  "predict": {
+    "q": "Suppose you pad on the left instead of the right (padding first, then the template), still masking padding targets with −100 but passing no attention mask. Does the loss on the answer tokens stay the same? Commit before checking.",
+    "answer": "No. With left padding the real tokens come after the padding, so causal attention lets every real token attend to it, and the positions shift too. Measured on example 1 with no attention mask: the answer losses went from 7.38, 0.13, 1.84, 0.06 (right padding, identical to no padding) to 9.15, 4.57, 3.91, 0.28. Right padding is safe without an attention mask because it only ever comes after the real tokens; left padding needs an attention mask and matching positions."
+  },
+  "apply": {
+    "task": "In the lab, change the collate step so it masks every end-of-text token, including the first one after each response. Rerun section 3 and compare the counted positions and mean loss for (b) with the original.",
+    "done": "Variant (b) now counts 75 positions instead of 78 (mean loss 2.43 instead of 2.35), and you can say which three targets disappeared (the end token after each answer) and what that would do to a fine-tuned model.",
+    "hint": "In the lab, the end token's part is 'response'. A quick way is to also mask any target equal to EOS."
+  },
+  "reflect": [
+    "Which prediction did you get wrong before reading: how much of the loss came from padding?",
+    "What couldn't you explain cleanly: why padding is so costly for a base model, or why right padding needs no attention mask?",
+    "Which relationship is still fuzzy: −100 in the targets → skipped by the loss, or masked targets → what the model learns?",
+    "Would you mask the instruction for your own dataset? What about its instruction and answer lengths decides it?",
+    "When you code ch 7, where in the collate function will you check that exactly one end token per row survives?"
+  ],
+  "revisit": [
+    "build-an-llm/training-pairs",
+    "text-to-answer/the-loop",
+    "z2h-1-toolkit/softmax-and-cross-entropy"
+  ],
+  "prereq": [
+    "build-an-llm/training-pairs"
+  ]
+}

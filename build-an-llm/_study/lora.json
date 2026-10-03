@@ -1,0 +1,131 @@
+{
+  "prime": {
+    "problem": "Fine-tuning every weight needs a gradient and two Adam numbers per weight, about four times the model's own memory, and every fine-tuned variant is a full copy of the model. Without a cheaper way, adapting even a small model to your data needs far more memory than running it.",
+    "fits": "You've traced the model and its matrices in the basics course, and chapter 6 of the book fine-tunes GPT-2 into a spam classifier by training its weights directly. This card prepares appendix E, which reruns that chapter 6 classifier with LoRA.",
+    "expect": [
+      "full fine-tuning vs a frozen model",
+      "optimizer state (Adam's m and v)",
+      "the low-rank detour <code>h = W x + (alpha / r) · B A x</code>",
+      "rank r and alpha",
+      "merging B A back into W"
+    ],
+    "goal": "Count the memory and the trained numbers for full fine-tuning and for LoRA, explain why B starts at zero, spot when a LoRA run has overwritten what the model knew, and merge the result into an ordinary model."
+  },
+  "attend": [
+    "Of the four float32 copies full fine-tuning keeps per weight, which three does freezing W remove, and why does that leave LoRA's memory almost all frozen weights?",
+    "If B started random instead of zero, what would the model's first answers look like, before any training step?",
+    "Why does Qwen's <code>v_proj</code> add fewer trained numbers than <code>q_proj</code> at the same rank?",
+    "Run A's loss reached 0.001 and Run B's stopped at 0.032. Why is the run with the higher loss the better model?",
+    "What property of the detour makes merging exact, and what do you give up once A and B are merged?"
+  ],
+  "core": {
+    "must": [
+      "Adam trains a weight → it stores the weight, its gradient, m and v (4 numbers) → frozen weights need only the first → Qwen float32 drops from 7.90 GB to 1.98 GB before activations",
+      "ΔW = B A with r ≪ d → each wrapped matrix trains r × (d<sub>in</sub> + d<sub>out</sub>) numbers instead of d<sub>in</sub> × d<sub>out</sub> → q and v at r = 8 train 540,672 numbers, 0.109% of Qwen",
+      "B starts at 0 → B A x = 0 at step 0 → the model starts exactly at the base model (identical logits) → training only ever adds a learned change",
+      "few near-identical examples + high learning rate → loss near 0 by memorising → other answers overwritten (India → Veloria) → mix in behaviour to keep, lower the learning rate, and probe questions you didn't train on"
+    ],
+    "elevated": [
+      "The detour is linear → <code>W x + s·B A x = (W + s·B A) x</code> → merging gives an ordinary matrix with zero extra inference cost, but one merged model can't serve two tasks in the same batch",
+      "alpha / r scales the detour → with Adam, changing alpha acts like changing the learning rate → keep alpha / r fixed and you can change r without retuning"
+    ],
+    "reference": [
+      "Qwen layer names <code>q_proj</code>, <code>k_proj</code>, <code>v_proj</code>, <code>o_proj</code>, <code>gate_proj</code>, <code>up_proj</code>, <code>down_proj</code>",
+      "the book's transposed convention <code>x @ A @ B</code> with A as d<sub>in</sub> × r",
+      "the paper's GPT-3 numbers: 1.2 TB → 350 GB memory, 350 GB → 35 MB checkpoint",
+      "the exact counts at r = 4 and 16"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw one LoRA-wrapped matrix: x, the frozen W, A, B, the scale, and the sum. Label the shapes for Qwen's <code>q_proj</code> at r = 8, then write two sentences on why it saves memory and why it starts at the base model.",
+    "checklist": [
+      "W frozen (896 × 896); A is 8 × 896, B is 896 × 8; output W x + (alpha / r) · B A x",
+      "memory: frozen weights need no gradient or Adam state, so only the small A and B carry four copies",
+      "B starts at zero, so B A x = 0 and the first forward pass equals the base model",
+      "after training, W + (alpha / r) · B A is one normal matrix: no extra cost at inference",
+      "the risk: few examples and a high learning rate overwrite other behaviour"
+    ]
+  },
+  "retrieve": [
+    {
+      "q": "Explain why LoRA cuts training memory so much more than it cuts the model's size on disk.",
+      "kind": "concept",
+      "answer": [
+        "training memory is weights + gradients + two Adam numbers per trained weight",
+        "freezing W removes three of the four copies for 99.9% of the weights",
+        "the frozen weights themselves still have to be loaded, so the model's size doesn't shrink; only what's saved per task (A and B) does"
+      ]
+    },
+    {
+      "q": "Walk through what happens to <code>What is the capital of India?</code> on the first forward pass after wrapping <code>q_proj</code> and <code>v_proj</code> with LoRA, and then on the first backward pass.",
+      "kind": "mechanism",
+      "answer": [
+        "forward: each wrapped layer computes W x plus (alpha / r) · B A x, and B = 0 makes the extra term exactly zero, so logits equal the base model's",
+        "backward: W gets no gradient (frozen); B gets a non-zero gradient because A x isn't zero; A's gradient is zero on this first step because it passes through B = 0",
+        "after one Adam step B is non-zero, and from then on both A and B train"
+      ]
+    },
+    {
+      "q": "You have a fixed budget of trained numbers. Would you put it all into <code>q_proj</code> at a higher rank, or spread it over <code>q_proj</code> and <code>v_proj</code> at a lower rank? What did the paper find, and what's the cost of going to all seven linear layers?",
+      "kind": "tradeoff",
+      "answer": [
+        "the paper found spreading over W<sub>q</sub> and W<sub>v</sub> at rank 4 beat W<sub>q</sub> alone at rank 8 (Table 5), and r = 1 already did well for both",
+        "all seven layers on Qwen at r = 8 trains 4,399,104 numbers (0.89%) vs 540,672: more capacity and more room to overwrite behaviour",
+        "memory barely moves either way (1.98 to 2.12 GB); the frozen weights dominate"
+      ]
+    },
+    {
+      "q": "Your LoRA run's training loss is 0.001 after 40 steps on 6 sentences. What do you check before trusting it?",
+      "kind": "tradeoff",
+      "answer": [
+        "ask questions you did not train on and compare with the base model's answers from before training",
+        "a near-zero loss on a handful of sentences usually means memorising",
+        "if old answers broke, mix in examples of behaviour to keep and lower the learning rate"
+      ]
+    }
+  ],
+  "compare": [
+    {
+      "with": "build-an-llm/instruction-tuning",
+      "q": "Instruction tuning decides <i>which tokens</i> the loss counts; LoRA decides <i>which weights</i> the gradient can change. What does each one protect, what does each one fail to protect, and would you use them together?",
+      "answer": [
+        "loss masking stops the model from being graded on the instruction and padding; it says nothing about how many weights move",
+        "LoRA limits which weights move; it doesn't stop the loss from rewarding memorisation or from overwriting behaviour",
+        "they're independent and commonly combined: masked loss, LoRA weights"
+      ]
+    },
+    {
+      "with": "training-agents-roadmap/stage-4-sft-on-traces",
+      "q": "That card runs LoRA on agent traces and compares against the base model. Which step of that workflow would have caught Run A's failure, and why does a base-model baseline matter more with LoRA than it seems?",
+      "answer": [
+        "evaluating the trained model against the base model on held-out tasks",
+        "LoRA starts exactly at the base model, so any difference from the base is what training did, good or bad",
+        "a low training loss alone can't show whether old behaviour broke"
+      ]
+    }
+  ],
+  "predict": {
+    "q": "You rerun Run A but wrap all seven linear layers at r = 16 (8,798,208 trained numbers) and keep the learning rate at 1e-3. Commit: does the India answer get better, worse, or stay broken, and why?",
+    "answer": "Worse, and not in the way you might guess. We ran it: instead of memorising faster, training became unstable. The loss rose from 4.06 to 7.83 by step 10 and was still 2.32 at step 40, and every answer turned to noise like <code>is is is capital of of of</code>. With about 16 times as many trained numbers, a learning rate that was already too high moves the model too far each step. More capacity doesn't protect behaviour: the data mix and the learning rate do. Try it by changing <code>QV</code> to <code>ALL</code> and <code>R</code> to 16 in the lab."
+  },
+  "apply": {
+    "task": "Without running anything, compute how many numbers LoRA trains if you wrap <code>k_proj</code> and <code>o_proj</code> instead of <code>q_proj</code> and <code>v_proj</code>, at r = 4, across all 24 layers. (Qwen: <code>k_proj</code> is 896 → 128, <code>o_proj</code> is 896 → 896.) Then change the target tuple in <code>labs/lora.py</code> and check.",
+    "done": "Your hand count is 270,336, exactly the same as q and v at r = 4, and the lab prints it. You can explain why: the two pairs have the same shapes, just swapped.",
+    "hint": "Each wrapped matrix adds r × (d<sub>in</sub> + d<sub>out</sub>). For <code>k_proj</code>: 4 × (896 + 128)."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: the memory saving, or what Run A did to the other answers?",
+    "What couldn't you explain cleanly: why B starts at zero, or why merging is exact?",
+    "Which relationship is still fuzzy: frozen weights → less optimizer state, or fewer trained numbers → still able to break behaviour?",
+    "Before appendix E, which layers do you expect the book to wrap, and how many trainable numbers will you count?",
+    "What would you check first if your appendix E classifier's accuracy dropped after LoRA training?"
+  ],
+  "revisit": [
+    "text-to-answer/ffn-and-experts",
+    "z2h-10-gpt2/optimizer-recipe",
+    "build-an-llm/instruction-tuning"
+  ],
+  "prereq": [
+    "z2h-2-micrograd/mlp-and-training-loop"
+  ]
+}
