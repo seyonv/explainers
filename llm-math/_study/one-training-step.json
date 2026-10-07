@@ -1,0 +1,76 @@
+{
+  "prime": {
+    "problem": "Each earlier card taught one stop on its own. Training needs every stop in order, with the right shapes, in both directions, and one missed array or swapped transpose breaks the whole step.",
+    "fits": "The capstone. It strings together the forward cards (embedding to loss), the four backward rules from Part 2, and the SGD and Adam updates from the card before, on the same tiny model, so you can do the full step on paper and match PyTorch.",
+    "expect": ["the 14 forward stops and their shapes", "the loss 2.2067", "four backward rules: p − y, matmul products, <code>+</code> copies, local slopes", "SGD vs Adam's first step", "the PyTorch check, 5.6e-16"],
+    "goal": "Run one training step of the tiny transformer by hand along row 2, match <code>tiny.out</code> to 4 decimals, and explain why the loss falls to 1.3544 with SGD and 1.0965 with Adam."
+  },
+  "attend": [
+    "Why does following only row 2 still exercise every weight matrix in the block?",
+    "Which forward arrays does the backward pass need to keep, and for which rule?",
+    "Why do the residual <code>+</code> stops make dx0 stronger than the attention branch alone would?",
+    "Why does SGD at lr 1 lower the mean loss but make position 2 worse, while Adam's first step lowers all three?",
+    "What would a loss of 0.0002 on these 3 tokens actually prove about the model?"
+  ],
+  "core": {
+    "must": [
+      "ids → x0 = E[ids] + P → LN1 → Q, K, V → S = QKᵀ/2, masked → A = softmax(S) → C = AV → o → x1 = x0 + o → u → f → x2 = x1 + f → h → z → p → L = mean −ln p[target] = 2.2067",
+      "Backward is the forward list in reverse → each stop has one rule: p − y at the top, dW = Xᵀ dY and dX = dY Wᵀ at every matmul, <code>+</code> copies, and in-place functions multiply by their local slope → 220 gradients with the same shapes as the weights → they match PyTorch to 5.6e-16",
+      "The rules need the forward arrays (h for dWout, u for GELU′, A for softmax backward, σ for LayerNorm) → training must keep every forward array until its backward rule has used it → a training step needs memory for the activations, not just the weights",
+      "SGD steps by lr × gradient → large gradients take large steps, so lr 1 overshoots position 2 (2.6985 → 3.0471) while the mean falls to 1.3544 → Adam's first step is lr × sign(g), 0.1 for every weight with a non-zero gradient → all three positions fall, mean 1.0965",
+      "30 Adam steps on 3 tokens → training loss 0.0002, p[target] 0.9998 → but the loss on the unseen text <code>cat sat on</code> rises 2.5157 → 6.4341 → a low training loss on tiny data is memorising, not learning"
+    ],
+    "elevated": [
+      "Following row 2 works because causal attention lets the last token see all three → its row touches every weight; rows 0–1 of K and V are copied, then one cell is spot-checked → about 2 hours on paper instead of a day",
+      "Gradients reach only weights that took part → dE rows 3–4 (<code>on</code>, <code>mat</code>) are exactly 0, and attention row 0 (fixed at 1) passes back exactly 0 to its scores → dWq stays small (largest 0.2320)"
+    ],
+    "reference": [
+      "Shapes: x0, a, Q, K, V, C, o, x1, f, x2, h are 3 × 4; S and A 3 × 3; u 3 × 8; z and p 3 × 5",
+      "Check cells (row 2): a[2,0] 1.5597, S[2] [0.4570, 2.0006, −2.1253], A[2] [0.1737, 0.8132, 0.0131], u[2,0] 1.4082, z[2,4] 2.4248, p[2,3] 0.0673",
+      "Backward checks: dz[2,3] −0.3109, dWout[1,3] −0.6103, dx2[2,0] 0.4440, du[2,0] −0.3531, dW1[0,0] −0.4500, dx1[2,0] 0.6984, dS[2,1] 0.1109, dx0[2,0] 0.7182",
+      "220 weights: E 20, P 12, Wq Wk Wv Wo 64, bo 4, W1 32, c1 8, W2 32, c2 4, Wout 20, three LayerNorms 24",
+      "Raschka's recipe: AdamW, lr 0.0004, weight decay 0.1 (§5.2); the PyTorch loop pattern is A.7",
+      "GPT-2 124M: 12 blocks, hidden 768, vocab 50,257, context 1,024; Qwen2.5-0.5B: 24 blocks, hidden 896, 494,032,768 weights"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw the down-then-up loop: the 14 forward stops on the left, the loss at the bottom, the gradient rule for each stop on the right, and the update at the top. Then say in 3–5 sentences why the loss falls after one step.",
+    "checklist": [
+      "the forward stops in order, with the two <code>+</code> stops that add a branch back",
+      "the loss as the mean of −ln p[target] over 3 positions, 2.2067",
+      "backward undoes the stops in reverse, using four rules",
+      "each gradient has its array's shape; there are 220 weight gradients",
+      "SGD steps by lr × g, Adam's first step by lr × sign(g); loss 1.3544 or 1.0965 after",
+      "PyTorch autograd agrees to 5.6e-16"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain to a friend what one training step does, in four moves, without using the word gradient until the third move.", "kind": "concept", "answer": ["forward: turn the 3 tokens into next-word probabilities", "loss: average −ln of the right word's probability, 2.2067", "backward: for every weight, how much a small nudge would change the loss (the gradient)", "update: move every weight a little the downhill way, so the loss falls"]},
+    {"q": "Walk the backward pass from dz to dx1 for row 2, naming the rule used at each stop.", "kind": "mechanism", "answer": ["dz = (p − y)/3, e.g. −0.3109 on <code>on</code>", "dh = dz Woutᵀ (matmul rule), dWout = hᵀ dz", "dx2 = LayerNorm backward of dh, 0.4440 at [2,0]", "df = dx2, because the <code>+</code> copies", "du = (df W2ᵀ) × GELU′(u), then dW1 = LN2(x1)ᵀ du", "dx1 = dx2 + LayerNorm-2 backward of du W1ᵀ: 0.4440 + 0.2543 → 0.6984"]},
+    {"q": "You have 2 hours and a calculator. Which entries do you compute fully, which do you copy, and what do you give up?", "kind": "tradeoff", "answer": ["compute row 2 fully at every stop, since it touches every weight", "copy rows 0–1 of a, K, V, dz and du where row 2 or a weight gradient needs them, and spot-check one copied cell", "compute only a few weight gradients (dWout[1,3], dW1[0,0]) and the dS row", "you give up redoing the forward pass after the update; run the lab for 1.3544 and 1.0965"]},
+    {"q": "Why can a model with 220 weights reach loss 0.0002 on its training text while getting worse on another text?", "kind": "tradeoff", "answer": ["3 training positions and 220 weights: plenty of freedom to fit three answers exactly", "nothing in the loss rewards fitting any other text", "the unseen text's loss rose 2.5157 → 6.4341 after 30 Adam steps", "only a loss on held-out text measures learning"]}
+  ],
+  "compare": [
+    {"with": "llm-math/tiny-net-by-hand", "q": "That card ran the same four moves on 6 weights. What is the same, and what does the transformer add that the 6-weight network didn't need?", "answer": ["same loop: forward, loss, backward in reverse, update", "same rules: chain rule, matmul products, a gate's local slope", "new: rows that mix through attention and softmax, LayerNorm backward over a whole row, and the <code>+</code> stops where gradients add", "new: a loss averaged over 3 positions, so dz carries a /3"]},
+    {"with": "llm-math/gradient-descent-and-adam", "q": "That card swept learning rates. Using this card's numbers, when does one step's success tell you a learning rate is good, and when doesn't it?", "answer": ["one SGD step at lr 1 lowered the mean to 1.3544, which looks fine", "but it made position 2 worse, and after 30 steps lr 1 bounces back up to 1.2475", "Adam lr 0.1 lowered all three on step 1 and kept falling", "judge a learning rate over many steps, not one"]},
+    {"with": "z2h-6-backprop-ninja/chunked-forward-and-cmp", "q": "Karpathy checks a hand-written backward pass against autograd tensor by tensor. How is that like this card's 5.6e-16 check, and why do both split the forward pass into small named arrays?", "answer": ["both compare every hand gradient with autograd's and report the largest difference", "small named arrays give each gradient a home and a shape", "a mismatch can then be traced to the first array where it appears", "both need float64 or careful tolerances to get near-zero differences"]}
+  ],
+  "predict": {
+    "q": "Of all 220 weights, which one do you think gets the largest gradient on this step: a cell of Wout, of W2, of the embedding table, or something else? Commit, then check with the lab.",
+    "answer": "Something else: the LayerNorm-2 scale g2[3], with gradient −0.8198. Next come b1[3] (0.7496), then P[2,0] and E[2,0] (both 0.7182, since they get the same dx0 row), then W2[5,3] (−0.6837). The scales and shifts are only 24 of the 220 weights, but each one multiplies a whole column of normalised values, so its gradient adds up over all 3 rows."
+  },
+  "apply": {
+    "task": "Do the 2-hour plan on the worksheet: forward along row 2, the loss, the backward checks dz[2,3], dWout[1,3], dx2[2,0], du[2,0], dW1[0,0] and dS row 2, then the SGD and Adam updates for Wout[1,3]. Then run <code>llm-math/labs/one-training-step.py</code> and compare it line by line.",
+    "done": "Every number you computed matches tiny.out to 4 decimals: for example a[2,0] 1.5597, A[2] [0.1737, 0.8132, 0.0131], p[2,3] 0.0673, L 2.2067, dWout[1,3] −0.6103, dx2[2,0] 0.4440, dW1[0,0] −0.4500, Wout[1,3] → 0.2103 (SGD) and −0.3000 (Adam).",
+    "hint": "Keep 5–6 digits in the middle steps. If a number is off in the first digit, go back to the first stop where it differs from tiny.out."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: that every position's loss would fall, or which weight gets the biggest gradient?",
+    "What couldn't you explain cleanly: LayerNorm backward, or the softmax backward in attention?",
+    "Which relationship is still fuzzy: a forward stop → the arrays its backward rule needs, or a <code>+</code> → gradients adding where paths meet?",
+    "Where did your hand numbers drift from tiny.out, and was it rounding or a real error?",
+    "What would you check first if your own GPT's loss fell on the training text but rose on the validation text?"
+  ],
+  "revisit": ["llm-math/tiny-net-by-hand", "llm-math/embedding-lookup", "llm-math/attention-scores", "llm-math/attention-output", "llm-math/norm-and-residual", "llm-math/ffn-and-gelu", "llm-math/logits-and-loss", "llm-math/grad-softmax-ce", "llm-math/grad-linear-layer", "llm-math/grad-ffn-norm-residual", "llm-math/grad-attention", "llm-math/gradient-descent-and-adam"],
+  "prereq": ["llm-math/tiny-net-by-hand", "llm-math/gradient-descent-and-adam"]
+}

@@ -1,0 +1,72 @@
+{
+  "prime": {
+    "problem": "The model's layers end in raw scores that can be negative or huge. You can't average with them or sample a word from them until they're positive and add to 1, and the obvious fix (divide by the sum) gives negative \"probabilities\".",
+    "fits": "First stop that turns vectors into weights. It takes the rows of numbers that the embedding and matrix-multiply cards produce, and it's used twice: on attention scores (next card) and on the logits at the top (the loss card).",
+    "expect": ["exp, then divide by the row's total", "subtracting the max (overflow)", "temperature z / T", "−inf → a weight of exactly 0"],
+    "goal": "Compute a softmax row by hand with the max trick, explain why exp is used, and predict what temperature and masking do to the shares."
+  },
+  "attend": [
+    "Dividing the logits by their sum also makes them add to 1. What exactly goes wrong with it on the tiny model's last row?",
+    "Why does subtracting the row's largest score leave every share unchanged, and what does it prevent?",
+    "Why does <code>mat</code>'s share relate only to the <i>gap</i> between its score and the others, not to the scores' size?",
+    "If temperature can sharpen or flatten the shares, why can it never change which word is on top?",
+    "How does a score of −inf let attention ignore future tokens without removing them from the row?"
+  ],
+  "core": {
+    "must": [
+      "exp of any number is positive and grows with its input → every share is above 0 and the order of the scores is kept → dividing by the total makes the row add to 1 (last logits row: total 15.2629, <code>mat</code> 11.3000 → 0.7404)",
+      "exp(a) ÷ exp(b) = exp(a − b) → only the gaps between scores matter → subtracting any constant c from the whole row cancels as e<sup>−c</sup> on the top and bottom → subtracting the max gives the same p, and the largest exp becomes exactly 1",
+      "float32 exp overflows above 88.72 → exp(1000) = inf and inf ÷ inf = nan → shifting [1000, 999, 998] to [0, −1, −2] gives [0.6652, 0.2447, 0.0900] safely",
+      "Dividing by T > 0 scales every gap by the same factor and keeps the order → small T widens the gaps (<code>mat</code> 0.9652 at T 0.5), big T narrows them (0.4628 at T 2) → a sampling dial that can't change the top word"
+    ],
+    "elevated": [
+      "exp(−inf) = 0 exactly → a masked score contributes nothing to the top or bottom of the fraction → the causal mask is just −inf written into the score grid before softmax",
+      "The max trick prevents overflow but not underflow → with very large logits the right word's p rounds to 0 and −log p is inf → real code computes log-softmax in one step"
+    ],
+    "reference": [
+      "Softmax always runs along the last axis, one row at a time: <code>exp(z) / exp(z).sum(-1, keepdims=True)</code>",
+      "exp overflow ceilings: float32 and bfloat16 88.72, float16 11.09",
+      "PyTorch: <code>torch.softmax(x, dim=-1)</code> does the max subtraction internally",
+      "Raschka §3.3.1 (attention weights), §5.3.1 (temperature)"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, write the softmax formula and explain in 3–4 sentences why it uses exp, why code subtracts the max first, and what temperature does. Or redraw the five-bar sketch: scores → exp → ÷ total → shares.",
+    "checklist": [
+      "exp makes every score positive and keeps their order; dividing by the total makes the row add to 1",
+      "dividing raw scores by their sum gives negative values and values above 1",
+      "only gaps matter, so a shift by the max cancels; it stops exp from overflowing (above 88.72 in float32)",
+      "temperature divides the scores by T: small T sharpens, big T flattens, the order never changes",
+      "−inf gives exactly 0, which is how masking works; softmax is used for attention weights and for next-token probabilities"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain why softmax exponentiates the scores instead of dividing them by their sum, using what goes wrong on the tiny model's last logits row.", "kind": "concept", "answer": ["the scores sum to 2.0667 and z / sum gives −0.2591 and 1.1732: below 0 and above 1", "a row summing to 0 would divide by zero", "exp is always positive, keeps the order, and turns gaps into ratios"]},
+    {"q": "Walk through computing softmax of [0.4570, 2.0006, −2.1253] the way <code>tiny.py</code> does it, naming each intermediate.", "kind": "mechanism", "answer": ["subtract the max, 2.0006 → [−1.5436, 0, −4.1259]", "exp → [0.2136, 1, 0.0161]", "total 1.2298", "divide → [0.1737, 0.8132, 0.0131], row 3 of A"]},
+    {"q": "Your model is generating repetitive, safe text. Would you raise or lower the temperature, what do you gain, and what do you risk?", "kind": "tradeoff", "answer": ["raise T: the gaps shrink, so lower-ranked words get more share and get sampled more", "gain: variety", "risk: more nonsense, because unlikely words get picked more often; at T 2 <code>mat</code> drops from 0.7404 to 0.4628", "T only reshapes the shares; it can't make a better word the top one"]},
+    {"q": "Removing the max-subtraction line from <code>tiny.py</code> changed nothing. Argue whether it's safe to drop it from a real model's code.", "kind": "tradeoff", "answer": ["tiny's largest logit is 2.4248, far under the 88.72 ceiling, so nothing overflowed", "real models can produce larger scores, and float16 overflows above just 11.09", "with Wout × 1000 the copy without it gave nan; the subtraction costs one pass over the row", "keep it: it's nearly free and changes no answer"]}
+  ],
+  "compare": [
+    {"with": "llm-math/attention-scores", "q": "Softmax sits right after QKᵀ/√d. Dividing by √d and dividing by a temperature T are both a division before softmax. What does each one fix, and when is each chosen?", "answer": ["√d is fixed by the head size and keeps scores from growing with d, so attention doesn't saturate during training", "T is chosen at generation time to make sampling sharper or flatter", "both rescale the gaps, so both keep the order", "√d is part of the model; T is not used in training"]},
+    {"with": "llm-math/logits-and-loss", "q": "The loss takes −log of one softmax output. Why do exp (in softmax) and log (in the loss) pair so well, and what numerical problem does computing them separately cause?", "answer": ["log undoes exp, so −log p = −z<sub>target</sub> + log Σ exp(z): no division left", "separately, a tiny p can round to 0 and −log gives inf", "so real code uses log-softmax / cross-entropy in one step, with the same max subtraction inside"]},
+    {"with": "z2h-3-bigram/softmax-as-exp-normalise", "q": "Karpathy's bigram model also exponentiates and normalises, but its scores come from one table lookup. What is the same, and what does a transformer change about where the scores come from?", "answer": ["same function: exp, then divide by the row's total", "bigram: a row of the table is the score row, picked by the previous character", "transformer: the score row is computed from the whole context through attention and the FFN", "the softmax step itself doesn't care where the scores came from"]}
+  ],
+  "predict": {
+    "q": "Attention row 1 has one real score and two −inf cells. Suppose instead that every cell in a row were −inf (a token allowed to see nothing). What would softmax return, and why?",
+    "answer": "nan for every entry. Every exp is 0, so the total is 0, and 0 ÷ 0 is undefined. Even the max trick can't help, because the max is −inf and −inf − (−inf) is nan. That's why the causal mask always leaves the diagonal open: each token can at least see itself."
+  },
+  "apply": {
+    "task": "Take the tiny model's last logits row [0.4963, −0.5355, −0.3458, 0.0269, 2.4248]. On paper, compute softmax at T = 1 using the max trick, then check your result and the T = 0.5 and T = 2 rows by running <code>python llm-math/labs/why.py</code>. Finally, in a scratch copy of <code>tiny.py</code>, remove the max-subtraction line, multiply <code>Wout</code> by 1000, and see what happens to the last row of <code>p</code>.",
+    "done": "Your hand result is [0.1076, 0.0384, 0.0464, 0.0673, 0.7404], why.py prints 0.9652 and 0.4628 for <code>mat</code> at T 0.5 and 2, and your broken copy shows nan for <code>mat</code>.",
+    "hint": "After subtracting 2.4248 the exps are [0.1454, 0.0518, 0.0626, 0.0909, 1.0000], and their total is 1.3507."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: the shares for [1000, 999, 998], or whether deleting the max line would change the loss?",
+    "What couldn't you explain cleanly: why the shift cancels, or why temperature can't change the order?",
+    "Which relationship is still fuzzy: exp → gaps become ratios, or ratios → shift invariance → the max trick?",
+    "Where will you see this softmax again in the next card, and what will feed it?",
+    "Could you explain to someone why a masked weight is exactly 0 and not 0.0001?"
+  ],
+  "revisit": ["llm-math/vectors-and-matmul", "z2h-1-toolkit/exp-and-log"],
+  "prereq": ["llm-math/vectors-and-matmul"]
+}

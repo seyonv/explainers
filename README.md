@@ -146,6 +146,27 @@ rented GPU.
 | 4 | Judge the answers with another LLM (§7.8) | book `ch07` | `brew install ollama`, then `ollama serve` in one terminal and `ollama pull llama3` in another, then `python ollama_evaluate.py --file_path instruction-data-with-response.json` |
 | 5 | LoRA | hub `build-an-llm/labs/`, then book `appendix-E/01_main-chapter-code/` | `cd build-an-llm && HF_HUB_OFFLINE=1 python labs/lora.py`, then `appendix-E.ipynb` |
 
+### Alongside Part 2 · The math of an LLM
+
+Course: `llm-math/`. Every equation the book's GPT uses, worked on one tiny model you can compute
+by hand: 5 words, 3 tokens, 4 numbers per vector, 220 weights. Read a card the evening before its
+chapter (the course overview has the map). Nothing downloads; each lab runs in a second.
+
+```bash
+cd ~/Desktop/repos/explainers/llm-math
+python labs/tiny.py
+```
+
+| Lab (`llm-math/labs/`) | What it shows |
+|---|---|
+| `tiny.py` | The whole model: one training step in plain numpy (forward, loss, backward, update), checked against PyTorch's autograd for all 220 weights. Every card's numbers come from here. |
+| `why.py` | The "why" measurements: the nudge test, softmax overflow, why √d, two linear layers collapsing, activations through depth, residuals, RoPE, learning rates, Adam |
+| `tiny_net.py` | The 6-weight network that card 3 trains on paper |
+| `<card>.py` | One per card (`attention-scores.py`, `grad-attention.py`, …): that card's worked example and its "Change it" experiment |
+
+The finish line is `worksheet.html`: print it, do the step by hand, and check your numbers against
+`python labs/one-training-step.py`.
+
 ### After the paths (optional)
 
 - [karpathy/nanoGPT](https://github.com/karpathy/nanoGPT): a clean, fast GPT training repo.

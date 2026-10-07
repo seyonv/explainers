@@ -1,0 +1,117 @@
+{
+  "prime": {
+    "problem": "Equations you've only read leave silent gaps: you can nod at <code>softmax(QKᵀ/√d)V</code> and still not know what number it gives, why the √d is there, or what <code>loss.backward()</code> computes. Without the whole chain in one order, each equation is an isolated fact and the book's code becomes something you trust rather than understand.",
+    "fits": "The map for this course. It sits beside Raschka's chapters 2–5 and appendix A, and after the LLM basics route that traced a question through Qwen in words. Here the same route is done in numbers, on one tiny model, forward and then back.",
+    "expect": [
+      "the forward pass as a chain of equations from token IDs to a loss",
+      "the backward pass as the same stops in reverse, by the chain rule",
+      "the update <code>W ← W − η·dW</code>",
+      "a measured reason for each odd-looking piece (√d, the max trick, residuals, LayerNorm, GELU, Adam)"
+    ],
+    "goal": "Name every stop of one training step in order, with its forward equation, its backward rule and its shape, say which measured problem each piece solves, and know which card to open when one link is shaky."
+  },
+  "attend": [
+    "Which forward values does the backward pass reuse, and why does that force the forward pass to run first?",
+    "Why do only 8 of the 220 weights get a zero gradient, and which ones are they?",
+    "Which pieces protect the size of the numbers going forward, and which protect the gradient coming back?",
+    "Which single backward rule covers seven of the model's weight matrices?",
+    "Where does the course's tiny model differ from Qwen and Llama, and which cards cover the modern versions?"
+  ],
+  "core": {
+    "must": [
+      "The loss is a chain of functions of the weights → the chain rule multiplies each stop's local slope from the loss backward → one backward sweep gives all 220 gradients at once, for about the cost of two more forward passes",
+      "Each backward rule needs the activations from its own stop (h for dWout, A for dS) → the forward values must be kept → training memory holds activations as well as weights",
+      "Repeated multiplications grow or shrink numbers geometrically → std 3.22e35 forward without care, gradient 3.52e-16 back without residuals → small init plus LayerNorm, √d and the residual each keep one of those products near 1",
+      "Every weight moves by −η·dW → too big a step overshoots (lr 1.0 bounces to 1.2475, lr 10 to inf) and too small crawls (lr 0.01: 0.8542 after 30 steps) → Adam scales each weight's step so small gradients still move"
+    ],
+    "elevated": [
+      "Softmax followed by −log has the gradient p − y → no Jacobian is ever built at the top → frameworks fuse the two into one cross_entropy call for speed and stability",
+      "The linear rule dW = xᵀ·dy sums over positions → the same weight's gradient adds up across every token → longer sequences give each update more signal for the same weights"
+    ],
+    "reference": [
+      "the tiny model's sizes: vocab 5, 3 tokens, d_model 4, FFN 8, 220 weights",
+      "the check numbers: L = 2.2067, S[2,1] = 2.0006, dz[2,3] = −0.3109, dWout[1,3] = −0.6103",
+      "Raschka sections per card (the table in the overview)",
+      "GPT-2 and Qwen shapes"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, draw the down-and-up loop of one training step: each forward stop with its equation on the left, the matching backward rule on the right, and the update at the bottom. Then write two sentences on why the backward pass runs in reverse.",
+    "checklist": [
+      "forward: embed + positions → LayerNorm → Q, K, V → scores ÷ √d with mask → softmax → A·V and Wo → residual → LayerNorm → FFN with GELU → residual → final LayerNorm → logits → −ln p[target]",
+      "backward starts at dz = (p − y)/T and uses dW = xᵀ·dy, dx = dy·Wᵀ at every linear layer",
+      "+ copies the gradient to both branches; softmax backward is A ⊙ (dA − Σ dA⊙A)",
+      "the update is W ← W − η·dW for every weight (Adam rescales per weight)",
+      "reverse order because each gradient needs the one after it and the forward values at its stop"
+    ]
+  },
+  "retrieve": [
+    {
+      "q": "Explain what the forward pass and the backward pass each produce, and why training needs both.",
+      "kind": "concept",
+      "answer": [
+        "forward: the loss, one number for how wrong the model is on this input (2.2067 here)",
+        "backward: a gradient for every weight, how much the loss moves per nudge of that weight",
+        "the update needs the gradients, and the gradients need the forward values and the loss"
+      ]
+    },
+    {
+      "q": "Walk through how the gradient gets from the loss back to the embedding row for <i>cat</i>.",
+      "kind": "mechanism",
+      "answer": [
+        "dz = (p − y)/3 at the logits; dh = dz·Woutᵀ; back through the final LayerNorm",
+        "at x2 = x1 + f the gradient copies down the highway and also goes through the FFN (GELU′, W1, W2, LayerNorm 2)",
+        "at x1 = x0 + o it copies again and goes through attention (Wo, A·V, softmax backward, Q, K, V, LayerNorm 1)",
+        "dx0 row 1 lands in dE row 1 (cat), and in dP row 1"
+      ]
+    },
+    {
+      "q": "Your model's loss turns into nan in the first few steps. Using this course's measurements, name three suspects and how each would show itself.",
+      "kind": "tradeoff",
+      "answer": [
+        "softmax without the max subtraction: exp overflows (above 88.72 in float32) and gives inf/inf = nan",
+        "a learning rate too large: lr 10 sends the tiny model's loss to 20.6 then inf",
+        "badly scaled init with no normalisation: activations grow to 1e35 through depth",
+        "check them in that order: the cheapest fix is the max trick, then lr, then init"
+      ]
+    }
+  ],
+  "compare": [
+    {
+      "with": "text-to-answer/the-whole-route",
+      "q": "That card traces the same route through Qwen2.5-0.5B in words and shapes. What does doing it on a 220-weight model add, and what does it lose?",
+      "answer": [
+        "adds: every number can be produced by hand and checked, and the backward pass appears at all",
+        "loses: real behaviour (Qwen actually answers New Delhi; the tiny model only memorises)",
+        "use the tiny model to learn the equations, Qwen to see what they do at scale"
+      ]
+    },
+    {
+      "with": "z2h-6-backprop-ninja/_overview",
+      "q": "Backprop ninja also derives gradients by hand. How does its route differ from Part 2 here?",
+      "answer": [
+        "ninja works on an MLP with BatchNorm, in Karpathy's code and order",
+        "this course does a transformer block: attention backward, LayerNorm backward, residuals",
+        "the shared core is the same: the linear rule by shapes and the softmax/cross-entropy p − y"
+      ]
+    }
+  ],
+  "predict": {
+    "q": "Suppose the tiny model got a fourth input token. Without running anything, which gradients would get more terms in their sums, and which embedding rows would still get zero gradient?",
+    "answer": "Every dW from the linear rule sums over positions, so each weight matrix's gradient gains a fourth term, and the loss divides by 4 instead of 3. Attention's score grid grows to 4 × 4. Embedding rows still get zero gradient for any token that isn't in the input: if the fourth token were <i>on</i>, only <i>mat</i>'s row would stay zero."
+  },
+  "apply": {
+    "task": "Open <code>labs/tiny.py</code> and change <code>targets</code> from <code>[1, 2, 3]</code> to <code>[1, 2, 4]</code> (the last target becomes <i>mat</i>, the word the random model already favours). Before running, predict whether the loss goes up or down, and roughly how far.",
+    "done": "You predicted a lower loss, ran it, and got 1.4074 (down from 2.2067), and you can say why: p[mat] at position 2 is 0.7404, so −ln p there is 0.3006 instead of 2.6985.",
+    "hint": "Only the last position's term changes. Average the new −ln p with the other two positions' 1.9390 and 1.9825."
+  },
+  "reflect": [
+    "Which prediction on this page did you get wrong, and which card would fix it?",
+    "Which stop could you not write the equation for from memory?",
+    "Which relationship is still fuzzy: forward value → backward rule (why dWout needs h), or backward rule → update (why the step is −η·dW)?",
+    "Which of the measured 'why' numbers surprised you most?",
+    "Which chapter of the book will you code next, and which cards do you read first?"
+  ],
+  "revisit": ["text-to-answer/the-whole-route"],
+  "prereq": []
+}

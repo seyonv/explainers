@@ -1,0 +1,141 @@
+{
+  "prime": {
+    "problem": "The first layers of a deep model learn only from the gradient that reaches them. Through a plain stack of 24 tanh layers that gradient arrives at size 3.52e-16, so the bottom layers barely train. The backward pass needs a path that doesn't shrink, and it needs correct rules for the GELU and LayerNorm it passes through.",
+    "fits": "Comes after the output head's gradient (cards 13 and 14), which delivers <code>dx2</code>. It runs the forward pass of the feed-forward half of the block in reverse: back through <code>x2 = x1 + f</code>, GELU and LayerNorm 2, reusing the linear-layer rule for <code>W2</code> and <code>W1</code>.",
+    "expect": [
+      "a + copies the gradient to both inputs; a value used twice gets the sum",
+      "GELU backward: du = dgu ⊙ GELU′(u)",
+      "dW1 = bnᵀ · du",
+      "LayerNorm backward: subtract the mean, subtract x̂ · mean(dx̂ ⊙ x̂), divide by σ"
+    ],
+    "goal": "Carry row 2 of dx2 back to dx1 on the tiny model and match tiny.py to 4 decimals, explain why LayerNorm's backward output adds to zero, and say with a measured number why the residual add keeps deep stacks trainable."
+  },
+  "attend": [
+    "x1 feeds both the stream and LayerNorm 2. Why does that make dx1 a sum, and which of the two parts is an exact copy of dx2?",
+    "Which entries of du end up tiny, and what about their forward values of u decides that?",
+    "LayerNorm's forward divides by σ. Why is dividing the gradient by σ alone wrong, and what direction does the naive answer wrongly push x1 in?",
+    "Why does the second subtraction in LayerNorm's backward use x̂ itself as the direction to remove?",
+    "If you deleted only the highway term from the backward code, which weights' gradients would change and which would stay exactly the same?"
+  ],
+  "core": {
+    "must": [
+      "x2 = x1 + f has slope 1 for both inputs → both get an exact copy of dx2 → x1 also feeds LayerNorm 2, so its gradient is the sum of the copy and the branch's return → row 2: [0.4440, 0.0408, 0.0180, −0.5029] + [0.2543, −0.3208, 0.1939, −0.1274] = [0.6984, −0.2800, 0.2120, −0.6303]",
+      "GELU acts on each number alone → its backward multiplies each gradient by GELU′ at that number's own u → open units (u = 1.4082, slope 1.1290) pass gradient at full strength, closed ones (u = −1.6184, slope −0.1219) pass a little, sign-flipped → du[2,0] = −0.3531, du[2,1] = 0.0106",
+      "LayerNorm removes the row's mean and spread in the forward pass → shifting or stretching the input row can't change the output (shift changes it by 1.1e-16) → so the gradient can have no shift or stretch part → its backward subtracts mean(dx̂) and x̂ · mean(dx̂ ⊙ x̂), and every row of the result adds to 0",
+      "Each + passes a full-strength copy back → with a + around every layer the gradient reaches the bottom undiminished → at depth 24 the input gradient is 0.371 with residuals vs 3.52e-16 without"
+    ],
+    "elevated": [
+      "dW1 = bnᵀ · du sums one product per token → the token with the big gradient dominates: dW1[0,0] = 0.0023 − 0.0745 − 0.3778 = −0.4500, almost all from <code>sat</code>",
+      "Dividing by σ alone (the naive LayerNorm backward) gives row 2 = [0.3075, −0.2043, 0.8993, 0.7586], which adds to 1.7611 → it spends gradient on a shift the forward pass erases, and every entry is wrong"
+    ],
+    "reference": [
+      "Row 2 of LayerNorm 2: x̂ = [1.0700, 0.8947, −0.7327, −1.2320], σ = 0.7813, dx̂ = [0.2402, −0.1596, 0.7026, 0.5927], mean(dx̂) = 0.3440, mean(dx̂ ⊙ x̂) = −0.2827",
+      "dx̂ = dy ⊙ γ; γ = 1 at the start, so dx̂ = dbn",
+      "LayerNorm's own gradients: dγ = Σ over tokens of dy ⊙ x̂, dβ = Σ over tokens of dy",
+      "Bias gradients: dc1 = du summed over tokens, dc2 = df summed over tokens",
+      "RMSNorm's backward has only the x̂ subtraction, because RMSNorm never subtracted the mean"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, write the three backward rules (through +, through GELU, through LayerNorm) and explain in 3–4 sentences why LayerNorm's backward has two subtractions and why the + makes deep models trainable. Or redraw the split sketch: dx2 arriving, the two copies, the branch's four steps, and the sum at x1.",
+    "checklist": [
+      "through +: both inputs get a copy; a value used twice sums its gradients, so dx1 = dx2 + LN2 back",
+      "through GELU: du = dgu ⊙ GELU′(u), each number scaled by its own slope",
+      "dW1 = bnᵀ · du, the linear-layer rule",
+      "LayerNorm: dx = (dx̂ − mean(dx̂) − x̂ · mean(dx̂ ⊙ x̂)) / σ; the result adds to 0 and has no part along x̂",
+      "the subtractions exist because LayerNorm erased the mean and the spread, so the loss can't depend on them",
+      "the copy at each + reaches the bottom at full size: 0.371 vs 3.52e-16 at depth 24"
+    ]
+  },
+  "retrieve": [
+    {
+      "q": "Explain why a gradient that reaches x1 is bigger than the one that left x2, in terms of how many places x1 is used.",
+      "kind": "concept",
+      "answer": [
+        "x1 is used on the stream (x2 = x1 + f) and as LayerNorm 2's input",
+        "the + gives the stream use an exact copy of dx2",
+        "the branch use returns its own gradient through W2, GELU, W1 and LayerNorm 2",
+        "the two add: row 2 size 1.0042 vs dx2's 0.6724"
+      ]
+    },
+    {
+      "q": "Walk row 2's gradient from dx2 to dx1, naming each step and the shape it produces.",
+      "kind": "mechanism",
+      "answer": [
+        "df = dx2, 3 × 4 (copy at the +)",
+        "dgu = df @ W2ᵀ, 3 × 8",
+        "du = dgu ⊙ GELU′(u), 3 × 8 (du[2,0] = −0.3127 × 1.1290 = −0.3531)",
+        "dbn = du @ W1ᵀ, 3 × 4, and dx̂ = dbn because γ = 1",
+        "LayerNorm backward: subtract mean 0.3440, subtract x̂ · (−0.2827), divide by 0.7813 → [0.2543, −0.3208, 0.1939, −0.1274]",
+        "add the copy: dx1 row 2 = [0.6984, −0.2800, 0.2120, −0.6303]"
+      ]
+    },
+    {
+      "q": "A colleague writes LayerNorm's backward as dy · γ / σ to save time. What does it cost, and how would you catch it?",
+      "kind": "tradeoff",
+      "answer": [
+        "it ignores that every input moves the row's mean and σ",
+        "its rows don't add to zero (row 2 adds to 1.7611), so it pushes x1 in directions the forward pass erases",
+        "every entry of the gradient below LayerNorm is wrong, so the attention weights and embeddings train on bad signals",
+        "catch it with a nudge test or the PyTorch comparison, or by checking the row sums are 0"
+      ]
+    }
+  ],
+  "compare": [
+    {
+      "with": "llm-math/norm-and-residual",
+      "q": "That card argued for the residual add and LayerNorm from the forward pass. What does the backward pass add to each argument?",
+      "answer": [
+        "forward: the add keeps x0 and lets a block learn a small correction",
+        "backward: the add copies the gradient, giving a slope-1 path through the whole depth",
+        "forward: LayerNorm makes every block read a row of spread 1",
+        "backward: the same erasure means LayerNorm's gradient has no shift or stretch part, so its rows add to 0"
+      ]
+    },
+    {
+      "with": "z2h-6-backprop-ninja/batchnorm-analytic-and-train",
+      "q": "BatchNorm's backward has the same two subtractions. What do they average over in each case, and what does that change about who influences whose gradient?",
+      "answer": [
+        "LayerNorm averages over one token's features, so its backward mixes only that token's 4 numbers",
+        "BatchNorm averages one feature over the batch, so its backward mixes gradients across examples",
+        "the form (subtract the mean, subtract x̂ times a mean, scale) is the same because both erase a mean and a spread",
+        "LayerNorm's gradient for a token doesn't depend on the other examples; BatchNorm's does"
+      ]
+    },
+    {
+      "with": "llm-math/grad-linear-layer",
+      "q": "dW1 = bnᵀ · du is the linear-layer rule from card 14. How is GELU's backward different in kind from a linear layer's, and why?",
+      "answer": [
+        "a linear layer mixes numbers, so its backward is a matrix product with Wᵀ",
+        "GELU acts on each number alone, so its backward is an entry-by-entry multiply",
+        "GELU's slope depends on the forward value u, so u must be saved from the forward pass",
+        "a linear layer's input-gradient slope is W, the same for every input"
+      ]
+    }
+  ],
+  "predict": {
+    "q": "Suppose LayerNorm 2's γ had trained to 2 in every column, and the gradient arriving at its output (dbn) stayed the same. Commit first: does row 2 of LayerNorm 2's backward output still add to zero, and what happens to its size?",
+    "answer": "It still adds to zero, because the mean subtraction comes after multiplying by γ, so it removes any shift whatever γ is. Its size doubles: with the same dbn and γ = 2, row 2 becomes [0.5086, −0.6416, 0.3878, −0.2548], exactly twice [0.2543, −0.3208, 0.1939, −0.1274]. A γ that differs per column would reshape the row, but the zero sum would still hold."
+  },
+  "apply": {
+    "task": "Do LayerNorm 2's backward for row 0 (the token <code>the</code>) by hand. Inputs: x̂ = [−1.0647, 0.7080, 1.2510, −0.8944], σ = 0.7622, dx̂ = [0.0051, 0.0303, −0.0578, −0.0334]. Find mean(dx̂), mean(dx̂ ⊙ x̂), the result, and its sum. Then add dx2 row 0 = [−0.0929, 0.0884, −0.0394, 0.0439] to get dx1 row 0.",
+    "done": "mean(dx̂) is −0.0139, mean(dx̂ ⊙ x̂) is −0.0066, the result is about [0.0158, 0.0642, −0.0467, −0.0333] (the last digit may be 1 off by hand) and adds to 0, and dx1 row 0 is [−0.0771, 0.1526, −0.0861, 0.0106], matching tiny.out.",
+    "hint": "dx̂ − mean(dx̂) is [0.0190, 0.0442, −0.0439, −0.0195]. The second subtraction adds 0.0066 · x̂, because mean(dx̂ ⊙ x̂) is negative."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: did you expect the gradient to shrink or grow on its way from x2 to x1?",
+    "What couldn't you explain cleanly: why a value used twice sums its gradients, or why the stretch direction is x̂?",
+    "Which relationship is still fuzzy: LayerNorm erases the mean → the gradient adds to zero, or a + around every layer → 0.371 instead of 3.52e-16?",
+    "Could you write LayerNorm's backward from scratch tomorrow without looking, and check it with the row-sum test?",
+    "Where in attention's backward (next card) do you expect the same three rules to show up again?"
+  ],
+  "revisit": [
+    "llm-math/norm-and-residual",
+    "llm-math/ffn-and-gelu",
+    "llm-math/grad-linear-layer",
+    "llm-math/derivatives-and-chain-rule"
+  ],
+  "prereq": [
+    "llm-math/grad-linear-layer"
+  ]
+}

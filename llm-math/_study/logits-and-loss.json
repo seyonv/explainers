@@ -1,0 +1,72 @@
+{
+  "prime": {
+    "problem": "After the block, each token is 4 numbers. Training needs one number that says how wrong the model's next-word guesses were, or there is nothing to push down.",
+    "fits": "The last forward stop. It reuses softmax from card 7 to turn the logits into shares, and it hands the backward pass its first gradient, <code>dz = (p − y)/3</code>, on the next card.",
+    "expect": ["logits <code>z = h · Wout</code>", "cross-entropy <code>−ln p[target]</code>", "mean over positions", "ln V, the guessing baseline", "perplexity <code>e^L</code>"],
+    "goal": "Compute the tiny model's loss 2.2067 from its probabilities, explain why the loss is −ln p and not 1 − p, and say what a loss above ln 5 tells you."
+  },
+  "attend": [
+    "The loss reads only one cell of each row of p. How do the other four words still feel it?",
+    "Why does −ln give a strong push on a confident mistake while 1 − p gives almost none?",
+    "Why can a model with random weights score worse than a model that guesses 0.2 everywhere?",
+    "How does one 3-token sequence become three training examples, and what stops a row from peeking at its own answer?",
+    "Why does real code compute the loss from the logits with logsumexp instead of from p?"
+  ],
+  "core": {
+    "must": [
+      "z = h · Wout gives one score per vocabulary word → softmax turns each row into shares that add to 1 → the loss at position t is −ln of the target's share → position 2: p[on] = 0.0673 → 2.6985; mean of [1.9390, 1.9825, 2.6985] = 2.2067",
+      "−ln p is 0 at p = 1 and has no ceiling as p → 0 → a confident mistake costs the most → its slope on the right logit is p − 1 = −0.9327, while 1 − p gives −p(1 − p) = −0.0628 → −ln keeps the learning signal exactly where the model is most wrong",
+      "Knowing nothing means p = 1/V for every word → loss ln V (ln 5 = 1.6094) → the tiny model scores 2.2067, above it → random weights make it confidently wrong (0.7404 on <code>mat</code>) → perplexity e^L ≈ 9.1 vs 5 for guessing",
+      "The probability of a whole text is a product of per-token shares → −ln turns the product into a sum (0.001333 → 6.6200 = 3 × 2.2067) → long texts don't underflow (1,024 tokens at 0.1: product 0, sum 2357.8) and every position adds its own training signal"
+    ],
+    "elevated": [
+      "Causal masking means row t has seen only tokens 0..t → every row is an honest next-word guess → 3 tokens give 3 predictions, and the mean over positions is the loss PyTorch's <code>cross_entropy</code> returns (2.206682)",
+      "Real code computes logsumexp(z) − z[target] straight from the logits (row 2: 2.7254 − 0.0269 = 2.6985) → same number, but no tiny p ever has to be formed and logged"
+    ],
+    "reference": [
+      "Shapes in the tiny model: h 3 × 4, Wout 4 × 5, z and p 3 × 5, L one number",
+      "Targets are the inputs shifted by one: ids [1, 2, 3] = cat sat on",
+      "GPT-2 124M: Wout 768 × 50,257 (38,597,376 weights), ln 50,257 = 10.8249; Qwen2.5-0.5B: 896 × 151,936 (136,134,656), tied to E, ln 151,936 = 11.9312",
+      "Natural log gives nats; base 2 would give bits",
+      "Raschka §4.6 (output head, weight tying), §5.1.2 (loss and perplexity)"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, explain in 3–5 sentences how the tiny model's 3 × 5 logits become the single number 2.2067, and why that number is worse than guessing. Or redraw the −ln p curve and place the three predictions and the ln 5 line on it.",
+    "checklist": [
+      "z = h · Wout, then softmax per row gives shares that add to 1",
+      "each position's loss is −ln of the target word's share",
+      "the loss is the mean over the 3 positions",
+      "−ln is 0 at p = 1 and has no ceiling, so confident mistakes cost the most",
+      "uniform guessing scores ln V = 1.6094; 2.2067 is higher because the model is confidently wrong"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain what the loss number measures, in words a non-ML friend would follow, using the idea of surprise.", "kind": "concept", "answer": ["for each position, the share the model gave the word that really came next", "−ln of that share is how surprised the model should be: 0 if it was sure and right", "the loss is the average surprise over all positions, in nats"]},
+    {"q": "Walk through position 2 from h to its loss, naming the shape at each step.", "kind": "mechanism", "answer": ["h row 2 (1 × 4) times Wout (4 × 5) gives 5 logits", "e^z for each, divided by their sum 15.2629, gives p (adds to 1)", "pick the target column, <code>on</code>: p = 0.0673", "−ln 0.0673 = 2.6985; average it with the other two positions to get 2.2067"]},
+    {"q": "Someone proposes training with 1 − p[target] because it's bounded and easier to read. Argue against it with numbers, and name what you'd give up with −ln.", "kind": "tradeoff", "answer": ["1 − p's push on the right logit is −p(1 − p): −0.0628 at p = 0.0673, versus −0.9327 for −ln", "it barely separates p = 0.01 (0.9900) from 0.001 (0.9990)", "it doesn't turn a product of probabilities into a sum", "with −ln you give up a bounded loss: one near-zero share can make it very large"]}
+  ],
+  "compare": [
+    {"with": "llm-math/softmax", "q": "The softmax card used softmax for attention weights; here it produces next-word probabilities. What is the same, what is different about where the scores come from and what happens to the output?", "answer": ["same formula: e^z over the row's sum, shares add to 1", "attention's scores are QKᵀ/√d over earlier tokens; here they are h · Wout over the vocabulary", "attention's shares weight a mix of values; here one share is read by −ln to give the loss", "both are hurt by huge scores: saturated attention, or a confident wrong guess"]},
+    {"with": "llm-math/grad-softmax-ce", "q": "The loss reads one probability, yet its gradient on the logits touches all five. How does the next card's p − y follow from this card's equations?", "answer": ["every logit sits in the softmax denominator, so every share depends on every logit", "differentiating −ln softmax gives p for each word and p − 1 for the target", "with the mean over 3 positions it becomes (p − y)/3, e.g. −0.3109 on <code>on</code> at position 2"]},
+    {"with": "z2h-5-batchnorm/expected-initial-loss", "q": "That card uses ln V as the loss a well-initialised model should start at. Our tiny model starts at 2.2067, above ln 5. What does each card say causes the gap, and how would you fix it?", "answer": ["a sane start spreads probability evenly, so the loss is ln V", "large random logits make the model confidently wrong, pushing the loss above ln V", "fix by making the output head's weights small at the start: an all-zero Wout gives exactly 1.6094"]}
+  ],
+  "predict": {
+    "q": "Keep the tiny model as it is, but change the last target from <code>on</code> to <code>mat</code>. The model already puts 0.7404 on <code>mat</code> there. Predict position 2's loss and the new mean, before computing.",
+    "answer": "Position 2 becomes −ln 0.7404 = 0.3006. The new mean is (1.9390 + 1.9825 + 0.3006) / 3 = 1.4074, now below ln 5 = 1.6094. Same weights, same probabilities: the loss is about the data as much as the model."
+  },
+  "apply": {
+    "task": "In a copy of <code>llm-math/labs/tiny.py</code>, set <code>\"Wout\": np.zeros((D, V))</code>. Before running, write down the logits, the p row and the loss you expect. Then run it and compare, and check the gradient at the top, dz, against (p − y)/3.",
+    "done": "You predicted and saw: every logit 0.0000, every p 0.2000, loss 1.6094 (numpy and torch both 1.609438), and dz of 0.0667 on wrong words and −0.2667 on each target.",
+    "hint": "With every logit equal, softmax has nothing to prefer, so each share is 1/5."
+  },
+  "reflect": [
+    "Which prediction did you get wrong before reading: would a random model beat guessing?",
+    "What couldn't you explain cleanly: why −ln and not 1 − p, or why the mean is over positions?",
+    "Which relationship is still fuzzy: logits → softmax shares, or one share → −ln → the gradient on all five logits?",
+    "Where would ln V for your own vocabulary tell you something is wrong at step 0?",
+    "What would change if the model had to predict 2 tokens ahead instead of 1?"
+  ],
+  "revisit": ["llm-math/softmax", "llm-math/norm-and-residual", "llm-math/vectors-and-matmul"],
+  "prereq": ["llm-math/softmax"]
+}

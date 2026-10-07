@@ -1,0 +1,70 @@
+{
+  "prime": {
+    "problem": "The loss has a gradient for attention's output, but Wq, Wk and Wv sit behind two matrix products and a softmax. Without walking the gradient back through them, those weights can't learn, and you can't tell why some of them get tiny gradients.",
+    "fits": "Builds on the linear rule (dW = xᵀ·dy, dx = dy·Wᵀ) from grad-linear-layer and on the forward attention cards (scores, softmax, A·V). It takes do = dx1 from the residual and hands da to LayerNorm 1's backward pass.",
+    "expect": ["dA = dC·Vᵀ and dV = Aᵀ·dC", "softmax backward: dS = A ⊙ (dA − Σ dA⊙A)", "dQ = (dS/√d)·K and dK = (dS/√d)ᵀ·Q", "da as the sum of three paths"],
+    "goal": "Walk row 2 of the tiny model's attention backward by hand from dC to da, explain why dS row 0 is all 0 and why Wq's gradients are small here, and compute dWq[0,3] = −0.2320 on paper."
+  },
+  "attend": [
+    "dA row 2 is negative in all three cells, yet dS row 2 has mixed signs: what does the subtraction of Σ dA⊙A do to cause that?",
+    "Why does a softmax row with one allowed key send back exactly zero, whatever dA says?",
+    "Masked cells have nonzero dA. Which factor in the softmax backward formula kills them?",
+    "Why do Wv's gradients come out larger than Wq's on this sentence, and which step does the V path skip?",
+    "Why does da have three terms, and why is the Q term exactly zero for token 0?"
+  ],
+  "core": {
+    "must": [
+      "C = A·V is a product of two input-made matrices → the linear rule runs once per side → dA = dC·Vᵀ (how much listening more to j would change the loss) and dV = Aᵀ·dC (each value is blamed by everyone who listened, in proportion)",
+      "softmax shares must sum to 1 → raising one score lowers the others → dS = A ⊙ (dA − the row's A-weighted average of dA) → only differences from the average survive, every row of dS sums to 0, and cells with A = 0 (masked or not) get 0",
+      "row 0 has one allowed key → its share is stuck at 1 → dS row 0 = 0 → dQ row 0 = 0 → token 0's query contributes nothing to dWq; row 1 is near 50/50 with nearly equal dA (0.0549 vs 0.0759) → dS row 1 is only ±0.0053 → only row 2 drives Wq, halved by √d → largest |dWq| 0.2320 vs |dWv| 0.6413",
+      "S = Q·Kᵀ/√d → divide dS by √d, then dQ = (dS/√d)·K and dK = (dS/√d)ᵀ·Q → Q, K and V were all made from a → da = dQ·Wqᵀ + dK·Wkᵀ + dV·Wvᵀ, the gradients of a reused tensor add"
+    ],
+    "elevated": [
+      "Rows of dS sum to 0 → columns of dK sum to 0 (0.0902 − 0.0907 + 0.0005 = 0) → adding the same vector to every key shifts every score in a row equally, which softmax ignores, so the loss has no slope that way",
+      "A wrong gradient can still lower the loss for one step: dropping the subtraction gave SGD 2.2067 → 0.9798 while the PyTorch check failed by 6.1e-01 → verify gradients with autograd or a nudge test, not by watching the loss"
+    ],
+    "reference": [
+      "Tiny model row 2: dC = [−0.2716, 0.6220, −0.6947, −0.4978], dA = [−0.9005, −0.1292, −0.3124], dS = [−0.1103, 0.1109, −0.0006], dQ = [−0.0550, 0.0300, −0.0475, −0.1537], da = [0.1142, 0.0519, −0.0546, 0.0279]",
+      "Largest |gradient|: dWq 0.2320 (at [0,3]), dWk 0.2937, dWv 0.6413; the nudge test on Wq[0,3] measures −0.2320",
+      "do = dx1 because the residual x1 = x0 + o copies the gradient to both branches",
+      "Raschka has no section on attention backward; autograd (appendix A.4) does it in the book"
+    ]
+  },
+  "compress": {
+    "prompt": "From memory, write the attention backward chain in order, from do to da, with the shape of each gradient. Or explain in 3–5 sentences why the softmax backward subtracts an average, and what that does to row 0.",
+    "checklist": [
+      "dC = do·Woᵀ, then the linear rule twice at C = A·V: dA = dC·Vᵀ, dV = Aᵀ·dC",
+      "dS = A ⊙ (dA − Σ dA⊙A): only differences from the row average survive, each row sums to 0",
+      "masked cells and one-key rows get 0 because A is 0 or the share is fixed at 1",
+      "divide by √d, then dQ = (dS/√d)·K and dK = (dS/√d)ᵀ·Q",
+      "dW = aᵀ·(dQ, dK, dV), and da is the sum of three paths"
+    ]
+  },
+  "retrieve": [
+    {"q": "Explain what one entry dA[i, j] measures, and why it alone doesn't tell you which way score S[i, j] should move.", "kind": "concept", "answer": ["dA[i, j] = dC row i · V row j: how much the loss changes if token i listens a bit more to token j", "the shares in a row must sum to 1, so raising one lowers the others", "the score's gradient depends on dA[i, j] minus the row's A-weighted average of dA, times A[i, j]"]},
+    {"q": "Walk row 2 of the tiny model's softmax backward, from A and dA to dS.", "kind": "mechanism", "answer": ["A = [0.1737, 0.8132, 0.0131], dA = [−0.9005, −0.1292, −0.3124]", "Σ dA⊙A = −0.1564 − 0.1051 − 0.0041 = −0.2656", "dA − Σ = [−0.6349, 0.1364, −0.0468]", "multiply by A: dS = [−0.1103, 0.1109, −0.0006], which sums to 0"]},
+    {"q": "On this sentence, Wq's largest gradient is 0.2320 and Wv's is 0.6413. What causes the gap, and would a longer sentence keep it?", "kind": "tradeoff", "answer": ["Q only affects the loss through the shares, so its gradient passes through softmax backward and ÷√d; V changes the output directly", "row 0 is fixed (one key) and row 1's two options are nearly equal, so only row 2 drives dQ", "with more tokens, more rows have several real choices, so the query path has more to work with; the 3-token case is extreme"]}
+  ],
+  "compare": [
+    {"with": "llm-math/grad-softmax-ce", "q": "At the top of the model, softmax plus cross-entropy gives the clean p − y. Here softmax backward gives A ⊙ (dA − Σ dA⊙A). Why the difference, and how are they the same rule?", "answer": ["both are the softmax backward: share × (incoming gradient − its share-weighted average)", "at the top the incoming gradient is −1/p at the target and 0 elsewhere, so the formula collapses to p − y", "here dA comes from dC·Vᵀ, a general vector, so no collapse happens", "both give rows that sum to 0"]},
+    {"with": "llm-math/grad-linear-layer", "q": "The linear-layer card has one input and one weight. At C = A·V, and at S = Q·Kᵀ, both sides came from the input. What changes when you apply the rule?", "answer": ["the rule runs once for each side: dA = dC·Vᵀ and dV = Aᵀ·dC", "neither side is a learned weight, so both gradients keep flowing back", "the learned weights only appear later, at Q, K, V = a·Wq, a·Wk, a·Wv", "shapes still decide where the transpose goes"]}
+  ],
+  "predict": {
+    "q": "Remove the causal mask, so every token can see every token (as in an encoder like BERT). Is dQ row 0 still exactly zero?",
+    "answer": "No. Row 0 now has three allowed keys, so its shares can move: A row 0 becomes [0.5628, 0.2416, 0.1955] and dQ row 0 becomes [0.0062, −0.0483, 0.0513, −0.0427]. The zero was caused by the mask leaving one key, not by anything special about token 0."
+  },
+  "apply": {
+    "task": "Compute dQ[2,0] by hand: the row dS/2 = [−0.0551, 0.0555, −0.0003] dotted with column 0 of K = [0.1129, −0.8817, −0.5212]. Then run llm-math/labs/grad-attention.py and find your number in its dQ row 2.",
+    "done": "You get −0.0550, matching dQ[2,0] in tiny.out and in the lab's output.",
+    "hint": "(−0.0551)(0.1129) + (0.0555)(−0.8817) + (−0.0003)(−0.5212) = −0.00622 − 0.04893 + 0.00016 = −0.05499, which rounds to −0.0550."
+  },
+  "reflect": [
+    "Which prediction did you get wrong: whether dQ row 0 would be zero, or whether a wrong gradient could still lower the loss?",
+    "What couldn't you explain cleanly: why the softmax backward subtracts an average, or why masked cells get 0 despite a nonzero dA?",
+    "Which relationship is still fuzzy: dA → dS through the softmax, or dS → dQ and dK through the scores matmul?",
+    "Where in the chain would you look first if dWq came out nonzero for a token that can see only itself?",
+    "Could you now say, for a new sentence, which attention rows will send back almost no gradient before running the code?"
+  ],
+  "revisit": ["llm-math/grad-linear-layer", "llm-math/softmax", "llm-math/attention-scores", "llm-math/attention-output", "llm-math/grad-softmax-ce"],
+  "prereq": ["llm-math/grad-linear-layer", "llm-math/attention-output"]
+}
