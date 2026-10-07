@@ -1,33 +1,39 @@
 {
   "prime": {
     "problem": "Attention hands each token a weighted mix of earlier tokens, but a mix is not a new feature. If the block that follows were only matrix multiplies, any number of them would collapse into one matrix, and the extra layers and width would add nothing.",
-    "fits": "Comes right after attention and the first residual add, and reuses LayerNorm from the norm-and-residual card. Its output f is added back to x1, and then the logits are computed from the result.",
-    "expect": ["up and down projections (W1, W2)", "GELU, the tanh form", "two linear layers collapse into one", "slope and dead gradients (ReLU vs GELU)", "position-wise: one row per token"],
-    "goal": "Compute one entry of u and its GELU by hand, explain with a measured number why a nonlinearity has to sit between W1 and W2, and say what GELU gains over ReLU in the backward pass."
+    "fits": "Comes right after attention and the first residual add, and reuses LayerNorm from the norm-and-residual card. Its output \\(f\\) is added back to \\(x_1\\), and then the logits are computed from the result.",
+    "expect": [
+      "up and down projections (\\(W_1\\), \\(W_2\\))",
+      "GELU, the \\(\\tanh\\) form",
+      "two linear layers collapse into one",
+      "slope and dead gradients (ReLU vs GELU)",
+      "position-wise: one row per token"
+    ],
+    "goal": "Compute one entry of \\(u\\) and its GELU by hand, explain with a measured number why a nonlinearity has to sit between \\(W_1\\) and \\(W_2\\), and say what GELU gains over ReLU in the backward pass."
   },
   "attend": [
-    "Which property of matrix multiplication lets W1 and W2 merge into one 4 × 4 matrix, and what exactly does GELU break?",
-    "In GELU's formula, which part acts as a gate between 0 and 1, and what does it do to big negative versus big positive u?",
+    "Which property of matrix multiplication lets \\(W_1\\) and \\(W_2\\) merge into one \\(4 \\times 4\\) matrix, and what exactly does GELU break?",
+    "In GELU's formula, which part acts as a gate between 0 and 1, and what does it do to big negative versus big positive \\(u\\)?",
     "Why does a slope of exactly 0 for negative inputs stop a ReLU unit from learning on that token?",
-    "Which shapes in (3 × 4) @ (4 × 8) guarantee that token 2's row can't affect token 0's output?",
+    "Which shapes in \\((3 \\times 4)(4 \\times 8)\\) guarantee that token 2's row can't affect token 0's output?",
     "How does SwiGLU's gate differ from GELU's, given that both widen and then narrow?"
   ],
   "core": {
     "must": [
-      "matrix multiply can be regrouped, (x W1) W2 = x (W1 W2) → two linear layers equal one 4 × 4 matrix (gap 4.4e-16) → stacking them adds weights but no ability → a nonlinearity in between breaks the regrouping (gap 1.1481) → depth and hidden width start to count",
-      "GELU(u) = u × a smooth gate in (0, 1) → big positive u passes almost unchanged (2.7043 → 2.6955), big negative u is pulled close to 0 (−1.6184 → −0.0856) → the bend depends on each number's value, so no fixed matrix can copy it",
-      "ReLU's slope is exactly 0 for u < 0 → the backward pass multiplies by that slope → those units get zero gradient (11 of 24 in the tiny model) → GELU keeps a small non-zero slope (0.2108 at −0.3803) → every unit still learns a little",
-      "u's row t uses only input row t, GELU acts on single numbers, f's row t uses only GELU(u)'s row t → tokens never mix inside the FFN (changing row 2 moves rows 0–1 by 0.0) → attention mixes between tokens, the FFN transforms each token's row"
+      "matrix multiply can be regrouped, \\((x W_1) W_2 = x (W_1 W_2)\\) → two linear layers equal one \\(4 \\times 4\\) matrix (gap 4.4e-16) → stacking them adds weights but no ability → a nonlinearity in between breaks the regrouping (gap 1.1481) → depth and hidden width start to count",
+      "\\(\\GELU(u) = u \\times\\) a smooth gate in \\((0, 1)\\) → big positive \\(u\\) passes almost unchanged (\\(2.7043 \\to 2.6955\\)), big negative \\(u\\) is pulled close to 0 (\\(-1.6184 \\to -0.0856\\)) → the bend depends on each number's value, so no fixed matrix can copy it",
+      "ReLU's slope is exactly 0 for \\(u \\lt 0\\) → the backward pass multiplies by that slope → those units get zero gradient (11 of 24 in the tiny model) → GELU keeps a small non-zero slope (0.2108 at \\(-0.3803\\)) → every unit still learns a little",
+      "\\(u\\)'s row \\(t\\) uses only input row \\(t\\), GELU acts on single numbers, \\(f\\)'s row \\(t\\) uses only \\(\\GELU(u)\\)'s row \\(t\\) → tokens never mix inside the FFN (changing row 2 moves rows 0–1 by 0.0) → attention mixes between tokens, the FFN transforms each token's row"
     ],
     "elevated": [
       "The hidden width (8 here, 3072 in GPT-2, 4,864 in Qwen) is where the bend happens → a wider middle gives more separate bends per token → most of a block's weights sit in the FFN (GPT-2: 4,722,432 vs 2,359,296 in attention)",
-      "SwiGLU: down(SiLU(x·W_gate) ⊙ (x·W_up)) → one copy is bent and used as an entry-by-entry gate on a second copy → three matrices instead of two, and Qwen uses it with no biases"
+      "SwiGLU: \\(\\bigl(\\operatorname{SiLU}(x W_{\\text{gate}}) \\odot (x W_{\\text{up}})\\bigr) W_{\\text{down}}\\) → one copy is bent and used as an entry-by-entry gate on a second copy → three matrices instead of two, and Qwen uses it with no biases"
     ],
     "reference": [
-      "GELU tanh form: 0.5·u·(1 + tanh(√(2/π)·(u + 0.044715·u³))), with √(2/π) = 0.7979; PyTorch's default nn.GELU() is the exact erf form",
-      "GELU(−1) = −0.1588 (slope −0.0830), GELU(0) = 0 (slope 0.5), GELU(1) = 0.8412 (slope 1.0830), GELU(3) = 2.9964; lowest point −0.1700 at u = −0.7525",
-      "Shapes: tiny 4 → 8 → 4 (76 weights with biases); GPT-2 768 → 3072 → 768; Qwen2.5-0.5B 896 → 4,864 → 896 with SwiGLU",
-      "Notation: u = LN2(x1)·W1 + c1, f = GELU(u)·W2 + c2, x2 = x1 + f"
+      "GELU tanh form: \\(\\GELU(u) = 0.5\\, u \\left(1 + \\tanh\\!\\left(\\sqrt{2/\\pi}\\,(u + 0.044715\\, u^3)\\right)\\right)\\), with \\(\\sqrt{2/\\pi} = 0.7979\\); PyTorch's default <code>nn.GELU()</code> is the exact erf form",
+      "\\(\\GELU(-1) = -0.1588\\) (slope \\(-0.0830\\)), \\(\\GELU(0) = 0\\) (slope 0.5), \\(\\GELU(1) = 0.8412\\) (slope 1.0830), \\(\\GELU(3) = 2.9964\\); lowest point \\(-0.1700\\) at \\(u = -0.7525\\)",
+      "Shapes: tiny \\(4 \\to 8 \\to 4\\) (76 weights with biases); GPT-2 \\(768 \\to 3072 \\to 768\\); Qwen2.5-0.5B \\(896 \\to 4{,}864 \\to 896\\) with SwiGLU",
+      "Notation: \\(u = \\LN_2(x_1) W_1 + c_1\\), \\(f = \\GELU(u) W_2 + c_2\\), \\(x_2 = x_1 + f\\)"
     ]
   },
   "compress": {
@@ -41,32 +47,96 @@
     ]
   },
   "retrieve": [
-    {"q": "Explain why stacking two linear layers with nothing in between gives the model no new ability, using the tiny model's W1 and W2.", "kind": "concept", "answer": ["(x W1) W2 = x (W1 W2) because matrix multiplication can be regrouped", "W1 @ W2 is one 4 × 4 matrix, 16 weights doing the work of 64", "measured gap between the two: 4.4e-16, just rounding"]},
-    {"q": "Walk through how token 0's row of LN2(x1) becomes row 0 of f, naming each shape and one real number along the way.", "kind": "mechanism", "answer": ["1 × 4 row times W1 (4 × 8) gives 8 numbers; u[0,0] = 1.4725", "GELU acts on each of the 8: 1.4725 → 1.3686, −0.6878 → −0.1691", "the 8 numbers times W2 (8 × 4) give 4: f[0,0] = −0.5699", "f has the input's shape, so it can be added: x2 = x1 + f"]},
-    {"q": "You're choosing between ReLU and GELU for the FFN. What does GELU cost you, and what does it buy in the backward pass?", "kind": "tradeoff", "answer": ["GELU costs a tanh and a cube per number; ReLU is one comparison", "ReLU gives exactly zero gradient to every negative input (11 of 24 here)", "GELU keeps a small slope there and has a smooth corner at 0", "for big positive inputs the two are almost the same (GELU(3) = 2.9964)"]},
-    {"q": "If you added 1 to token 2's row of LN2(x1), which rows of f would change and which wouldn't? Explain from the shapes.", "kind": "mechanism", "answer": ["only row 2 of f changes (by up to 2.9527)", "rows 0 and 1 change by 0.0", "each row of u uses only its own input row, and GELU acts on single numbers"]}
+    {
+      "q": "Explain why stacking two linear layers with nothing in between gives the model no new ability, using the tiny model's \\(W_1\\) and \\(W_2\\).",
+      "kind": "concept",
+      "answer": [
+        "\\((x W_1) W_2 = x (W_1 W_2)\\) because matrix multiplication can be regrouped",
+        "\\(W_1 W_2\\) is one \\(4 \\times 4\\) matrix, 16 weights doing the work of 64",
+        "measured gap between the two: 4.4e-16, just rounding"
+      ]
+    },
+    {
+      "q": "Walk through how token 0's row of \\(\\LN_2(x_1)\\) becomes row 0 of \\(f\\), naming each shape and one real number along the way.",
+      "kind": "mechanism",
+      "answer": [
+        "\\(1 \\times 4\\) row times \\(W_1\\) (\\(4 \\times 8\\)) gives 8 numbers; \\(u[0,0] = 1.4725\\)",
+        "GELU acts on each of the 8: \\(1.4725 \\to 1.3686\\), \\(-0.6878 \\to -0.1691\\)",
+        "the 8 numbers times \\(W_2\\) (\\(8 \\times 4\\)) give 4: \\(f[0,0] = -0.5699\\)",
+        "\\(f\\) has the input's shape, so it can be added: \\(x_2 = x_1 + f\\)"
+      ]
+    },
+    {
+      "q": "You're choosing between ReLU and GELU for the FFN. What does GELU cost you, and what does it buy in the backward pass?",
+      "kind": "tradeoff",
+      "answer": [
+        "GELU costs a \\(\\tanh\\) and a cube per number; ReLU is one comparison",
+        "ReLU gives exactly zero gradient to every negative input (11 of 24 here)",
+        "GELU keeps a small slope there and has a smooth corner at 0",
+        "for big positive inputs the two are almost the same (\\(\\GELU(3) = 2.9964\\))"
+      ]
+    },
+    {
+      "q": "If you added 1 to token 2's row of \\(\\LN_2(x_1)\\), which rows of \\(f\\) would change and which wouldn't? Explain from the shapes.",
+      "kind": "mechanism",
+      "answer": [
+        "only row 2 of \\(f\\) changes (by up to 2.9527)",
+        "rows 0 and 1 change by 0.0",
+        "each row of \\(u\\) uses only its own input row, and GELU acts on single numbers"
+      ]
+    }
   ],
   "compare": [
-    {"with": "llm-math/attention-output", "q": "Attention and the FFN both multiply rows by learned matrices. What does each one mix, which design choice causes that, and what would a block lose without each?", "answer": ["attention's A @ V mixes rows: each output is a weighted average over tokens", "the FFN's matrices act on one row at a time, so it never mixes tokens", "without attention, tokens can't see each other; without the FFN, there is no per-token nonlinearity and the block's linear parts collapse"]},
-    {"with": "z2h-5-batchnorm/saturated-tanh", "q": "A saturated tanh and a ReLU on a negative input both pass back almost no gradient. How do the causes differ, and how does GELU fare on each?", "answer": ["tanh saturates at both ends for big |u|, so its slope goes to 0 on both sides", "ReLU's slope is exactly 0 on the whole negative half, at any size", "GELU is linear-like for big positive u, so it doesn't saturate there; for very negative u its slope does get tiny (−0.0116 at −3)"]},
-    {"with": "reasoning-models/modern-block", "q": "Qwen's SwiGLU replaces GELU's single path with two. What changes in the formula and the weight count, and what stays the same?", "answer": ["SwiGLU: (SiLU(x·W_gate) ⊙ (x·W_up))·W_down, three matrices instead of two", "one bent copy gates a second copy entry by entry", "it still widens (896 → 4,864), bends and narrows back to 896, row by row"]}
+    {
+      "with": "llm-math/attention-output",
+      "q": "Attention and the FFN both multiply rows by learned matrices. What does each one mix, which design choice causes that, and what would a block lose without each?",
+      "answer": [
+        "attention's \\(AV\\) mixes rows: each output is a weighted average over tokens",
+        "the FFN's matrices act on one row at a time, so it never mixes tokens",
+        "without attention, tokens can't see each other; without the FFN, there is no per-token nonlinearity and the block's linear parts collapse"
+      ]
+    },
+    {
+      "with": "z2h-5-batchnorm/saturated-tanh",
+      "q": "A saturated tanh and a ReLU on a negative input both pass back almost no gradient. How do the causes differ, and how does GELU fare on each?",
+      "answer": [
+        "\\(\\tanh\\) saturates at both ends for big \\(|u|\\), so its slope goes to 0 on both sides",
+        "ReLU's slope is exactly 0 on the whole negative half, at any size",
+        "GELU is linear-like for big positive \\(u\\), so it doesn't saturate there; for very negative \\(u\\) its slope does get tiny (\\(-0.0116\\) at \\(-3\\))"
+      ]
+    },
+    {
+      "with": "reasoning-models/modern-block",
+      "q": "Qwen's SwiGLU replaces GELU's single path with two. What changes in the formula and the weight count, and what stays the same?",
+      "answer": [
+        "SwiGLU: \\(\\bigl(\\operatorname{SiLU}(x W_{\\text{gate}}) \\odot (x W_{\\text{up}})\\bigr) W_{\\text{down}}\\), three matrices instead of two",
+        "one bent copy gates a second copy entry by entry",
+        "it still widens (\\(896 \\to 4{,}864\\)), bends and narrows back to 896, row by row"
+      ]
+    }
   ],
   "predict": {
-    "q": "The next card multiplies h (3 × 4) by Wout (4 × 5) to get logits, with no bend after it. Could Wout be merged into W2 the way W1 and W2 merged without GELU? Commit before reading on.",
-    "answer": "No. Between W2 and Wout sit the residual add (x2 = x1 + f) and the final LayerNorm, which divides each row by its own standard deviation. That division depends on the row's values, so it isn't a fixed matrix, and the chain can't be regrouped."
+    "q": "The next card multiplies \\(h\\) (\\(3 \\times 4\\)) by \\(\\Wout\\) (\\(4 \\times 5\\)) to get logits, with no bend after it. Could \\(\\Wout\\) be merged into \\(W_2\\) the way \\(W_1\\) and \\(W_2\\) merged without GELU? Commit before reading on.",
+    "answer": "No. Between \\(W_2\\) and \\(\\Wout\\) sit the residual add (\\(x_2 = x_1 + f\\)) and the final LayerNorm, which divides each row by its own standard deviation. That division depends on the row's values, so it isn't a fixed matrix, and the chain can't be regrouped."
   },
   "apply": {
-    "task": "By hand: row 1 of LN2(x1) is [−1.1288, 0.9045, −0.8581, 1.0823] and column 1 of W1 is [−0.3, −0.3, 0.9, 0.3]. Compute u[1,1]. Then say what GELU and ReLU each output for it, and what slope each passes back. Check yourself with <code>python labs/ffn-and-gelu.py</code> and then <code>python labs/ffn-and-gelu.py relu</code>.",
-    "done": "You get u[1,1] = −0.3803, GELU = −0.1338 with slope 0.2108, and ReLU = 0 with slope 0, matching the lab's printed u, GELU(u) and slope grids.",
-    "hint": "The four products are 0.33864, −0.27135, −0.77229 and 0.32469, which sum to −0.38031."
+    "task": "By hand: row 1 of \\(\\LN_2(x_1)\\) is \\([-1.1288,\\ 0.9045,\\ -0.8581,\\ 1.0823]\\) and column 1 of \\(W_1\\) is \\([-0.3,\\ -0.3,\\ 0.9,\\ 0.3]\\). Compute \\(u[1,1]\\). Then say what GELU and ReLU each output for it, and what slope each passes back. Check yourself with <code>python labs/ffn-and-gelu.py</code> and then <code>python labs/ffn-and-gelu.py relu</code>.",
+    "done": "You get \\(u[1,1] = -0.3803\\), \\(\\GELU = -0.1338\\) with slope 0.2108, and \\(\\ReLU = 0\\) with slope 0, matching the lab's printed \\(u\\), \\(\\GELU(u)\\) and slope grids.",
+    "hint": "The four products are \\(0.33864\\), \\(-0.27135\\), \\(-0.77229\\) and \\(0.32469\\), which sum to \\(-0.38031\\)."
   },
   "reflect": [
     "Which prediction did you get wrong: how many weights the GELU-free FFN really needs, or how many zero gradients ReLU gives?",
     "What couldn't you explain cleanly: why regrouping works for matrices, or why GELU can't be regrouped?",
-    "Which relationship is still fuzzy: slope of the activation → size of du, or du → how much W1 learns?",
+    "Which relationship is still fuzzy: slope of the activation → size of \\(du\\), or \\(du\\) → how much \\(W_1\\) learns?",
     "Where else in the block is there something that isn't a fixed matrix, and does it also stop layers collapsing?",
     "Why would a model designer pay for a 4× wider middle instead of more blocks?"
   ],
-  "revisit": ["llm-math/vectors-and-matmul", "llm-math/norm-and-residual", "llm-math/derivatives-and-chain-rule"],
-  "prereq": ["llm-math/vectors-and-matmul"]
+  "revisit": [
+    "llm-math/vectors-and-matmul",
+    "llm-math/norm-and-residual",
+    "llm-math/derivatives-and-chain-rule"
+  ],
+  "prereq": [
+    "llm-math/vectors-and-matmul"
+  ]
 }

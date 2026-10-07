@@ -1,48 +1,48 @@
 {
   "prime": {
-    "problem": "Stack many layers and the numbers flowing through them drift: with N(0,1) weights a vector's spread reaches 3.22e35 after 24 layers, and the gradient reaching the first layers can shrink to 3.52e-16. Deep models need a way to keep each block's input on a fixed scale and to keep a gradient path that doesn't fade.",
-    "fits": "Comes right after attention produced its output <code>o</code>. It explains the two steps wrapped around every attention and feed-forward call in the block: LayerNorm before the call, and the residual add after it.",
+    "problem": "Stack many layers and the numbers flowing through them drift: with \\(\\mathcal{N}(0, 1)\\) weights a vector's spread reaches 3.22e35 after 24 layers, and the gradient reaching the first layers can shrink to 3.52e-16. Deep models need a way to keep each block's input on a fixed scale and to keep a gradient path that doesn't fade.",
+    "fits": "Comes right after attention produced its output \\(o\\). It explains the two steps wrapped around every attention and feed-forward call in the block: LayerNorm before the call, and the residual add after it.",
     "expect": [
-      "LayerNorm: mean, variance (divide by D), x̂, γ and β",
+      "LayerNorm: mean, variance (divide by \\(D\\)), \\(\\hat{x}\\), \\(\\gamma\\) and \\(\\beta\\)",
       "RMSNorm, Qwen's version",
-      "residual stream: x1 = x0 + o",
-      "pre-norm placement x + f(LN(x))"
+      "residual stream: \\(x_1 = x_0 + o\\)",
+      "pre-norm placement \\(x + f(\\LN(x))\\)"
     ],
     "goal": "Normalise a row of the tiny model by hand and match tiny.py to 4 decimals, write the pre-norm block as two residual adds, and say with a measured number why each of the two moves is there."
   },
   "attend": [
-    "Why does dividing by σ make LayerNorm blind to the overall size of a row, and what part of the model is still sensitive to size?",
+    "Why does dividing by \\(\\sigma\\) make LayerNorm blind to the overall size of a row, and what part of the model is still sensitive to size?",
     "Careful initial weights already keep the spread near 1. What does LayerNorm add that initialisation can't?",
     "What exactly does RMSNorm leave out, and on which kind of row would it give the same answer as LayerNorm?",
-    "In x1 = x0 + o, which path does the gradient take back to x0, and why does that path not shrink with depth?",
+    "In \\(x_1 = x_0 + o\\), which path does the gradient take back to \\(x_0\\), and why does that path not shrink with depth?",
     "Why does the pre-norm block still need a final LayerNorm before the output head?"
   ],
   "core": {
     "must": [
-      "LayerNorm subtracts the row mean and divides by the row spread → every row comes out with mean 0 and spread 1 → scaling a row by 10 changes nothing (LN(10 · row 0) = [−0.1255, 0.3765, 1.2549, −1.5059]) → each block reads inputs in the same range whatever the weights have become",
-      "Without a norm each layer multiplies the spread by its weights' gain → 24 N(0,1) layers take it to 3.22e35 → careful init (N(0,1/d)) holds it near 1 only while the weights stay as initialised → LayerNorm resets it to 1 in front of every block during all of training",
-      "Residual add x1 = x0 + o → the stream keeps x0 and the block only learns a correction → backward, the + has slope 1 along the stream → the gradient at the input of a 24-layer tanh stack is 0.371 with residuals vs 3.52e-16 without",
-      "Pre-norm: the norm sits inside the branch, x + f(LN(x)) → branch inputs are normalised but the stream is not → the stream's spread grows (row 0: 0.7969 → 0.7622 → 1.3361) → a final LayerNorm is needed before the output head"
+      "LayerNorm subtracts the row mean and divides by the row spread → every row comes out with mean 0 and spread 1 → scaling a row by 10 changes nothing (\\(\\LN(10 \\cdot x_0[0]) = [-0.1255,\\ 0.3765,\\ 1.2549,\\ -1.5059]\\)) → each block reads inputs in the same range whatever the weights have become",
+      "Without a norm each layer multiplies the spread by its weights' gain → 24 \\(\\mathcal{N}(0, 1)\\) layers take it to 3.22e35 → careful init (\\(\\mathcal{N}(0, 1/d)\\)) holds it near 1 only while the weights stay as initialised → LayerNorm resets it to 1 in front of every block during all of training",
+      "Residual add \\(x_1 = x_0 + o\\) → the stream keeps \\(x_0\\) and the block only learns a correction → backward, the + has slope 1 along the stream → the gradient at the input of a 24-layer tanh stack is 0.371 with residuals vs 3.52e-16 without",
+      "Pre-norm: the norm sits inside the branch, \\(x + f(\\LN(x))\\) → branch inputs are normalised but the stream is not → the stream's spread grows (row 0: \\(0.7969 \\to 0.7622 \\to 1.3361\\)) → a final LayerNorm is needed before the output head"
     ],
     "elevated": [
-      "LayerNorm divides by D, not D − 1 (unbiased=False) → with D − 1, row 0 would be [−0.1087, 0.3260, 1.0868, −1.3041] and nothing would match PyTorch",
-      "γ starts at 1 and β at 0 → at step 0 LayerNorm's output is exactly x̂ → training can then learn to undo part of the normalisation per column"
+      "LayerNorm divides by \\(D\\), not \\(D - 1\\) (unbiased=False) → with \\(D - 1\\), row 0 would be \\([-0.1087,\\ 0.3260,\\ 1.0868,\\ -1.3041]\\) and nothing would match PyTorch",
+      "\\(\\gamma\\) starts at 1 and \\(\\beta\\) at 0 → at step 0 LayerNorm's output is exactly \\(\\hat{x}\\) → training can then learn to undo part of the normalisation per column"
     ],
     "reference": [
-      "ε = 1e-5 in tiny.py, added to σ² before the square root",
-      "Row 0 of x0 = [−0.3, 0.1, 0.8, −1.4]: mean −0.2, variance 0.635, σ 0.7969",
-      "RMSNorm of row 0 = [−0.3651, 0.1217, 0.9737, −1.7040] (RMS 0.8216)",
-      "GPT-2 124M: 25 LayerNorms over 768 numbers; Qwen2.5-0.5B: 49 RMSNorms over 896, γ only",
+      "\\(\\epsilon = 10^{-5}\\) in tiny.py, added to \\(\\sigma^2\\) before the square root",
+      "Row 0 of \\(x_0\\) = \\([-0.3,\\ 0.1,\\ 0.8,\\ -1.4]\\): mean −0.2, variance 0.635, \\(\\sigma\\) 0.7969",
+      "RMSNorm of row 0 = \\([-0.3651,\\ 0.1217,\\ 0.9737,\\ -1.7040]\\) (RMS 0.8216)",
+      "GPT-2 124M: 25 LayerNorms over 768 numbers; Qwen2.5-0.5B: 49 RMSNorms over 896, \\(\\gamma\\) only",
       "Raschka calls residual connections shortcut connections (§4.4)"
     ]
   },
   "compress": {
     "prompt": "From memory, write the two lines of the pre-norm block and explain in 3–4 sentences what the norm protects against and what the add protects against. Or redraw the residual-stream sketch with the two branches and the gradient path.",
     "checklist": [
-      "x1 = x0 + Attn(LN1(x0)) and x2 = x1 + FFN(LN2(x1)), then a final LN",
-      "LayerNorm: subtract the row mean, divide by √(σ² + ε) with σ² over D, then γ · x̂ + β",
+      "\\(x_1 = x_0 + \\operatorname{Attn}(\\LN_1(x_0))\\) and \\(x_2 = x_1 + \\operatorname{FFN}(\\LN_2(x_1))\\), then a final LN",
+      "LayerNorm: subtract the row mean, divide by \\(\\sqrt{\\sigma^2 + \\epsilon}\\) with \\(\\sigma^2\\) over \\(D\\), then \\(\\gamma \\odot \\hat{x} + \\beta\\)",
       "the norm keeps every block's input at spread 1 whatever the weights are (vs 3.22e35 unnormalised)",
-      "the add keeps x0 and gives the gradient a slope-1 path (0.371 vs 3.52e-16 at depth 24)",
+      "the add keeps \\(x_0\\) and gives the gradient a slope-1 path (0.371 vs 3.52e-16 at depth 24)",
       "the stream itself is not normalised and grows, hence the final norm"
     ]
   },
@@ -53,28 +53,28 @@
       "answer": [
         "it centres the row on its own mean and divides by its own spread",
         "each token is normalised independently, so the output doesn't depend on other examples",
-        "then γ and β, one per column, let training rescale and shift"
+        "then \\(\\gamma\\) and \\(\\beta\\), one per column, let training rescale and shift"
       ]
     },
     {
-      "q": "Walk row 0 of x0 = [−0.3, 0.1, 0.8, −1.4] through LayerNorm 1 and the first residual add, naming every intermediate value.",
+      "q": "Walk row 0 of \\(x_0 = [-0.3,\\ 0.1,\\ 0.8,\\ -1.4]\\) through LayerNorm 1 and the first residual add, naming every intermediate value.",
       "kind": "mechanism",
       "answer": [
-        "mean −0.2, x − μ = [−0.1, 0.3, 1.0, −1.2]",
-        "variance 2.54 / 4 = 0.635, σ = 0.7969",
-        "a row 0 = [−0.1255, 0.3765, 1.2549, −1.5059]",
-        "attention returns o row 0 = [−0.7278, 0.2234, −0.0627, 0.5020]",
-        "x1 row 0 = x0 + o = [−1.0278, 0.3234, 0.7373, −0.8980]"
+        "mean −0.2, \\(x - \\mu = [-0.1,\\ 0.3,\\ 1.0,\\ -1.2]\\)",
+        "variance \\(2.54/4 = 0.635\\), \\(\\sigma = 0.7969\\)",
+        "row 0 of \\(a\\) = \\([-0.1255,\\ 0.3765,\\ 1.2549,\\ -1.5059]\\)",
+        "attention returns row 0 of \\(o\\) = \\([-0.7278,\\ 0.2234,\\ -0.0627,\\ 0.5020]\\)",
+        "row 0 of \\(x_1 = x_0 + o\\) = \\([-1.0278,\\ 0.3234,\\ 0.7373,\\ -0.8980]\\)"
       ]
     },
     {
       "q": "You're choosing between LayerNorm and RMSNorm for a new model. What does RMSNorm give up, what does it save, and when would the two agree?",
       "kind": "tradeoff",
       "answer": [
-        "RMSNorm skips the mean subtraction and the β shift",
+        "RMSNorm skips the mean subtraction and the \\(\\beta\\) shift",
         "it saves a little compute and parameters",
         "it no longer removes a row's offset",
-        "the two agree (up to γ) when a row's mean is already 0",
+        "the two agree (up to \\(\\gamma\\)) when a row's mean is already 0",
         "Qwen and Llama use RMSNorm; GPT-2 uses LayerNorm"
       ]
     }
@@ -85,8 +85,8 @@
       "q": "This card says the residual add gives the gradient a direct path. What does that card add about the backward pass through the + and through LayerNorm, and why is LayerNorm's backward more complicated than the add's?",
       "answer": [
         "the + copies the incoming gradient to both the stream and the branch, unchanged",
-        "so dx1 = dx2 + (the branch's contribution)",
-        "LayerNorm's backward has to account for the mean and σ depending on every number in the row",
+        "so \\(dx_1 = dx_2\\) + (the branch's contribution)",
+        "LayerNorm's backward has to account for the mean and \\(\\sigma\\) depending on every number in the row",
         "so its gradient mixes all 4 entries of the row, unlike the add"
       ]
     },
@@ -94,7 +94,7 @@
       "with": "z2h-5-batchnorm/kaiming-init",
       "q": "Kaiming init and LayerNorm both fight exploding or vanishing activations. What does each control, when does each act, and which one still matters once the other is in place?",
       "answer": [
-        "init sets the weights' scale (variance about 1/fan_in) so the spread starts near 1",
+        "init sets the weights' scale (variance about \\(1/\\text{fan\\_in}\\)) so the spread starts near 1",
         "it acts once, at the start; training then changes the weights",
         "LayerNorm rescales activations on every forward pass, during all of training",
         "with LayerNorm, init still matters for the stream and for the first steps, but much less"
@@ -102,19 +102,19 @@
     }
   ],
   "predict": {
-    "q": "In the tiny model, suppose LayerNorm 1 is removed, so attention reads x0 directly, and x0 is then scaled by 10. Commit first: do the attention weights A get sharper, flatter or stay the same, and why?",
-    "answer": "Sharper. Q and K both scale by 10, so every score in Q·Kᵀ scales by 100, and softmax of much bigger scores puts almost all the weight on one token. Measured with LayerNorm 1 removed: A's last row is [0.2208, 0.7071, 0.0721] for x0 and [0.0000, 1.0000, 0.0000] for 10 · x0. With LayerNorm in place, a and therefore A don't change at all."
+    "q": "In the tiny model, suppose LayerNorm 1 is removed, so attention reads \\(x_0\\) directly, and \\(x_0\\) is then scaled by 10. Commit first: do the attention weights \\(A\\) get sharper, flatter or stay the same, and why?",
+    "answer": "Sharper. \\(Q\\) and \\(K\\) both scale by 10, so every score in \\(QK^\\top\\) scales by 100, and softmax of much bigger scores puts almost all the weight on one token. Measured with LayerNorm 1 removed: the last row of \\(A\\) is \\([0.2208,\\ 0.7071,\\ 0.0721]\\) for \\(x_0\\) and \\([0.0000,\\ 1.0000,\\ 0.0000]\\) for \\(10 x_0\\). With LayerNorm in place, \\(a\\) and therefore \\(A\\) don't change at all."
   },
   "apply": {
-    "task": "Compute LayerNorm 1 for row 1 of x0 = [−1.3, 0.7, −1.1, 1.4] by hand (divide by 4, ε = 0.00001), then add attention's correction o row 1 = [−0.4505, 0.4652, −0.2624, 0.0203] to x0 row 1 to get x1 row 1. Check both against tiny.out.",
-    "done": "Your mean is −0.075, σ is 1.1541, a row 1 is [−1.0615, 0.6715, −0.8882, 1.2781], and x1 row 1 is [−1.7505, 1.1652, −1.3624, 1.4203].",
-    "hint": "x − μ for row 1 is [−1.225, 0.775, −1.025, 1.475]; the squares sum to 5.3275."
+    "task": "Compute LayerNorm 1 for row 1 of \\(x_0\\), \\([-1.3,\\ 0.7,\\ -1.1,\\ 1.4]\\), by hand (divide by 4, \\(\\epsilon = 0.00001\\)), then add attention's correction, row 1 of \\(o\\) = \\([-0.4505,\\ 0.4652,\\ -0.2624,\\ 0.0203]\\), to row 1 of \\(x_0\\) to get row 1 of \\(x_1\\). Check both against tiny.out.",
+    "done": "Your mean is −0.075, \\(\\sigma\\) is 1.1541, row 1 of \\(a\\) is \\([-1.0615,\\ 0.6715,\\ -0.8882,\\ 1.2781]\\), and row 1 of \\(x_1\\) is \\([-1.7505,\\ 1.1652,\\ -1.3624,\\ 1.4203]\\).",
+    "hint": "\\(x - \\mu\\) for row 1 is \\([-1.225,\\ 0.775,\\ -1.025,\\ 1.475]\\); the squares sum to 5.3275."
   },
   "reflect": [
-    "Which prediction did you get wrong: did you expect LayerNorm's output to grow when x0 was scaled by 10?",
+    "Which prediction did you get wrong: did you expect LayerNorm's output to grow when \\(x_0\\) was scaled by 10?",
     "What couldn't you explain cleanly: why careful initialisation isn't enough on its own, or why the stream still needs a final norm?",
     "Which relationship is still fuzzy: normalised branch input → stable block output, or slope-1 add → gradient that survives depth?",
-    "Can you say in one sentence why LayerNorm divides by D and not D − 1?",
+    "Can you say in one sentence why LayerNorm divides by \\(D\\) and not \\(D - 1\\)?",
     "Where would a model break first if you removed only the residual adds and kept the norms?"
   ],
   "revisit": [

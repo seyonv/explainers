@@ -6,6 +6,7 @@
 import { readFileSync, writeFileSync, existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { inject, strip } from "./study-lib.mjs";
+import { renderPage } from "./render-math.mjs";
 
 const root = new URL(".", import.meta.url).pathname;
 const args = process.argv.slice(2);
@@ -34,6 +35,8 @@ for (const course of courses) {
     let out;
     try {
       out = jsons.has(slug) ? inject(html, JSON.parse(readFileSync(join(sdir, slug + ".json"), "utf8")), { course, slug, titleOf, usedIn: usedIn[`${course}/${slug}`] }) : strip(html);
+      // a course that ships katex/ writes its maths as \( … \) and \[ … \]: typeset it, Study Mode included
+      if (existsSync(join(dir, "katex"))) out = renderPage(out, dir, `${course}/${f}`)[0];
     } catch (e) { console.error(`${course}/${f}: ${e.message}`); failed++; continue; }
     if (out !== html) { writeFileSync(path, out); jsons.has(slug) ? built++ : stripped++; }
     jsons.delete(slug);
