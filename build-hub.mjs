@@ -72,31 +72,33 @@ entries.sort((a, b) => (b.kind === "series") - (a.kind === "series"));
 let paths = [];
 if (existsSync(join(root, "study-path.json"))) {
   paths = JSON.parse(readFileSync(join(root, "study-path.json"), "utf8")).paths;
-  for (const path of paths) {
-    // A roadmap path groups an existing roadmap's stages into tiles instead of pointing at day plans. Each stage's
-    // tick ids come from the data-ids on its link in the roadmap's index.html; all stages share one localStorage key.
-    if (path.roadmap) {
-      // A path can also carry a `classic` version (its pre-mission pages, frozen in a subfolder); the hub's
-      // Mission/Classic switch picks which set of tiles to show.
-      for (const v of [path, path.classic].filter(Boolean)) {
-        const html = readFileSync(join(root, v.roadmap, "index.html"), "utf8");
-        const stages = Object.fromEntries([...html.matchAll(/href="([^"]+)" data-stage="([^"]+)" data-ids="([^"]+)"/g)]
-          .map((m) => [m[2], { href: `${v.roadmap}/${m[1]}`, ids: m[3].split(" ") }]));
-        for (const d of v.days) {
-          d.stages = d.stages.map((s) => stages[s]).filter(Boolean);
-          d.ids = d.stages.flatMap((s) => s.ids);
-        }
-        v.days = v.days.filter((d) => d.ids.length);
-      }
-      continue;
+  // A roadmap path groups an existing roadmap's stages into tiles instead of pointing at day plans. Each stage's
+  // tick ids come from the data-ids on its link in the roadmap's index.html, and its localStorage key from
+  // data-key (or the path's shared key). A path can also carry a `classic` version (its pre-mission pages),
+  // itself either a roadmap or a set of day plans; the hub's Mission/Classic switch picks which tiles to show.
+  const roadmapTiles = (v) => {
+    const html = readFileSync(join(root, v.roadmap, "index.html"), "utf8");
+    const stages = Object.fromEntries([...html.matchAll(/href="([^"]+)" data-stage="([^"]+)" data-ids="([^"]+)"(?: data-key="([^"]+)")?/g)]
+      .map((m) => [m[2], { href: `${v.roadmap}/${m[1]}`, ids: m[3].split(" "), ...(m[4] ? { key: m[4], label: m[2] } : {}) }]));
+    for (const d of v.days) {
+      d.stages = d.stages.map((s) => stages[s]).filter(Boolean);
+      d.ids = d.stages.flatMap((s) => s.ids);
     }
-    path.days = path.days.filter((d) => entries.some((e) => e.slug === d.plan) && entries.some((e) => e.slug === d.flow));
-    for (const d of path.days) {
-      for (const e of entries.filter((x) => x.slug === d.plan || x.slug === d.flow)) e.series = path.title;
+    v.days = v.days.filter((d) => d.ids.length);
+  };
+  const dayTiles = (v, title) => {
+    v.days = v.days.filter((d) => entries.some((e) => e.slug === d.plan) && entries.some((e) => e.slug === d.flow));
+    for (const d of v.days) {
+      for (const e of entries.filter((x) => x.slug === d.plan || x.slug === d.flow)) e.series = title;
       const html = readFileSync(join(root, d.plan, d.plan + ".html"), "utf8");
       d.ids = [...new Set([...html.matchAll(/data-id="([^"]+)"/g)].map((m) => m[1]))];
     }
-    for (const e of entries.filter((x) => x.slug === path.overview)) e.series = path.title;
+    for (const e of entries.filter((x) => x.slug === v.overview)) e.series = title;
+  };
+  for (const path of paths) {
+    for (const v of [path, path.classic].filter(Boolean)) (v.roadmap ? roadmapTiles(v) : dayTiles(v, path.title));
+    // A path folded in as another's reference (LLM basics under Build) keeps its day pages out of the grid.
+    for (const d of path.reference?.days || []) for (const e of entries.filter((x) => x.slug === d.plan || x.slug === d.flow)) e.series = path.reference.title;
   }
   paths = paths.filter((p) => p.days.length);
 }
@@ -105,7 +107,9 @@ if (existsSync(join(root, "study-path.json"))) {
 // plus the day the path's roadmap assigns to the rest (path.later.courses), so nobody reads it twice.
 const isCard = (f) => f.endsWith(".html") && f !== "index.html" && !f.startsWith("_") && !f.startsWith("checkpoint");
 const dayRange = (ls) => ls.length === 1 ? ls[0] : `Days ${ls[0].replace(/^Day /, "")}–${ls[ls.length - 1].replace(/^Day /, "")}`;
-for (const path of paths.filter((p) => !p.roadmap && p.short)) {
+// A mission path that is a roadmap counts course coverage from its classic day plans.
+const dayPaths = paths.map((p) => (p.roadmap ? (p.classic && !p.classic.roadmap ? { ...p.classic, id: p.id, short: p.short } : null) : p)).filter((p) => p && p.short);
+for (const path of dayPaths) {
   const used = {};
   for (const d of path.days) {
     const html = readFileSync(join(root, d.plan, d.plan + ".html"), "utf8");
