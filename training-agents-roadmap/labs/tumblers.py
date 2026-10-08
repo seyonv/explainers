@@ -1,5 +1,6 @@
 """Tumblers: a lock with N dials (0-9). Turning a dial also drags the dials it is linked to by the
-same amount. Reach the target code within the move budget. Original game for the roadmap capstone."""
+same amount. Reach the target code within the move budget. Original game for the roadmap capstone.
+Superseded by safecracker.py (hidden wiring, pin links); this file stays for older links."""
 import random
 from collections import deque
 
