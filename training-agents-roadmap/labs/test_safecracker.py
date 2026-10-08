@@ -43,5 +43,39 @@ class Core(unittest.TestCase):
         self.assertIsNone(parse_action("turn(9, +)", 3))
         self.assertIsNone(parse_action("hello", 3))
 
+from safecracker import split, play, random_policy, try_undo_policy, prober_policy
+import random as _r
+
+class Baselines(unittest.TestCase):
+    def test_splits_never_share_a_wiring(self):
+        test = split("test", 3, "linear", 40); train = split("train", 3, "linear", 80)
+        tc = {canon(p["n"], p["links"]) for p in test}
+        self.assertTrue(all(canon(p["n"], p["links"]) not in tc for p in train))
+
+    def test_prober_beats_random_on_linear(self):
+        ps = split("test", 3, "linear", 40)
+        rnd = sum(play(random_policy(_r.Random(0)), p, 2 * p["optimal"])[0] for p in ps)
+        prb = sum(play(prober_policy(), p, 2 * p["optimal"])[0] for p in ps)
+        self.assertLessEqual(rnd, 2)
+        self.assertGreaterEqual(prb, 30)            # research measured ~94% at 2x on n=3
+
+    def test_play_respects_budget(self):
+        p = split("test", 3, "linear", 1)[0]
+        won, moves = play(random_policy(_r.Random(1)), p, 5)
+        self.assertLessEqual(moves, 5)
+
+from safecracker import traces
+
+class Traces(unittest.TestCase):
+    def test_traces_are_winning_chat_games_from_training_safes(self):
+        ts = traces(3, n=3)
+        self.assertEqual(len(ts), 3)
+        for g in ts:
+            roles = [m["role"] for m in g["messages"]]
+            self.assertEqual(roles[0], "system"); self.assertEqual(roles[1], "user")
+            self.assertTrue(all(m["role"] == "assistant" for m in g["messages"][2::2]))
+            self.assertRegex(g["messages"][2]["content"], r"^turn\(\d, [+-]\)$")
+            self.assertTrue(g["won"])
+
 if __name__ == "__main__":
     unittest.main()
