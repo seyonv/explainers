@@ -77,5 +77,13 @@ class Traces(unittest.TestCase):
             self.assertRegex(g["messages"][2]["content"], r"^turn\(\d, [+-]\)$")
             self.assertTrue(g["won"])
 
+from safecracker import quick_table
+
+class Quick(unittest.TestCase):
+    def test_quick_table_only_measures_the_sizes_asked_for(self):
+        rows = quick_table([3], 5)
+        self.assertEqual({(r["tier"], r["n"]) for r in rows}, {("linear", 3), ("hard", 3)})
+        self.assertTrue(all(0 <= r["prober"] <= 100 for r in rows))
+
 if __name__ == "__main__":
     unittest.main()

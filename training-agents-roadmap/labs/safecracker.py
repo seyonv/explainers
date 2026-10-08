@@ -305,6 +305,16 @@ def _playable(path, cal):
                       "links": _jsonable(p["links"])})
     json.dump(safes, open(path, "w"), indent=1)
 
+def quick_table(sizes, count):
+    """Percent of `count` test safes each baseline cracks at a 2x budget, for each tier and dial count."""
+    rows = []
+    for tier in ("linear", "hard"):
+        for n in sizes:
+            ps = split("test", n, tier, count)
+            r = {k: round(100 * _rate(f, ps, 2.0)[0] / count) for k, f in POLICIES.items()}
+            rows.append({"tier": tier, "n": n, **r})
+    return rows
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--facts", metavar="OUTDIR", help="measure everything and write safecracker.json")
@@ -323,12 +333,10 @@ def main():
         print(f"Q-table after {a.episodes} episodes: {q_eval(Q, same):.0%} of fresh targets on the safe it trained on, "
               f"{q_eval(Q, split('test', 3, 'linear', 300)):.0%} on safes with new wiring")
         return
-    print("50 test safes per row, move budget 2x the full-information optimum (about a minute)")
-    for tier in ("linear", "hard"):
-        for n in (3, 4, 5):
-            ps = split("test", n, tier, 50)
-            r = {k: _rate(f, ps, 2.0)[0] * 2 for k, f in POLICIES.items()}
-            print(f"{tier:6} dials={n}: random {r['random']}%, try-and-undo {r['try_undo']}%, prober {r['prober']}%")
+    sizes = [s for s in a.sizes if s in LINKS] if a.sizes != [3, 4, 5, 6] else [3, 4, 5]
+    print("50 test safes per row, move budget 2x the full-information optimum (bigger safes take a few minutes)")
+    for r in quick_table(sizes, 50):
+        print(f"{r['tier']:6} dials={r['n']}: random {r['random']}%, try-and-undo {r['try_undo']}%, prober {r['prober']}%")
 
 if __name__ == "__main__":
     main()

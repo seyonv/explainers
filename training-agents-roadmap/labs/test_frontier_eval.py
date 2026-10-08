@@ -18,5 +18,14 @@ class Episode(unittest.TestCase):
         won, moves, usd, log = fe.episode(chat, "m", p, budget=3, prices={})
         self.assertFalse(won); self.assertEqual(moves, 3); self.assertIsNone(log[0]["action"])
 
+class Repeats(unittest.TestCase):
+    def test_repeats_run_every_safe_again_and_pool(self):
+        safes = split("test", 3, "linear", 4)
+        chat = lambda model, messages: ("no idea", {"prompt_tokens": 1, "completion_tokens": 1})
+        r = fe.run_model(chat, "m", safes, repeats=3, mult=1.0, prices={}, max_usd=10)
+        self.assertEqual(r["episodes"], 12)
+        self.assertEqual(len(r["per_repeat"]), 3)
+        self.assertEqual(r["won"], 0)
+
 if __name__ == "__main__":
     unittest.main()
