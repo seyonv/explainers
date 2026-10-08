@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Stage 4: Fine-tune a model on coding-agent traces (classic)</title><meta name="description" content="Supervised fine-tuning, made concrete: chat templates, loss masking, LoRA and GPU memory, then Class 1's Gemma-4 LoRA run on real Pi-harness traces, with the base-model baseline the class left out.">
+<style>@font-face{font-family:"Virgil";src:url("../Virgil.woff2") format("woff2");font-display:swap}
+:root{
+  --bg:#fbfaf6; --surface:#f3f2ec; --surface2:#e9e7df; --border:#dcd9cf;
+  --text:#1c1f23; --muted:#686d66; --faint:#b6b4ab; --ink2:#55595f;
+  --g:#3f9a6e; --g-bg:#dcefe2; --b:#3d6fc9; --b-bg:#e2eafa; --o:#d4812b; --o-bg:#fbecd9;
+  --v:#7c5bcf; --v-bg:#ece5fb; --r:#c7503a; --r-bg:#fbe6e1; --n:#9a978d; --n-bg:#f1f0ea;
+  --accent:var(--g); --accent-bg:var(--g-bg);
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#141619; --surface:#1c1f23; --surface2:#24282d; --border:#32373d;
+  --text:#e6e8ea; --muted:#9aa1a9; --faint:#4d535a; --ink2:#aab0b7;
+  --g:#62c08f; --g-bg:#1b2d23; --b:#7ea3ec; --b-bg:#1c2536; --o:#eba35c; --o-bg:#33261a;
+  --v:#a88ef0; --v-bg:#261f38; --r:#ec7a63; --r-bg:#35201c; --n:#80858c; --n-bg:#202327;
+}}
+:root[data-theme="dark"]{
+  --bg:#141619; --surface:#1c1f23; --surface2:#24282d; --border:#32373d;
+  --text:#e6e8ea; --muted:#9aa1a9; --faint:#4d535a; --ink2:#aab0b7;
+  --g:#62c08f; --g-bg:#1b2d23; --b:#7ea3ec; --b-bg:#1c2536; --o:#eba35c; --o-bg:#33261a;
+  --v:#a88ef0; --v-bg:#261f38; --r:#ec7a63; --r-bg:#35201c; --n:#80858c; --n-bg:#202327;
+}
+/* diagrams */
+.dg{display:block;width:100%;height:auto;min-width:var(--minw)}
+.dg .h{font-family:"Virgil","Comic Sans MS",cursive;fill:var(--text)}
+.dg .s{font-family:-apple-system,"Inter",system-ui,sans-serif;font-size:14px;fill:var(--text)}
+.dg .mono{font-family:ui-monospace,Menlo,monospace}
+.dg .mut{fill:var(--muted)} .dg .acc{fill:var(--g)} .dg .red{fill:var(--r)} .dg .lab{fill:var(--ink2);font-size:13px}
+.dg .num{font-size:20px;fill:#fff}
+.dg .bx{stroke-width:1.6;fill:var(--n-bg);stroke:var(--n)}
+.dg .bx.g{fill:var(--g-bg);stroke:var(--g)} .dg .bx.b{fill:var(--b-bg);stroke:var(--b)} .dg .bx.o{fill:var(--o-bg);stroke:var(--o)}
+.dg .bx.v{fill:var(--v-bg);stroke:var(--v)} .dg .bx.r{fill:var(--r-bg);stroke:var(--r)}
+.dg .ar{stroke:var(--ink2);stroke-width:1.6;fill:none} .dg .ar.dash{stroke-dasharray:5 5}
+.dg .ax{stroke:var(--muted);stroke-width:1.2}
+.dg .ln{fill:none;stroke-width:3;stroke-linecap:round;stroke-linejoin:round}
+.dg .ln.g{stroke:var(--g)} .dg .ln.b{stroke:var(--b)} .dg .ln.o{stroke:var(--o)} .dg .ln.r{stroke:var(--r)}
+.dg .trail{fill:none;stroke:var(--faint);stroke-width:5;stroke-dasharray:2 11;stroke-linecap:round}
+.dg .stop circle{stroke:var(--bg);stroke-width:4}
+.dg .stop.g circle{fill:var(--g)} .dg .stop.b circle{fill:var(--b)} .dg .stop.o circle{fill:var(--o)} .dg .stop.v circle{fill:var(--v)} .dg .stop.r circle{fill:var(--r)} .dg .stop.n circle{fill:var(--n)}
+.dg a:hover circle{stroke:var(--text)} .dg a:focus-visible circle{stroke:var(--text);stroke-width:5}
+.dg .stop.done circle{fill:var(--text)}
+
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text)}
+a{color:inherit;text-decoration-color:var(--faint);text-underline-offset:2px}
+a:hover{text-decoration-color:var(--accent)}
+a:focus-visible,button:focus-visible,summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:3px}
+.card{max-width:880px;margin:0 auto;padding:24px 32px 56px;font-family:-apple-system,"Inter",system-ui,sans-serif;line-height:1.5}
+.crumbs{font-size:13px;color:var(--muted);display:flex;flex-wrap:wrap;gap:6px}
+.crumbs a{text-decoration:none}.crumbs a:hover{text-decoration:underline}
+.eyebrow{font-size:12px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--accent);margin:18px 0 0}
+h1{font-family:"Virgil","Comic Sans MS",cursive;font-weight:400;font-size:clamp(30px,5vw,40px);line-height:1.1;margin:6px 0 8px;text-wrap:balance}
+h2{font-size:20px;font-weight:650;margin:0 0 4px;text-wrap:balance}
+h2.big{font-family:"Virgil",cursive;font-weight:400;font-size:28px}
+h2 .n{font-size:13px;font-weight:400;color:var(--muted);margin-left:6px}
+h3{font-size:16px;margin:0}
+p{font-size:15.5px;margin:0 0 10px}
+.sub{font-size:16px;color:var(--muted);margin:0 0 14px;max-width:70ch}
+.n{color:var(--muted);font-size:13.5px}
+code{font-family:ui-monospace,Menlo,monospace;font-size:.86em;background:var(--surface2);padding:.1em .35em;border-radius:4px}
+pre{margin:8px 0 4px;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px 12px;overflow-x:auto;font-size:12.5px;line-height:1.5}
+pre code{background:none;padding:0;font-size:inherit;white-space:pre}
+.ext{font-size:10px;color:var(--faint);margin-left:2px}
+section{margin-top:34px}
+.intro{font-size:14.5px;color:var(--muted)}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin:4px 0 8px}
+.chip{font-size:12.5px;border:1px solid var(--border);background:var(--surface);border-radius:999px;padding:2px 10px;color:var(--muted);white-space:nowrap}
+.chip b{color:var(--text);font-weight:600}
+.meta{display:flex;flex-wrap:wrap;gap:6px}
+.track{display:block;height:5px;border-radius:3px;background:var(--surface2);margin:8px 0 10px;overflow:hidden}
+.track i{display:block;height:100%;width:0;background:var(--accent);transition:width .25s}
+@media (prefers-reduced-motion:reduce){.track i{transition:none}}
+.toc{position:sticky;top:0;z-index:5;background:color-mix(in srgb,var(--bg) 92%,transparent);backdrop-filter:blur(6px);display:flex;gap:4px 14px;flex-wrap:wrap;padding:8px 0;border-bottom:1px solid var(--border);font-size:13.5px;margin:0 0 6px}
+.toc a{text-decoration:none;color:var(--muted)}.toc a:hover{color:var(--text)}
+/* figures */
+.fig{margin:18px 0 14px}
+.figbox{background:var(--bg);border:1px solid var(--border);border-radius:12px;padding:14px;overflow-x:auto}
+.fig figcaption{font-size:13px;color:var(--muted);margin-top:6px}
+.fig.ext-img img{display:block;max-width:100%;height:auto;border-radius:10px;border:1px solid var(--border);background:#fff;margin:0 auto}
+#map .figbox{padding:6px 10px}
+/* boxes */
+.outcomes,.prime,.routine{border:1px solid var(--border);background:var(--surface);border-radius:12px;padding:12px 18px;margin:14px 0 0;font-size:14.5px}
+.outcomes .k,.routine .k,.best .k{font-size:11px;letter-spacing:.06em;text-transform:uppercase;font-weight:650;color:var(--muted);margin-bottom:4px}
+.outcomes ul,.routine ol{margin:4px 0 2px;padding-left:20px}.outcomes li,.routine li{margin:4px 0}
+.prime{border-color:var(--v);background:var(--v-bg)}
+.prime h2{font-size:16px}
+.prime p{font-size:14.5px}
+.routine{border-color:var(--g);background:var(--g-bg)}
+/* tick items */
+.items{list-style:none;margin:6px 0 0;padding:0}
+.item{display:grid;grid-template-columns:24px 1fr;gap:10px;padding:10px 0;border-bottom:1px solid var(--border)}
+.items .item:first-child{border-top:1px solid var(--border)}
+.item input{width:18px;height:18px;margin:2px 0 0;accent-color:var(--accent);cursor:pointer}
+.txt{min-width:0;display:flex;flex-direction:column;gap:3px}
+.t{font-size:15.5px;font-weight:600}
+.why{font-size:14px;color:var(--muted)}
+.item.done .t{color:var(--muted);text-decoration:line-through;text-decoration-color:var(--faint)}
+.item.opt .t::after{content:"optional";font-size:11px;font-weight:500;color:var(--muted);border:1px solid var(--border);border-radius:4px;padding:0 5px;margin-left:8px;vertical-align:2px}
+.expect{font-size:13.5px;border-left:3px solid var(--g);padding:2px 0 2px 10px;margin-top:4px}
+.tag{font-size:11px;font-weight:500;color:var(--muted);border:1px solid var(--border);border-radius:4px;padding:0 5px}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+/* concept blocks */
+.concept{margin-top:22px}
+.concept .items .item{border-top:1px solid var(--border)}
+.concept h3.t{font-size:18px}
+.cbody{padding-left:34px}
+.cbody p{margin-top:8px}
+.best{margin:12px 0 6px}
+.rgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:10px}
+.res{display:grid;grid-template-columns:84px 1fr;gap:10px;align-items:start;border:1px solid var(--border);border-radius:10px;padding:8px;text-decoration:none;background:var(--surface)}
+.res:hover{border-color:var(--accent)}
+.ri{width:84px;height:56px;border-radius:6px;overflow:hidden;background:var(--surface2);display:flex;align-items:center;justify-content:center}
+.ri img{width:100%;height:100%;object-fit:cover;display:block}
+.ri-ph{font-size:10px;font-weight:700;letter-spacing:.08em;color:var(--muted)}
+.ri-ph.video{color:var(--r)}.ri-ph.course{color:var(--b)}.ri-ph.code{color:var(--o)}.ri-ph.card{color:var(--g)}.ri-ph.paper{color:var(--v)}
+.rt{display:flex;flex-direction:column;gap:2px;min-width:0}
+.rh{font-size:14px;font-weight:600;line-height:1.3}
+.rn{font-size:12.5px;color:var(--muted);line-height:1.35}
+.rm{font-size:11.5px;color:var(--faint)}
+.mine{font-size:13.5px;color:var(--muted);margin-top:8px}
+.mine b{color:var(--text)}
+.know{font-size:14px;background:var(--g-bg);border-radius:8px;padding:8px 12px;margin:10px 0 4px}
+.know b{display:block;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--g);margin-bottom:2px}
+.deep{margin-top:6px;font-size:13.5px}
+.deep summary{cursor:pointer;color:var(--accent);width:max-content}
+.deep ul{margin:6px 0 2px;padding-left:18px}.deep li{margin:3px 0}
+.deep p{font-size:13.5px;margin:6px 0}
+/* watch */
+.wrow{display:grid;grid-template-columns:minmax(0,340px) 1fr;gap:16px;align-items:start;margin:8px 0 6px}
+@media (max-width:640px){.wrow{grid-template-columns:1fr}}
+.wl{font-size:13.5px}
+.chapters{list-style:none;margin:10px 0 0;padding:0;columns:2 320px;column-gap:22px}
+.chapters li{break-inside:avoid;display:grid;grid-template-columns:62px 1fr;gap:6px;font-size:13.5px;padding:4px 0}
+.chapters li.skip{opacity:.72}
+.ts{font-variant-numeric:tabular-nums;font-family:ui-monospace,Menlo,monospace;font-size:12.5px;color:var(--r);text-decoration:none}
+.ts:hover{text-decoration:underline}
+/* video cards */
+.vgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:12px;margin-top:12px}
+.vcard{display:flex;flex-direction:column;border:1px solid var(--border);border-radius:12px;overflow:hidden;text-decoration:none;background:var(--surface)}
+.vcard:hover{border-color:var(--r)}
+.thumb{position:relative;display:block;aspect-ratio:16/9;overflow:hidden;background:#000}
+.thumb img{width:100%;height:100%;object-fit:cover;display:block}
+.dur{position:absolute;right:6px;bottom:6px;background:rgba(0,0,0,.78);color:#fff;font-size:11.5px;border-radius:4px;padding:1px 5px;font-variant-numeric:tabular-nums}
+.play{position:absolute;inset:0;margin:auto;width:46px;height:32px;border-radius:9px;background:rgba(220,40,40,.92);color:#fff;display:flex;align-items:center;justify-content:center;font-size:14px;opacity:.9}
+.vt{display:flex;flex-direction:column;gap:2px;padding:8px 10px 10px}
+.vn{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--r);font-weight:650}
+.vh{font-size:14.5px;font-weight:600;line-height:1.3}
+.vs{font-size:12.5px;color:var(--muted)}
+/* labs */
+.lab{border-top:3px solid var(--o);padding-top:14px}
+.ph{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:6px 12px;margin-bottom:6px}
+/* checkpoint */
+.qs{padding-left:22px;margin:8px 0 10px}
+.qs li{margin:10px 0}
+.qs details summary{cursor:pointer;color:var(--accent);font-size:13.5px;width:max-content}
+.qs details p{font-size:14px;background:var(--surface);border-radius:8px;padding:8px 12px;margin:6px 0 0}
+.qs details p.n{background:none;padding:2px 12px}
+/* map page */
+.stages{display:flex;flex-direction:column;gap:10px;margin-top:10px}
+.stage{display:grid;grid-template-columns:200px 1fr;gap:14px;border:1px solid var(--border);border-left:5px solid var(--n);border-radius:12px;padding:10px;text-decoration:none;background:var(--surface)}
+.stage:hover{border-color:var(--accent)}
+.stage.g{border-left-color:var(--g)}.stage.b{border-left-color:var(--b)}.stage.o{border-left-color:var(--o)}.stage.v{border-left-color:var(--v)}.stage.r{border-left-color:var(--r)}
+@media (max-width:600px){.stage{grid-template-columns:1fr}}
+.sthumb{position:relative;display:block;aspect-ratio:16/9;border-radius:8px;overflow:hidden;background:var(--surface2)}
+.sthumb img{width:100%;height:100%;object-fit:cover;display:block}
+.noimg{display:flex;width:100%;height:100%;align-items:center;justify-content:center;font-family:"Virgil",cursive;font-size:22px;color:var(--text);text-align:center;padding:8px}
+.noimg.g{background:var(--g-bg)}.noimg.b{background:var(--b-bg)}.noimg.o{background:var(--o-bg)}.noimg.v{background:var(--v-bg)}.noimg.r{background:var(--r-bg)}
+.sn{position:absolute;left:6px;top:6px;width:30px;height:30px;border-radius:50%;background:var(--text);color:var(--bg);display:flex;align-items:center;justify-content:center;font-family:"Virgil",cursive;font-size:17px}
+.sbody{display:flex;flex-direction:column;gap:3px;min-width:0}
+.skick{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);font-weight:650}
+.stitle{font-size:17px;font-weight:650;line-height:1.25}
+.ssub{font-size:14px;color:var(--muted)}
+.smeta{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:12.5px;color:var(--muted);margin-top:2px}
+.smeta b{color:var(--text);font-weight:600}
+.scount{font-size:12px;color:var(--muted)}
+.donebadge{display:none;margin-left:8px;color:var(--g);font-weight:650}
+.stage-done .donebadge{display:inline}
+.tbl{width:100%;border-collapse:collapse;font-size:13.5px;margin:10px 0}
+.tbl th,.tbl td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--border);vertical-align:top}
+.tbl th{font-size:11.5px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted)}
+#budget{overflow-x:auto}
+ul.plain{padding-left:20px;font-size:14.5px}ul.plain li{margin:6px 0}
+.overall{display:flex;align-items:center;gap:12px;font-size:13px;color:var(--muted);margin:30px 0 4px;font-variant-numeric:tabular-nums}
+.overall .track{flex:1;margin:0}
+.reset{font:inherit;font-size:13px;color:var(--muted);background:none;border:1px solid var(--border);border-radius:8px;padding:3px 10px;cursor:pointer}
+.reset:hover{border-color:var(--r);color:var(--r)}
+.pn{display:flex;flex-wrap:wrap;justify-content:space-between;gap:8px 16px;margin-top:18px;font-size:14.5px;font-weight:600}
+.foot{margin-top:18px;padding-top:12px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+@media (max-width:560px){.card{padding:18px 16px 40px}.cbody{padding-left:0}}
+.gallery{display:grid;gap:12px;margin:12px 0}.gallery.g2{grid-template-columns:repeat(auto-fit,minmax(260px,1fr))}
+.gallery .fig{margin:0}.ext-img img{width:100%}.credit{display:block;font-size:12px;color:var(--faint);margin-top:2px}
+.day{border:1px solid var(--border);border-radius:12px;padding:12px 16px;margin:14px 0;background:var(--surface)}
+.day .k{font-size:11px;letter-spacing:.06em;text-transform:uppercase;font-weight:650;color:var(--muted)}
+.day ol{margin:6px 0 0;padding-left:22px;font-size:14.5px}.day li{margin:4px 0}
+</style></head><body>
+<article class="card"><div class="vswitch" role="group" aria-label="Path version">
+<span class="vsk">Path version</span><span class="vseg"><a href="../stage-4-sft-on-traces.html" data-view="mission">Mission</a><a class="on" aria-current="page" href="stage-4-sft-on-traces.html" data-view="classic">Classic</a></span>
+<span class="vsn">The reading-first version of this path, as it was before the mission. Your ticks are shared with the mission version.</span></div>
+<style>.vswitch{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;margin:0 0 14px;padding:9px 12px;border:1px solid var(--border,#dcd9cf);border-radius:12px;background:var(--surface,#f3f2ec);font:13px/1.4 -apple-system,"Inter",system-ui,sans-serif}
+.vswitch .vsk{font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--muted,#686d66)}
+.vseg{display:inline-flex;border:1px solid var(--border,#dcd9cf);border-radius:999px;overflow:hidden;background:var(--bg,#fbfaf6)}
+.vseg a{padding:5px 14px;color:var(--text,#1c1f23);text-decoration:none;font-weight:600}
+.vseg a.on{background:var(--o,#d4812b);color:#fff}
+.vseg a:not(.on):hover{background:var(--o-bg,#fbecd9)}
+.vswitch .vsn{color:var(--muted,#686d66);flex:1 1 260px}</style>
+<script>(()=>{for(const a of document.querySelectorAll(".vseg a"))a.addEventListener("click",()=>{try{localStorage.setItem("path-view:training-agents",a.dataset.view)}catch(e){}});try{localStorage.setItem("path-view:training-agents","classic")}catch(e){}})();</script><nav class="crumbs"><a href="../../index.html">All explainers</a><span>›</span><a href="index.html">Training Agents roadmap</a><span>›</span><b>Stage 4 of 8</b></nav><header class="stage-head" data-stage="s4" data-ids="s4-sft s4-lora s4-watch s4-lab-tool s4-lab-qlora s4-lab-mask s4-lab-prep s4-lab-smoke s4-lab-run s4-lab-read s4-lab-base s4-checkpoint">
+<p class="eyebrow" style="color:var(--g)">Stage 4 · Class 1 · SFT on agent traces</p>
+<h1>Fine-tune a model on coding-agent traces</h1><p class="sub">Supervised fine-tuning, made concrete: chat templates, loss masking, LoRA and GPU memory, then Class 1's Gemma-4 LoRA run on real Pi-harness traces, with the base-model baseline the class left out.</p>
+<div class="chips"><span class="chip"><b>Time</b> ~8 h</span><span class="chip"><b>Cost</b> ~$4–6</span><span class="chip"><b>GPU</b> Colab T4 → L40S</span><span class="chip prog"><b>Progress</b> <span data-count>0</span></span></div>
+<div class="track" aria-hidden="true"><i data-bar></i></div>
+</header>
+<nav class="toc" aria-label="On this page"><a href="#prime">Prime</a><a href="#primer">Primer</a><a href="#watch">Watch</a><a href="#lab-free">Free lab</a><a href="#lab-class">Class run</a><a href="#checkpoint">Checkpoint</a></nav>
+<figure class="fig" id="hero"><div class="figbox"><svg class="dg" viewBox="0 0 900 280" role="img" aria-label="GPU memory for inference, full fine-tuning and LoRA" style="--minw:560px"><defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" style="fill:var(--ink2)"/></marker></defs><text x="20" y="28" class="h" text-anchor="start" style="font-size:15px">Memory for Qwen3-0.6B before activations (GB). Activations grow with batch × sequence length.</text><text x="20" y="86" class="s" text-anchor="start">Inference, bf16</text><rect x="210" y="60" width="72" height="38" rx="5" class="bx b"/><text x="294" y="85" class="h" text-anchor="start" style="font-size:16px">≈ 1.2 GB</text><text x="20" y="150" class="s" text-anchor="start">Full fine-tune, AdamW</text><rect x="210" y="124" width="72" height="38" rx="5" class="bx b"/><rect x="284" y="124" width="72" height="38" rx="5" class="bx o"/><rect x="358" y="124" width="144" height="38" rx="5" class="bx v"/><text x="430" y="148" class="s" text-anchor="middle" style="font-size:12px">fp32 copy</text><rect x="504" y="124" width="288" height="38" rx="5" class="bx r"/><text x="648" y="148" class="s" text-anchor="middle" style="font-size:12px">Adam m, v</text><text x="804" y="149" class="h" text-anchor="start" style="font-size:16px">≈ 9.6 GB</text><text x="20" y="214" class="s" text-anchor="start">LoRA r=16</text><rect x="210" y="188" width="72" height="38" rx="5" class="bx b"/><rect x="284" y="188" width="9" height="38" rx="5" class="bx g"/><text x="305" y="213" class="h" text-anchor="start" style="font-size:16px">≈ 1.3 GB</text><text x="20" y="262" class="s mut" text-anchor="start" style="font-size:13px">16 bytes per parameter for full fine-tuning is why a 7B model needs ~112 GB, and why the classes use LoRA or a 0.6B model.</text></svg></div><figcaption>Why the classes use LoRA and small models: full fine-tuning with AdamW costs ~16 bytes per parameter before activations.</figcaption></figure>
+<aside class="outcomes"><div class="k">By the end of this stage you can</div><ul><li>Render a trace through a chat template and show which tokens carry loss.</li><li>Explain LoRA with real parameter counts, and pick a rank and learning rate.</li><li>Estimate whether a run fits on a GPU before you pay for it.</li><li>Run a LoRA SFT with TRL, read its Trackio curves, and evaluate it against the base model.</li></ul></aside>
+<section class="prime" id="prime"><h2>Prime <span class="n">5–10 min, before anything else</span></h2><p>Guess before reading: if you fine-tune on Claude Opus's traces, can the small model end up <i>better</i> than Opus at the task? Why or why not? (The class calls the answer the “emulation ceiling”.)</p></section>
+
+<section id="primer"><h2 class="big">Primer</h2><p class="intro">Read these in order. Each block is short on purpose: the diagram and the “best first” link carry the idea; “Go deeper” is only for when a block doesn't land.</p><section class="concept" id="sft">
+<ol class="items"><li class="item"><input type="checkbox" id="c-s4-sft" data-id="s4-sft"><div class="txt"><label for="c-s4-sft" class="sr">Done</label><h3 class="t">SFT is next-token prediction, masked</h3><span class="why">~2 h</span></div></li></ol>
+<div class="cbody"><p>Supervised fine-tuning is the same cross-entropy loss as pretraining, on example conversations. A <b>chat template</b> turns a <code>messages</code> list into the exact token string the model was trained on, with special role markers (<code>&lt;|im_start|&gt;assistant</code> and friends). Get it wrong and the model silently underperforms.</p><p><b>Loss masking</b> means training only on tokens the model should learn to <i>produce</i>. In an agent trace that's the assistant turns: its reasoning and tool calls. System prompt, user task and tool output are masked. Class 1's script turns each assistant turn into a prompt/completion pair (everything before it is the prompt), which is why 627 sessions become 15,251 examples, 6,727 after dropping those longer than 4,096 tokens.</p><p>SFT has an <b>emulation ceiling</b>: the model copies the traces, so it can't beat them. Aim it at a narrow job, and pair a task eval (held-out loss on traces) with general ones (HumanEval, MBPP) to catch what it forgot.</p><figure class="fig" id="fig-sft"><div class="figbox"><svg class="dg" viewBox="0 0 1053.2 190" role="img" aria-label="An agent trace where only assistant turns contribute to the loss" style="--minw:560px"><defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" style="fill:var(--ink2)"/></marker></defs><rect x="10" y="60" width="194.20000000000002" height="56" rx="8" class="bx n"/><text x="18" y="78" class="s mut" style="font-size:11px">system</text><text x="18" y="100" class="s mono" style="font-size:12px">You are a coding agent.</text><text x="107.10000000000001" y="140" class="s mut" text-anchor="middle" style="font-size:12px">mask 0</text><rect x="210.20000000000002" y="60" width="172" height="56" rx="8" class="bx n"/><text x="218.20000000000002" y="78" class="s mut" style="font-size:11px">user</text><text x="218.20000000000002" y="100" class="s mono" style="font-size:12px">Fix the failing test</text><text x="296.20000000000005" y="140" class="s mut" text-anchor="middle" style="font-size:12px">mask 0</text><rect x="388.20000000000005" y="60" width="135" height="56" rx="8" class="bx g"/><text x="396.20000000000005" y="78" class="s mut" style="font-size:11px">assistant</text><text x="396.20000000000005" y="100" class="s mono" style="font-size:12px">read("calc.py")</text><text x="455.70000000000005" y="140" class="s acc" text-anchor="middle" style="font-size:12px">loss ✓</text><rect x="529.2" y="60" width="149.8" height="56" rx="8" class="bx n"/><text x="537.2" y="78" class="s mut" style="font-size:11px">tool</text><text x="537.2" y="100" class="s mono" style="font-size:12px">def add(a,b): a-b</text><text x="604.1" y="140" class="s mut" text-anchor="middle" style="font-size:12px">mask 0</text><rect x="685" y="60" width="120.2" height="56" rx="8" class="bx g"/><text x="693" y="78" class="s mut" style="font-size:11px">assistant</text><text x="693" y="100" class="s mono" style="font-size:12px">edit(… a+b …)</text><text x="745.1" y="140" class="s acc" text-anchor="middle" style="font-size:12px">loss ✓</text><rect x="811.2" y="60" width="110" height="56" rx="8" class="bx n"/><text x="819.2" y="78" class="s mut" style="font-size:11px">tool</text><text x="819.2" y="100" class="s mono" style="font-size:12px">1 passed</text><text x="866.2" y="140" class="s mut" text-anchor="middle" style="font-size:12px">mask 0</text><rect x="927.2" y="60" width="110" height="56" rx="8" class="bx g"/><text x="935.2" y="78" class="s mut" style="font-size:11px">assistant</text><text x="935.2" y="100" class="s mono" style="font-size:12px">Done.</text><text x="982.2" y="140" class="s acc" text-anchor="middle" style="font-size:12px">loss ✓</text><text x="10" y="36" class="h" text-anchor="start" style="font-size:16px">One agent trace, flattened into tokens by the chat template:</text><text x="10" y="176" class="s mut" text-anchor="start">Train only on what the agent should learn to write (its actions), not on what the world wrote back.</text></svg></div><figcaption>The same trace as stage 2. <code>assistant_only_loss</code> (for <code>messages</code> data) or completion-only loss (for prompt/completion data) sets the grey tokens' labels to −100 so they don't count.</figcaption></figure><div class="gallery g2"><figure class="fig ext-img"><a href="https://huggingface.co/docs/trl/sft_trainer" target="_blank" rel="noopener"><img src="https://huggingface.co/datasets/trl-lib/documentation-images/resolve/main/train_on_assistant.png" alt="assistant_only_loss masks everything but assistant turns" loading="lazy"></a><figcaption><code>assistant_only_loss</code>: only assistant turns carry loss. <span class="credit">Image: <a href="https://huggingface.co/docs/trl/sft_trainer" target="_blank" rel="noopener">HF TRL docs</a><span class="ext" aria-hidden="true">↗</span></span></figcaption></figure><figure class="fig ext-img"><a href="https://huggingface.co/docs/trl/sft_trainer" target="_blank" rel="noopener"><img src="https://huggingface.co/datasets/trl-lib/documentation-images/resolve/main/train_on_completion.png" alt="completion_only_loss masks the prompt" loading="lazy"></a><figcaption><code>completion_only_loss</code>: the prompt is masked, the completion trained. This is what Class 1 uses. <span class="credit">Image: <a href="https://huggingface.co/docs/trl/sft_trainer" target="_blank" rel="noopener">HF TRL docs</a><span class="ext" aria-hidden="true">↗</span></span></figcaption></figure></div><div class="best"><div class="k">Best first</div><div class="rgrid"><a class="res" href="https://huggingface.co/learn/llm-course/chapter11/1" target="_blank" rel="noopener"><span class="ri"><span class="ri-ph course" aria-hidden="true">COURSE</span></span><span class="rt"><span class="rh">HF LLM Course, chapter 11: fine-tuning<span class="ext" aria-hidden="true">↗</span></span><span class="rn">Chat templates, SFT with TRL, LoRA; with code.</span><span class="rm">2 h</span></span></a><a class="res" href="https://x.com/ben_burtenshaw/status/2067615361428545566?s=20" target="_blank" rel="noopener"><span class="ri"><span class="ri-ph read" aria-hidden="true">READ</span></span><span class="rt"><span class="rh">Ben Burtenshaw's SFT article (from the class)<span class="ext" aria-hidden="true">↗</span></span><span class="rn">The same loss in plain PyTorch, no TRL.</span><span class="rm">15 min</span></span></a></div></div><p class="mine"><b>Already in your hub:</b> <a href="../../z2h-1-toolkit/softmax-and-cross-entropy.html">Softmax and cross-entropy</a> · <a href="../../z2h-4-mlp/splits-and-fit.html">Train/dev/test and over- vs underfitting</a> · <a href="../../paper-2107-03374/codex-s.html">Codex-S: SFT on filtered samples</a> · <a href="https://agents-inference-software-factory.svas.workers.dev/models/#sft-peft-preferences" target="_blank" rel="noopener">Models guide · SFT, LoRA, DPO</a><span class="ext" aria-hidden="true">↗</span></p><div class="know"><b>You know it when you can</b> render one trace with <code>tokenizer.apply_chat_template</code>, point at the role tokens, and count how many tokens actually carry loss.</div><details class="deep"><summary>Go deeper (4)</summary><ul><li><a href="https://huggingface.co/docs/trl/sft_trainer" target="_blank" rel="noopener">TRL SFT Trainer docs</a><span class="ext" aria-hidden="true">↗</span> <span class="n">· dataset formats, <code>assistant_only_loss</code>, <code>completion_only_loss</code></span></li><li><a href="https://huggingface.co/blog/chat-templates" target="_blank" rel="noopener">Chat templates: an end to the silent performance killer</a><span class="ext" aria-hidden="true">↗</span></li><li><a href="https://cameronrwolfe.substack.com/p/understanding-and-using-supervised" target="_blank" rel="noopener">Cameron Wolfe: understanding and using SFT</a><span class="ext" aria-hidden="true">↗</span></li><li><a href="https://rlhfbook.com/c/04-instruction-tuning" target="_blank" rel="noopener">RLHF Book, ch. 4: instruction tuning</a><span class="ext" aria-hidden="true">↗</span></li></ul></details></div></section><section class="concept" id="lora">
+<ol class="items"><li class="item"><input type="checkbox" id="c-s4-lora" data-id="s4-lora"><div class="txt"><label for="c-s4-lora" class="sr">Done</label><h3 class="t">LoRA and GPU memory</h3><span class="why">~1.5 h</span></div></li></ol>
+<div class="cbody"><p><b>LoRA</b> freezes the base weights and learns a thin low-rank correction next to each chosen matrix: <code>h = Wx + (α/r)·BAx</code>. At rank 16 on a 4096×4096 matrix that's 131,072 trainable numbers instead of 16.8 million. Because the frozen weights need no gradients or optimizer state, memory drops from ~16 bytes per parameter to ~2. <b>QLoRA</b> also stores the frozen weights in 4-bit, as Class 1 does (<code>--load-in-4bit</code>).</p><p>LoRA usually wants a learning rate about 10× a full fine-tune's: Class 1 uses <b>2e-4</b>. <b>Gradient accumulation</b> runs small micro-batches before one optimizer step: Class 1's batch 1 × accumulation 16 is an effective batch of 16 on one GPU. <b>Gradient checkpointing</b> recomputes activations instead of storing them.</p><figure class="fig" id="fig-lora"><div class="figbox"><svg class="dg" viewBox="0 0 820 270" role="img" aria-label="LoRA adds a trainable low-rank product B times A to a frozen weight matrix" style="--minw:560px"><defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" style="fill:var(--ink2)"/></marker></defs><rect x="30" y="50" width="180" height="180" class="bx n"/><text x="120" y="135" class="h" text-anchor="middle" style="font-size:34px">W</text><text x="120" y="165" class="s mut" text-anchor="middle">4096 × 4096</text><text x="120" y="250" class="s" text-anchor="middle">frozen: 16,777,216</text><text x="240" y="145" class="h" text-anchor="middle" style="font-size:34px">+</text><rect x="270" y="50" width="24" height="180" class="bx g"/><text x="282" y="250" class="s" text-anchor="middle">B 4096×16</text><text x="315" y="145" class="h" text-anchor="middle" style="font-size:34px">·</text><rect x="335" y="128" width="180" height="24" class="bx g"/><text x="425" y="118" class="s" text-anchor="middle">A 16×4096</text><text x="560" y="110" class="h" text-anchor="start" style="font-size:20px">trainable: 131,072</text><text x="560" y="138" class="s" text-anchor="start">= 0.78% of this one matrix</text><text x="560" y="166" class="s mut" text-anchor="start">rank r = 16 is the knob</text><text x="30" y="30" class="h" text-anchor="start" style="font-size:16px">LoRA: freeze the big matrix, learn a thin low-rank correction next to it</text></svg></div><figcaption>LoRA on one 4096×4096 projection. Class 1 adds adapters like this to 205 projections in Gemma-4-E2B, at r = 16, α = 32.</figcaption></figure><div class="gallery g1"><figure class="fig ext-img"><a href="https://github.com/huggingface/trl/blob/main/examples/sft_qlora/sft_qlora.ipynb" target="_blank" rel="noopener"><img src="https://huggingface.co/datasets/trl-lib/documentation-images/resolve/main/sft-lora-notebook-trackio.png" alt="Trackio dashboard from the SFT LoRA notebook" loading="lazy"></a><figcaption>What the free Colab SFT run's Trackio dashboard looks like: compare yours against it. <span class="credit">Image: <a href="https://github.com/huggingface/trl/blob/main/examples/sft_qlora/sft_qlora.ipynb" target="_blank" rel="noopener">HF TRL</a><span class="ext" aria-hidden="true">↗</span></span></figcaption></figure></div><div class="best"><div class="k">Best first</div><div class="rgrid"><a class="res" href="../../perf-7-training-economics/training-step.html" target="_blank" rel="noopener"><span class="ri"><span class="ri-ph card" aria-hidden="true">CARD</span></span><span class="rt"><span class="rh">A training step and where its memory goes</span><span class="rn">Your perf-7 card: params, grads, optimizer states.</span><span class="rm">30 min</span></span></a><a class="res" href="https://thinkingmachines.ai/blog/lora/" target="_blank" rel="noopener"><span class="ri"><span class="ri-ph read" aria-hidden="true">READ</span></span><span class="rt"><span class="rh">LoRA Without Regret (Thinking Machines)<span class="ext" aria-hidden="true">↗</span></span><span class="rn">When LoRA matches full fine-tuning, and the LR rule.</span><span class="rm">40 min</span></span></a></div></div><p class="mine"><b>Already in your hub:</b> <a href="../../perf-7-training-economics/precision-recompute.html">Mixed precision and activation checkpointing</a> · <a href="../../z2h-10-gpt2/big-batch.html">Gradient accumulation (Z2H)</a> · <a href="../../z2h-10-gpt2/optimizer-recipe.html">AdamW, clipping, warmup, cosine</a> · <a href="../../z2h-7-wavenet/smooth-loss-plot.html">Reading a noisy loss curve</a></p><div class="know"><b>You know it when you can</b> estimate the memory for a full fine-tune of Qwen3-0.6B (≈9.6 GB before activations) and a LoRA of it (≈1.3 GB), and say what <code>per_device_train_batch_size=4, gradient_accumulation_steps=8</code> means.</div><details class="deep"><summary>Go deeper (5)</summary><ul><li><a href="https://huggingface.co/docs/peft/conceptual_guides/lora" target="_blank" rel="noopener">PEFT: LoRA conceptual guide</a><span class="ext" aria-hidden="true">↗</span></li><li><a href="https://www.youtube.com/watch?v=PXWYUTMt-AU" target="_blank" rel="noopener">Umar Jamil: LoRA explained visually</a><span class="ext" aria-hidden="true">↗</span> <span class="n">· 27 min</span></li><li><a href="https://huggingface.co/docs/transformers/model_memory_anatomy" target="_blank" rel="noopener">Transformers: model training anatomy (GPU memory)</a><span class="ext" aria-hidden="true">↗</span></li><li><a href="https://huggingface.co/docs/trl/reducing_memory_usage" target="_blank" rel="noopener">TRL: reducing memory usage</a><span class="ext" aria-hidden="true">↗</span></li><li><a href="https://blog.eleuther.ai/transformer-math/" target="_blank" rel="noopener">EleutherAI: Transformer Math 101</a><span class="ext" aria-hidden="true">↗</span></li></ul></details></div></section></section>
+<section class="watch" id="watch"><h2>Watch</h2>
+<div class="wrow"><a class="vcard big" href="https://www.youtube.com/watch?v=rNgUoH7Wbv8" target="_blank" rel="noopener">
+<span class="thumb"><img src="https://i.ytimg.com/vi/rNgUoH7Wbv8/hqdefault.jpg" alt="" loading="lazy" width="480" height="360"><span class="dur">1:00:00</span><span class="play" aria-hidden="true">▶</span></span>
+<span class="vt"><span class="vn">Class 1 · hands-on</span><span class="vh">SFT on agent traces</span><span class="vs">Burtenshaw, Paniego</span></span></a><div class="wside"><p class="intro">Ben has an agent (Codex, with the repo's skills) write and launch the training. Watch for what the agent was asked to check before spending money; that habit is the real lesson. Chapters are YouTube's own.</p><p class="wl"><a href="https://docs.google.com/presentation/d/1hcGZ4U9TjZZzcGNbH2K6wYD45qwZTyo_gosCQsnHlnc/edit?usp=sharing" target="_blank" rel="noopener">Slides</a><span class="ext" aria-hidden="true">↗</span> · <a href="https://huggingface.co/spaces/burtenshaw/pi-mono-sft-trackio" target="_blank" rel="noopener">Class dashboard</a><span class="ext" aria-hidden="true">↗</span> · <a href="https://huggingface.co/burtenshaw/gemma4-pi-mono-youtube-livestream-1-scripts" target="_blank" rel="noopener">Scripts on the Hub</a><span class="ext" aria-hidden="true">↗</span> · <a href="https://github.com/burtenshaw/training-agents/tree/main/tutorials/01-sft-on-traces" target="_blank" rel="noopener">Tutorial folder</a><span class="ext" aria-hidden="true">↗</span></p></div></div>
+<ol class="items"><li class="item"><input type="checkbox" id="c-s4-watch" data-id="s4-watch"><div class="txt"><label for="c-s4-watch" class="sr">Done</label><span class="t">Watch SFT on agent traces with these questions open</span><span class="why">Write down: <b>(1)</b> the one-paragraph prompt Ben gives the agent (7:04). <b>(2)</b> What SFT does at code level (41:10): template, shift, cross-entropy, mask. <b>(3)</b> What each Trackio curve should do in a healthy run (51:39).</span></div></li></ol>
+<ol class="chapters"><li class="skip"><a class="ts" href="https://www.youtube.com/watch?v=rNgUoH7Wbv8" target="_blank" rel="noopener">0:00</a><span><b>Introduction and welcome</b> <span class="tag">skim</span></span></li><li class=""><a class="ts" href="https://www.youtube.com/watch?v=rNgUoH7Wbv8&t=336" target="_blank" rel="noopener">5:36</a><span><b>Exploring an agent trace</b></span></li><li class=""><a class="ts" href="https://www.youtube.com/watch?v=rNgUoH7Wbv8&t=382" target="_blank" rel="noopener">6:22</a><span><b>Using agents to train agents</b></span></li><li class=""><a class="ts" href="https://www.youtube.com/watch?v=rNgUoH7Wbv8&t=525" target="_blank" rel="noopener">8:45</a><span><b>Selecting the dataset: real-world agent traces</b> <span class="n"><code>badlogicgames/pi-mono</code></span></span></li><li class=""><a class="ts" href="https://www.youtube.com/watch?v=rNgUoH7Wbv8&t=619" target="_blank" rel="noopener">10:19</a><span><b>Deep dive into SFT for agents</b></span></li><li class=""><a class="ts" href="https://www.youtube.com/watch?v=rNgUoH7Wbv8&t=1002" target="_blank" rel="noopener">16:42</a><span><b>The agent “contract” and planning</b> <span class="n">smoke tests before spending</span></span></li><li class=""><a class="ts" href="https://www.youtube.com/watch?v=rNgUoH7Wbv8&t=1122" target="_blank" rel="noopener">18:42</a><span><b>Why train on traces?</b></span></li><li class=""><a class="ts" href="https://www.youtube.com/watch?v=rNgUoH7Wbv8&t=1316" target="_blank" rel="noopener">21:56</a><span><b>Anatomy of a trace</b></span></li><li class="skip"><a class="ts" href="https://www.youtube.com/watch?v=rNgUoH7Wbv8&t=1472" target="_blank" rel="noopener">24:32</a><span><b>Loading skills and interacting with the Hub</b> <span class="tag">skim</span></span></li><li class=""><a class="ts" href="https://www.youtube.com/watch?v=rNgUoH7Wbv8&t=1779" target="_blank" rel="noopener">29:39</a><span><b>Reviewing the agent-generated training script</b></span></li><li class=""><a class="ts" href="https://www.youtube.com/watch?v=rNgUoH7Wbv8&t=2470" target="_blank" rel="noopener">41:10</a><span><b>What is SFT at a code level?</b> <span class="n">the most important 10 minutes</span></span></li><li class=""><a class="ts" href="https://www.youtube.com/watch?v=rNgUoH7Wbv8&t=2674" target="_blank" rel="noopener">44:34</a><span><b>Prompt completions and masking</b></span></li><li class=""><a class="ts" href="https://www.youtube.com/watch?v=rNgUoH7Wbv8&t=3099" target="_blank" rel="noopener">51:39</a><span><b>Trackio dashboard</b></span></li><li class=""><a class="ts" href="https://www.youtube.com/watch?v=rNgUoH7Wbv8&t=3345" target="_blank" rel="noopener">55:45</a><span><b>Benchmarks and HumanEval</b></span></li><li class="skip"><a class="ts" href="https://www.youtube.com/watch?v=rNgUoH7Wbv8&t=3480" target="_blank" rel="noopener">58:00</a><span><b>Summary and next steps</b> <span class="tag">skim</span></span></li></ol></section>
+<section class="lab" id="lab-free"><div class="ph"><h2>Lab A · A free SFT run you can watch</h2><span class="meta"><span class="chip"><b>Time</b> ~1.5 h</span><span class="chip"><b>Cost</b> $0</span><span class="chip"><b>Where</b> Colab T4</span></span></div>
+<p class="intro">Two official TRL notebooks that run on Colab's free T4. The tool-calling one is closest to agent traces.</p><ol class="items"><li class="item"><input type="checkbox" id="c-s4-lab-tool" data-id="s4-lab-tool"><div class="txt"><label for="c-s4-lab-tool" class="sr">Done</label><span class="t">Run TRL's “Teaching tool calling with SFT” notebook</span><span class="why"><a href="https://colab.research.google.com/github/huggingface/trl/blob/main/examples/sft_tool_calling/sft_tool_calling.ipynb" target="_blank" rel="noopener">Open in Colab</a><span class="ext" aria-hidden="true">↗</span>. Before training, print one formatted example and find the tool-call tokens.</span><span class="expect"><b>You should see</b> the model emitting a well-formed tool call it couldn't produce before training.</span></div></li><li class="item opt"><input type="checkbox" id="c-s4-lab-qlora" data-id="s4-lab-qlora"><div class="txt"><label for="c-s4-lab-qlora" class="sr">Done</label><span class="t">Or: SFT with LoRA/QLoRA on a free Colab</span><span class="why"><a href="https://colab.research.google.com/github/huggingface/trl/blob/main/examples/sft_qlora/sft_qlora.ipynb" target="_blank" rel="noopener">Open in Colab</a><span class="ext" aria-hidden="true">↗</span>. Change the LoRA rank from 16 to 8 and compare the trainable-parameter count it prints.</span><span class="expect"><b>You should see</b> roughly half the trainable parameters at r = 8.</span></div></li><li class="item"><input type="checkbox" id="c-s4-lab-mask" data-id="s4-lab-mask"><div class="txt"><label for="c-s4-lab-mask" class="sr">Done</label><span class="t">Count the trained tokens yourself on a real agent trace (Mac, no GPU)</span><pre><code>uv run --python 3.12 --with transformers --with jinja2 --with datasets python - &lt;&lt;'EOF'
+import json, os, sys
+from datasets import load_dataset
+from transformers import AutoTokenizer
+tok = AutoTokenizer.from_pretrained(&quot;Qwen/Qwen3-0.6B&quot;)
+row = next(iter(load_dataset(&quot;SWE-bench/SWE-smith-trajectories&quot;, split=&quot;tool&quot;, streaming=True)))
+raw = json.loads(row[&quot;messages&quot;]) if isinstance(row[&quot;messages&quot;], str) else row[&quot;messages&quot;]
+text = lambda c: c if isinstance(c, str) else &quot; &quot;.join(p.get(&quot;text&quot;, &quot;&quot;) for p in c or [])
+msgs = [{&quot;role&quot;: m[&quot;role&quot;], &quot;content&quot;: text(m.get(&quot;content&quot;))} for m in raw[:6]]
+print(tok.apply_chat_template(msgs, tokenize=False)[:1200])
+# Class 1's trick: each assistant turn = full prefix minus the prompt before it
+n = lambda m, gen=False: len(tok.apply_chat_template(m, tokenize=True, add_generation_prompt=gen, return_dict=True)[&quot;input_ids&quot;])
+trained = sum(n(msgs[:i + 1]) - n(msgs[:i], True) for i, m in enumerate(msgs) if m[&quot;role&quot;] == &quot;assistant&quot;)
+print(&quot;tokens:&quot;, n(msgs), &quot;| trained on (assistant turns):&quot;, trained)
+sys.stdout.flush(); os._exit(0)   # streaming datasets can hang on exit
+EOF</code></pre><span class="expect"><b>You should see</b> the rendered template with its role markers (tool turns included), then something like <code>tokens: 1061 | trained on (assistant turns): 89</code>. Under 10% of this trace is the model's own writing; the rest is prompt and tool output.</span><details class="deep"><summary>If it breaks</summary><p>Why not <code>return_assistant_tokens_mask=True</code>? Qwen3's chat template has no <code>{% generation %}</code> markers, so that mask comes back all zeros. That's exactly why Class 1 builds prompt/completion pairs and uses completion-only loss instead of <code>assistant_only_loss</code>.</p></details></div></li></ol></section><section class="lab" id="lab-class"><div class="ph"><h2>Lab B · Class 1's run, plus the missing baseline</h2><span class="meta"><span class="chip"><b>Time</b> ~3 h (mostly waiting)</span><span class="chip"><b>Cost</b> ~$4–6</span><span class="chip"><b>Where</b> HF Jobs</span></span></div>
+<p class="intro">Class 1's <code>train_sft.py</code>: Gemma-4-E2B-it, LoRA r16/α32, 4-bit, lr 2e-4, 200 steps on an L40S. Replace <code>burtenshaw/...</code> IDs with your own username.</p><p class="wl"><a href="https://github.com/burtenshaw/training-agents/blob/main/tutorials/01-sft-on-traces/train_sft.py" target="_blank" rel="noopener">train_sft.py</a><span class="ext" aria-hidden="true">↗</span> · <a href="https://github.com/burtenshaw/training-agents/tree/main/tutorials/01-sft-on-traces" target="_blank" rel="noopener">Tutorial README</a><span class="ext" aria-hidden="true">↗</span></p><ol class="items"><li class="item"><input type="checkbox" id="c-s4-lab-prep" data-id="s4-lab-prep"><div class="txt"><label for="c-s4-lab-prep" class="sr">Done</label><span class="t">Prepare the data only, on your Mac</span><pre><code>cd training-agents
+uv run tutorials/01-sft-on-traces/train_sft.py --prepare-only --max-files 20</code></pre><span class="expect"><b>You should see</b> the data funnel printed: files → events → assistant examples → kept at max length. On the full set it's 627 → 33,879 → 15,251 → 6,727.</span></div></li><li class="item"><input type="checkbox" id="c-s4-lab-smoke" data-id="s4-lab-smoke"><div class="txt"><label for="c-s4-lab-smoke" class="sr">Done</label><span class="t">Smoke test: 1 step on a cheap GPU</span><pre><code>hf jobs uv run --flavor l40sx1 --timeout 30m --secrets HF_TOKEN \
+  tutorials/01-sft-on-traces/train_sft.py \
+  --max-examples 512 --eval-size 32 --max-length 2048 --max-steps 1 \
+  --gradient-accumulation-steps 1 --logging-steps 1 --eval-steps 1 --save-steps 1 \
+  --trackio-project my-sft --trackio-space-id &lt;you&gt;/my-sft-trackio --run-name smoke</code></pre><span class="expect"><b>You should see</b> one training step, then “205” LoRA targets verified. This costs cents and catches auth, data-shape and out-of-memory bugs before the hour-long run.</span></div></li><li class="item"><input type="checkbox" id="c-s4-lab-run" data-id="s4-lab-run"><div class="txt"><label for="c-s4-lab-run" class="sr">Done</label><span class="t">The real run (one variant, not the sweep)</span><pre><code>hf jobs uv run --flavor l40sx1 --timeout 3h -d --secrets HF_TOKEN \
+  tutorials/01-sft-on-traces/train_sft.py \
+  --output-dir outputs/sft-lr2e4-r16 --hub-model-id &lt;you&gt;/gemma-4-E2B-it-pi-mono-lora \
+  --push-to-hub --max-length 4096 --max-steps 200 --learning-rate 2e-4 \
+  --lora-r 16 --lora-alpha 32 --gradient-accumulation-steps 16 \
+  --trackio-project my-sft --trackio-space-id &lt;you&gt;/my-sft-trackio --run-name lr2e4-r16
+hf jobs ps
+hf jobs logs --tail 200 &lt;job-id&gt;</code></pre><span class="expect"><b>You should see</b> about 65 minutes. In Class 1 this variant ended at train loss 0.65, eval loss 0.55 and eval token accuracy 0.86.</span></div></li><li class="item"><input type="checkbox" id="c-s4-lab-read" data-id="s4-lab-read"><div class="txt"><label for="c-s4-lab-read" class="sr">Done</label><span class="t">Read your Trackio curves against the class's</span><span class="why">Open your Space next to <a href="https://huggingface.co/spaces/burtenshaw/pi-mono-sft-trackio" target="_blank" rel="noopener">the class dashboard</a><span class="ext" aria-hidden="true">↗</span>. Check: loss and entropy fall, token accuracy rises, learning rate decays, eval loss tracks train loss.</span><span class="expect"><b>You should see</b> eval loss following train loss down. If eval turns up while train keeps falling, you're overfitting.</span></div></li><li class="item"><input type="checkbox" id="c-s4-lab-base" data-id="s4-lab-base"><div class="txt"><label for="c-s4-lab-base" class="sr">Done</label><span class="t">Evaluate the base model AND your adapter (the class skipped the base)</span><span class="why">Use the class's Inspect command from the tutorial README twice: once with <code>--model vllm/google/gemma-4-E2B-it</code>, once with <code>vllm/google/gemma-4-E2B-it:&lt;you&gt;/gemma-4-E2B-it-pi-mono-lora</code>.</span><span class="expect"><b>You should see</b> two HumanEval numbers with error bars. The class's adapter scored 0.744 ± 0.034. Without the base score, you can't say the SFT helped general coding, or hurt it.</span><details class="deep"><summary>If it breaks</summary><p>Inside Jobs, Inspect needs <code>--sandbox local</code> (no Docker) and vLLM needs <code>VLLM_USE_FLASHINFER_SAMPLER=0</code>.</p></details></div></li></ol></section>
+<section class="cp" id="checkpoint"><h2>Checkpoint</h2><p class="intro">Closed book. Write your answer before you open each one. If you miss one, reread the block it names, not the whole stage.</p>
+<ol class="qs"><li><p>Why does Class 1 get 15,251 examples from 627 sessions?</p><details><summary>Answer</summary><p>Each assistant turn becomes its own prompt/completion example: the conversation up to that turn is the prompt, the turn is the completion. Many turns per session.</p><p class="n">Reread: SFT is next-token prediction, masked</p></details></li><li><p>LoRA r = 16 on a 4096×4096 matrix: how many trainable parameters, and what fraction?</p><details><summary>Answer</summary><p>2 × 4096 × 16 = 131,072, which is 0.78% of 16,777,216.</p><p class="n">Reread: LoRA and GPU memory</p></details></li><li><p>Roughly how much memory does a full AdamW fine-tune of Qwen3-0.6B need before activations, and why?</p><details><summary>Answer</summary><p>≈ 9.6 GB: 16 bytes per parameter (2 bf16 weights + 2 grads + 4 fp32 master + 8 for Adam's two moments) × 0.6B.</p><p class="n">Reread: LoRA and GPU memory</p></details></li><li><p>The class reports HumanEval 0.744 for the adapter. What's missing before you can call it an improvement?</p><details><summary>Answer</summary><p>The base model's score on the same eval (with its error bar). Also a task-specific held-out eval, since HumanEval is saturated and measures general coding, not Pi-harness skill.</p><p class="n">Reread: Lab B</p></details></li></ol>
+<ol class="items"><li class="item"><input type="checkbox" id="c-s4-checkpoint" data-id="s4-checkpoint"><div class="txt"><label for="c-s4-checkpoint" class="sr">Done</label><span class="t">I answered every checkpoint question without peeking</span><span class="why">Tick this only when that's true. It's what the map counts as “stage done”.</span></div></li></ol></section>
+
+<div class="overall"><span>This page</span><div class="track" aria-hidden="true"><i id="allbar"></i></div><span id="allcount"></span><button class="reset" id="reset" type="button">Clear this page's ticks</button></div>
+<nav class="pn"><a href="stage-3-rl-for-agents.html">← Stage 3: What changes when the policy is an agent</a><a href="stage-5-distillation.html">Stage 5: Move a teacher's skill into a smaller model →</a></nav>
+<p class="foot">Part of the <a href="index.html">Training Agents roadmap</a>. Ticks stay in this browser. Study method: <a href="../../learning-principles/learning-principles.html">learning principles</a>.</p></article>
+<script>(() => {
+  const KEY = "training-agents-roadmap:v1";
+  let done = {};
+  try { done = JSON.parse(localStorage.getItem(KEY)) || {}; } catch {}
+  const save = () => { try { localStorage.setItem(KEY, JSON.stringify(done)); } catch {} };
+  const boxes = [...document.querySelectorAll("input[data-id]")];
+  const paint = () => {
+    for (const b of boxes) { b.checked = !!done[b.dataset.id]; b.closest(".item").classList.toggle("done", b.checked); }
+    for (const el of document.querySelectorAll("[data-stage]")) {
+      const ids = el.dataset.ids.split(" "), n = ids.filter((i) => done[i]).length;
+      const c = el.querySelector("[data-count]"); if (c) c.textContent = n + " / " + ids.length;
+      const bar = el.querySelector("[data-bar]"); if (bar) bar.style.width = (100 * n / ids.length) + "%";
+      el.classList.toggle("stage-done", !!done[el.dataset.stage + "-checkpoint"]);
+    }
+    const all = document.getElementById("allcount");
+    if (all) { const n = boxes.filter((b) => b.checked).length; all.textContent = n + " / " + boxes.length + " on this page"; document.getElementById("allbar").style.width = (100 * n / Math.max(boxes.length, 1)) + "%"; }
+  };
+  for (const b of boxes) b.addEventListener("change", () => { if (b.checked) done[b.dataset.id] = 1; else delete done[b.dataset.id]; save(); paint(); });
+  const reset = document.getElementById("reset");
+  if (reset) { let armed = false; reset.addEventListener("click", () => {
+    if (!armed) { armed = true; reset.textContent = "Click again to clear"; setTimeout(() => { armed = false; reset.textContent = "Clear this page's ticks"; }, 3000); return; }
+    for (const b of boxes) delete done[b.dataset.id]; save(); paint(); armed = false; reset.textContent = "Clear this page's ticks"; }); }
+  paint();
+})();</script>
+</body></html>
