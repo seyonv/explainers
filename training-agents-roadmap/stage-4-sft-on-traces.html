@@ -347,7 +347,7 @@ hf jobs logs --tail 200 &lt;job-id&gt;</code></pre><span class="expect"><b>You s
     for (const b of boxes) delete done[b.dataset.id]; save(); paint(); armed = false; reset.textContent = "Clear this page's ticks"; }); }
   paint();
 })();</script>
-<script type="application/json" id="mission-data">{"key":"mission:training-agents:v1","ladder":[{"id":"r0","label":"Crack safes by hand","unit":"n"},{"id":"r1","label":"Random, then try-and-undo","unit":"%"},{"id":"r2","label":"A Q-table on one safe, then on new ones","unit":"%"},{"id":"r3","label":"Frontier models: the number to beat","unit":"%"},{"id":"r4","label":"Qwen3-1.7B, untrained, in your environment","unit":"%"},{"id":"r5","label":"After SFT on a prober's games","unit":"%"},{"id":"r6","label":"After GRPO","unit":"%"},{"id":"r7","label":"Trained against your environment on the Hub","unit":"%"},{"id":"r8","label":"Bigger held-out safes: $ per safe cracked","unit":"$"}],"slots":{"frontier":{"rung":"r3","unit":"%","label":"Y"},"mine":{"rung":"r7","unit":"%","label":"X"},"usd":{"rung":"r8","unit":"$","label":"40"},"ratio":{"div":["r8f","r8"],"unit":"n","label":"N"}}}</script><script>(() => {
+<script type="application/json" id="mission-data">{"key":"mission:training-agents:v1","ladder":[{"id":"r0","label":"Crack safes by hand","unit":"n"},{"id":"r1","label":"Random, then try-and-undo","unit":"%"},{"id":"r2","label":"A Q-table on one safe, then on new ones","unit":"%"},{"id":"r3","label":"Frontier models: the number to beat","unit":"%"},{"id":"r4","label":"Qwen3-1.7B, untrained, in your environment","unit":"%"},{"id":"r5","label":"After SFT on a prober's games","unit":"%"},{"id":"r6","label":"After GRPO","unit":"%"},{"id":"r7","label":"Trained against your environment on the Hub","unit":"%"},{"id":"r8","label":"Bigger held-out safes: $ per safe cracked","unit":"$"}],"slots":{"frontier":{"rung":"r3","unit":"%","label":"Y"},"mine":{"rung":"r7","unit":"%","label":"X"},"usd":{"rung":"r8t","unit":"$","label":"40"},"ratio":{"div":["r8f","r8"],"unit":"n","label":"N"}}}</script><script>(() => {
 function parseScore(raw, unit) {
   const s = String(raw ?? "").trim().replace(/[%$,\s]/g, "");
   if (!/^-?\d+(\.\d+)?$/.test(s)) return { ok: false, error: "Enter a number, like 62 or 0.4." };
@@ -378,8 +378,13 @@ function parseMinutes(s) {
   if ((m = t.match(/(\d+(?:\.\d+)?)\s*(?:[–-]\s*\d+(?:\.\d+)?)?\s*days?/))) return Math.round(num(m[1]) * 360);
   return null;
 }
-function checkinDue(startedAt, minutes, now, done) {
-  return !done && !!startedAt && !!minutes && now - startedAt >= 2 * minutes * 60000;
+function checkinDue(activeMs, minutes, done) {
+  return !done && !!minutes && activeMs >= 2 * minutes * 60000;
+}
+function accrue(prevMs, lastTs, now, visible) {
+  if (!lastTs || !visible) return prevMs;
+  const gap = now - lastTs;
+  return gap > 0 && gap <= 5 * 60000 ? prevMs + gap : prevMs;   // longer than 5 minutes away is a break
 }
 function turnJS(code, links, i, d) {
   const c = code.slice();
@@ -395,8 +400,16 @@ if (!dataEl) return;
 const MD = JSON.parse(dataEl.textContent), KEY = MD.key, NOSTORE = /[?&]nostore\b/.test(location.search);
 const load = () => { try { if (NOSTORE) throw 0; return JSON.parse(localStorage.getItem(KEY)) || {}; } catch (e) { return null; } };
 const save = (st) => { try { if (NOSTORE) throw 0; localStorage.setItem(KEY, JSON.stringify(st)); return true; } catch (e) { return false; } };
-let st = load(); const canSave = st !== null; if (!st) st = {};
-st.log = st.log || {}; st.quests = st.quests || []; st.started = st.started || {};
+const norm = (s) => {
+  s = s && typeof s === "object" && !Array.isArray(s) ? s : {};
+  for (const k of ["log", "active"]) if (!s[k] || typeof s[k] !== "object") s[k] = {};
+  if (!Array.isArray(s.quests)) s.quests = [];
+  return s;
+};
+const first = load(); const canSave = first !== null; let st = norm(first);
+// Every change re-reads storage and applies to the fresh copy, so a second open tab can't erase this one's work.
+function commit(mut) { const fresh = load(); const base = fresh === null ? st : norm(fresh); mut(base); st = base; return save(st); }
+window.addEventListener("storage", (ev) => { if (ev.key === KEY) { st = norm(load()); paint(); } });
 const page = location.pathname.split("/").pop() || "index.html";
 const fmtOf = (unit, v) => unit === "%" ? Math.round(v) + "%" : unit === "$" ? "$" + (v < 10 ? v.toFixed(2) : Math.round(v)) : String(v);
 const values = () => {
@@ -431,7 +444,7 @@ function paint() {
       const li = document.createElement("li"); li.textContent = q.text + " ";
       const s = document.createElement("span"); s.className = "n"; s.textContent = "· " + q.stage + " ";
       const b = document.createElement("button"); b.type = "button"; b.textContent = "Done with it";
-      b.addEventListener("click", () => { st.quests.splice(k, 1); save(st); paint(); });
+      b.addEventListener("click", () => { commit((s) => { s.quests = s.quests.filter((x) => x.at !== q.at || x.text !== q.text); }); paint(); });
       li.append(s, b); ql.append(li);
     });
   }
@@ -444,22 +457,24 @@ for (const form of document.querySelectorAll("form.mlog")) {
     ev.preventDefault();
     const r = parseScore(input.value, form.dataset.unit);
     if (!r.ok) { err.textContent = r.error; ok.textContent = ""; return; }
-    err.textContent = ""; st.log[form.dataset.rung] = { value: r.value, at: Date.now() };
-    ok.textContent = save(st) ? "Logged: " + fmtOf(form.dataset.unit, r.value) : "Can't save in this browser; your number won't be kept.";
+    err.textContent = "";
+    ok.textContent = commit((s) => { s.log[form.dataset.rung] = { value: r.value, at: Date.now() }; }) ? "Logged: " + fmtOf(form.dataset.unit, r.value) : "Can't save in this browser; your number won't be kept.";
     paint();
   });
 }
 const bar = document.querySelector(".mbar");
 function park(text) {
   if (!text.trim()) return;
-  st.quests.push({ text: text.trim().slice(0, 160), at: Date.now(), stage: document.title.split(":")[0] }); save(st); paint();
+  const q = { text: text.trim().slice(0, 160), at: Date.now(), stage: document.title.split(":")[0] };
+  commit((s) => { s.quests.push(q); }); paint();
 }
 if (bar) {
   const res = bar.querySelector("[data-resume]");
   if (st.resume && st.resume.page === page) res.value = st.resume.note || "";
   res.addEventListener("change", () => {
     const blk = currentBlock();
-    st.resume = { page, href: page + (blk && blk.id ? "#" + blk.id : ""), note: res.value.trim() }; save(st);
+    const resume = { page, href: page + (blk && blk.id ? "#" + blk.id : ""), note: res.value.trim() };
+    commit((s) => { s.resume = resume; });
   });
   const qf = bar.querySelector("[data-quest]");
   bar.querySelector("[data-quest-open]").addEventListener("click", () => { qf.hidden = !qf.hidden; if (!qf.hidden) qf.querySelector("input").focus(); });
@@ -468,26 +483,29 @@ if (bar) {
 const blocks = [...document.querySelectorAll("[data-block]")];
 const openIn = (b) => [...b.querySelectorAll("input[data-id]")].some((x) => !x.checked);
 function currentBlock() { return blocks.find(openIn) || null; }
+const lastSeen = {};
 function tick() {
   const b = currentBlock(); const now = Date.now();
   for (const old of document.querySelectorAll(".checkin")) if (!b || old.parentElement !== b) old.remove();
   if (!b) return;
-  const id = page + "#" + b.dataset.block;
-  if (!st.started[id]) { st.started[id] = now; save(st); }
-  if (!checkinDue(st.started[id], Number(b.dataset.minutes) || null, now, !openIn(b)) || b.querySelector(".checkin")) return;
+  const id = page + "#" + b.dataset.block, visible = document.visibilityState !== "hidden";
+  const added = accrue(0, lastSeen[id], now, visible); lastSeen[id] = visible ? now : null;
+  if (added) commit((s) => { s.active[id] = (s.active[id] || 0) + added; });
+  if (!checkinDue(st.active[id] || 0, Number(b.dataset.minutes) || null, !openIn(b)) || b.querySelector(".checkin")) return;
   const c = document.createElement("div"); c.className = "checkin";
   c.innerHTML = '<span>Still moving today\'s number?</span><button type="button" data-k>Keep going</button><button type="button" data-p>Park it</button>' +
     '<form hidden><input type="text" maxlength="160" placeholder="What were you chasing?" aria-label="Side quest"><button type="submit">Save and move on</button></form>';
-  c.querySelector("[data-k]").addEventListener("click", () => { st.started[id] = Date.now(); save(st); c.remove(); });
+  c.querySelector("[data-k]").addEventListener("click", () => { commit((s) => { s.active[id] = 0; }); c.remove(); });
   const f = c.querySelector("form");
   c.querySelector("[data-p]").addEventListener("click", () => { f.hidden = false; f.querySelector("input").focus(); });
   f.addEventListener("submit", (ev) => {
-    ev.preventDefault(); park(f.querySelector("input").value); st.started[id] = Date.now(); save(st); c.remove();
+    ev.preventDefault(); park(f.querySelector("input").value); commit((s) => { s.active[id] = 0; }); c.remove();
     const nx = blocks[blocks.indexOf(b) + 1]; if (nx) nx.scrollIntoView({ behavior: "smooth" });
   });
   b.prepend(c);
 }
 document.addEventListener("change", (ev) => { if (ev.target.matches("input[data-id]")) tick(); });
+document.addEventListener("visibilitychange", tick);
 window.__missionTick = tick; setInterval(tick, 60000); tick();
 const cp = document.querySelector("[data-copy]");
 if (cp) cp.addEventListener("click", () => {
