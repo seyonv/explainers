@@ -220,9 +220,10 @@ On the hub, each series shows as one wide tile (on its map folder) that lists it
 
 ### Mission versions
 
-A path can open with a **mission**: one result you build and post ("my X beats Y on a fair benchmark"), shown as a tweet with blanks that fill in from your own logged numbers. Training agents (`training-agents-roadmap/mission.html`) and Build an LLM (`build-mission/`) have one. Each mission folder holds the mission page (`index.html`), one page per day (`day-N.html`) and its labs. Every page has a **Path version: Mission | Classic** switch; Classic is the reading-first version, and ticks are shared between the two. In `study-path.json` the mission version is a `roadmap` path and the old one sits under `classic`. The scoreboard is kept in your browser only.
+A path can open with a **mission**: one result you build and post ("my X beats Y on a fair benchmark"), shown as a tweet with blanks that fill in from your own logged numbers. Training agents (`training-agents-roadmap/mission.html`), Build an LLM (`build-mission/`) and the inference path (`inference-mission/`) have one. Each mission folder holds the mission page (`index.html`), one page per day (`day-N.html`) and its labs. Every page has a **Path version: Mission | Classic** switch; Classic is the reading-first version, and ticks are shared between the two. In `study-path.json` the mission version is a `roadmap` path and the old one sits under `classic`. The scoreboard is kept in your browser only.
 
 - `build-mission/labs/`: `afd_corpus.py` (downloads weather-service forecast discussions), `bpb.py` (bits per byte for compressors, a byte bigram and GPT-2), `tiny_gpt.py`, `finetune_gpt2.py`, `sweep.py` and `sample.py`. Standard library for the first two; `uv run --python 3.12 --with torch [--with transformers]` for the rest.
+- `inference-mission/labs/trace_lab.py`: prompt reuse in the TraceLab agent trace vs ShareGPT, the KV budget, a scaled replay slice, the GPU benchmark scripts for each day, and the final ranking. Needs `uv run --python 3.12 --with tokenizers` for `--reuse`; the GPU scripts run on a rented machine.
 
 ## Study Mode
 
